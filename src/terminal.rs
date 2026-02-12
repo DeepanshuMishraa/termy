@@ -6,9 +6,42 @@ use alacritty_terminal::{
     term::{Config as TermConfig, Term},
     tty::{self, Options as PtyOptions, Shell},
 };
-use flume::{Receiver, Sender, unbounded};
-use gpui::{Pixels, px};
-use std::{env, sync::Arc};
+use flume::{unbounded, Receiver, Sender};
+use gpui::{px, Pixels};
+use std::{collections::HashMap, env, path::Path, sync::Arc};
+
+fn login_shell_args(shell_path: &str) -> Vec<String> {
+    match Path::new(shell_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+    {
+        Some("bash" | "zsh" | "fish") => vec!["-i".to_string(), "-l".to_string()],
+        _ => Vec::new(),
+    }
+}
+
+fn pty_env_overrides() -> HashMap<String, String> {
+    let mut env_overrides = HashMap::new();
+    let mut path_entries: Vec<String> = env::var("PATH")
+        .unwrap_or_else(|_| "/usr/bin:/bin:/usr/sbin:/sbin".to_string())
+        .split(':')
+        .map(ToString::to_string)
+        .collect();
+
+    for extra in [
+        "/opt/homebrew/bin",
+        "/opt/homebrew/sbin",
+        "/usr/local/bin",
+        "/usr/local/sbin",
+    ] {
+        if !path_entries.iter().any(|entry| entry == extra) {
+            path_entries.push(extra.to_string());
+        }
+    }
+
+    env_overrides.insert("PATH".to_string(), path_entries.join(":"));
+    env_overrides
+}
 
 /// Events sent from the terminal to the view
 #[derive(Debug, Clone)]
@@ -113,7 +146,7 @@ impl Terminal {
 
         // Get shell from environment or default to bash
         let shell_path = env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
-        let shell = Shell::new(shell_path, vec![]);
+        let shell = Shell::new(shell_path.clone(), login_shell_args(&shell_path));
 
         // Get working directory
         let working_directory = env::current_dir().ok();
@@ -122,7 +155,7 @@ impl Terminal {
         let pty_options = PtyOptions {
             shell: Some(shell),
             working_directory,
-            env: std::collections::HashMap::new(),
+            env: pty_env_overrides(),
             drain_on_exit: true,
         };
 

@@ -1,7 +1,13 @@
 [package]
-name = "gpui-terminal"
+name = "termy"
 version = "0.1.0"
 edition = "2024"
+
+[package.metadata.bundle]
+name = "Termy"
+identifier = "com.example.termy"
+short_description = "Minimal GPUI-powered terminal"
+category = "Developer Tool"
 
 [dependencies]
 gpui = { git = "https://github.com/zed-industries/zed", package = "gpui" }

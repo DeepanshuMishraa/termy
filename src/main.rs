@@ -18,7 +18,7 @@ fn main() {
         cx.bind_keys([KeyBinding::new("cmd-,", OpenConfig, None)]);
         cx.on_action(|_: &OpenConfig, _cx| config::open_config_file());
         cx.set_menus(vec![Menu {
-            name: "gpui-terminal".into(),
+            name: "Termy".into(),
             items: vec![
                 MenuItem::os_submenu("Services", SystemMenuType::Services),
                 MenuItem::separator(),

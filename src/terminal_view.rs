@@ -90,6 +90,31 @@ impl TerminalView {
         }
     }
 
+    fn sync_terminal_size(&mut self, window: &Window, cell_size: Size<Pixels>) {
+        let viewport = window.viewport_size();
+        let viewport_width: f32 = viewport.width.into();
+        let viewport_height: f32 = viewport.height.into();
+        let cell_width: f32 = cell_size.width.into();
+        let cell_height: f32 = cell_size.height.into();
+
+        if cell_width <= 0.0 || cell_height <= 0.0 {
+            return;
+        }
+
+        let cols = (viewport_width / cell_width).floor().max(2.0) as u16;
+        let rows = (viewport_height / cell_height).floor().max(1.0) as u16;
+
+        let current = self.terminal.size();
+        if current.cols != cols || current.rows != rows {
+            self.terminal.resize(TerminalSize {
+                cols,
+                rows,
+                cell_width: cell_size.width,
+                cell_height: cell_size.height,
+            });
+        }
+    }
+
     fn handle_key_down(
         &mut self,
         event: &KeyDownEvent,
@@ -130,6 +155,8 @@ impl Render for TerminalView {
         let font_family = self.font_family.clone();
         let font_size = self.font_size;
 
+        self.sync_terminal_size(window, cell_size);
+
         // Collect cells to render
         let mut cells_to_render: Vec<CellRenderInfo> = Vec::new();
         let (cursor_col, cursor_row) = self.terminal.cursor_position();
@@ -154,6 +181,9 @@ impl Render for TerminalView {
                     fg: fg.into(),
                     bg: bg.into(),
                     bold: cell_content.flags.contains(Flags::BOLD),
+                    render_text: !cell_content
+                        .flags
+                        .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER),
                     _italic: cell_content.flags.contains(Flags::ITALIC),
                     is_cursor,
                 });
@@ -171,7 +201,7 @@ impl Render for TerminalView {
             .on_mouse_down(MouseButton::Left, cx.listener(Self::handle_mouse_down))
             .size_full()
             .bg(colors.background)
-            .font_family(font_family)
+            .font_family(font_family.clone())
             .text_size(font_size)
             .child(TerminalGrid {
                 cells: cells_to_render,
@@ -179,6 +209,8 @@ impl Render for TerminalView {
                 cols: terminal_size.cols as usize,
                 rows: terminal_size.rows as usize,
                 cursor_color: colors.cursor.into(),
+                font_family,
+                font_size,
             })
     }
 }
@@ -192,6 +224,7 @@ struct CellRenderInfo {
     fg: Hsla,
     bg: Hsla,
     bold: bool,
+    render_text: bool,
     _italic: bool,
     is_cursor: bool,
 }
@@ -203,6 +236,8 @@ struct TerminalGrid {
     cols: usize,
     rows: usize,
     cursor_color: Hsla,
+    font_family: SharedString,
+    font_size: Pixels,
 }
 
 impl IntoElement for TerminalGrid {
@@ -313,7 +348,7 @@ impl Element for TerminalGrid {
 
         // Paint text
         for cell in &self.cells {
-            if cell.char == ' ' || cell.char == '\0' {
+            if !cell.render_text || cell.char == ' ' || cell.char == '\0' || cell.char.is_control() {
                 continue;
             }
 
@@ -340,7 +375,7 @@ impl Element for TerminalGrid {
             };
 
             let font = Font {
-                family: "JetBrains Mono".into(),
+                family: self.font_family.clone(),
                 weight: font_weight,
                 ..Default::default()
             };
@@ -354,10 +389,9 @@ impl Element for TerminalGrid {
                 strikethrough: None,
             };
 
-            let font_size = px(14.0);
             let line = window
                 .text_system()
-                .shape_line(text, font_size, &[run], None);
+                .shape_line(text, self.font_size, &[run], None);
             let _ = line.paint(point(x, y), self.cell_size.height, TextAlign::Left, None, window, cx);
         }
     }

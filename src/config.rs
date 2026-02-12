@@ -119,10 +119,10 @@ pub fn open_config_file() {
 
 fn config_path() -> Option<PathBuf> {
     if let Ok(home) = env::var("HOME") {
-        return Some(Path::new(&home).join(".config/gpui-terminal/config.txt"));
+        return Some(Path::new(&home).join(".config/termy/config.txt"));
     }
 
     env::current_dir()
         .ok()
-        .map(|dir| dir.join(".config/gpui-terminal/config.txt"))
+        .map(|dir| dir.join(".config/termy/config.txt"))
 }
