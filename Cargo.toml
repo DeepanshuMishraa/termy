@@ -8,6 +8,7 @@ name = "Termy"
 identifier = "com.example.termy"
 short_description = "Minimal GPUI-powered terminal"
 category = "Developer Tool"
+icon = ["assets/termy.icns"]
 
 [dependencies]
 gpui = { git = "https://github.com/zed-industries/zed", package = "gpui" }

@@ -49,6 +49,7 @@ pub enum TerminalEvent {
     /// Terminal content has changed, needs redraw
     Wakeup,
     /// Terminal title changed
+    #[allow(dead_code)]
     Title(String),
     /// Bell character received
     Bell,
@@ -195,6 +196,7 @@ impl Terminal {
     }
 
     /// Write a string to the PTY
+    #[allow(dead_code)]
     pub fn write_str(&self, input: &str) {
         self.write(input.as_bytes());
     }
@@ -240,6 +242,7 @@ impl Terminal {
     }
 
     /// Check if there are pending events
+    #[allow(dead_code)]
     pub fn has_pending_events(&self) -> bool {
         !self.events_rx.is_empty()
     }

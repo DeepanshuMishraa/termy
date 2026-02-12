@@ -1,8 +1,56 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Parse arguments
+VERSION=""
+ARCH=""
+
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --version)
+      VERSION="$2"
+      shift 2
+      ;;
+    --arch)
+      ARCH="$2"
+      shift 2
+      ;;
+    --help|-h)
+      echo "Usage: $0 [--version VERSION] [--arch ARCH]"
+      echo ""
+      echo "Options:"
+      echo "  --version VERSION   Set version (default: read from Cargo.toml)"
+      echo "  --arch ARCH         Set architecture (default: auto-detect)"
+      echo "  --help, -h          Show this help message"
+      echo ""
+      echo "Output: target/release/Termy-<version>-macos-<arch>.dmg"
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1"
+      echo "Use --help for usage information"
+      exit 1
+      ;;
+  esac
+done
+
+# Get version from Cargo.toml if not provided
+if [ -z "$VERSION" ]; then
+  VERSION=$(grep "^version = " Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+  if [ -z "$VERSION" ]; then
+    echo "Could not read version from Cargo.toml"
+    exit 1
+  fi
+fi
+
+# Detect architecture if not provided
+if [ -z "$ARCH" ]; then
+  ARCH=$(uname -m)
+fi
+
 APP_NAME="Termy"
-DMG_NAME="termy"
+OS="macos"
+DMG_NAME="Termy-${VERSION}-${OS}-${ARCH}"
 RELEASE_DIR="target/release"
 BUNDLE_DIR="$RELEASE_DIR/bundle/osx"
 APP_PATH="$BUNDLE_DIR/$APP_NAME.app"
@@ -30,6 +78,14 @@ if ! cargo bundle --version >/dev/null 2>&1; then
   exit 1
 fi
 
+# Generate icon if needed
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ ! -f "$SCRIPT_DIR/../assets/termy.icns" ]; then
+  echo "Generating app icon..."
+  "$SCRIPT_DIR/generate-icon.sh"
+fi
+
+echo "Building $APP_NAME v$VERSION for $OS $ARCH..."
 echo "Building macOS app bundle..."
 cargo bundle --release --format osx
 
