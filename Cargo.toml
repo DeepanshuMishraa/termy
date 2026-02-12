@@ -1,0 +1,23 @@
+[package]
+name = "gpui-terminal"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gpui = { git = "https://github.com/zed-industries/zed", package = "gpui" }
+# Pin core-text to 21.0.0 to avoid core-graphics version conflict
+core-text = "=21.0.0"
+
+# Terminal emulation
+alacritty_terminal = { git = "https://github.com/alacritty/alacritty", rev = "4225cea231432fb23442b1da2463b4ec9dfd726c" }
+
+# Async/concurrency
+futures = "0.3"
+flume = "0.11"
+parking_lot = "0.12"
+smol = "2.0"
+anyhow = "1.0"
+
+# Logging
+log = "0.4"
+env_logger = "0.11"
