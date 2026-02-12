@@ -1,6 +1,6 @@
 # GPUI Terminal
 
-Minimal GPUI-powered terminal built on gpui-rs, alacritty, and pty for a fast, clean UI.
+Minimal GPUI-powered terminal built on gpui and alacritty_terminal 🔥
 
 ## Run
 
