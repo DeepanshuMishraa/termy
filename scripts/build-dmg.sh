@@ -4,6 +4,7 @@ set -euo pipefail
 # Parse arguments
 VERSION=""
 ARCH=""
+TARGET=""
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -15,12 +16,17 @@ while [[ $# -gt 0 ]]; do
       ARCH="$2"
       shift 2
       ;;
+    --target)
+      TARGET="$2"
+      shift 2
+      ;;
     --help|-h)
-      echo "Usage: $0 [--version VERSION] [--arch ARCH]"
+      echo "Usage: $0 [--version VERSION] [--arch ARCH] [--target TARGET]"
       echo ""
       echo "Options:"
       echo "  --version VERSION   Set version (default: read from Cargo.toml)"
       echo "  --arch ARCH         Set architecture (default: auto-detect)"
+      echo "  --target TARGET     Set Rust target triple (e.g., aarch64-apple-darwin, x86_64-apple-darwin)"
       echo "  --help, -h          Show this help message"
       echo ""
       echo "Output: target/release/Termy-<version>-macos-<arch>.dmg"
@@ -46,6 +52,22 @@ fi
 # Detect architecture if not provided
 if [ -z "$ARCH" ]; then
   ARCH=$(uname -m)
+fi
+
+# Map arch to target if not provided
+if [ -z "$TARGET" ]; then
+  case "$ARCH" in
+    arm64)
+      TARGET="aarch64-apple-darwin"
+      ;;
+    x86_64)
+      TARGET="x86_64-apple-darwin"
+      ;;
+    *)
+      echo "Unknown architecture: $ARCH"
+      exit 1
+      ;;
+  esac
 fi
 
 APP_NAME="Termy"
@@ -85,8 +107,13 @@ if [ ! -f "$SCRIPT_DIR/../assets/termy.icns" ]; then
   "$SCRIPT_DIR/generate-icon.sh"
 fi
 
-echo "Building $APP_NAME v$VERSION for $OS $ARCH..."
+echo "Building $APP_NAME v$VERSION for $OS $ARCH (target: $TARGET)..."
 echo "Building macOS app bundle..."
+
+# Build with specific target
+cargo build --release --target "$TARGET"
+
+# Bundle the app (cargo-bundle uses the existing build artifacts)
 cargo bundle --release --format osx
 
 if [ ! -d "$APP_PATH" ]; then

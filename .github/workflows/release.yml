@@ -1,0 +1,70 @@
+name: Release
+
+on:
+  release:
+    types: [created]
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        include:
+          - arch: arm64
+            target: aarch64-apple-darwin
+          - arch: x86_64
+            target: x86_64-apple-darwin
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Install Rust
+      uses: dtolnay/rust-action@stable
+      with:
+        targets: ${{ matrix.target }}
+    
+    - name: Install cargo-bundle
+      run: cargo install cargo-bundle
+    
+    - name: Get version
+      id: get_version
+      run: |
+        VERSION="${GITHUB_REF_NAME#v}"
+        echo "VERSION=$VERSION" >> "$GITHUB_OUTPUT"
+        echo "Building version: $VERSION for ${{ matrix.arch }}"
+    
+    - name: Build DMG
+      run: |
+        ./scripts/build-dmg.sh --version "${{ steps.get_version.outputs.VERSION }}" --arch ${{ matrix.arch }} --target ${{ matrix.target }}
+    
+    - name: Upload Release Asset
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ github.event.release.upload_url }}
+        asset_path: target/release/Termy-${{ steps.get_version.outputs.VERSION }}-macos-${{ matrix.arch }}.dmg
+        asset_name: Termy-${{ steps.get_version.outputs.VERSION }}-macos-${{ matrix.arch }}.dmg
+        asset_content_type: application/x-apple-diskimage
+
+  update-release:
+    needs: build-macos
+    runs-on: ubuntu-latest
+    steps:
+    - name: Update release to latest (non-prerelease)
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        script: |
+          const release_id = context.payload.release.id;
+          
+          await github.rest.repos.updateRelease({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            release_id: release_id,
+            prerelease: false,
+            make_latest: 'true'
+          });
+          
+          console.log(`Release ${context.payload.release.tag_name} updated to latest (non-prerelease)`);
