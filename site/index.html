@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Termy</title>
+    <link
+      rel="icon"
+      type="image/png"
+      href="https://raw.githubusercontent.com/lassejlv/termy/refs/heads/main/assets/termy_icon.png"
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;700&family=Geist+Mono:wght@400;600&display=swap"
+      rel="stylesheet"
+    />
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <style type="text/tailwindcss">
+      @theme {
+        --font-sans: "Geist", ui-sans-serif, system-ui, sans-serif;
+        --font-mono:
+          "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+    </style>
+  </head>
+  <body
+    class="min-h-screen bg-[#090d1a] text-[#e7ebf5] selection:bg-[#a7e9a3] selection:text-[#0b1020]"
+  >
+    <div
+      class="fixed inset-0 -z-10 bg-[radial-gradient(circle_at_18%_12%,rgba(102,130,198,0.22),transparent_34%),radial-gradient(circle_at_76%_16%,rgba(77,174,247,0.14),transparent_28%),radial-gradient(circle_at_62%_78%,rgba(241,163,178,0.10),transparent_34%),linear-gradient(to_bottom,#090d1a,#0b1020,#0a0f1d)]"
+    ></div>
+
+    <header class="mx-auto w-full max-w-6xl px-6 py-6">
+      <nav class="flex items-center justify-between">
+        <a
+          href="#"
+          class="flex items-center gap-3 text-sm font-bold tracking-[0.2em] text-[#dce2f3]"
+        >
+          <img
+            src="https://raw.githubusercontent.com/lassejlv/termy/refs/heads/main/assets/termy_icon.png"
+            alt="Termy icon"
+            class="h-7 w-7 rounded-md"
+          />
+          TERMY
+        </a>
+        <div class="flex items-center gap-6 text-sm text-[#b3bdd6]">
+          <a href="#features" class="hover:text-white">Features</a>
+          <a href="#download" class="hover:text-white">Download</a>
+          <a
+            href="https://github.com/lassejlv/termy"
+            target="_blank"
+            rel="noreferrer"
+            class="hover:text-white"
+            >GitHub</a
+          >
+        </div>
+      </nav>
+    </header>
+
+    <main class="mx-auto w-full max-w-6xl px-6 pb-20">
+      <section class="pb-14 pt-10">
+        <div>
+          <h1
+            class="mt-5 text-4xl font-bold leading-tight text-white md:text-6xl"
+          >
+            Fast terminal.
+            <span class="text-[#8cbef2]">No bloat.</span>
+          </h1>
+          <p class="mt-4 max-w-xl text-base text-[#bcc6dd] md:text-lg">
+            Termy is a lightweight terminal emulator built in Rust with GPU
+            rendering and built-in themes.
+          </p>
+
+          <div class="mt-8 flex flex-wrap items-center gap-3">
+            <a
+              id="primary-download"
+              href="#download"
+              class="rounded-xl bg-[#a7e9a3] px-5 py-3 text-sm font-semibold text-[#0b1020] transition hover:bg-[#93dc8f]"
+            >
+              Download Latest
+            </a>
+            <a
+              id="hero-release-link"
+              href="https://github.com/lassejlv/termy/releases/latest"
+              target="_blank"
+              rel="noreferrer"
+              class="rounded-xl border border-[#3a4568] px-5 py-3 text-sm font-semibold text-[#d0d8eb] transition hover:border-[#69b4f2] hover:text-white"
+            >
+              View Release
+            </a>
+          </div>
+        </div>
+      </section>
+
+      <section id="features" class="grid gap-4 py-10 md:grid-cols-3">
+        <article class="rounded-2xl border border-[#30385a] bg-[#161d34]/70 p-5">
+          <h2 class="text-lg font-semibold text-white">Fast Rendering</h2>
+          <p class="mt-2 text-sm text-[#b7c1d8]">
+            GPU-accelerated UI with smooth text rendering and low overhead.
+          </p>
+        </article>
+        <article class="rounded-2xl border border-[#30385a] bg-[#161d34]/70 p-5">
+          <h2 class="text-lg font-semibold text-white">Simple Config</h2>
+          <p class="mt-2 text-sm text-[#b7c1d8]">
+            Edit one config file for theme, font, size, padding, and startup
+            dir.
+          </p>
+        </article>
+        <article class="rounded-2xl border border-[#30385a] bg-[#161d34]/70 p-5">
+          <h2 class="text-lg font-semibold text-white">Native macOS DMG</h2>
+          <p class="mt-2 text-sm text-[#b7c1d8]">
+            Release assets are built for Apple Silicon and Intel and attached
+            automatically.
+          </p>
+        </article>
+      </section>
+
+      <section id="download" class="py-8">
+        <div class="rounded-2xl border border-[#30385a] bg-[#161d34]/72 p-6">
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p class="text-xs uppercase tracking-[0.2em] text-[#9eabc7]">
+                Download
+              </p>
+              <h2 class="mt-1 text-2xl font-semibold text-white">
+                Latest Release
+              </h2>
+            </div>
+            <div class="flex flex-wrap items-center gap-2">
+              <span
+                id="tag"
+                class="rounded-full bg-[#202948] px-3 py-1 text-sm font-medium text-[#dbe4f6]"
+                >Loading...</span
+              >
+              <span id="published" class="text-sm text-[#9eabc7]"></span>
+            </div>
+          </div>
+
+          <p
+            id="status"
+            class="mt-4 rounded-lg border border-[#30385a] bg-[#131a2f] px-3 py-2 text-sm text-[#bcc7df]"
+          >
+            Fetching latest release...
+          </p>
+
+          <a
+            id="release-link"
+            class="mt-4 inline-block text-sm text-[#84bbf3] hover:text-[#a2cdf8] hover:underline"
+            target="_blank"
+            rel="noreferrer"
+          >
+            View release on GitHub
+          </a>
+
+          <ul id="assets" class="mt-4 grid gap-3 md:grid-cols-2"></ul>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const owner = "lassejlv";
+      const repo = "termy";
+      const api = `https://api.github.com/repos/${owner}/${repo}/releases/latest`;
+      const RELEASE_CACHE_KEY = "termy_latest_release_v1";
+      const RELEASE_CACHE_TTL_MS = 60 * 60 * 1000;
+
+      const primaryDownloadEl = document.getElementById("primary-download");
+      const heroReleaseLinkEl = document.getElementById("hero-release-link");
+      const statusEl = document.getElementById("status");
+      const tagEl = document.getElementById("tag");
+      const publishedEl = document.getElementById("published");
+      const releaseLinkEl = document.getElementById("release-link");
+      const assetsEl = document.getElementById("assets");
+
+      function formatBytes(bytes) {
+        if (!Number.isFinite(bytes) || bytes <= 0) return "";
+        const units = ["B", "KB", "MB", "GB"];
+        let value = bytes;
+        let unit = 0;
+        while (value >= 1024 && unit < units.length - 1) {
+          value /= 1024;
+          unit += 1;
+        }
+        return `${value.toFixed(value >= 10 || unit === 0 ? 0 : 1)} ${units[unit]}`;
+      }
+
+      function setError(message) {
+        statusEl.textContent = message;
+        statusEl.className =
+          "mt-4 rounded-lg border border-[#5b3c53] bg-[#2a1b2a] px-3 py-2 text-sm text-[#f1b8c5]";
+      }
+
+      function getCachedRelease() {
+        try {
+          const raw = localStorage.getItem(RELEASE_CACHE_KEY);
+          if (!raw) return null;
+          const parsed = JSON.parse(raw);
+          if (!parsed || typeof parsed !== "object") return null;
+          if (typeof parsed.cachedAt !== "number" || !parsed.data) return null;
+          if (Date.now() - parsed.cachedAt > RELEASE_CACHE_TTL_MS) return null;
+          return parsed.data;
+        } catch {
+          return null;
+        }
+      }
+
+      function setCachedRelease(release) {
+        try {
+          localStorage.setItem(
+            RELEASE_CACHE_KEY,
+            JSON.stringify({
+              cachedAt: Date.now(),
+              data: release,
+            }),
+          );
+        } catch {
+          // Ignore cache write failures (storage disabled/full).
+        }
+      }
+
+      function renderRelease(release) {
+        assetsEl.innerHTML = "";
+
+        tagEl.textContent = release.tag_name || "Unknown tag";
+        const date = release.published_at
+          ? new Date(release.published_at).toLocaleDateString()
+          : "Unknown date";
+        publishedEl.textContent = `Published ${date}`;
+        statusEl.classList.add("hidden");
+        releaseLinkEl.href = release.html_url;
+        releaseLinkEl.textContent = release.html_url || "Open release";
+        heroReleaseLinkEl.href = release.html_url || heroReleaseLinkEl.href;
+
+        if (!Array.isArray(release.assets) || release.assets.length === 0) {
+          const li = document.createElement("li");
+          li.className = "text-sm text-[#9eabc7]";
+          li.textContent = "No assets found for this release.";
+          assetsEl.appendChild(li);
+          return;
+        }
+
+        const dmgAssets = release.assets.filter((asset) =>
+          asset.name.toLowerCase().endsWith(".dmg"),
+        );
+        const orderedAssets = dmgAssets.length ? dmgAssets : release.assets;
+
+        const preferred =
+          orderedAssets.find((asset) => asset.name.includes("arm64")) ||
+          orderedAssets[0];
+        if (preferred?.browser_download_url) {
+          primaryDownloadEl.href = preferred.browser_download_url;
+        }
+
+        for (const asset of orderedAssets) {
+          const li = document.createElement("li");
+          const link = document.createElement("a");
+          link.href = asset.browser_download_url;
+          link.target = "_blank";
+          link.rel = "noreferrer";
+          link.className =
+            "block rounded-xl border border-[#30385a] bg-[#11182d]/80 px-4 py-3 text-sm transition hover:border-[#69b4f2]";
+          link.innerHTML = `
+            <div class="font-medium text-[#a7e9a3]">${asset.name}</div>
+            <div class="mt-1 text-xs text-[#9eabc7]">${formatBytes(asset.size)}</div>
+          `;
+          li.appendChild(link);
+          assetsEl.appendChild(li);
+        }
+      }
+
+      async function loadLatestRelease() {
+        try {
+          const cachedRelease = getCachedRelease();
+          if (cachedRelease) {
+            renderRelease(cachedRelease);
+            return;
+          }
+
+          const response = await fetch(api, {
+            headers: {
+              Accept: "application/vnd.github+json",
+            },
+          });
+
+          if (!response.ok) {
+            throw new Error(`GitHub API returned ${response.status}`);
+          }
+
+          const release = await response.json();
+          setCachedRelease(release);
+          renderRelease(release);
+        } catch (error) {
+          setError("Could not fetch latest release. Try again in a moment.");
+          console.error(error);
+        }
+      }
+
+      loadLatestRelease();
+    </script>
+  </body>
+</html>
