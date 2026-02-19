@@ -1,161 +1,199 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Parse arguments
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+usage() {
+  cat <<EOF
+Usage: $0 [--version VERSION] [--arch ARCH] [--target TARGET] [--no-layout]
+
+Options:
+  --version VERSION   Set version (default: read from Cargo.toml)
+  --arch ARCH         Set architecture (arm64 or x86_64)
+  --target TARGET     Set target triple (aarch64-apple-darwin or x86_64-apple-darwin)
+  --no-layout         Skip Finder layout customization
+  --help, -h          Show this help message
+
+Output:
+  target/release/Termy-<version>-macos-<arch>.dmg
+EOF
+}
+
+die() {
+  echo "Error: $*" >&2
+  exit 1
+}
+
+log() {
+  echo "==> $*"
+}
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "'$1' is required"
+}
+
+read_version_from_cargo_toml() {
+  awk '
+    /^\[package\]$/ { in_package = 1; next }
+    /^\[/ && in_package { exit }
+    in_package && $1 == "version" {
+      gsub(/"/, "", $3)
+      print $3
+      exit
+    }
+  ' "$REPO_ROOT/Cargo.toml"
+}
+
+arch_to_target() {
+  case "$1" in
+    arm64|aarch64) echo "aarch64-apple-darwin" ;;
+    x86_64|amd64) echo "x86_64-apple-darwin" ;;
+    *) return 1 ;;
+  esac
+}
+
+target_to_arch() {
+  case "$1" in
+    aarch64-apple-darwin) echo "arm64" ;;
+    x86_64-apple-darwin) echo "x86_64" ;;
+    *) return 1 ;;
+  esac
+}
+
 VERSION=""
 ARCH=""
 TARGET=""
+SKIP_LAYOUT=0
 
 while [[ $# -gt 0 ]]; do
-  case $1 in
+  case "$1" in
     --version)
+      [[ $# -ge 2 ]] || die "--version requires a value"
       VERSION="$2"
       shift 2
       ;;
     --arch)
+      [[ $# -ge 2 ]] || die "--arch requires a value"
       ARCH="$2"
       shift 2
       ;;
     --target)
+      [[ $# -ge 2 ]] || die "--target requires a value"
       TARGET="$2"
       shift 2
       ;;
+    --no-layout)
+      SKIP_LAYOUT=1
+      shift
+      ;;
     --help|-h)
-      echo "Usage: $0 [--version VERSION] [--arch ARCH] [--target TARGET]"
-      echo ""
-      echo "Options:"
-      echo "  --version VERSION   Set version (default: read from Cargo.toml)"
-      echo "  --arch ARCH         Set architecture (default: auto-detect)"
-      echo "  --target TARGET     Set Rust target triple (e.g., aarch64-apple-darwin, x86_64-apple-darwin)"
-      echo "  --help, -h          Show this help message"
-      echo ""
-      echo "Output: target/release/Termy-<version>-macos-<arch>.dmg"
+      usage
       exit 0
       ;;
     *)
-      echo "Unknown option: $1"
-      echo "Use --help for usage information"
-      exit 1
+      die "Unknown option: $1 (use --help)"
       ;;
   esac
 done
 
-# Get version from Cargo.toml if not provided
-if [ -z "$VERSION" ]; then
-  VERSION=$(grep "^version = " Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
-  if [ -z "$VERSION" ]; then
-    echo "Could not read version from Cargo.toml"
-    exit 1
-  fi
+if [[ -z "$VERSION" ]]; then
+  VERSION="$(read_version_from_cargo_toml)"
+  [[ -n "$VERSION" ]] || die "Could not read version from Cargo.toml"
 fi
 
-# Detect architecture if not provided
-if [ -z "$ARCH" ]; then
-  ARCH=$(uname -m)
+if [[ -z "$ARCH" && -z "$TARGET" ]]; then
+  ARCH="$(uname -m)"
 fi
 
-# Map arch to target if not provided
-if [ -z "$TARGET" ]; then
-  case "$ARCH" in
-    arm64)
-      TARGET="aarch64-apple-darwin"
-      ;;
-    x86_64)
-      TARGET="x86_64-apple-darwin"
-      ;;
-    *)
-      echo "Unknown architecture: $ARCH"
-      exit 1
-      ;;
-  esac
+if [[ -n "$ARCH" && -z "$TARGET" ]]; then
+  TARGET="$(arch_to_target "$ARCH")" || die "Unsupported architecture: $ARCH"
+fi
+
+if [[ -n "$TARGET" && -z "$ARCH" ]]; then
+  ARCH="$(target_to_arch "$TARGET")" || die "Unsupported target: $TARGET"
+fi
+
+if [[ -n "$ARCH" && -n "$TARGET" ]]; then
+  EXPECTED_TARGET="$(arch_to_target "$ARCH")" || die "Unsupported architecture: $ARCH"
+  [[ "$EXPECTED_TARGET" == "$TARGET" ]] || die "Mismatched --arch ($ARCH) and --target ($TARGET)"
 fi
 
 APP_NAME="Termy"
-OS="macos"
-DMG_NAME="Termy-${VERSION}-${OS}-${ARCH}"
-RELEASE_DIR="target/release"
-BUNDLE_DIR="$RELEASE_DIR/bundle/osx"
-APP_PATH="$BUNDLE_DIR/$APP_NAME.app"
-DMG_ROOT="target/dmg-root"
-RW_DMG="$RELEASE_DIR/$DMG_NAME-rw.dmg"
-OUTPUT_DMG="$RELEASE_DIR/$DMG_NAME.dmg"
+OS_NAME="macos"
+DMG_NAME="${APP_NAME}-${VERSION}-${OS_NAME}-${ARCH}"
+VOLUME_NAME="${APP_NAME}-${VERSION}"
 
-if ! command -v cargo >/dev/null 2>&1; then
-  echo "cargo is not installed"
-  exit 1
-fi
+TARGET_RELEASE_DIR="$REPO_ROOT/target/$TARGET/release"
+DEFAULT_RELEASE_DIR="$REPO_ROOT/target/release"
+OUTPUT_DIR="$DEFAULT_RELEASE_DIR"
+DMG_ROOT="$REPO_ROOT/target/dmg-root"
+RW_DMG="$OUTPUT_DIR/${DMG_NAME}-rw.dmg"
+OUTPUT_DMG="$OUTPUT_DIR/${DMG_NAME}.dmg"
 
-if ! command -v hdiutil >/dev/null 2>&1; then
-  echo "hdiutil is not available (this script must run on macOS)"
-  exit 1
-fi
+BUNDLE_PRIMARY="$TARGET_RELEASE_DIR/bundle/osx/$APP_NAME.app"
+BUNDLE_FALLBACK="$DEFAULT_RELEASE_DIR/bundle/osx/$APP_NAME.app"
 
-if ! command -v osascript >/dev/null 2>&1; then
-  echo "osascript is not available (required to arrange DMG window)"
-  exit 1
-fi
+require_cmd cargo
+require_cmd hdiutil
 
 if ! cargo bundle --version >/dev/null 2>&1; then
-  echo "cargo-bundle not found. Install it with: cargo install cargo-bundle"
-  exit 1
+  die "cargo-bundle not found. Install it with: cargo install cargo-bundle"
 fi
 
-# Generate icon if needed
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [ ! -f "$SCRIPT_DIR/../assets/termy.icns" ]; then
-  echo "Generating app icon..."
+if [[ ! -f "$REPO_ROOT/assets/termy.icns" ]]; then
+  log "Generating app icon"
   "$SCRIPT_DIR/generate-icon.sh"
 fi
 
-echo "Building $APP_NAME v$VERSION for $OS $ARCH (target: $TARGET)..."
-echo "Building macOS app bundle..."
+log "Building $APP_NAME v$VERSION for $ARCH ($TARGET)"
+(cd "$REPO_ROOT" && cargo build --release --target "$TARGET")
+(cd "$REPO_ROOT" && cargo bundle --release --format osx --target "$TARGET")
 
-# Build with specific target
-cargo build --release --target "$TARGET"
-
-# Bundle the app (cargo-bundle uses the existing build artifacts)
-cargo bundle --release --format osx
-
-if [ ! -d "$APP_PATH" ]; then
-  echo "Expected app bundle not found at: $APP_PATH"
-  exit 1
+APP_PATH=""
+if [[ -d "$BUNDLE_PRIMARY" ]]; then
+  APP_PATH="$BUNDLE_PRIMARY"
+elif [[ -d "$BUNDLE_FALLBACK" ]]; then
+  APP_PATH="$BUNDLE_FALLBACK"
+else
+  APP_PATH="$(find "$REPO_ROOT/target" -maxdepth 5 -type d -name "$APP_NAME.app" -path "*/bundle/osx/*" | head -n1 || true)"
 fi
+[[ -n "$APP_PATH" && -d "$APP_PATH" ]] || die "Could not find built app bundle"
 
-echo "Preparing DMG staging folder..."
+log "Preparing DMG staging folder"
 rm -rf "$DMG_ROOT"
-mkdir -p "$DMG_ROOT"
+mkdir -p "$DMG_ROOT" "$OUTPUT_DIR"
 cp -R "$APP_PATH" "$DMG_ROOT/"
 ln -s /Applications "$DMG_ROOT/Applications"
 
-echo "Creating unsigned DMG..."
+log "Creating temporary DMG"
 rm -f "$RW_DMG" "$OUTPUT_DMG"
-
 hdiutil create \
-  -volname "$APP_NAME" \
+  -volname "$VOLUME_NAME" \
   -srcfolder "$DMG_ROOT" \
   -ov \
   -format UDRW \
-  "$RW_DMG"
+  "$RW_DMG" >/dev/null
 
-MOUNT_INFO="$(hdiutil attach -readwrite -noverify -noautoopen "$RW_DMG")"
-DEVICE="$(printf '%s\n' "$MOUNT_INFO" | awk '/\/Volumes\// {print $1; exit}')"
-MOUNT_POINT="/Volumes/$APP_NAME"
-
-if [ -z "$DEVICE" ] || [ ! -d "$MOUNT_POINT" ]; then
-  echo "Failed to mount temporary DMG"
-  exit 1
-fi
-
+DEVICE=""
+MOUNT_POINT=""
 cleanup() {
-  if [ -n "${DEVICE:-}" ]; then
-    hdiutil detach "$DEVICE" >/dev/null 2>&1 || true
+  if [[ -n "${DEVICE:-}" ]]; then
+    hdiutil detach "$DEVICE" -quiet >/dev/null 2>&1 || true
   fi
+  rm -rf "$DMG_ROOT"
 }
 trap cleanup EXIT
 
-osascript <<EOF
+ATTACH_INFO="$(hdiutil attach -readwrite -noverify -noautoopen "$RW_DMG")"
+IFS=$'\t' read -r DEVICE MOUNT_POINT <<< "$(printf '%s\n' "$ATTACH_INFO" | awk '/\/Volumes\// {print $1 "\t" $NF; exit}')"
+[[ -n "$DEVICE" && -n "$MOUNT_POINT" && -d "$MOUNT_POINT" ]] || die "Failed to mount temporary DMG"
+
+if [[ "$SKIP_LAYOUT" -eq 0 && -x "/usr/bin/osascript" ]]; then
+  log "Applying Finder layout"
+  if ! /usr/bin/osascript <<EOF
 tell application "Finder"
-  tell disk "$APP_NAME"
+  tell disk "$VOLUME_NAME"
     open
     set current view of container window to icon view
     set toolbar visible of container window to false
@@ -167,18 +205,24 @@ tell application "Finder"
     set text size of opts to 12
     set position of item "$APP_NAME.app" to {150, 180}
     set position of item "Applications" to {390, 180}
-    close
-    open
     update without registering applications
     delay 1
+    close
   end tell
 end tell
 EOF
+  then
+    echo "Warning: Finder layout customization failed; continuing without layout tweaks" >&2
+  fi
+else
+  log "Skipping Finder layout customization"
+fi
 
-hdiutil detach "$DEVICE"
+hdiutil detach "$DEVICE" -quiet
 DEVICE=""
 
-hdiutil convert "$RW_DMG" -format UDZO -imagekey zlib-level=9 -o "$OUTPUT_DMG"
+log "Converting to compressed DMG"
+hdiutil convert "$RW_DMG" -format UDZO -imagekey zlib-level=9 -o "$OUTPUT_DMG" >/dev/null
 rm -f "$RW_DMG"
 
 echo "Done: $OUTPUT_DMG"

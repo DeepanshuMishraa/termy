@@ -1,0 +1,90 @@
+name: Release macOS DMGs
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event.release.id }}
+  cancel-in-progress: false
+
+jobs:
+  build-dmg:
+    name: Build ${{ matrix.arch }} DMG
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            target: aarch64-apple-darwin
+            runner: macos-14
+          - arch: x86_64
+            target: x86_64-apple-darwin
+            runner: macos-13
+    env:
+      VERSION: ${{ github.event.release.tag_name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-bundle
+        run: cargo install cargo-bundle --locked
+
+      - name: Build DMG
+        run: ./scripts/build-dmg.sh --version "$VERSION" --arch "${{ matrix.arch }}" --target "${{ matrix.target }}" --no-layout
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: termy-dmg-${{ matrix.arch }}
+          path: target/release/Termy-${{ env.VERSION }}-macos-${{ matrix.arch }}.dmg
+          if-no-files-found: error
+
+  attach-and-finalize-release:
+    name: Attach DMGs and finalize release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: build-dmg
+    permissions:
+      contents: write
+    steps:
+      - name: Download DMG artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Attach DMGs to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name }}
+          files: dist/*.dmg
+          fail_on_unmatched_files: true
+          overwrite_files: true
+
+      - name: Mark release as latest and not pre-release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.request("PATCH /repos/{owner}/{repo}/releases/{release_id}", {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: context.payload.release.id,
+              prerelease: false,
+              make_latest: "true"
+            });
