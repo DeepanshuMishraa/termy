@@ -5,9 +5,11 @@ use std::{
 };
 
 const DEFAULT_CONFIG: &str = "# Will be comments using #\n\
-theme = tokyonight\n\
+theme = termy\n\
 # Startup directory for new terminal sessions\n\
 # working_dir = ~/Documents\n\
+# Show tab bar above the terminal grid\n\
+# use_tabs = true\n\
 # Startup window size in pixels\n\
 window_width = 1100\n\
 window_height = 720\n\
@@ -21,6 +23,7 @@ padding_y = 8\n";
 
 #[derive(Debug, Clone, Copy)]
 pub enum Theme {
+    Termy,
     TokyoNight,
     Catppuccin,
     Dracula,
@@ -40,6 +43,7 @@ impl Theme {
         let mut normalized = value.trim().to_ascii_lowercase();
         normalized.retain(|c| c != ' ' && c != '-' && c != '_');
         match normalized.as_str() {
+            "termy" | "default" => Some(Self::Termy),
             "tokyonight" => Some(Self::TokyoNight),
             "catppuccin" => Some(Self::Catppuccin),
             "dracula" => Some(Self::Dracula),
@@ -61,6 +65,7 @@ impl Theme {
 pub struct AppConfig {
     pub theme: Theme,
     pub working_dir: Option<String>,
+    pub use_tabs: bool,
     pub window_width: f32,
     pub window_height: f32,
     pub font_family: String,
@@ -72,8 +77,9 @@ pub struct AppConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            theme: Theme::TokyoNight,
+            theme: Theme::Termy,
             working_dir: None,
+            use_tabs: false,
             window_width: 1100.0,
             window_height: 720.0,
             font_family: "JetBrains Mono".to_string(),
@@ -118,6 +124,12 @@ impl AppConfig {
 
             if key.eq_ignore_ascii_case("working_dir") && !value.is_empty() {
                 config.working_dir = Some(value.to_string());
+            }
+
+            if key.eq_ignore_ascii_case("use_tabs") {
+                if let Some(use_tabs) = parse_bool(value) {
+                    config.use_tabs = use_tabs;
+                }
             }
 
             if key.eq_ignore_ascii_case("window_width") {
@@ -177,6 +189,14 @@ impl AppConfig {
         }
 
         config
+    }
+}
+
+fn parse_bool(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => Some(true),
+        "false" | "0" | "no" | "off" => Some(false),
+        _ => None,
     }
 }
 

@@ -47,8 +47,9 @@ Config file:
 Example:
 
 ```txt
-theme = tokyonight
+theme = termy
 working_dir = ~/Documents
+use_tabs = true
 window_width = 1100
 window_height = 720
 font_family = "JetBrains Mono"
@@ -58,7 +59,7 @@ padding_y = 8
 ```
 
 Themes:
-- `tokyonight`, `catppuccin`, `dracula`, `gruvbox`, `nord`, `solarized`, `onedark`, `monokai`, `material`, `palenight`, `tomorrow`, `oceanic`
+- `termy`, `tokyonight`, `catppuccin`, `dracula`, `gruvbox`, `nord`, `solarized`, `onedark`, `monokai`, `material`, `palenight`, `tomorrow`, `oceanic`
 
 ## License
 

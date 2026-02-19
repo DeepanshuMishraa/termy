@@ -8,6 +8,7 @@ mod oceanic_next;
 mod one_dark;
 mod palenight;
 mod solarized_dark;
+mod termy;
 mod tokyo_night;
 mod tomorrow_night;
 
@@ -23,6 +24,10 @@ pub struct ThemeColors {
 
 pub fn tokyo_night() -> ThemeColors {
     tokyo_night::theme()
+}
+
+pub fn termy() -> ThemeColors {
+    termy::theme()
 }
 
 pub fn catppuccin_mocha() -> ThemeColors {

@@ -14,6 +14,14 @@ const MIN_FONT_SIZE: f32 = 8.0;
 const MAX_FONT_SIZE: f32 = 40.0;
 const ZOOM_STEP: f32 = 1.0;
 const TITLEBAR_HEIGHT: f32 = 34.0;
+const TABBAR_HEIGHT: f32 = 40.0;
+const TITLEBAR_PLUS_SIZE: f32 = 22.0;
+const TITLEBAR_SIDE_PADDING: f32 = 12.0;
+const TAB_HORIZONTAL_PADDING: f32 = 12.0;
+const TAB_PILL_WIDTH: f32 = 180.0;
+const TAB_PILL_GAP: f32 = 8.0;
+const TAB_CLOSE_HITBOX: f32 = 26.0;
+const MAX_TAB_TITLE_CHARS: usize = 28;
 const SELECTION_BG_ALPHA: f32 = 0.35;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -22,11 +30,21 @@ struct CellPos {
     row: usize,
 }
 
+struct TerminalTab {
+    terminal: Terminal,
+    title: String,
+}
+
 /// The main terminal view component
 pub struct TerminalView {
-    terminal: Terminal,
+    tabs: Vec<TerminalTab>,
+    active_tab: usize,
+    renaming_tab: Option<usize>,
+    rename_buffer: String,
     focus_handle: FocusHandle,
     colors: TerminalColors,
+    use_tabs: bool,
+    configured_working_dir: Option<String>,
     font_family: SharedString,
     base_font_size: f32,
     font_size: Pixels,
@@ -54,9 +72,39 @@ impl TerminalView {
                 smol::Timer::after(Duration::from_millis(16)).await;
                 let result = cx.update(|cx| {
                     this.update(cx, |view, cx| {
-                        let events = view.terminal.process_events();
-                        let should_redraw =
-                            events.iter().any(|e| matches!(e, TerminalEvent::Wakeup));
+                        let mut should_redraw = false;
+                        let active_tab = view.active_tab;
+
+                        for index in 0..view.tabs.len() {
+                            let events = view.tabs[index].terminal.process_events();
+                            for event in events {
+                                match event {
+                                    TerminalEvent::Wakeup
+                                    | TerminalEvent::Bell
+                                    | TerminalEvent::Exit => {
+                                        if index == active_tab {
+                                            should_redraw = true;
+                                        }
+                                    }
+                                    TerminalEvent::Title(title) => {
+                                        let title = title.trim();
+                                        if !title.is_empty() && view.use_tabs {
+                                            let next = Self::truncate_tab_title(title);
+
+                                            if view.tabs[index].title != next
+                                                && view.renaming_tab != Some(index)
+                                            {
+                                                view.tabs[index].title = next;
+                                                if view.show_tab_bar() {
+                                                    should_redraw = true;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
                         if should_redraw {
                             cx.notify();
                         }
@@ -74,12 +122,22 @@ impl TerminalView {
         let base_font_size = config.font_size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
         let padding_x = config.padding_x.max(0.0);
         let padding_y = config.padding_y.max(0.0);
+        let configured_working_dir = config.working_dir.clone();
+        let terminal = Terminal::new(TerminalSize::default(), configured_working_dir.as_deref())
+            .expect("Failed to create terminal");
 
         Self {
-            terminal: Terminal::new(TerminalSize::default(), config.working_dir.as_deref())
-                .expect("Failed to create terminal"),
+            tabs: vec![TerminalTab {
+                terminal,
+                title: "Terminal".to_string(),
+            }],
+            active_tab: 0,
+            renaming_tab: None,
+            rename_buffer: String::new(),
             focus_handle,
             colors,
+            use_tabs: config.use_tabs,
+            configured_working_dir,
             font_family: config.font_family.into(),
             base_font_size,
             font_size: px(base_font_size),
@@ -99,6 +157,129 @@ impl TerminalView {
         self.selection_head = None;
         self.selection_dragging = false;
         self.selection_moved = false;
+    }
+
+    fn show_tab_bar(&self) -> bool {
+        self.use_tabs && self.tabs.len() > 1
+    }
+
+    fn active_terminal(&self) -> &Terminal {
+        &self.tabs[self.active_tab].terminal
+    }
+
+    fn active_terminal_mut(&mut self) -> &mut Terminal {
+        &mut self.tabs[self.active_tab].terminal
+    }
+
+    fn truncate_tab_title(title: &str) -> String {
+        let mut next = title.trim().to_string();
+        if next.chars().count() > MAX_TAB_TITLE_CHARS {
+            next = next.chars().take(MAX_TAB_TITLE_CHARS).collect();
+        }
+        next
+    }
+
+    fn add_tab(&mut self, cx: &mut Context<Self>) {
+        if !self.use_tabs {
+            return;
+        }
+
+        let terminal = Terminal::new(
+            TerminalSize::default(),
+            self.configured_working_dir.as_deref(),
+        )
+        .expect("Failed to create terminal tab");
+
+        self.tabs.push(TerminalTab {
+            terminal,
+            title: "Terminal".to_string(),
+        });
+        self.active_tab = self.tabs.len() - 1;
+        self.renaming_tab = None;
+        self.rename_buffer.clear();
+        self.clear_selection();
+        cx.notify();
+    }
+
+    fn close_tab(&mut self, index: usize, cx: &mut Context<Self>) {
+        if self.tabs.len() <= 1 || index >= self.tabs.len() {
+            return;
+        }
+
+        self.tabs.remove(index);
+
+        if self.active_tab > index {
+            self.active_tab -= 1;
+        } else if self.active_tab >= self.tabs.len() {
+            self.active_tab = self.tabs.len() - 1;
+        }
+
+        match self.renaming_tab {
+            Some(editing) if editing == index => {
+                self.renaming_tab = None;
+                self.rename_buffer.clear();
+            }
+            Some(editing) if editing > index => {
+                self.renaming_tab = Some(editing - 1);
+            }
+            _ => {}
+        }
+
+        self.clear_selection();
+        cx.notify();
+    }
+
+    fn close_active_tab(&mut self, cx: &mut Context<Self>) {
+        self.close_tab(self.active_tab, cx);
+    }
+
+    fn switch_tab(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index >= self.tabs.len() || index == self.active_tab {
+            return;
+        }
+
+        self.active_tab = index;
+        self.renaming_tab = None;
+        self.rename_buffer.clear();
+        self.clear_selection();
+        cx.notify();
+    }
+
+    fn begin_rename_tab(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index >= self.tabs.len() {
+            return;
+        }
+
+        self.active_tab = index;
+        self.renaming_tab = Some(index);
+        self.rename_buffer = self.tabs[index].title.clone();
+        self.clear_selection();
+        cx.notify();
+    }
+
+    fn commit_rename_tab(&mut self, cx: &mut Context<Self>) {
+        let Some(index) = self.renaming_tab else {
+            return;
+        };
+
+        let trimmed = self.rename_buffer.trim();
+        if !trimmed.is_empty() {
+            self.tabs[index].title = Self::truncate_tab_title(trimmed);
+        }
+
+        self.renaming_tab = None;
+        self.rename_buffer.clear();
+        cx.notify();
+    }
+
+    fn cancel_rename_tab(&mut self, cx: &mut Context<Self>) {
+        if self.renaming_tab.is_none() {
+            return;
+        }
+
+        self.renaming_tab = None;
+        self.rename_buffer.clear();
+        cx.notify();
     }
 
     fn has_selection(&self) -> bool {
@@ -166,7 +347,7 @@ impl TerminalView {
     }
 
     fn position_to_cell(&self, position: gpui::Point<Pixels>, clamp: bool) -> Option<CellPos> {
-        let size = self.terminal.size();
+        let size = self.active_terminal().size();
         if size.cols == 0 || size.rows == 0 {
             return None;
         }
@@ -174,7 +355,7 @@ impl TerminalView {
         let mut x: f32 = position.x.into();
         let mut y: f32 = position.y.into();
         x -= self.padding_x;
-        y -= TITLEBAR_HEIGHT + self.padding_y;
+        y -= self.chrome_height() + self.padding_y;
 
         let cell_width: f32 = size.cell_width.into();
         let cell_height: f32 = size.cell_height.into();
@@ -206,7 +387,7 @@ impl TerminalView {
 
     fn selected_text(&self) -> Option<String> {
         let (start, end) = self.selection_range()?;
-        let size = self.terminal.size();
+        let size = self.active_terminal().size();
         let cols = size.cols as usize;
         let rows = size.rows as usize;
         if cols == 0 || rows == 0 {
@@ -214,7 +395,7 @@ impl TerminalView {
         }
 
         let mut grid = vec![vec![' '; cols]; rows];
-        self.terminal.with_term(|term| {
+        self.active_terminal().with_term(|term| {
             let content = term.renderable_content();
             for cell in content.display_iter {
                 let row = cell.point.line.0;
@@ -310,13 +491,13 @@ impl TerminalView {
 
         let terminal_width = (viewport_width - (self.padding_x * 2.0)).max(cell_width * 2.0);
         let terminal_height =
-            (viewport_height - TITLEBAR_HEIGHT - (self.padding_y * 2.0)).max(cell_height);
+            (viewport_height - self.chrome_height() - (self.padding_y * 2.0)).max(cell_height);
         let cols = (terminal_width / cell_width).floor().max(2.0) as u16;
         let rows = (terminal_height / cell_height).floor().max(1.0) as u16;
 
-        let current = self.terminal.size();
+        let current = self.active_terminal().size();
         if current.cols != cols || current.rows != rows {
-            self.terminal.resize(TerminalSize {
+            self.active_terminal_mut().resize(TerminalSize {
                 cols,
                 rows,
                 cell_width: cell_size.width,
@@ -334,6 +515,43 @@ impl TerminalView {
         let key = event.keystroke.key.as_str();
         let modifiers = event.keystroke.modifiers;
 
+        if self.renaming_tab.is_some() {
+            match key {
+                "enter" => {
+                    self.commit_rename_tab(cx);
+                    return;
+                }
+                "escape" => {
+                    self.cancel_rename_tab(cx);
+                    return;
+                }
+                "backspace" => {
+                    self.rename_buffer.pop();
+                    cx.notify();
+                    return;
+                }
+                "space" if !modifiers.control && !modifiers.alt && !modifiers.function => {
+                    if self.rename_buffer.chars().count() < MAX_TAB_TITLE_CHARS {
+                        self.rename_buffer.push(' ');
+                        cx.notify();
+                    }
+                    return;
+                }
+                _ if key.len() == 1
+                    && !modifiers.control
+                    && !modifiers.alt
+                    && !modifiers.function =>
+                {
+                    if self.rename_buffer.chars().count() < MAX_TAB_TITLE_CHARS {
+                        self.rename_buffer.push_str(key);
+                        cx.notify();
+                    }
+                    return;
+                }
+                _ => return,
+            }
+        }
+
         if Self::is_copy_shortcut(key, modifiers) {
             if let Some(selected) = self.selected_text() {
                 cx.write_to_clipboard(ClipboardItem::new_string(selected));
@@ -343,10 +561,30 @@ impl TerminalView {
 
         if Self::is_paste_shortcut(key, modifiers) {
             if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-                self.terminal.write(text.as_bytes());
+                self.active_terminal().write(text.as_bytes());
                 self.clear_selection();
                 cx.notify();
             }
+            return;
+        }
+
+        if self.use_tabs
+            && modifiers.secondary()
+            && !modifiers.alt
+            && !modifiers.function
+            && key.eq_ignore_ascii_case("w")
+        {
+            self.close_active_tab(cx);
+            return;
+        }
+
+        if self.use_tabs
+            && modifiers.secondary()
+            && !modifiers.alt
+            && !modifiers.function
+            && key.eq_ignore_ascii_case("t")
+        {
+            self.add_tab(cx);
             return;
         }
 
@@ -370,7 +608,7 @@ impl TerminalView {
         }
 
         if let Some(input) = keystroke_to_input(key, modifiers) {
-            self.terminal.write(&input);
+            self.active_terminal().write(&input);
             self.clear_selection();
             // Request a redraw to show the typed character
             cx.notify();
@@ -450,14 +688,71 @@ impl TerminalView {
         cx.notify();
     }
 
+    fn handle_tabbar_mouse_down(
+        &mut self,
+        event: &MouseDownEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if event.button != MouseButton::Left || !self.show_tab_bar() {
+            return;
+        }
+
+        let mut x: f32 = event.position.x.into();
+        x -= TAB_HORIZONTAL_PADDING;
+        if x < 0.0 {
+            return;
+        }
+
+        let slot_width = TAB_PILL_WIDTH + TAB_PILL_GAP;
+        let index = (x / slot_width).floor() as usize;
+        if index >= self.tabs.len() {
+            return;
+        }
+
+        let x_in_slot = x - (index as f32 * slot_width);
+        if x_in_slot > TAB_PILL_WIDTH {
+            return;
+        }
+
+        let close_left = TAB_PILL_WIDTH - TAB_CLOSE_HITBOX;
+        if x_in_slot >= close_left {
+            self.close_tab(index, cx);
+            return;
+        }
+
+        if event.click_count >= 2 {
+            self.begin_rename_tab(index, cx);
+            return;
+        }
+
+        self.switch_tab(index, cx);
+    }
+
     fn handle_titlebar_mouse_down(
         &mut self,
         event: &MouseDownEvent,
         window: &mut Window,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) {
         if event.button != MouseButton::Left {
             return;
+        }
+
+        if self.use_tabs {
+            let viewport = window.viewport_size();
+            let viewport_width: f32 = viewport.width.into();
+            let x: f32 = event.position.x.into();
+            let y: f32 = event.position.y.into();
+            let plus_left = viewport_width - TITLEBAR_SIDE_PADDING - TITLEBAR_PLUS_SIZE;
+            let plus_top = (TITLEBAR_HEIGHT - TITLEBAR_PLUS_SIZE) * 0.5;
+            let plus_right = plus_left + TITLEBAR_PLUS_SIZE;
+            let plus_bottom = plus_top + TITLEBAR_PLUS_SIZE;
+
+            if x >= plus_left && x <= plus_right && y >= plus_top && y <= plus_bottom {
+                self.add_tab(cx);
+                return;
+            }
         }
 
         if event.click_count == 2 {
@@ -469,6 +764,18 @@ impl TerminalView {
         }
 
         window.start_window_move();
+    }
+
+    fn tab_bar_height(&self) -> f32 {
+        if self.show_tab_bar() {
+            TABBAR_HEIGHT
+        } else {
+            0.0
+        }
+    }
+
+    fn chrome_height(&self) -> f32 {
+        TITLEBAR_HEIGHT + self.tab_bar_height()
     }
 }
 
@@ -489,9 +796,9 @@ impl Render for TerminalView {
 
         // Collect cells to render
         let mut cells_to_render: Vec<CellRenderInfo> = Vec::new();
-        let (cursor_col, cursor_row) = self.terminal.cursor_position();
+        let (cursor_col, cursor_row) = self.active_terminal().cursor_position();
 
-        self.terminal.with_term(|term| {
+        self.active_terminal().with_term(|term| {
             let content = term.renderable_content();
             for cell in content.display_iter {
                 let point = cell.point;
@@ -522,17 +829,93 @@ impl Render for TerminalView {
             }
         });
 
-        let terminal_size = self.terminal.size();
+        let terminal_size = self.active_terminal().size();
         let focus_handle = self.focus_handle.clone();
+        let show_tab_bar = self.show_tab_bar();
         let mut titlebar_bg = colors.background;
         titlebar_bg.a = 0.96;
         let mut titlebar_border = colors.cursor;
         titlebar_border.a = 0.18;
         let mut titlebar_text = colors.foreground;
         titlebar_text.a = 0.82;
+        let mut titlebar_plus_bg = colors.cursor;
+        titlebar_plus_bg.a = if self.use_tabs { 0.2 } else { 0.0 };
+        let mut titlebar_plus_text = colors.foreground;
+        titlebar_plus_text.a = if self.use_tabs { 0.92 } else { 0.0 };
+        let mut tabbar_bg = colors.background;
+        tabbar_bg.a = if show_tab_bar { 0.9 } else { 0.0 };
+        let mut tabbar_border = colors.cursor;
+        tabbar_border.a = if show_tab_bar { 0.12 } else { 0.0 };
+        let mut active_tab_bg = colors.cursor;
+        active_tab_bg.a = 0.2;
+        let mut active_tab_text = colors.foreground;
+        active_tab_text.a = 0.95;
+        let mut inactive_tab_bg = colors.background;
+        inactive_tab_bg.a = 0.65;
+        let mut inactive_tab_text = colors.foreground;
+        inactive_tab_text.a = 0.58;
         let mut selection_bg = colors.cursor;
         selection_bg.a = SELECTION_BG_ALPHA;
         let selection_fg = colors.background;
+
+        let mut tabs_row = div()
+            .w_full()
+            .h(px(if show_tab_bar { TABBAR_HEIGHT } else { 0.0 }))
+            .flex()
+            .items_center()
+            .px(px(TAB_HORIZONTAL_PADDING));
+
+        if show_tab_bar {
+            for (index, tab) in self.tabs.iter().enumerate() {
+                let is_active = index == self.active_tab;
+                let label = if self.renaming_tab == Some(index) {
+                    format!("{}  {}|", index + 1, self.rename_buffer)
+                } else {
+                    format!("{}  {}", index + 1, tab.title)
+                };
+
+                tabs_row = tabs_row.child(
+                    div()
+                        .bg(if is_active {
+                            active_tab_bg
+                        } else {
+                            inactive_tab_bg
+                        })
+                        .w(px(TAB_PILL_WIDTH))
+                        .px(px(10.0))
+                        .py(px(7.0))
+                        .flex()
+                        .items_center()
+                        .child(
+                            div()
+                                .flex_1()
+                                .overflow_hidden()
+                                .text_color(if is_active {
+                                    active_tab_text
+                                } else {
+                                    inactive_tab_text
+                                })
+                                .text_size(px(12.0))
+                                .child(label),
+                        )
+                        .child(
+                            div()
+                                .w(px(TAB_CLOSE_HITBOX))
+                                .text_color(if is_active {
+                                    active_tab_text
+                                } else {
+                                    inactive_tab_text
+                                })
+                                .text_size(px(12.0))
+                                .child("×"),
+                        ),
+                );
+
+                if index + 1 < self.tabs.len() {
+                    tabs_row = tabs_row.child(div().w(px(TAB_PILL_GAP)).h(px(1.0)));
+                }
+            }
+        }
 
         div()
             .id("termy-root")
@@ -548,7 +931,6 @@ impl Render for TerminalView {
                     .flex_none()
                     .flex()
                     .items_center()
-                    .justify_center()
                     .window_control_area(WindowControlArea::Drag)
                     .on_mouse_down(
                         MouseButton::Left,
@@ -557,9 +939,51 @@ impl Render for TerminalView {
                     .bg(titlebar_bg)
                     .border_b(px(1.0))
                     .border_color(titlebar_border)
-                    .text_color(titlebar_text)
-                    .text_size(px(12.0))
-                    .child("Termy"),
+                    .child(
+                        div()
+                            .w_full()
+                            .flex()
+                            .items_center()
+                            .px(px(TITLEBAR_SIDE_PADDING))
+                            .child(div().w(px(TITLEBAR_PLUS_SIZE)).h(px(TITLEBAR_PLUS_SIZE)))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .flex()
+                                    .justify_center()
+                                    .text_color(titlebar_text)
+                                    .text_size(px(12.0))
+                                    .child("Termy"),
+                            )
+                            .child(
+                                div()
+                                    .w(px(TITLEBAR_PLUS_SIZE))
+                                    .h(px(TITLEBAR_PLUS_SIZE))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .bg(titlebar_plus_bg)
+                                    .text_color(titlebar_plus_text)
+                                    .text_size(px(16.0))
+                                    .child(if self.use_tabs { "+" } else { "" }),
+                            ),
+                    ),
+            )
+            .child(
+                div()
+                    .id("tabbar")
+                    .w_full()
+                    .h(px(self.tab_bar_height()))
+                    .flex_none()
+                    .overflow_hidden()
+                    .bg(tabbar_bg)
+                    .border_b(px(if show_tab_bar { 1.0 } else { 0.0 }))
+                    .border_color(tabbar_border)
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(Self::handle_tabbar_mouse_down),
+                    )
+                    .child(tabs_row),
             )
             .child(
                 div()

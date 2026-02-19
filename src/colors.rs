@@ -49,6 +49,7 @@ impl Default for TerminalColors {
 impl TerminalColors {
     pub fn from_theme(theme: Theme) -> Self {
         let theme_colors = match theme {
+            Theme::Termy => themes::termy(),
             Theme::TokyoNight => themes::tokyo_night(),
             Theme::Catppuccin => themes::catppuccin_mocha(),
             Theme::Dracula => themes::dracula(),
