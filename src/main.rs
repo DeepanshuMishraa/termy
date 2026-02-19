@@ -12,6 +12,9 @@ use terminal_view::TerminalView;
 
 actions!(terminal, [Quit, OpenConfig]);
 
+const MIN_WINDOW_WIDTH: f32 = 480.0;
+const MIN_WINDOW_HEIGHT: f32 = 320.0;
+
 fn main() {
     env_logger::init();
 
@@ -30,7 +33,10 @@ fn main() {
             ],
         }]);
 
-        let bounds = Bounds::centered(None, size(px(800.0), px(600.0)), cx);
+        let app_config = config::AppConfig::load_or_create();
+        let window_width = app_config.window_width.max(MIN_WINDOW_WIDTH);
+        let window_height = app_config.window_height.max(MIN_WINDOW_HEIGHT);
+        let bounds = Bounds::centered(None, size(px(window_width), px(window_height)), cx);
 
         cx.open_window(
             WindowOptions {

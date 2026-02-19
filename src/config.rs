@@ -8,6 +8,11 @@ const DEFAULT_CONFIG: &str = "# Will be comments using #\n\
 theme = tokyonight\n\
 # Startup directory for new terminal sessions\n\
 # working_dir = ~/Documents\n\
+# Startup window size in pixels\n\
+window_width = 1100\n\
+window_height = 720\n\
+# Terminal font family\n\
+font_family = JetBrains Mono\n\
 # Terminal font size in pixels\n\
 font_size = 14\n\
 # Inner terminal padding in pixels\n\
@@ -56,6 +61,9 @@ impl Theme {
 pub struct AppConfig {
     pub theme: Theme,
     pub working_dir: Option<String>,
+    pub window_width: f32,
+    pub window_height: f32,
+    pub font_family: String,
     pub font_size: f32,
     pub padding_x: f32,
     pub padding_y: f32,
@@ -66,6 +74,9 @@ impl Default for AppConfig {
         Self {
             theme: Theme::TokyoNight,
             working_dir: None,
+            window_width: 1100.0,
+            window_height: 720.0,
+            font_family: "JetBrains Mono".to_string(),
             font_size: 14.0,
             padding_x: 12.0,
             padding_y: 8.0,
@@ -107,6 +118,37 @@ impl AppConfig {
 
             if key.eq_ignore_ascii_case("working_dir") && !value.is_empty() {
                 config.working_dir = Some(value.to_string());
+            }
+
+            if key.eq_ignore_ascii_case("window_width") {
+                if let Ok(window_width) = value.parse::<f32>() {
+                    if window_width > 0.0 {
+                        config.window_width = window_width;
+                    }
+                }
+            }
+
+            if key.eq_ignore_ascii_case("window_height") {
+                if let Ok(window_height) = value.parse::<f32>() {
+                    if window_height > 0.0 {
+                        config.window_height = window_height;
+                    }
+                }
+            }
+
+            if key.eq_ignore_ascii_case("font_family") && !value.is_empty() {
+                let trimmed = value.trim();
+                let unquoted = if (trimmed.starts_with('"') && trimmed.ends_with('"'))
+                    || (trimmed.starts_with('\'') && trimmed.ends_with('\''))
+                {
+                    &trimmed[1..trimmed.len() - 1]
+                } else {
+                    trimmed
+                };
+
+                if !unquoted.is_empty() {
+                    config.font_family = unquoted.to_string();
+                }
             }
 
             if key.eq_ignore_ascii_case("font_size") {

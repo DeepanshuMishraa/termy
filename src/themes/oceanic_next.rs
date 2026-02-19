@@ -1,4 +1,4 @@
-use super::{rgba, ThemeColors};
+use super::{ThemeColors, rgba};
 
 pub fn theme() -> ThemeColors {
     ThemeColors {

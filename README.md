@@ -89,6 +89,13 @@ theme = tokyonight
 # Optional startup directory (supports "~")
 working_dir = ~/Documents
 
+# Startup window size in pixels
+window_width = 1100
+window_height = 720
+
+# Terminal font family (quotes optional unless you prefer them)
+font_family = "JetBrains Mono"
+
 # Terminal font size in pixels
 font_size = 14
 
