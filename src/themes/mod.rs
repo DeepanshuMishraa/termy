@@ -1,9 +1,15 @@
 mod catppuccin_mocha;
 mod dracula;
 mod gruvbox_dark;
+mod material_dark;
+mod monokai;
 mod nord;
+mod oceanic_next;
+mod one_dark;
+mod palenight;
 mod solarized_dark;
 mod tokyo_night;
+mod tomorrow_night;
 
 use gpui::Rgba;
 
@@ -37,6 +43,30 @@ pub fn nord() -> ThemeColors {
 
 pub fn solarized_dark() -> ThemeColors {
     solarized_dark::theme()
+}
+
+pub fn one_dark() -> ThemeColors {
+    one_dark::theme()
+}
+
+pub fn monokai() -> ThemeColors {
+    monokai::theme()
+}
+
+pub fn material_dark() -> ThemeColors {
+    material_dark::theme()
+}
+
+pub fn palenight() -> ThemeColors {
+    palenight::theme()
+}
+
+pub fn tomorrow_night() -> ThemeColors {
+    tomorrow_night::theme()
+}
+
+pub fn oceanic_next() -> ThemeColors {
+    oceanic_next::theme()
 }
 
 fn rgba(r: u8, g: u8, b: u8) -> Rgba {

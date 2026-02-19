@@ -1,10 +1,13 @@
 mod colors;
 mod config;
 mod terminal;
-mod themes;
 mod terminal_view;
+mod themes;
 
-use gpui::{App, Application, Bounds, KeyBinding, Menu, MenuItem, SystemMenuType, WindowBounds, WindowOptions, actions, prelude::*, px, size};
+use gpui::{
+    App, Application, Bounds, KeyBinding, Menu, MenuItem, SystemMenuType, WindowBounds,
+    WindowOptions, actions, prelude::*, px, size,
+};
 use terminal_view::TerminalView;
 
 actions!(terminal, [Quit, OpenConfig]);
@@ -32,6 +35,11 @@ fn main() {
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
+                titlebar: Some(gpui::TitlebarOptions {
+                    title: Some("Termy".into()),
+                    appears_transparent: true,
+                    traffic_light_position: Some(gpui::point(px(12.0), px(10.0))),
+                }),
                 ..Default::default()
             },
             |window, cx| cx.new(|cx| TerminalView::new(window, cx)),

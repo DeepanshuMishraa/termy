@@ -5,7 +5,14 @@ use std::{
 };
 
 const DEFAULT_CONFIG: &str = "# Will be comments using #\n\
-theme = tokyonight\n";
+theme = tokyonight\n\
+# Startup directory for new terminal sessions\n\
+# working_dir = ~/Documents\n\
+# Terminal font size in pixels\n\
+font_size = 14\n\
+# Inner terminal padding in pixels\n\
+padding_x = 12\n\
+padding_y = 8\n";
 
 #[derive(Debug, Clone, Copy)]
 pub enum Theme {
@@ -15,6 +22,12 @@ pub enum Theme {
     GruvboxDark,
     Nord,
     SolarizedDark,
+    OneDark,
+    Monokai,
+    MaterialDark,
+    Palenight,
+    TomorrowNight,
+    OceanicNext,
 }
 
 impl Theme {
@@ -28,20 +41,34 @@ impl Theme {
             "gruvbox" | "gruvboxdark" => Some(Self::GruvboxDark),
             "nord" => Some(Self::Nord),
             "solarizeddark" | "solarized" => Some(Self::SolarizedDark),
+            "onedark" | "one" => Some(Self::OneDark),
+            "monokai" => Some(Self::Monokai),
+            "materialdark" | "material" => Some(Self::MaterialDark),
+            "palenight" => Some(Self::Palenight),
+            "tomorrownight" | "tomorrow" => Some(Self::TomorrowNight),
+            "oceanicnext" | "oceanic" => Some(Self::OceanicNext),
             _ => None,
         }
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct AppConfig {
     pub theme: Theme,
+    pub working_dir: Option<String>,
+    pub font_size: f32,
+    pub padding_x: f32,
+    pub padding_y: f32,
 }
 
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
             theme: Theme::TokyoNight,
+            working_dir: None,
+            font_size: 14.0,
+            padding_x: 12.0,
+            padding_y: 8.0,
         }
     }
 }
@@ -75,6 +102,34 @@ impl AppConfig {
             if key.eq_ignore_ascii_case("theme") {
                 if let Some(theme) = Theme::from_str(value) {
                     config.theme = theme;
+                }
+            }
+
+            if key.eq_ignore_ascii_case("working_dir") && !value.is_empty() {
+                config.working_dir = Some(value.to_string());
+            }
+
+            if key.eq_ignore_ascii_case("font_size") {
+                if let Ok(font_size) = value.parse::<f32>() {
+                    if font_size > 0.0 {
+                        config.font_size = font_size;
+                    }
+                }
+            }
+
+            if key.eq_ignore_ascii_case("padding_x") {
+                if let Ok(padding_x) = value.parse::<f32>() {
+                    if padding_x >= 0.0 {
+                        config.padding_x = padding_x;
+                    }
+                }
+            }
+
+            if key.eq_ignore_ascii_case("padding_y") {
+                if let Ok(padding_y) = value.parse::<f32>() {
+                    if padding_y >= 0.0 {
+                        config.padding_y = padding_y;
+                    }
                 }
             }
         }

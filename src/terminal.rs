@@ -6,8 +6,8 @@ use alacritty_terminal::{
     term::{Config as TermConfig, Term},
     tty::{self, Options as PtyOptions, Shell},
 };
-use flume::{unbounded, Receiver, Sender};
-use gpui::{px, Pixels};
+use flume::{Receiver, Sender, unbounded};
+use gpui::{Pixels, px};
 use std::{collections::HashMap, env, path::Path, sync::Arc};
 
 fn login_shell_args(shell_path: &str) -> Vec<String> {
@@ -41,6 +41,28 @@ fn pty_env_overrides() -> HashMap<String, String> {
 
     env_overrides.insert("PATH".to_string(), path_entries.join(":"));
     env_overrides
+}
+
+fn resolve_working_directory(configured: Option<&str>) -> Option<std::path::PathBuf> {
+    let configured = configured?.trim();
+    if configured.is_empty() {
+        return None;
+    }
+
+    let expanded = if configured == "~" || configured.starts_with("~/") {
+        env::var("HOME").ok().map(|home| {
+            if configured == "~" {
+                home
+            } else {
+                format!("{home}/{}", &configured[2..])
+            }
+        })?
+    } else {
+        configured.to_string()
+    };
+
+    let path = std::path::PathBuf::from(expanded);
+    if path.is_dir() { Some(path) } else { None }
 }
 
 /// Events sent from the terminal to the view
@@ -141,7 +163,7 @@ pub struct Terminal {
 
 impl Terminal {
     /// Create a new terminal with the given size
-    pub fn new(size: TerminalSize) -> anyhow::Result<Self> {
+    pub fn new(size: TerminalSize, configured_working_dir: Option<&str>) -> anyhow::Result<Self> {
         // Create event channels
         let (events_tx, events_rx) = unbounded();
 
@@ -150,7 +172,8 @@ impl Terminal {
         let shell = Shell::new(shell_path.clone(), login_shell_args(&shell_path));
 
         // Get working directory
-        let working_directory = env::current_dir().ok();
+        let working_directory =
+            resolve_working_directory(configured_working_dir).or_else(|| env::current_dir().ok());
 
         // Configure PTY
         let pty_options = PtyOptions {

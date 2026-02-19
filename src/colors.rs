@@ -55,6 +55,12 @@ impl TerminalColors {
             Theme::GruvboxDark => themes::gruvbox_dark(),
             Theme::Nord => themes::nord(),
             Theme::SolarizedDark => themes::solarized_dark(),
+            Theme::OneDark => themes::one_dark(),
+            Theme::Monokai => themes::monokai(),
+            Theme::MaterialDark => themes::material_dark(),
+            Theme::Palenight => themes::palenight(),
+            Theme::TomorrowNight => themes::tomorrow_night(),
+            Theme::OceanicNext => themes::oceanic_next(),
         };
 
         Self::from_theme_colors(theme_colors)

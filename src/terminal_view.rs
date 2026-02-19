@@ -5,9 +5,15 @@ use alacritty_terminal::term::cell::Flags;
 use gpui::{
     App, AsyncApp, Bounds, Context, Element, FocusHandle, Focusable, Font, FontWeight, Hsla,
     InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, ParentElement,
-    Pixels, Render, SharedString, Size, Styled, TextAlign, TextRun, WeakEntity, Window, div, point, px, quad,
+    Pixels, Render, SharedString, Size, Styled, TextAlign, TextRun, WeakEntity, Window,
+    WindowControlArea, div, point, px, quad,
 };
 use std::time::Duration;
+
+const MIN_FONT_SIZE: f32 = 8.0;
+const MAX_FONT_SIZE: f32 = 40.0;
+const ZOOM_STEP: f32 = 1.0;
+const TITLEBAR_HEIGHT: f32 = 34.0;
 
 /// The main terminal view component
 pub struct TerminalView {
@@ -15,7 +21,10 @@ pub struct TerminalView {
     focus_handle: FocusHandle,
     colors: TerminalColors,
     font_family: SharedString,
+    base_font_size: f32,
     font_size: Pixels,
+    padding_x: f32,
+    padding_y: f32,
     line_height: f32,
     /// Cached cell dimensions
     cell_size: Option<Size<Pixels>>,
@@ -24,7 +33,7 @@ pub struct TerminalView {
 impl TerminalView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
-        
+
         // Focus the terminal immediately
         focus_handle.focus(window, cx);
 
@@ -51,16 +60,36 @@ impl TerminalView {
 
         let config = AppConfig::load_or_create();
         let colors = TerminalColors::from_theme(config.theme);
+        let base_font_size = config.font_size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
+        let padding_x = config.padding_x.max(0.0);
+        let padding_y = config.padding_y.max(0.0);
 
         Self {
-            terminal: Terminal::new(TerminalSize::default()).expect("Failed to create terminal"),
+            terminal: Terminal::new(TerminalSize::default(), config.working_dir.as_deref())
+                .expect("Failed to create terminal"),
             focus_handle,
             colors,
             font_family: "JetBrains Mono".into(),
-            font_size: px(14.0),
+            base_font_size,
+            font_size: px(base_font_size),
+            padding_x,
+            padding_y,
             line_height: 1.4,
             cell_size: None,
         }
+    }
+
+    fn update_zoom(&mut self, next_size: f32, cx: &mut Context<Self>) {
+        let clamped = next_size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
+        let current: f32 = self.font_size.into();
+        if (current - clamped).abs() < f32::EPSILON {
+            return;
+        }
+
+        self.font_size = px(clamped);
+        // Force cell size recalc so terminal grid reflows at the new zoom.
+        self.cell_size = None;
+        cx.notify();
     }
 
     fn calculate_cell_size(&self, window: &mut Window, _cx: &App) -> Size<Pixels> {
@@ -101,8 +130,11 @@ impl TerminalView {
             return;
         }
 
-        let cols = (viewport_width / cell_width).floor().max(2.0) as u16;
-        let rows = (viewport_height / cell_height).floor().max(1.0) as u16;
+        let terminal_width = (viewport_width - (self.padding_x * 2.0)).max(cell_width * 2.0);
+        let terminal_height =
+            (viewport_height - TITLEBAR_HEIGHT - (self.padding_y * 2.0)).max(cell_height);
+        let cols = (terminal_width / cell_width).floor().max(2.0) as u16;
+        let rows = (terminal_height / cell_height).floor().max(1.0) as u16;
 
         let current = self.terminal.size();
         if current.cols != cols || current.rows != rows {
@@ -121,8 +153,27 @@ impl TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let key = &event.keystroke.key;
+        let key = event.keystroke.key.as_str();
         let modifiers = event.keystroke.modifiers;
+
+        if modifiers.secondary() && !modifiers.alt && !modifiers.function {
+            let current: f32 = self.font_size.into();
+            match key {
+                "=" | "+" | "plus" => {
+                    self.update_zoom(current + ZOOM_STEP, cx);
+                    return;
+                }
+                "-" | "_" | "minus" => {
+                    self.update_zoom(current - ZOOM_STEP, cx);
+                    return;
+                }
+                "0" => {
+                    self.update_zoom(self.base_font_size, cx);
+                    return;
+                }
+                _ => {}
+            }
+        }
 
         if let Some(input) = keystroke_to_input(key, modifiers) {
             self.terminal.write(&input);
@@ -139,6 +190,27 @@ impl TerminalView {
     ) {
         // Focus the terminal on click
         self.focus_handle.focus(window, cx);
+    }
+
+    fn handle_titlebar_mouse_down(
+        &mut self,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) {
+        if event.button != MouseButton::Left {
+            return;
+        }
+
+        if event.click_count == 2 {
+            #[cfg(target_os = "macos")]
+            window.titlebar_double_click();
+            #[cfg(not(target_os = "macos"))]
+            window.zoom_window();
+            return;
+        }
+
+        window.start_window_move();
     }
 }
 
@@ -192,26 +264,64 @@ impl Render for TerminalView {
 
         let terminal_size = self.terminal.size();
         let focus_handle = self.focus_handle.clone();
+        let mut titlebar_bg = colors.background;
+        titlebar_bg.a = 0.96;
+        let mut titlebar_border = colors.cursor;
+        titlebar_border.a = 0.18;
+        let mut titlebar_text = colors.foreground;
+        titlebar_text.a = 0.82;
 
         div()
-            .id("terminal")
-            .track_focus(&focus_handle)
-            .key_context("Terminal")
-            .on_key_down(cx.listener(Self::handle_key_down))
-            .on_mouse_down(MouseButton::Left, cx.listener(Self::handle_mouse_down))
+            .id("termy-root")
+            .flex()
+            .flex_col()
             .size_full()
             .bg(colors.background)
-            .font_family(font_family.clone())
-            .text_size(font_size)
-            .child(TerminalGrid {
-                cells: cells_to_render,
-                cell_size,
-                cols: terminal_size.cols as usize,
-                rows: terminal_size.rows as usize,
-                cursor_color: colors.cursor.into(),
-                font_family,
-                font_size,
-            })
+            .child(
+                div()
+                    .id("titlebar")
+                    .w_full()
+                    .h(px(TITLEBAR_HEIGHT))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .window_control_area(WindowControlArea::Drag)
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(Self::handle_titlebar_mouse_down),
+                    )
+                    .bg(titlebar_bg)
+                    .border_b(px(1.0))
+                    .border_color(titlebar_border)
+                    .text_color(titlebar_text)
+                    .text_size(px(12.0))
+                    .child("Termy"),
+            )
+            .child(
+                div()
+                    .id("terminal")
+                    .track_focus(&focus_handle)
+                    .key_context("Terminal")
+                    .on_key_down(cx.listener(Self::handle_key_down))
+                    .on_mouse_down(MouseButton::Left, cx.listener(Self::handle_mouse_down))
+                    .flex_1()
+                    .w_full()
+                    .px(px(self.padding_x))
+                    .py(px(self.padding_y))
+                    .overflow_hidden()
+                    .font_family(font_family.clone())
+                    .text_size(font_size)
+                    .child(TerminalGrid {
+                        cells: cells_to_render,
+                        cell_size,
+                        cols: terminal_size.cols as usize,
+                        rows: terminal_size.rows as usize,
+                        cursor_color: colors.cursor.into(),
+                        font_family,
+                        font_size,
+                    }),
+            )
     }
 }
 
@@ -348,7 +458,8 @@ impl Element for TerminalGrid {
 
         // Paint text
         for cell in &self.cells {
-            if !cell.render_text || cell.char == ' ' || cell.char == '\0' || cell.char.is_control() {
+            if !cell.render_text || cell.char == ' ' || cell.char == '\0' || cell.char.is_control()
+            {
                 continue;
             }
 
@@ -392,7 +503,14 @@ impl Element for TerminalGrid {
             let line = window
                 .text_system()
                 .shape_line(text, self.font_size, &[run], None);
-            let _ = line.paint(point(x, y), self.cell_size.height, TextAlign::Left, None, window, cx);
+            let _ = line.paint(
+                point(x, y),
+                self.cell_size.height,
+                TextAlign::Left,
+                None,
+                window,
+                cx,
+            );
         }
     }
 }
