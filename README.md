@@ -37,9 +37,26 @@ Create app + DMG:
 Output:
 - `target/release/Termy-<version>-macos-<arch>.dmg`
 
+## Build Setup.exe (Windows)
+
+Install Inno Setup once:
+
+```powershell
+winget install JRSoftware.InnoSetup
+```
+
+Create Windows installer:
+
+```powershell
+./scripts/build-setup.ps1 -Version 0.1.0 -Arch x64 -Target x86_64-pc-windows-msvc
+```
+
+Output:
+- `target/dist/Termy-<version>-<arch>-Setup.exe`
+
 ## Config
 
-Yes config file is inspired by ghostty
+The config file is inspired by Ghostty.
 
 Config file:
 - `~/.config/termy/config.txt`
@@ -58,8 +75,8 @@ padding_x = 12
 padding_y = 8
 ```
 
-Themes:
-- `termy`, `tokyonight`, `catppuccin`, `dracula`, `gruvbox`, `nord`, `solarized`, `onedark`, `monokai`, `material`, `palenight`, `tomorrow`, `oceanic`
+Full configuration reference:
+- `docs/configuration.md`
 
 ## License
 

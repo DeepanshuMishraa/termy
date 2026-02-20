@@ -13,3 +13,20 @@ generate-icon:
 #   just build-dmg -- --version 0.1.0 --arch arm64 --target aarch64-apple-darwin
 build-dmg *args:
   ./scripts/build-dmg.sh {{args}}
+
+# Build Windows Setup.exe via Inno Setup
+# Example:
+#   just build-setup -- -Version 0.1.0 -Arch x64 -Target x86_64-pc-windows-msvc
+build-setup *args:
+  set -- {{args}}; \
+  if [ "${1-}" = "--" ]; then shift; fi; \
+  if command -v powershell >/dev/null 2>&1; then \
+    powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-setup.ps1 "$@"; \
+  elif command -v powershell.exe >/dev/null 2>&1; then \
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-setup.ps1 "$@"; \
+  elif [ -x /c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe ]; then \
+    /c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-setup.ps1 "$@"; \
+  else \
+    echo "PowerShell not found. Install PowerShell or run scripts/build-setup.ps1 directly from PowerShell."; \
+    exit 127; \
+  fi
