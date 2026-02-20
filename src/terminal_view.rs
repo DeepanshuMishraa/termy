@@ -11,6 +11,7 @@ use gpui::{
     MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Render, SharedString, Size, Styled,
     TextAlign, TextRun, WeakEntity, Window, WindowControlArea, div, point, px, quad,
 };
+use std::time::Duration;
 
 const MIN_FONT_SIZE: f32 = 8.0;
 const MAX_FONT_SIZE: f32 = 40.0;
@@ -29,6 +30,7 @@ const TAB_CLOSE_HITBOX: f32 = 22.0;
 const TAB_INACTIVE_CLOSE_MIN_WIDTH: f32 = 120.0;
 const MAX_TAB_TITLE_CHARS: usize = 96;
 const DEFAULT_TAB_TITLE: &str = "Terminal";
+const COMMAND_TITLE_DELAY_MS: u64 = 250;
 const SELECTION_BG_ALPHA: f32 = 0.35;
 const DIM_TEXT_FACTOR: f32 = 0.66;
 
@@ -50,6 +52,8 @@ struct TerminalTab {
     manual_title: Option<String>,
     explicit_title: Option<String>,
     shell_title: Option<String>,
+    pending_command_title: Option<String>,
+    pending_command_token: u64,
     title: String,
 }
 
@@ -60,9 +64,17 @@ impl TerminalTab {
             manual_title: None,
             explicit_title: None,
             shell_title: None,
+            pending_command_title: None,
+            pending_command_token: 0,
             title: String::new(),
         }
     }
+}
+
+enum ExplicitTitlePayload {
+    Prompt(String),
+    Command(String),
+    Title(String),
 }
 
 /// The main terminal view component
@@ -106,7 +118,7 @@ impl TerminalView {
                 while event_wakeup_rx.try_recv().is_ok() {}
                 let result = cx.update(|cx| {
                     this.update(cx, |view, cx| {
-                        if view.process_terminal_events() {
+                        if view.process_terminal_events(cx) {
                             cx.notify();
                         }
                     })
@@ -165,7 +177,7 @@ impl TerminalView {
         view
     }
 
-    fn process_terminal_events(&mut self) -> bool {
+    fn process_terminal_events(&mut self, cx: &mut Context<Self>) -> bool {
         let mut should_redraw = false;
         let active_tab = self.active_tab;
 
@@ -179,7 +191,7 @@ impl TerminalView {
                         }
                     }
                     TerminalEvent::Title(title) => {
-                        if self.apply_terminal_title(index, &title)
+                        if self.apply_terminal_title(index, &title, cx)
                             && (index == active_tab || self.show_tab_bar())
                         {
                             should_redraw = true;
@@ -242,7 +254,7 @@ impl TerminalView {
             .replace("{command}", command.unwrap_or(""))
     }
 
-    fn parse_explicit_title(&self, title: &str) -> Option<String> {
+    fn parse_explicit_title(&self, title: &str) -> Option<ExplicitTitlePayload> {
         let prefix = self.tab_title.explicit_prefix.trim();
         if prefix.is_empty() {
             return None;
@@ -258,11 +270,11 @@ impl TerminalView {
             if prompt.is_empty() {
                 return None;
             }
-            return Some(Self::resolve_template(
+            return Some(ExplicitTitlePayload::Prompt(Self::resolve_template(
                 &self.tab_title.prompt_format,
                 Some(prompt),
                 None,
-            ));
+            )));
         }
 
         if let Some(command) = payload.strip_prefix("command:") {
@@ -270,11 +282,11 @@ impl TerminalView {
             if command.is_empty() {
                 return None;
             }
-            return Some(Self::resolve_template(
+            return Some(ExplicitTitlePayload::Command(Self::resolve_template(
                 &self.tab_title.command_format,
                 None,
                 Some(command),
-            ));
+            )));
         }
 
         let explicit = payload.strip_prefix("title:").unwrap_or(payload).trim();
@@ -282,7 +294,7 @@ impl TerminalView {
             return None;
         }
 
-        Some(explicit.to_string())
+        Some(ExplicitTitlePayload::Title(explicit.to_string()))
     }
 
     fn resolved_tab_title(&self, index: usize) -> String {
@@ -318,19 +330,104 @@ impl TerminalView {
         true
     }
 
-    fn apply_terminal_title(&mut self, index: usize, title: &str) -> bool {
+    fn cancel_pending_command_title(&mut self, index: usize) {
+        if index >= self.tabs.len() {
+            return;
+        }
+
+        let tab = &mut self.tabs[index];
+        tab.pending_command_token = tab.pending_command_token.wrapping_add(1);
+        tab.pending_command_title = None;
+    }
+
+    fn set_explicit_title(&mut self, index: usize, explicit_title: String) -> bool {
+        if index >= self.tabs.len() {
+            return false;
+        }
+
+        let explicit_title = Self::truncate_tab_title(&explicit_title);
+        if self.tabs[index].explicit_title.as_deref() == Some(explicit_title.as_str()) {
+            return false;
+        }
+
+        self.tabs[index].explicit_title = Some(explicit_title);
+        self.refresh_tab_title(index)
+    }
+
+    fn schedule_delayed_command_title(
+        &mut self,
+        index: usize,
+        command_title: String,
+        delay_ms: u64,
+        cx: &mut Context<Self>,
+    ) {
+        if index >= self.tabs.len() {
+            return;
+        }
+
+        let tab = &mut self.tabs[index];
+        tab.pending_command_token = tab.pending_command_token.wrapping_add(1);
+        tab.pending_command_title = Some(Self::truncate_tab_title(&command_title));
+        let token = tab.pending_command_token;
+
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            smol::Timer::after(Duration::from_millis(delay_ms)).await;
+            let _ = cx.update(|cx| {
+                this.update(cx, |view, cx| {
+                    if view.activate_pending_command_title(index, token) {
+                        cx.notify();
+                    }
+                })
+            });
+        })
+        .detach();
+    }
+
+    fn activate_pending_command_title(&mut self, index: usize, token: u64) -> bool {
+        if index >= self.tabs.len() {
+            return false;
+        }
+
+        let tab = &mut self.tabs[index];
+        if tab.pending_command_token != token {
+            return false;
+        }
+
+        let Some(command_title) = tab.pending_command_title.take() else {
+            return false;
+        };
+
+        if tab.explicit_title.as_deref() == Some(command_title.as_str()) {
+            return false;
+        }
+
+        tab.explicit_title = Some(command_title);
+        self.refresh_tab_title(index)
+    }
+
+    fn apply_terminal_title(&mut self, index: usize, title: &str, cx: &mut Context<Self>) -> bool {
         let title = title.trim();
         if title.is_empty() || index >= self.tabs.len() {
             return false;
         }
 
-        if let Some(explicit_title) = self.parse_explicit_title(title) {
-            let explicit_title = Self::truncate_tab_title(&explicit_title);
-            if self.tabs[index].explicit_title.as_deref() == Some(explicit_title.as_str()) {
-                return false;
-            }
-            self.tabs[index].explicit_title = Some(explicit_title);
-            return self.refresh_tab_title(index);
+        if let Some(explicit_payload) = self.parse_explicit_title(title) {
+            return match explicit_payload {
+                ExplicitTitlePayload::Prompt(prompt_title)
+                | ExplicitTitlePayload::Title(prompt_title) => {
+                    self.cancel_pending_command_title(index);
+                    self.set_explicit_title(index, prompt_title)
+                }
+                ExplicitTitlePayload::Command(command_title) => {
+                    self.schedule_delayed_command_title(
+                        index,
+                        command_title,
+                        COMMAND_TITLE_DELAY_MS,
+                        cx,
+                    );
+                    false
+                }
+            };
         }
 
         let shell_title = Self::truncate_tab_title(title);
@@ -347,6 +444,7 @@ impl TerminalView {
             return false;
         }
 
+        self.cancel_pending_command_title(index);
         let tab = &mut self.tabs[index];
         let had_shell = tab.shell_title.take().is_some();
         let had_explicit = tab.explicit_title.take().is_some();

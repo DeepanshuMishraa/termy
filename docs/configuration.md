@@ -40,6 +40,9 @@ Mode presets:
 - Values: non-empty string
 - What it does: fallback title if higher-priority sources are empty.
 
+Note:
+- Termy applies a built-in short delay before showing `command:...` titles to reduce flash for fast commands.
+
 ### Advanced (optional)
 
 `tab_title_priority`
