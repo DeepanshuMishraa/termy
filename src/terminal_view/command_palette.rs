@@ -1,44 +1,6 @@
 use super::*;
 
 impl TerminalView {
-    #[cfg(target_os = "windows")]
-    fn show_native_info_dialog(title: &str, message: &str) -> Result<(), String> {
-        use std::ffi::{OsStr, c_void};
-        use std::iter::once;
-        use std::os::windows::ffi::OsStrExt;
-
-        #[link(name = "user32")]
-        unsafe extern "system" {
-            fn MessageBoxW(
-                hwnd: *mut c_void,
-                lp_text: *const u16,
-                lp_caption: *const u16,
-                u_type: u32,
-            ) -> i32;
-        }
-
-        const MB_OK: u32 = 0x0000_0000;
-        const MB_ICONINFORMATION: u32 = 0x0000_0040;
-
-        let title_w: Vec<u16> = OsStr::new(title).encode_wide().chain(once(0)).collect();
-        let message_w: Vec<u16> = OsStr::new(message).encode_wide().chain(once(0)).collect();
-
-        let result = unsafe {
-            MessageBoxW(
-                std::ptr::null_mut(),
-                message_w.as_ptr(),
-                title_w.as_ptr(),
-                MB_OK | MB_ICONINFORMATION,
-            )
-        };
-
-        if result == 0 {
-            Err("Failed to show native Windows dialog".to_string())
-        } else {
-            Ok(())
-        }
-    }
-
     pub(super) fn is_command_palette_shortcut(key: &str, modifiers: gpui::Modifiers) -> bool {
         modifiers.secondary()
             && !modifiers.alt
@@ -400,11 +362,6 @@ impl TerminalView {
                     std::env::consts::ARCH,
                     config_path
                 );
-                #[cfg(target_os = "windows")]
-                if Self::show_native_info_dialog("Termy Info", &message).is_ok() {
-                    cx.notify();
-                    return;
-                }
                 termy_toast::info(message);
                 cx.notify();
             }
