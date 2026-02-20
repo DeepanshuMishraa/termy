@@ -23,6 +23,7 @@ const TAB_PILL_GAP: f32 = 8.0;
 const TAB_CLOSE_HITBOX: f32 = 26.0;
 const MAX_TAB_TITLE_CHARS: usize = 28;
 const SELECTION_BG_ALPHA: f32 = 0.35;
+const DIM_TEXT_FACTOR: f32 = 0.66;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct CellPos {
@@ -514,6 +515,7 @@ impl TerminalView {
     ) {
         let key = event.keystroke.key.as_str();
         let modifiers = event.keystroke.modifiers;
+        let key_char = event.keystroke.key_char.as_deref();
 
         if self.renaming_tab.is_some() {
             match key {
@@ -530,7 +532,12 @@ impl TerminalView {
                     cx.notify();
                     return;
                 }
-                "space" if !modifiers.control && !modifiers.alt && !modifiers.function => {
+                "space"
+                    if !modifiers.control
+                        && !modifiers.alt
+                        && !modifiers.function
+                        && !modifiers.platform =>
+                {
                     if self.rename_buffer.chars().count() < MAX_TAB_TITLE_CHARS {
                         self.rename_buffer.push(' ');
                         cx.notify();
@@ -538,13 +545,20 @@ impl TerminalView {
                     return;
                 }
                 _ if key.len() == 1
+                    && key_char.is_some()
                     && !modifiers.control
                     && !modifiers.alt
-                    && !modifiers.function =>
+                    && !modifiers.function
+                    && !modifiers.platform =>
                 {
-                    if self.rename_buffer.chars().count() < MAX_TAB_TITLE_CHARS {
-                        self.rename_buffer.push_str(key);
-                        cx.notify();
+                    if let Some(input) = key_char {
+                        let input_len = input.chars().count();
+                        if input_len > 0
+                            && self.rename_buffer.chars().count() + input_len <= MAX_TAB_TITLE_CHARS
+                        {
+                            self.rename_buffer.push_str(input);
+                            cx.notify();
+                        }
                     }
                     return;
                 }
@@ -607,7 +621,7 @@ impl TerminalView {
             }
         }
 
-        if let Some(input) = keystroke_to_input(key, modifiers) {
+        if let Some(input) = keystroke_to_input(&event.keystroke) {
             self.active_terminal().write(&input);
             self.clear_selection();
             // Request a redraw to show the typed character
@@ -803,25 +817,39 @@ impl Render for TerminalView {
             for cell in content.display_iter {
                 let point = cell.point;
                 let cell_content = &cell.cell;
+                let row = point.line.0;
+                if row < 0 {
+                    continue;
+                }
+                let row = row as usize;
+                let col = point.column.0;
 
                 // Get foreground and background colors
-                let fg = colors.convert(cell_content.fg);
-                let bg = colors.convert(cell_content.bg);
+                let mut fg = colors.convert(cell_content.fg);
+                let mut bg = colors.convert(cell_content.bg);
+                if cell_content.flags.contains(Flags::INVERSE) {
+                    std::mem::swap(&mut fg, &mut bg);
+                }
+                if cell_content.flags.contains(Flags::DIM) {
+                    fg.r *= DIM_TEXT_FACTOR;
+                    fg.g *= DIM_TEXT_FACTOR;
+                    fg.b *= DIM_TEXT_FACTOR;
+                }
 
                 let c = cell_content.c;
-                let is_cursor = point.column.0 == cursor_col && point.line.0 as usize == cursor_row;
-                let selected = self.cell_is_selected(point.column.0, point.line.0 as usize);
+                let is_cursor = col == cursor_col && row == cursor_row;
+                let selected = self.cell_is_selected(col, row);
 
                 cells_to_render.push(CellRenderInfo {
-                    col: point.column.0,
-                    row: point.line.0 as usize,
+                    col,
+                    row,
                     char: c,
                     fg: fg.into(),
                     bg: bg.into(),
                     bold: cell_content.flags.contains(Flags::BOLD),
-                    render_text: !cell_content
-                        .flags
-                        .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER),
+                    render_text: !cell_content.flags.intersects(
+                        Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER | Flags::HIDDEN,
+                    ),
                     _italic: cell_content.flags.contains(Flags::ITALIC),
                     is_cursor,
                     selected,
