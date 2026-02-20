@@ -1,21 +1,17 @@
 use crate::colors::TerminalColors;
-use crate::config::{self, AppConfig, TabTitleConfig, TabTitleSource};
-use crate::terminal::{
-    TabTitleShellIntegration, Terminal, TerminalEvent, TerminalSize, keystroke_to_input,
-};
+use crate::config::AppConfig;
+use crate::terminal_grid::{CellRenderInfo, TerminalGrid};
+use crate::terminal::{Terminal, TerminalEvent, TerminalSize, keystroke_to_input};
 use alacritty_terminal::term::cell::Flags;
 use flume::{Sender, bounded};
 use gpui::{
-    App, AsyncApp, Bounds, ClipboardItem, Context, Element, FocusHandle, Focusable, Font,
-    FontWeight, Hsla, InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Render, SharedString, Size, Styled,
-    TextAlign, TextRun, WeakEntity, Window, WindowControlArea, div, point, px, quad,
+    App, AsyncApp, ClipboardItem, Context, FocusHandle, Focusable, Font, FontWeight,
+    InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, ParentElement, Pixels, Render, SharedString, Size, Styled, WeakEntity, Window,
+    WindowControlArea, div, px,
 };
-use std::{
-    fs,
-    path::PathBuf,
-    time::{Duration, SystemTime},
-};
+use std::process::Command;
+use std::time::Duration;
 
 const MIN_FONT_SIZE: f32 = 8.0;
 const MAX_FONT_SIZE: f32 = 40.0;
@@ -64,24 +60,12 @@ struct TerminalTab {
     title: String,
 }
 
-impl TerminalTab {
-    fn new(terminal: Terminal) -> Self {
-        Self {
-            terminal,
-            manual_title: None,
-            explicit_title: None,
-            shell_title: None,
-            pending_command_title: None,
-            pending_command_token: 0,
-            title: String::new(),
-        }
-    }
-}
-
-enum ExplicitTitlePayload {
-    Prompt(String),
-    Command(String),
-    Title(String),
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct HoveredLink {
+    row: usize,
+    start_col: usize,
+    end_col: usize,
+    target: String,
 }
 
 /// The main terminal view component
@@ -109,6 +93,7 @@ pub struct TerminalView {
     selection_head: Option<CellPos>,
     selection_dragging: bool,
     selection_moved: bool,
+    hovered_link: Option<HoveredLink>,
     /// Cached cell dimensions
     cell_size: Option<Size<Pixels>>,
 }
@@ -208,6 +193,7 @@ impl TerminalView {
             selection_head: None,
             selection_dragging: false,
             selection_moved: false,
+            hovered_link: None,
             cell_size: None,
         };
         view.refresh_tab_title(0);
@@ -302,6 +288,15 @@ impl TerminalView {
         self.selection_head = None;
         self.selection_dragging = false;
         self.selection_moved = false;
+    }
+
+    fn clear_hovered_link(&mut self) -> bool {
+        if self.hovered_link.is_some() {
+            self.hovered_link = None;
+            true
+        } else {
+            false
+        }
     }
 
     fn show_tab_bar(&self) -> bool {
@@ -644,18 +639,6 @@ impl TerminalView {
         cx.notify();
     }
 
-    fn begin_rename_tab(&mut self, index: usize, cx: &mut Context<Self>) {
-        if index >= self.tabs.len() {
-            return;
-        }
-
-        self.active_tab = index;
-        self.renaming_tab = Some(index);
-        self.rename_buffer = self.tabs[index].title.clone();
-        self.clear_selection();
-        cx.notify();
-    }
-
     fn commit_rename_tab(&mut self, cx: &mut Context<Self>) {
         let Some(index) = self.renaming_tab else {
             return;
@@ -836,6 +819,212 @@ impl TerminalView {
         } else {
             Some(lines.join("\n"))
         }
+    }
+
+    fn row_text(&self, row: usize) -> Option<Vec<char>> {
+        let size = self.active_terminal().size();
+        let cols = size.cols as usize;
+        let rows = size.rows as usize;
+        if cols == 0 || row >= rows {
+            return None;
+        }
+
+        let mut line = vec![' '; cols];
+        self.active_terminal().with_term(|term| {
+            let content = term.renderable_content();
+            for cell in content.display_iter {
+                let cell_row = cell.point.line.0;
+                if cell_row < 0 || cell_row as usize != row {
+                    continue;
+                }
+
+                let col = cell.point.column.0;
+                if col >= cols {
+                    continue;
+                }
+
+                if cell.cell.flags.intersects(
+                    Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER | Flags::HIDDEN,
+                ) {
+                    continue;
+                }
+
+                let c = cell.cell.c;
+                if c != '\0' {
+                    line[col] = if c.is_control() { ' ' } else { c };
+                }
+            }
+        });
+
+        Some(line)
+    }
+
+    fn edge_trim_char(c: char) -> bool {
+        matches!(
+            c,
+            '\''
+                | '"'
+                | '`'
+                | ','
+                | '.'
+                | ';'
+                | '!'
+                | '?'
+                | '('
+                | ')'
+                | '['
+                | ']'
+                | '{'
+                | '}'
+                | '<'
+                | '>'
+        )
+    }
+
+    fn classify_link_token(token: &str) -> Option<String> {
+        if token.is_empty() {
+            return None;
+        }
+
+        let lower = token.to_ascii_lowercase();
+        if lower.starts_with("http://") || lower.starts_with("https://") {
+            return Some(token.to_string());
+        }
+
+        if lower.starts_with("www.") {
+            return Some(format!("https://{}", token));
+        }
+
+        if Self::is_ipv4_with_optional_port_and_path(token) || Self::looks_like_domain(token) {
+            return Some(format!("http://{}", token));
+        }
+
+        None
+    }
+
+    fn is_ipv4_with_optional_port_and_path(input: &str) -> bool {
+        let host_port = input.split('/').next().unwrap_or(input);
+        let (host, port) = if let Some((host, port)) = host_port.rsplit_once(':') {
+            (host, Some(port))
+        } else {
+            (host_port, None)
+        };
+
+        let octets: Vec<&str> = host.split('.').collect();
+        if octets.len() != 4 {
+            return false;
+        }
+        if octets
+            .iter()
+            .any(|octet| octet.is_empty() || octet.parse::<u8>().is_err())
+        {
+            return false;
+        }
+
+        if let Some(port) = port {
+            if port.is_empty() || !port.chars().all(|c| c.is_ascii_digit()) {
+                return false;
+            }
+            if port.parse::<u16>().is_err() {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    fn looks_like_domain(input: &str) -> bool {
+        let host_port = input.split('/').next().unwrap_or(input);
+        let (host, port) = if let Some((host, port)) = host_port.rsplit_once(':') {
+            (host, Some(port))
+        } else {
+            (host_port, None)
+        };
+
+        if host.eq_ignore_ascii_case("localhost") {
+            return true;
+        }
+
+        if !host.contains('.') {
+            return false;
+        }
+
+        for label in host.split('.') {
+            if label.is_empty() {
+                return false;
+            }
+            if label.starts_with('-') || label.ends_with('-') {
+                return false;
+            }
+            if !label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+                return false;
+            }
+        }
+
+        if let Some(port) = port {
+            if port.is_empty() || !port.chars().all(|c| c.is_ascii_digit()) {
+                return false;
+            }
+            if port.parse::<u16>().is_err() {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    fn link_at_cell(&self, cell: CellPos) -> Option<HoveredLink> {
+        let line = self.row_text(cell.row)?;
+        if cell.col >= line.len() || line[cell.col].is_whitespace() {
+            return None;
+        }
+
+        let mut start = cell.col;
+        while start > 0 && !line[start - 1].is_whitespace() {
+            start -= 1;
+        }
+
+        let mut end = cell.col;
+        while end + 1 < line.len() && !line[end + 1].is_whitespace() {
+            end += 1;
+        }
+
+        while start <= end && Self::edge_trim_char(line[start]) {
+            start += 1;
+        }
+        while end >= start && Self::edge_trim_char(line[end]) {
+            if end == 0 {
+                break;
+            }
+            end -= 1;
+        }
+
+        if start > end {
+            return None;
+        }
+
+        let token: String = line[start..=end].iter().collect();
+        let target = Self::classify_link_token(token.trim_end_matches(':'))?;
+
+        Some(HoveredLink {
+            row: cell.row,
+            start_col: start,
+            end_col: end,
+            target,
+        })
+    }
+
+    fn open_link(url: &str) {
+        #[cfg(target_os = "macos")]
+        let _ = Command::new("open").arg(url).status();
+        #[cfg(target_os = "linux")]
+        let _ = Command::new("xdg-open").arg(url).status();
+        #[cfg(target_os = "windows")]
+        let _ = Command::new("cmd").args(["/C", "start", "", url]).status();
+    }
+
+    fn is_link_modifier(modifiers: gpui::Modifiers) -> bool {
+        modifiers.secondary() && !modifiers.alt && !modifiers.function
     }
 
     fn update_zoom(&mut self, next_size: f32, cx: &mut Context<Self>) {
@@ -1041,8 +1230,21 @@ impl TerminalView {
             return;
         }
 
+        if Self::is_link_modifier(event.modifiers) {
+            if let Some(cell) = self.position_to_cell(event.position, false) {
+                if let Some(link) = self.link_at_cell(cell) {
+                    Self::open_link(&link.target);
+                    if self.clear_hovered_link() {
+                        cx.notify();
+                    }
+                    return;
+                }
+            }
+        }
+
         let Some(cell) = self.position_to_cell(event.position, false) else {
             self.clear_selection();
+            self.clear_hovered_link();
             cx.notify();
             return;
         };
@@ -1051,6 +1253,7 @@ impl TerminalView {
         self.selection_head = Some(cell);
         self.selection_dragging = true;
         self.selection_moved = false;
+        self.clear_hovered_link();
         cx.notify();
     }
 
@@ -1061,6 +1264,17 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) {
         if !self.selection_dragging || !event.dragging() {
+            if Self::is_link_modifier(event.modifiers) {
+                let next = self
+                    .position_to_cell(event.position, false)
+                    .and_then(|cell| self.link_at_cell(cell));
+                if self.hovered_link != next {
+                    self.hovered_link = next;
+                    cx.notify();
+                }
+            } else if self.clear_hovered_link() {
+                cx.notify();
+            }
             return;
         }
 
@@ -1073,6 +1287,7 @@ impl TerminalView {
             if self.selection_anchor != self.selection_head {
                 self.selection_moved = true;
             }
+            self.clear_hovered_link();
             cx.notify();
         }
     }
@@ -1098,6 +1313,7 @@ impl TerminalView {
         if !self.selection_moved {
             self.clear_selection();
         }
+        self.clear_hovered_link();
         cx.notify();
     }
 
@@ -1142,11 +1358,6 @@ impl TerminalView {
             }
         }
 
-        if event.click_count >= 2 {
-            self.begin_rename_tab(index, cx);
-            return;
-        }
-
         self.switch_tab(index, cx);
     }
 
@@ -1166,7 +1377,7 @@ impl TerminalView {
             let x: f32 = event.position.x.into();
             let y: f32 = event.position.y.into();
             let plus_left = viewport_width - TITLEBAR_SIDE_PADDING - TITLEBAR_PLUS_SIZE;
-            let plus_top = (TITLEBAR_HEIGHT - TITLEBAR_PLUS_SIZE) * 0.5;
+            let plus_top = (self.titlebar_height() - TITLEBAR_PLUS_SIZE) * 0.5;
             let plus_right = plus_left + TITLEBAR_PLUS_SIZE;
             let plus_bottom = plus_top + TITLEBAR_PLUS_SIZE;
 
@@ -1195,8 +1406,19 @@ impl TerminalView {
         }
     }
 
+    fn titlebar_height(&self) -> f32 {
+        #[cfg(target_os = "windows")]
+        {
+            0.0
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            TITLEBAR_HEIGHT
+        }
+    }
+
     fn chrome_height(&self) -> f32 {
-        TITLEBAR_HEIGHT + self.tab_bar_height()
+        self.titlebar_height() + self.tab_bar_height()
     }
 }
 
@@ -1257,7 +1479,6 @@ impl Render for TerminalView {
                     render_text: !cell_content.flags.intersects(
                         Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER | Flags::HIDDEN,
                     ),
-                    _italic: cell_content.flags.contains(Flags::ITALIC),
                     is_cursor,
                     selected,
                 });
@@ -1267,13 +1488,7 @@ impl Render for TerminalView {
         let terminal_size = self.active_terminal().size();
         let focus_handle = self.focus_handle.clone();
         let show_tab_bar = self.show_tab_bar();
-        let show_windows_controls = cfg!(target_os = "windows");
-        let show_titlebar_plus = self.use_tabs && !show_windows_controls;
-        let titlebar_side_slot_width = if show_windows_controls {
-            WINDOWS_TITLEBAR_CONTROLS_WIDTH
-        } else {
-            TITLEBAR_PLUS_SIZE
-        };
+        let titlebar_height = self.titlebar_height();
         let mut titlebar_bg = colors.background;
         titlebar_bg.a = 0.96;
         let mut titlebar_border = colors.cursor;
@@ -1303,8 +1518,10 @@ impl Render for TerminalView {
         let mut selection_bg = colors.cursor;
         selection_bg.a = SELECTION_BG_ALPHA;
         let selection_fg = colors.background;
-        let viewport = window.viewport_size();
-        let tab_layout = self.tab_bar_layout(viewport.width.into());
+        let hovered_link_range = self
+            .hovered_link
+            .as_ref()
+            .map(|link| (link.row, link.start_col, link.end_col));
 
         let mut tabs_row = div()
             .w_full()
@@ -1397,7 +1614,7 @@ impl Render for TerminalView {
                 div()
                     .id("titlebar")
                     .w_full()
-                    .h(px(TITLEBAR_HEIGHT))
+                    .h(px(titlebar_height))
                     .flex_none()
                     .flex()
                     .items_center()
@@ -1407,7 +1624,7 @@ impl Render for TerminalView {
                         cx.listener(Self::handle_titlebar_mouse_down),
                     )
                     .bg(titlebar_bg)
-                    .border_b(px(1.0))
+                    .border_b(px(if titlebar_height > 0.0 { 1.0 } else { 0.0 }))
                     .border_color(titlebar_border)
                     .child(
                         div()
@@ -1525,213 +1742,10 @@ impl Render for TerminalView {
                         cursor_color: colors.cursor.into(),
                         selection_bg: selection_bg.into(),
                         selection_fg: selection_fg.into(),
+                        hovered_link_range,
                         font_family,
                         font_size,
                     }),
             )
-    }
-}
-
-/// Info needed to render a single cell
-#[derive(Clone)]
-struct CellRenderInfo {
-    col: usize,
-    row: usize,
-    char: char,
-    fg: Hsla,
-    bg: Hsla,
-    bold: bool,
-    render_text: bool,
-    _italic: bool,
-    is_cursor: bool,
-    selected: bool,
-}
-
-/// Custom element for rendering the terminal grid
-struct TerminalGrid {
-    cells: Vec<CellRenderInfo>,
-    cell_size: Size<Pixels>,
-    cols: usize,
-    rows: usize,
-    cursor_color: Hsla,
-    selection_bg: Hsla,
-    selection_fg: Hsla,
-    font_family: SharedString,
-    font_size: Pixels,
-}
-
-impl IntoElement for TerminalGrid {
-    type Element = Self;
-
-    fn into_element(self) -> Self::Element {
-        self
-    }
-}
-
-impl Element for TerminalGrid {
-    type RequestLayoutState = ();
-    type PrepaintState = ();
-
-    fn id(&self) -> Option<gpui::ElementId> {
-        None
-    }
-
-    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
-        None
-    }
-
-    fn request_layout(
-        &mut self,
-        _id: Option<&gpui::GlobalElementId>,
-        _inspector_id: Option<&gpui::InspectorElementId>,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> (gpui::LayoutId, Self::RequestLayoutState) {
-        let width = self.cell_size.width * self.cols as f32;
-        let height = self.cell_size.height * self.rows as f32;
-
-        let layout_id = window.request_layout(
-            gpui::Style {
-                size: gpui::Size {
-                    width: gpui::Length::Definite(gpui::DefiniteLength::Absolute(
-                        gpui::AbsoluteLength::Pixels(width),
-                    )),
-                    height: gpui::Length::Definite(gpui::DefiniteLength::Absolute(
-                        gpui::AbsoluteLength::Pixels(height),
-                    )),
-                },
-                ..Default::default()
-            },
-            [],
-            cx,
-        );
-
-        (layout_id, ())
-    }
-
-    fn prepaint(
-        &mut self,
-        _id: Option<&gpui::GlobalElementId>,
-        _inspector_id: Option<&gpui::InspectorElementId>,
-        _bounds: Bounds<Pixels>,
-        _request_layout: &mut Self::RequestLayoutState,
-        _window: &mut Window,
-        _cx: &mut App,
-    ) -> Self::PrepaintState {
-    }
-
-    fn paint(
-        &mut self,
-        _id: Option<&gpui::GlobalElementId>,
-        _inspector_id: Option<&gpui::InspectorElementId>,
-        bounds: Bounds<Pixels>,
-        _request_layout: &mut Self::RequestLayoutState,
-        _prepaint: &mut Self::PrepaintState,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        let origin = bounds.origin;
-
-        // Paint background colors and cursor first
-        for cell in &self.cells {
-            let x = origin.x + self.cell_size.width * cell.col as f32;
-            let y = origin.y + self.cell_size.height * cell.row as f32;
-
-            // Draw background if not default
-            let cell_bounds = Bounds {
-                origin: point(x, y),
-                size: self.cell_size,
-            };
-
-            if cell.is_cursor {
-                // Draw cursor
-                window.paint_quad(quad(
-                    cell_bounds,
-                    px(0.0),
-                    self.cursor_color,
-                    gpui::Edges::default(),
-                    Hsla::transparent_black(),
-                    gpui::BorderStyle::default(),
-                ));
-            } else if cell.selected {
-                window.paint_quad(quad(
-                    cell_bounds,
-                    px(0.0),
-                    self.selection_bg,
-                    gpui::Edges::default(),
-                    Hsla::transparent_black(),
-                    gpui::BorderStyle::default(),
-                ));
-            } else if cell.bg.a > 0.01 {
-                // Draw cell background
-                window.paint_quad(quad(
-                    cell_bounds,
-                    px(0.0),
-                    cell.bg,
-                    gpui::Edges::default(),
-                    Hsla::transparent_black(),
-                    gpui::BorderStyle::default(),
-                ));
-            }
-        }
-
-        // Paint text
-        for cell in &self.cells {
-            if !cell.render_text || cell.char == ' ' || cell.char == '\0' || cell.char.is_control()
-            {
-                continue;
-            }
-
-            let x = origin.x + self.cell_size.width * cell.col as f32;
-            let y = origin.y + self.cell_size.height * cell.row as f32;
-
-            let fg_color = if cell.is_cursor {
-                // Invert color for cursor
-                Hsla {
-                    h: 0.0,
-                    s: 0.0,
-                    l: 0.0,
-                    a: 1.0,
-                }
-            } else if cell.selected {
-                self.selection_fg
-            } else {
-                cell.fg
-            };
-
-            let text: SharedString = cell.char.to_string().into();
-            let font_weight = if cell.bold {
-                FontWeight::BOLD
-            } else {
-                FontWeight::NORMAL
-            };
-
-            let font = Font {
-                family: self.font_family.clone(),
-                weight: font_weight,
-                ..Default::default()
-            };
-
-            let run = TextRun {
-                len: text.len(),
-                font,
-                color: fg_color,
-                background_color: None,
-                underline: None,
-                strikethrough: None,
-            };
-
-            let line = window
-                .text_system()
-                .shape_line(text, self.font_size, &[run], None);
-            let _ = line.paint(
-                point(x, y),
-                self.cell_size.height,
-                TextAlign::Left,
-                None,
-                window,
-                cx,
-            );
-        }
     }
 }
