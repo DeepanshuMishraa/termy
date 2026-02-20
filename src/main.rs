@@ -1,6 +1,7 @@
 mod colors;
 mod config;
 mod terminal;
+mod terminal_grid;
 mod terminal_view;
 mod themes;
 
@@ -37,15 +38,19 @@ fn main() {
         let window_width = app_config.window_width.max(MIN_WINDOW_WIDTH);
         let window_height = app_config.window_height.max(MIN_WINDOW_HEIGHT);
         let bounds = Bounds::centered(None, size(px(window_width), px(window_height)), cx);
+        #[cfg(target_os = "macos")]
+        let titlebar = Some(gpui::TitlebarOptions {
+            title: Some("Termy".into()),
+            appears_transparent: true,
+            traffic_light_position: Some(gpui::point(px(12.0), px(10.0))),
+        });
+        #[cfg(not(target_os = "macos"))]
+        let titlebar = None;
 
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
-                titlebar: Some(gpui::TitlebarOptions {
-                    title: Some("Termy".into()),
-                    appears_transparent: true,
-                    traffic_light_position: Some(gpui::point(px(12.0), px(10.0))),
-                }),
+                titlebar,
                 ..Default::default()
             },
             |window, cx| cx.new(|cx| TerminalView::new(window, cx)),
