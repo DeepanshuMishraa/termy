@@ -111,6 +111,7 @@ struct HoveredLink {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CommandPaletteAction {
+    RestartApp,
     NewTab,
     CloseTab,
     RenameTab,

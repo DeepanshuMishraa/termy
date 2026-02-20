@@ -62,6 +62,11 @@ impl TerminalView {
     fn command_palette_items(&self) -> Vec<CommandPaletteItem> {
         let mut items = vec![
             CommandPaletteItem {
+                title: "Restart App",
+                keywords: "relaunch reopen restart",
+                action: CommandPaletteAction::RestartApp,
+            },
+            CommandPaletteItem {
                 title: "Open Config",
                 keywords: "settings preferences",
                 action: CommandPaletteAction::OpenConfig,
@@ -249,6 +254,13 @@ impl TerminalView {
         self.command_palette_selected = 0;
 
         match action {
+            CommandPaletteAction::RestartApp => match self.restart_application() {
+                Ok(()) => cx.quit(),
+                Err(error) => {
+                    termy_toast::error(format!("Restart failed: {}", error));
+                    cx.notify();
+                }
+            },
             CommandPaletteAction::NewTab => {
                 self.add_tab(cx);
                 termy_toast::success("Opened new tab");
