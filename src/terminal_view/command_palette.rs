@@ -1,6 +1,44 @@
 use super::*;
 
 impl TerminalView {
+    #[cfg(target_os = "windows")]
+    fn show_native_info_dialog(title: &str, message: &str) -> Result<(), String> {
+        use std::ffi::{OsStr, c_void};
+        use std::iter::once;
+        use std::os::windows::ffi::OsStrExt;
+
+        #[link(name = "user32")]
+        unsafe extern "system" {
+            fn MessageBoxW(
+                hwnd: *mut c_void,
+                lp_text: *const u16,
+                lp_caption: *const u16,
+                u_type: u32,
+            ) -> i32;
+        }
+
+        const MB_OK: u32 = 0x0000_0000;
+        const MB_ICONINFORMATION: u32 = 0x0000_0040;
+
+        let title_w: Vec<u16> = OsStr::new(title).encode_wide().chain(once(0)).collect();
+        let message_w: Vec<u16> = OsStr::new(message).encode_wide().chain(once(0)).collect();
+
+        let result = unsafe {
+            MessageBoxW(
+                std::ptr::null_mut(),
+                message_w.as_ptr(),
+                title_w.as_ptr(),
+                MB_OK | MB_ICONINFORMATION,
+            )
+        };
+
+        if result == 0 {
+            Err("Failed to show native Windows dialog".to_string())
+        } else {
+            Ok(())
+        }
+    }
+
     pub(super) fn is_command_palette_shortcut(key: &str, modifiers: gpui::Modifiers) -> bool {
         modifiers.secondary()
             && !modifiers.alt
@@ -12,6 +50,7 @@ impl TerminalView {
         self.command_palette_open = true;
         self.command_palette_query.clear();
         self.command_palette_selected = 0;
+        self.command_palette_scroll_offset = 0;
         self.command_palette_query_select_all = false;
         self.command_palette_opened_at = Some(Instant::now());
 
@@ -47,6 +86,7 @@ impl TerminalView {
         self.command_palette_open = false;
         self.command_palette_query.clear();
         self.command_palette_selected = 0;
+        self.command_palette_scroll_offset = 0;
         self.command_palette_query_select_all = false;
         self.command_palette_opened_at = None;
         cx.notify();
@@ -150,6 +190,77 @@ impl TerminalView {
         }
     }
 
+    fn sync_command_palette_scroll(&mut self, len: usize) {
+        if len <= COMMAND_PALETTE_MAX_ITEMS {
+            self.command_palette_scroll_offset = 0;
+            return;
+        }
+
+        let max_start = len - COMMAND_PALETTE_MAX_ITEMS;
+        self.command_palette_scroll_offset = self.command_palette_scroll_offset.min(max_start);
+
+        if self.command_palette_selected < self.command_palette_scroll_offset {
+            self.command_palette_scroll_offset = self.command_palette_selected;
+        } else {
+            let visible_end = self.command_palette_scroll_offset + COMMAND_PALETTE_MAX_ITEMS;
+            if self.command_palette_selected >= visible_end {
+                self.command_palette_scroll_offset =
+                    self.command_palette_selected + 1 - COMMAND_PALETTE_MAX_ITEMS;
+            }
+        }
+    }
+
+    fn handle_command_palette_scroll_wheel(
+        &mut self,
+        event: &ScrollWheelEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let len = self.filtered_command_palette_items().len();
+        if len <= COMMAND_PALETTE_MAX_ITEMS {
+            return;
+        }
+
+        let delta_y: f32 = match event.delta {
+            ScrollDelta::Pixels(delta) => {
+                let y: f32 = delta.y.into();
+                y
+            }
+            ScrollDelta::Lines(delta) => delta.y,
+        };
+        if delta_y.abs() < f32::EPSILON {
+            return;
+        }
+
+        let max_start = len - COMMAND_PALETTE_MAX_ITEMS;
+        let step = match event.delta {
+            ScrollDelta::Pixels(delta) => {
+                let y: f32 = delta.y.into();
+                (y.abs() / 24.0).ceil().max(1.0) as usize
+            }
+            ScrollDelta::Lines(delta) => delta.y.abs().ceil().max(1.0) as usize,
+        };
+
+        if delta_y < 0.0 {
+            self.command_palette_scroll_offset =
+                (self.command_palette_scroll_offset + step).min(max_start);
+        } else {
+            self.command_palette_scroll_offset =
+                self.command_palette_scroll_offset.saturating_sub(step);
+        }
+
+        if self.command_palette_selected < self.command_palette_scroll_offset {
+            self.command_palette_selected = self.command_palette_scroll_offset;
+        } else {
+            let visible_end = self.command_palette_scroll_offset + COMMAND_PALETTE_MAX_ITEMS;
+            if self.command_palette_selected >= visible_end {
+                self.command_palette_selected = visible_end.saturating_sub(1);
+            }
+        }
+
+        cx.notify();
+    }
+
     pub(super) fn handle_command_palette_key_down(
         &mut self,
         key: &str,
@@ -179,6 +290,8 @@ impl TerminalView {
             "up" => {
                 if self.command_palette_selected > 0 {
                     self.command_palette_selected -= 1;
+                    let len = self.filtered_command_palette_items().len();
+                    self.sync_command_palette_scroll(len);
                     cx.notify();
                 }
                 return;
@@ -187,6 +300,7 @@ impl TerminalView {
                 let len = self.filtered_command_palette_items().len();
                 if len > 0 && self.command_palette_selected + 1 < len {
                     self.command_palette_selected += 1;
+                    self.sync_command_palette_scroll(len);
                     cx.notify();
                 }
                 return;
@@ -197,6 +311,7 @@ impl TerminalView {
                     self.command_palette_query_select_all = false;
                     let len = self.filtered_command_palette_items().len();
                     self.clamp_command_palette_selection(len);
+                    self.sync_command_palette_scroll(len);
                     cx.notify();
                     return;
                 }
@@ -204,6 +319,7 @@ impl TerminalView {
                     self.command_palette_query_select_all = false;
                     let len = self.filtered_command_palette_items().len();
                     self.clamp_command_palette_selection(len);
+                    self.sync_command_palette_scroll(len);
                     cx.notify();
                 }
                 return;
@@ -221,6 +337,7 @@ impl TerminalView {
                 self.command_palette_query.push(' ');
                 let len = self.filtered_command_palette_items().len();
                 self.clamp_command_palette_selection(len);
+                self.sync_command_palette_scroll(len);
                 cx.notify();
                 return;
             }
@@ -241,6 +358,7 @@ impl TerminalView {
             self.command_palette_query.push_str(input);
             let len = self.filtered_command_palette_items().len();
             self.clamp_command_palette_selection(len);
+            self.sync_command_palette_scroll(len);
             cx.notify();
         }
     }
@@ -265,6 +383,7 @@ impl TerminalView {
         self.command_palette_open = false;
         self.command_palette_query.clear();
         self.command_palette_selected = 0;
+        self.command_palette_scroll_offset = 0;
         self.command_palette_query_select_all = false;
 
         match action {
@@ -274,13 +393,19 @@ impl TerminalView {
                     .as_ref()
                     .map(|path| path.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "unknown".to_string());
-                termy_toast::info(format!(
+                let message = format!(
                     "Termy v{} | {}-{} | config: {}",
                     crate::APP_VERSION,
                     std::env::consts::OS,
                     std::env::consts::ARCH,
                     config_path
-                ));
+                );
+                #[cfg(target_os = "windows")]
+                if Self::show_native_info_dialog("Termy Info", &message).is_ok() {
+                    cx.notify();
+                    return;
+                }
+                termy_toast::info(message);
                 cx.notify();
             }
             CommandPaletteAction::RestartApp => match self.restart_application() {
@@ -341,6 +466,12 @@ impl TerminalView {
         } else {
             self.command_palette_selected.min(items.len() - 1)
         };
+        let visible_start = if items.len() <= COMMAND_PALETTE_MAX_ITEMS {
+            0
+        } else {
+            self.command_palette_scroll_offset
+                .min(items.len() - COMMAND_PALETTE_MAX_ITEMS)
+        };
 
         let mut overlay_bg = self.colors.background;
         overlay_bg.a = 0.78;
@@ -371,8 +502,12 @@ impl TerminalView {
 
         let mut transparent = self.colors.background;
         transparent.a = 0.0;
+        let mut scrollbar_track = self.colors.cursor;
+        scrollbar_track.a = 0.12;
+        let mut scrollbar_thumb = self.colors.cursor;
+        scrollbar_thumb.a = 0.42;
 
-        let mut list = div().flex().flex_col().gap(px(4.0));
+        let mut list = div().flex_1().flex().flex_col().gap(px(4.0));
         if items.is_empty() {
             list = list.child(
                 div()
@@ -384,9 +519,10 @@ impl TerminalView {
             );
         } else {
             for (index, item) in items
-                .into_iter()
-                .take(COMMAND_PALETTE_MAX_ITEMS)
+                .iter()
                 .enumerate()
+                .skip(visible_start)
+                .take(COMMAND_PALETTE_MAX_ITEMS)
             {
                 let is_selected = index == selected;
                 let action = item.action;
@@ -420,6 +556,45 @@ impl TerminalView {
                 );
             }
         }
+        let visible_count = items.len().min(COMMAND_PALETTE_MAX_ITEMS);
+        let row_height = 34.0;
+        let row_gap = 4.0;
+        let track_height =
+            (visible_count as f32 * row_height) + (visible_count.saturating_sub(1) as f32 * row_gap);
+        let max_scroll_start = items.len().saturating_sub(COMMAND_PALETTE_MAX_ITEMS);
+        let thumb_height = if items.len() > COMMAND_PALETTE_MAX_ITEMS {
+            ((visible_count as f32 / items.len() as f32) * track_height).max(18.0)
+        } else {
+            track_height.max(0.0)
+        };
+        let thumb_top = if max_scroll_start > 0 {
+            (self.command_palette_scroll_offset as f32 / max_scroll_start as f32)
+                * (track_height - thumb_height).max(0.0)
+        } else {
+            0.0
+        };
+        let list_with_scrollbar = div()
+            .w_full()
+            .flex()
+            .items_start()
+            .gap(px(8.0))
+            .child(list)
+            .children((items.len() > COMMAND_PALETTE_MAX_ITEMS).then(|| {
+                div()
+                    .w(px(4.0))
+                    .h(px(track_height))
+                    .rounded_full()
+                    .bg(scrollbar_track)
+                    .child(
+                        div()
+                            .relative()
+                            .top(px(thumb_top))
+                            .w(px(4.0))
+                            .h(px(thumb_height))
+                            .rounded_full()
+                            .bg(scrollbar_thumb),
+                    )
+            }));
 
         div()
             .id("command-palette-modal")
@@ -455,6 +630,9 @@ impl TerminalView {
                             .on_click(cx.listener(|_this, _event, _window, cx| {
                                 cx.stop_propagation();
                             }))
+                            .on_scroll_wheel(cx.listener(
+                                Self::handle_command_palette_scroll_wheel,
+                            ))
                             .child(
                                 div()
                                     .w_full()
@@ -481,7 +659,7 @@ impl TerminalView {
                                     )),
                             )
                             .child(div().h(px(8.0)))
-                            .child(list)
+                            .child(list_with_scrollbar)
                             .child(
                                 div()
                                     .pt(px(8.0))

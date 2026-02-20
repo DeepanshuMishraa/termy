@@ -5,7 +5,8 @@ use flume::{Sender, bounded};
 use gpui::{
     AnyElement, App, AsyncApp, ClipboardItem, Context, Element, FocusHandle, Focusable, Font,
     FontWeight, InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Render, SharedString, Size,
+    MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Render, ScrollDelta, ScrollWheelEvent,
+    SharedString, Size,
     StatefulInteractiveElement, Styled, WeakEntity, Window, WindowControlArea, div, px,
 };
 use std::{
@@ -165,6 +166,7 @@ pub struct TerminalView {
     command_palette_open: bool,
     command_palette_query: String,
     command_palette_selected: usize,
+    command_palette_scroll_offset: usize,
     command_palette_query_select_all: bool,
     command_palette_opened_at: Option<Instant>,
     /// Cached cell dimensions
@@ -276,6 +278,7 @@ impl TerminalView {
             command_palette_open: false,
             command_palette_query: String::new(),
             command_palette_selected: 0,
+            command_palette_scroll_offset: 0,
             command_palette_query_select_all: false,
             command_palette_opened_at: None,
             cell_size: None,

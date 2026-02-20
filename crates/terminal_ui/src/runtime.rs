@@ -1,7 +1,7 @@
 use alacritty_terminal::{
     event::{Event as AlacEvent, EventListener, WindowSize},
     event_loop::{EventLoop, Msg, Notifier},
-    grid::Dimensions,
+    grid::{Dimensions, Scroll},
     sync::FairMutex,
     term::{Config as TermConfig, Term},
     tty::{self, Options as PtyOptions, Shell},
@@ -385,6 +385,26 @@ impl Terminal {
     pub fn with_term<R>(&self, f: impl FnOnce(&Term<JsonEventListener>) -> R) -> R {
         let term = self.term.lock();
         f(&term)
+    }
+
+    /// Scroll the displayed viewport through scrollback history.
+    /// Positive deltas move up into history, negative deltas move down toward live output.
+    pub fn scroll_display(&self, delta_lines: i32) -> bool {
+        if delta_lines == 0 {
+            return false;
+        }
+
+        let mut term = self.term.lock();
+        let old_offset = term.grid().display_offset();
+        term.scroll_display(Scroll::Delta(delta_lines));
+        term.grid().display_offset() != old_offset
+    }
+
+    /// Return `(display_offset, history_size)` for viewport scrollbar rendering.
+    pub fn scroll_state(&self) -> (usize, usize) {
+        let term = self.term.lock();
+        let grid = term.grid();
+        (grid.display_offset(), grid.history_size())
     }
 
     /// Get the cursor position (column, row)
