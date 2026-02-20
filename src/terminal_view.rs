@@ -1,6 +1,8 @@
 use crate::colors::TerminalColors;
-use crate::config::AppConfig;
-use crate::terminal::{Terminal, TerminalEvent, TerminalSize, keystroke_to_input};
+use crate::config::{AppConfig, TabTitleConfig, TabTitleSource};
+use crate::terminal::{
+    TabTitleShellIntegration, Terminal, TerminalEvent, TerminalSize, keystroke_to_input,
+};
 use alacritty_terminal::term::cell::Flags;
 use flume::{Sender, bounded};
 use gpui::{
@@ -26,6 +28,7 @@ const TAB_PILL_GAP: f32 = 8.0;
 const TAB_CLOSE_HITBOX: f32 = 22.0;
 const TAB_INACTIVE_CLOSE_MIN_WIDTH: f32 = 120.0;
 const MAX_TAB_TITLE_CHARS: usize = 96;
+const DEFAULT_TAB_TITLE: &str = "Terminal";
 const SELECTION_BG_ALPHA: f32 = 0.35;
 const DIM_TEXT_FACTOR: f32 = 0.66;
 
@@ -44,7 +47,22 @@ struct TabBarLayout {
 
 struct TerminalTab {
     terminal: Terminal,
+    manual_title: Option<String>,
+    explicit_title: Option<String>,
+    shell_title: Option<String>,
     title: String,
+}
+
+impl TerminalTab {
+    fn new(terminal: Terminal) -> Self {
+        Self {
+            terminal,
+            manual_title: None,
+            explicit_title: None,
+            shell_title: None,
+            title: String::new(),
+        }
+    }
 }
 
 /// The main terminal view component
@@ -57,6 +75,8 @@ pub struct TerminalView {
     focus_handle: FocusHandle,
     colors: TerminalColors,
     use_tabs: bool,
+    tab_title: TabTitleConfig,
+    tab_shell_integration: TabTitleShellIntegration,
     configured_working_dir: Option<String>,
     font_family: SharedString,
     base_font_size: f32,
@@ -104,18 +124,21 @@ impl TerminalView {
         let padding_x = config.padding_x.max(0.0);
         let padding_y = config.padding_y.max(0.0);
         let configured_working_dir = config.working_dir.clone();
+        let tab_title = config.tab_title.clone();
+        let tab_shell_integration = TabTitleShellIntegration {
+            enabled: tab_title.shell_integration,
+            explicit_prefix: tab_title.explicit_prefix.clone(),
+        };
         let terminal = Terminal::new(
             TerminalSize::default(),
             configured_working_dir.as_deref(),
             Some(event_wakeup_tx.clone()),
+            Some(&tab_shell_integration),
         )
         .expect("Failed to create terminal");
 
-        Self {
-            tabs: vec![TerminalTab {
-                terminal,
-                title: "Terminal".to_string(),
-            }],
+        let mut view = Self {
+            tabs: vec![TerminalTab::new(terminal)],
             active_tab: 0,
             renaming_tab: None,
             rename_buffer: String::new(),
@@ -123,6 +146,8 @@ impl TerminalView {
             focus_handle,
             colors,
             use_tabs: config.use_tabs,
+            tab_title,
+            tab_shell_integration,
             configured_working_dir,
             font_family: config.font_family.into(),
             base_font_size,
@@ -135,7 +160,9 @@ impl TerminalView {
             selection_dragging: false,
             selection_moved: false,
             cell_size: None,
-        }
+        };
+        view.refresh_tab_title(0);
+        view
     }
 
     fn process_terminal_events(&mut self) -> bool {
@@ -152,15 +179,17 @@ impl TerminalView {
                         }
                     }
                     TerminalEvent::Title(title) => {
-                        let title = title.trim();
-                        if !title.is_empty() && self.use_tabs {
-                            let next = Self::truncate_tab_title(title);
-                            if self.tabs[index].title != next && self.renaming_tab != Some(index) {
-                                self.tabs[index].title = next;
-                                if self.show_tab_bar() {
-                                    should_redraw = true;
-                                }
-                            }
+                        if self.apply_terminal_title(index, &title)
+                            && (index == active_tab || self.show_tab_bar())
+                        {
+                            should_redraw = true;
+                        }
+                    }
+                    TerminalEvent::ResetTitle => {
+                        if self.clear_terminal_titles(index)
+                            && (index == active_tab || self.show_tab_bar())
+                        {
+                            should_redraw = true;
                         }
                     }
                 }
@@ -196,6 +225,136 @@ impl TerminalView {
             return normalized.chars().take(MAX_TAB_TITLE_CHARS).collect();
         }
         normalized
+    }
+
+    fn fallback_title(&self) -> &str {
+        let fallback = self.tab_title.fallback.trim();
+        if fallback.is_empty() {
+            DEFAULT_TAB_TITLE
+        } else {
+            fallback
+        }
+    }
+
+    fn resolve_template(template: &str, cwd: Option<&str>, command: Option<&str>) -> String {
+        template
+            .replace("{cwd}", cwd.unwrap_or(""))
+            .replace("{command}", command.unwrap_or(""))
+    }
+
+    fn parse_explicit_title(&self, title: &str) -> Option<String> {
+        let prefix = self.tab_title.explicit_prefix.trim();
+        if prefix.is_empty() {
+            return None;
+        }
+
+        let payload = title.strip_prefix(prefix)?.trim();
+        if payload.is_empty() {
+            return None;
+        }
+
+        if let Some(prompt) = payload.strip_prefix("prompt:") {
+            let prompt = prompt.trim();
+            if prompt.is_empty() {
+                return None;
+            }
+            return Some(Self::resolve_template(
+                &self.tab_title.prompt_format,
+                Some(prompt),
+                None,
+            ));
+        }
+
+        if let Some(command) = payload.strip_prefix("command:") {
+            let command = command.trim();
+            if command.is_empty() {
+                return None;
+            }
+            return Some(Self::resolve_template(
+                &self.tab_title.command_format,
+                None,
+                Some(command),
+            ));
+        }
+
+        let explicit = payload.strip_prefix("title:").unwrap_or(payload).trim();
+        if explicit.is_empty() {
+            return None;
+        }
+
+        Some(explicit.to_string())
+    }
+
+    fn resolved_tab_title(&self, index: usize) -> String {
+        let tab = &self.tabs[index];
+
+        for source in &self.tab_title.priority {
+            let candidate = match source {
+                TabTitleSource::Manual => tab.manual_title.as_deref(),
+                TabTitleSource::Explicit => tab.explicit_title.as_deref(),
+                TabTitleSource::Shell => tab.shell_title.as_deref(),
+                TabTitleSource::Fallback => Some(self.fallback_title()),
+            };
+
+            if let Some(candidate) = candidate.map(str::trim).filter(|value| !value.is_empty()) {
+                return Self::truncate_tab_title(candidate);
+            }
+        }
+
+        Self::truncate_tab_title(self.fallback_title())
+    }
+
+    fn refresh_tab_title(&mut self, index: usize) -> bool {
+        if index >= self.tabs.len() {
+            return false;
+        }
+
+        let next = self.resolved_tab_title(index);
+        if self.tabs[index].title == next {
+            return false;
+        }
+
+        self.tabs[index].title = next;
+        true
+    }
+
+    fn apply_terminal_title(&mut self, index: usize, title: &str) -> bool {
+        let title = title.trim();
+        if title.is_empty() || index >= self.tabs.len() {
+            return false;
+        }
+
+        if let Some(explicit_title) = self.parse_explicit_title(title) {
+            let explicit_title = Self::truncate_tab_title(&explicit_title);
+            if self.tabs[index].explicit_title.as_deref() == Some(explicit_title.as_str()) {
+                return false;
+            }
+            self.tabs[index].explicit_title = Some(explicit_title);
+            return self.refresh_tab_title(index);
+        }
+
+        let shell_title = Self::truncate_tab_title(title);
+        if self.tabs[index].shell_title.as_deref() == Some(shell_title.as_str()) {
+            return false;
+        }
+
+        self.tabs[index].shell_title = Some(shell_title);
+        self.refresh_tab_title(index)
+    }
+
+    fn clear_terminal_titles(&mut self, index: usize) -> bool {
+        if index >= self.tabs.len() {
+            return false;
+        }
+
+        let tab = &mut self.tabs[index];
+        let had_shell = tab.shell_title.take().is_some();
+        let had_explicit = tab.explicit_title.take().is_some();
+        if !had_shell && !had_explicit {
+            return false;
+        }
+
+        self.refresh_tab_title(index)
     }
 
     fn tab_bar_layout(&self, viewport_width: f32) -> TabBarLayout {
@@ -244,14 +403,13 @@ impl TerminalView {
             TerminalSize::default(),
             self.configured_working_dir.as_deref(),
             Some(self.event_wakeup_tx.clone()),
+            Some(&self.tab_shell_integration),
         )
         .expect("Failed to create terminal tab");
 
-        self.tabs.push(TerminalTab {
-            terminal,
-            title: "Terminal".to_string(),
-        });
+        self.tabs.push(TerminalTab::new(terminal));
         self.active_tab = self.tabs.len() - 1;
+        self.refresh_tab_title(self.active_tab);
         self.renaming_tab = None;
         self.rename_buffer.clear();
         self.clear_selection();
@@ -320,9 +478,10 @@ impl TerminalView {
         };
 
         let trimmed = self.rename_buffer.trim();
-        if !trimmed.is_empty() {
-            self.tabs[index].title = Self::truncate_tab_title(trimmed);
-        }
+        self.tabs[index].manual_title = (!trimmed.is_empty())
+            .then(|| Self::truncate_tab_title(trimmed))
+            .filter(|title| !title.is_empty());
+        self.refresh_tab_title(index);
 
         self.renaming_tab = None;
         self.rename_buffer.clear();
