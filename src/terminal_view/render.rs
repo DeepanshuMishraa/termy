@@ -34,6 +34,7 @@ impl Render for TerminalView {
         let colors = self.colors.clone();
         let font_family = self.font_family.clone();
         let font_size = self.font_size;
+        let background_opacity = self.transparent_background_opacity;
 
         self.sync_terminal_size(window, cell_size);
 
@@ -58,6 +59,24 @@ impl Render for TerminalView {
                 let mut bg = colors.convert(cell_content.bg);
                 if cell_content.flags.contains(Flags::INVERSE) {
                     std::mem::swap(&mut fg, &mut bg);
+                }
+                let final_bg_is_default = if cell_content.flags.contains(Flags::INVERSE) {
+                    matches!(
+                        cell_content.fg,
+                        alacritty_terminal::vte::ansi::Color::Named(
+                            alacritty_terminal::vte::ansi::NamedColor::Background
+                        )
+                    )
+                } else {
+                    matches!(
+                        cell_content.bg,
+                        alacritty_terminal::vte::ansi::Color::Named(
+                            alacritty_terminal::vte::ansi::NamedColor::Background
+                        )
+                    )
+                };
+                if final_bg_is_default {
+                    bg.a *= background_opacity;
                 }
                 if cell_content.flags.contains(Flags::DIM) {
                     fg.r *= DIM_TEXT_FACTOR;
@@ -500,6 +519,97 @@ impl Render for TerminalView {
         let command_palette_overlay = self
             .command_palette_open
             .then(|| self.render_command_palette_modal(cx));
+        let titlebar_element: Option<AnyElement> = (titlebar_height > 0.0).then(|| {
+            div()
+                .id("titlebar")
+                .w_full()
+                .h(px(titlebar_height))
+                .flex_none()
+                .flex()
+                .items_center()
+                .window_control_area(WindowControlArea::Drag)
+                .on_mouse_down(MouseButton::Left, cx.listener(Self::handle_titlebar_mouse_down))
+                .bg(titlebar_bg)
+                .border_b(px(1.0))
+                .border_color(titlebar_border)
+                .child(
+                    div()
+                        .w_full()
+                        .flex()
+                        .items_center()
+                        .px(px(TITLEBAR_SIDE_PADDING))
+                        .child(
+                            div()
+                                .w(px(titlebar_side_slot_width))
+                                .h(px(TITLEBAR_PLUS_SIZE)),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .flex()
+                                .justify_center()
+                                .text_color(titlebar_text)
+                                .text_size(px(12.0))
+                                .child("Termy"),
+                        )
+                        .child(if show_windows_controls {
+                            div()
+                                .w(px(WINDOWS_TITLEBAR_CONTROLS_WIDTH))
+                                .h(px(TITLEBAR_HEIGHT))
+                                .flex()
+                                .items_center()
+                                .child(
+                                    div()
+                                        .w(px(WINDOWS_TITLEBAR_BUTTON_WIDTH))
+                                        .h(px(TITLEBAR_HEIGHT))
+                                        .window_control_area(WindowControlArea::Min)
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .text_color(titlebar_text)
+                                        .text_size(px(12.0))
+                                        .child("-"),
+                                )
+                                .child(
+                                    div()
+                                        .w(px(WINDOWS_TITLEBAR_BUTTON_WIDTH))
+                                        .h(px(TITLEBAR_HEIGHT))
+                                        .window_control_area(WindowControlArea::Max)
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .text_color(titlebar_text)
+                                        .text_size(px(12.0))
+                                        .child("+"),
+                                )
+                                .child(
+                                    div()
+                                        .w(px(WINDOWS_TITLEBAR_BUTTON_WIDTH))
+                                        .h(px(TITLEBAR_HEIGHT))
+                                        .window_control_area(WindowControlArea::Close)
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .text_color(titlebar_text)
+                                        .text_size(px(12.0))
+                                        .child("x"),
+                                )
+                        } else {
+                            div()
+                                .w(px(TITLEBAR_PLUS_SIZE))
+                                .h(px(TITLEBAR_PLUS_SIZE))
+                                .rounded_sm()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .bg(titlebar_plus_bg)
+                                .text_color(titlebar_plus_text)
+                                .text_size(px(16.0))
+                                .child(if show_titlebar_plus { "+" } else { "" })
+                        }),
+                )
+                .into_any()
+        });
         let toast_overlay = if self.toast_manager.active().is_empty() {
             None
         } else {
@@ -652,106 +762,16 @@ impl Render for TerminalView {
                     .into_any(),
             )
         };
+        let mut root_bg = colors.background;
+        root_bg.a *= background_opacity;
 
         div()
             .id("termy-root")
             .flex()
             .flex_col()
             .size_full()
-            .bg(colors.background)
-            .child(
-                div()
-                    .id("titlebar")
-                    .w_full()
-                    .h(px(titlebar_height))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .window_control_area(WindowControlArea::Drag)
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(Self::handle_titlebar_mouse_down),
-                    )
-                    .bg(titlebar_bg)
-                    .border_b(px(if titlebar_height > 0.0 { 1.0 } else { 0.0 }))
-                    .border_color(titlebar_border)
-                    .child(
-                        div()
-                            .w_full()
-                            .flex()
-                            .items_center()
-                            .px(px(TITLEBAR_SIDE_PADDING))
-                            .child(
-                                div()
-                                    .w(px(titlebar_side_slot_width))
-                                    .h(px(TITLEBAR_PLUS_SIZE)),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .flex()
-                                    .justify_center()
-                                    .text_color(titlebar_text)
-                                    .text_size(px(12.0))
-                                    .child("Termy"),
-                            )
-                            .child(if show_windows_controls {
-                                div()
-                                    .w(px(WINDOWS_TITLEBAR_CONTROLS_WIDTH))
-                                    .h(px(TITLEBAR_HEIGHT))
-                                    .flex()
-                                    .items_center()
-                                    .child(
-                                        div()
-                                            .w(px(WINDOWS_TITLEBAR_BUTTON_WIDTH))
-                                            .h(px(TITLEBAR_HEIGHT))
-                                            .window_control_area(WindowControlArea::Min)
-                                            .flex()
-                                            .items_center()
-                                            .justify_center()
-                                            .text_color(titlebar_text)
-                                            .text_size(px(12.0))
-                                            .child("-"),
-                                    )
-                                    .child(
-                                        div()
-                                            .w(px(WINDOWS_TITLEBAR_BUTTON_WIDTH))
-                                            .h(px(TITLEBAR_HEIGHT))
-                                            .window_control_area(WindowControlArea::Max)
-                                            .flex()
-                                            .items_center()
-                                            .justify_center()
-                                            .text_color(titlebar_text)
-                                            .text_size(px(12.0))
-                                            .child("+"),
-                                    )
-                                    .child(
-                                        div()
-                                            .w(px(WINDOWS_TITLEBAR_BUTTON_WIDTH))
-                                            .h(px(TITLEBAR_HEIGHT))
-                                            .window_control_area(WindowControlArea::Close)
-                                            .flex()
-                                            .items_center()
-                                            .justify_center()
-                                            .text_color(titlebar_text)
-                                            .text_size(px(12.0))
-                                            .child("x"),
-                                    )
-                            } else {
-                                div()
-                                    .w(px(TITLEBAR_PLUS_SIZE))
-                                    .h(px(TITLEBAR_PLUS_SIZE))
-                                    .rounded_sm()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .bg(titlebar_plus_bg)
-                                    .text_color(titlebar_plus_text)
-                                    .text_size(px(16.0))
-                                    .child(if show_titlebar_plus { "+" } else { "" })
-                            }),
-                    ),
-            )
+            .bg(root_bg)
+            .children(titlebar_element)
             .child(
                 div()
                     .id("tabbar")

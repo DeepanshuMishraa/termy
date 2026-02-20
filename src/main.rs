@@ -18,6 +18,14 @@ pub(crate) const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const MIN_WINDOW_WIDTH: f32 = 480.0;
 const MIN_WINDOW_HEIGHT: f32 = 320.0;
+#[cfg(target_os = "windows")]
+const LEGACY_DEFAULT_WINDOW_WIDTH: f32 = 1100.0;
+#[cfg(target_os = "windows")]
+const LEGACY_DEFAULT_WINDOW_HEIGHT: f32 = 720.0;
+#[cfg(target_os = "windows")]
+const WINDOWS_DEFAULT_WINDOW_WIDTH: f32 = 1280.0;
+#[cfg(target_os = "windows")]
+const WINDOWS_DEFAULT_WINDOW_HEIGHT: f32 = 820.0;
 
 #[cfg(target_os = "macos")]
 const QUIT_KEYBINDING: &str = "cmd-q";
@@ -58,8 +66,17 @@ fn main() {
         }]);
 
         let app_config = config::AppConfig::load_or_create();
-        let window_width = app_config.window_width.max(MIN_WINDOW_WIDTH);
-        let window_height = app_config.window_height.max(MIN_WINDOW_HEIGHT);
+        let mut window_width = app_config.window_width;
+        let mut window_height = app_config.window_height;
+        #[cfg(target_os = "windows")]
+        if (window_width - LEGACY_DEFAULT_WINDOW_WIDTH).abs() < f32::EPSILON
+            && (window_height - LEGACY_DEFAULT_WINDOW_HEIGHT).abs() < f32::EPSILON
+        {
+            window_width = WINDOWS_DEFAULT_WINDOW_WIDTH;
+            window_height = WINDOWS_DEFAULT_WINDOW_HEIGHT;
+        }
+        let window_width = window_width.max(MIN_WINDOW_WIDTH);
+        let window_height = window_height.max(MIN_WINDOW_HEIGHT);
         let bounds = Bounds::centered(None, size(px(window_width), px(window_height)), cx);
 
         #[cfg(target_os = "macos")]
@@ -69,7 +86,12 @@ fn main() {
             traffic_light_position: Some(gpui::point(px(12.0), px(10.0))),
             ..Default::default()
         });
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "windows")]
+        let titlebar = Some(gpui::TitlebarOptions {
+            title: Some("Termy".into()),
+            ..Default::default()
+        });
+        #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
         let titlebar = Some(gpui::TitlebarOptions {
             title: Some("Termy".into()),
             appears_transparent: true,

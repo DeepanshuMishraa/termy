@@ -62,6 +62,11 @@ impl TerminalView {
     fn command_palette_items(&self) -> Vec<CommandPaletteItem> {
         let mut items = vec![
             CommandPaletteItem {
+                title: "App Info",
+                keywords: "information version about build",
+                action: CommandPaletteAction::AppInfo,
+            },
+            CommandPaletteItem {
                 title: "Restart App",
                 keywords: "relaunch reopen restart",
                 action: CommandPaletteAction::RestartApp,
@@ -263,6 +268,21 @@ impl TerminalView {
         self.command_palette_query_select_all = false;
 
         match action {
+            CommandPaletteAction::AppInfo => {
+                let config_path = self
+                    .config_path
+                    .as_ref()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "unknown".to_string());
+                termy_toast::info(format!(
+                    "Termy v{} | {}-{} | config: {}",
+                    crate::APP_VERSION,
+                    std::env::consts::OS,
+                    std::env::consts::ARCH,
+                    config_path
+                ));
+                cx.notify();
+            }
             CommandPaletteAction::RestartApp => match self.restart_application() {
                 Ok(()) => cx.quit(),
                 Err(error) => {

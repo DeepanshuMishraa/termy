@@ -3,10 +3,10 @@ use crate::config::{self, AppConfig, TabTitleConfig, TabTitleSource};
 use alacritty_terminal::term::cell::Flags;
 use flume::{Sender, bounded};
 use gpui::{
-    AnyElement, App, AppContext, AsyncApp, ClipboardItem, Context, Element, Entity, FocusHandle,
-    Focusable, Font, FontWeight, InteractiveElement, IntoElement, KeyDownEvent, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Render, SharedString,
-    Size, StatefulInteractiveElement, Styled, WeakEntity, Window, WindowControlArea, div, px,
+    AnyElement, App, AsyncApp, ClipboardItem, Context, Element, FocusHandle, Focusable, Font,
+    FontWeight, InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Render, SharedString, Size,
+    StatefulInteractiveElement, Styled, WeakEntity, Window, WindowControlArea, div, px,
 };
 use std::{
     fs,
@@ -22,6 +22,8 @@ use termy_toast::ToastManager;
 
 #[cfg(target_os = "macos")]
 use termy_auto_update::{AutoUpdater, UpdateState};
+#[cfg(target_os = "macos")]
+use gpui::Entity;
 
 mod command_palette;
 mod interaction;
@@ -54,6 +56,7 @@ const COMMAND_TITLE_DELAY_MS: u64 = 250;
 const CONFIG_WATCH_INTERVAL_MS: u64 = 750;
 const SELECTION_BG_ALPHA: f32 = 0.35;
 const DIM_TEXT_FACTOR: f32 = 0.66;
+#[cfg(target_os = "macos")]
 const UPDATE_BANNER_HEIGHT: f32 = 32.0;
 const COMMAND_PALETTE_WIDTH: f32 = 640.0;
 const COMMAND_PALETTE_MAX_ITEMS: usize = 8;
@@ -111,6 +114,7 @@ struct HoveredLink {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CommandPaletteAction {
+    AppInfo,
     RestartApp,
     NewTab,
     CloseTab,
@@ -148,6 +152,7 @@ pub struct TerminalView {
     font_family: SharedString,
     base_font_size: f32,
     font_size: Pixels,
+    transparent_background_opacity: f32,
     padding_x: f32,
     padding_y: f32,
     line_height: f32,
@@ -258,6 +263,7 @@ impl TerminalView {
             font_family: config.font_family.into(),
             base_font_size,
             font_size: px(base_font_size),
+            transparent_background_opacity: config.transparent_background_opacity,
             padding_x,
             padding_y,
             line_height: 1.4,
@@ -310,6 +316,7 @@ impl TerminalView {
         self.font_family = config.font_family.into();
         self.base_font_size = config.font_size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
         self.font_size = px(self.base_font_size);
+        self.transparent_background_opacity = config.transparent_background_opacity;
         self.padding_x = config.padding_x.max(0.0);
         self.padding_y = config.padding_y.max(0.0);
 
