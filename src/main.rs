@@ -62,28 +62,20 @@ fn main() {
         let window_width = app_config.window_width.max(MIN_WINDOW_WIDTH);
         let window_height = app_config.window_height.max(MIN_WINDOW_HEIGHT);
         let bounds = Bounds::centered(None, size(px(window_width), px(window_height)), cx);
+
         #[cfg(target_os = "macos")]
         let titlebar = Some(gpui::TitlebarOptions {
             title: Some("Termy".into()),
             appears_transparent: true,
             traffic_light_position: Some(gpui::point(px(12.0), px(10.0))),
+            ..Default::default()
         });
         #[cfg(not(target_os = "macos"))]
-        let titlebar = None;
-
-        #[cfg(target_os = "macos")]
-        let titlebar = gpui::TitlebarOptions {
-            title: Some("Termy".into()),
-            appears_transparent: true,
-            traffic_light_position: Some(gpui::point(px(12.0), px(10.0))),
-            ..Default::default()
-        };
-        #[cfg(not(target_os = "macos"))]
-        let titlebar = gpui::TitlebarOptions {
+        let titlebar = Some(gpui::TitlebarOptions {
             title: Some("Termy".into()),
             appears_transparent: true,
             ..Default::default()
-        };
+        });
 
         cx.open_window(
             WindowOptions {

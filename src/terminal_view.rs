@@ -1,7 +1,9 @@
 use crate::colors::TerminalColors;
-use crate::config::AppConfig;
+use crate::config::{self, AppConfig, TabTitleConfig, TabTitleSource};
 use crate::terminal_grid::{CellRenderInfo, TerminalGrid};
-use crate::terminal::{Terminal, TerminalEvent, TerminalSize, keystroke_to_input};
+use crate::terminal::{
+    TabTitleShellIntegration, Terminal, TerminalEvent, TerminalSize, keystroke_to_input,
+};
 use alacritty_terminal::term::cell::Flags;
 use flume::{Sender, bounded};
 use gpui::{
@@ -10,8 +12,7 @@ use gpui::{
     MouseUpEvent, ParentElement, Pixels, Render, SharedString, Size, Styled, WeakEntity, Window,
     WindowControlArea, div, px,
 };
-use std::process::Command;
-use std::time::Duration;
+use std::{fs, path::PathBuf, process::Command, time::{Duration, SystemTime}};
 
 const MIN_FONT_SIZE: f32 = 8.0;
 const MAX_FONT_SIZE: f32 = 40.0;
@@ -58,6 +59,26 @@ struct TerminalTab {
     pending_command_title: Option<String>,
     pending_command_token: u64,
     title: String,
+}
+
+impl TerminalTab {
+    fn new(terminal: Terminal) -> Self {
+        Self {
+            terminal,
+            manual_title: None,
+            explicit_title: None,
+            shell_title: None,
+            pending_command_title: None,
+            pending_command_token: 0,
+            title: DEFAULT_TAB_TITLE.to_string(),
+        }
+    }
+}
+
+enum ExplicitTitlePayload {
+    Prompt(String),
+    Command(String),
+    Title(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1488,6 +1509,15 @@ impl Render for TerminalView {
         let terminal_size = self.active_terminal().size();
         let focus_handle = self.focus_handle.clone();
         let show_tab_bar = self.show_tab_bar();
+        let show_windows_controls = cfg!(target_os = "windows");
+        let show_titlebar_plus = self.use_tabs && !show_windows_controls;
+        let titlebar_side_slot_width = if show_windows_controls {
+            WINDOWS_TITLEBAR_CONTROLS_WIDTH
+        } else {
+            TITLEBAR_PLUS_SIZE
+        };
+        let viewport = window.viewport_size();
+        let tab_layout = self.tab_bar_layout(viewport.width.into());
         let titlebar_height = self.titlebar_height();
         let mut titlebar_bg = colors.background;
         titlebar_bg.a = 0.96;
