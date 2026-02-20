@@ -29,12 +29,14 @@ tab_title_shell_integration = true\n\
 # tab_title_prompt_format = {cwd}\n\
 # tab_title_command_format = {command}\n\
 # Startup window size in pixels\n\
-window_width = 1100\n\
-window_height = 720\n\
+window_width = 1280\n\
+window_height = 820\n\
 # Terminal font family\n\
 font_family = JetBrains Mono\n\
 # Terminal font size in pixels\n\
 font_size = 14\n\
+# Terminal background opacity (0.0 = fully transparent, 1.0 = opaque)\n\
+# transparent_background_opacity = 1.0\n\
 # Inner terminal padding in pixels\n\
 padding_x = 12\n\
 padding_y = 8\n";
@@ -158,6 +160,7 @@ pub struct AppConfig {
     pub window_height: f32,
     pub font_family: String,
     pub font_size: f32,
+    pub transparent_background_opacity: f32,
     pub padding_x: f32,
     pub padding_y: f32,
 }
@@ -169,10 +172,11 @@ impl Default for AppConfig {
             working_dir: None,
             use_tabs: false,
             tab_title: TabTitleConfig::default(),
-            window_width: 1100.0,
-            window_height: 720.0,
+            window_width: 1280.0,
+            window_height: 820.0,
             font_family: "JetBrains Mono".to_string(),
             font_size: 14.0,
+            transparent_background_opacity: 1.0,
             padding_x: 12.0,
             padding_y: 8.0,
         }
@@ -292,6 +296,14 @@ impl AppConfig {
                     if font_size > 0.0 {
                         config.font_size = font_size;
                     }
+                }
+            }
+
+            if key.eq_ignore_ascii_case("transparent_background_opacity")
+                || key.eq_ignore_ascii_case("transparent_background_opccaity")
+            {
+                if let Ok(opacity) = value.parse::<f32>() {
+                    config.transparent_background_opacity = opacity.clamp(0.0, 1.0);
                 }
             }
 

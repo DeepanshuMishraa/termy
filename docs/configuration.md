@@ -113,11 +113,11 @@ Explicit payload examples:
 - Values: template string
 
 `window_width`
-- Default: `1100`
+- Default: `1280`
 - Values: positive number
 
 `window_height`
-- Default: `720`
+- Default: `820`
 - Values: positive number
 
 `font_family`
@@ -127,6 +127,12 @@ Explicit payload examples:
 `font_size`
 - Default: `14`
 - Values: positive number
+
+`transparent_background_opacity`
+- Default: `1.0`
+- Values: number between `0.0` and `1.0`
+- What it does: controls terminal background transparency (`0.0` fully transparent, `1.0` opaque)
+- Note: `transparent_background_opccaity` (misspelled) is also accepted for backward compatibility.
 
 `padding_x`
 - Default: `12`
