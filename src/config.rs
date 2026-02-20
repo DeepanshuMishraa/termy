@@ -39,43 +39,25 @@ font_size = 14\n\
 padding_x = 12\n\
 padding_y = 8\n";
 
-#[derive(Debug, Clone, Copy)]
-pub enum Theme {
-    Termy,
-    TokyoNight,
-    Catppuccin,
-    Dracula,
-    GruvboxDark,
-    Nord,
-    SolarizedDark,
-    OneDark,
-    Monokai,
-    MaterialDark,
-    Palenight,
-    TomorrowNight,
-    OceanicNext,
-}
+pub type ThemeId = String;
 
-impl Theme {
-    fn from_str(value: &str) -> Option<Self> {
-        let mut normalized = value.trim().to_ascii_lowercase();
-        normalized.retain(|c| c != ' ' && c != '-' && c != '_');
-        match normalized.as_str() {
-            "termy" | "default" => Some(Self::Termy),
-            "tokyonight" => Some(Self::TokyoNight),
-            "catppuccin" => Some(Self::Catppuccin),
-            "dracula" => Some(Self::Dracula),
-            "gruvbox" | "gruvboxdark" => Some(Self::GruvboxDark),
-            "nord" => Some(Self::Nord),
-            "solarizeddark" | "solarized" => Some(Self::SolarizedDark),
-            "onedark" | "one" => Some(Self::OneDark),
-            "monokai" => Some(Self::Monokai),
-            "materialdark" | "material" => Some(Self::MaterialDark),
-            "palenight" => Some(Self::Palenight),
-            "tomorrownight" | "tomorrow" => Some(Self::TomorrowNight),
-            "oceanicnext" | "oceanic" => Some(Self::OceanicNext),
-            _ => None,
-        }
+const DEFAULT_THEME_ID: &str = "termy";
+
+fn parse_theme_id(value: &str) -> Option<ThemeId> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+
+    if let Some(canonical) = termy_themes::canonical_builtin_theme_id(value) {
+        return Some(canonical.to_string());
+    }
+
+    let normalized = termy_themes::normalize_theme_id(value);
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
     }
 }
 
@@ -168,7 +150,7 @@ impl Default for TabTitleConfig {
 
 #[derive(Debug, Clone)]
 pub struct AppConfig {
-    pub theme: Theme,
+    pub theme: ThemeId,
     pub working_dir: Option<String>,
     pub use_tabs: bool,
     pub tab_title: TabTitleConfig,
@@ -183,7 +165,7 @@ pub struct AppConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            theme: Theme::Termy,
+            theme: DEFAULT_THEME_ID.to_string(),
             working_dir: None,
             use_tabs: false,
             tab_title: TabTitleConfig::default(),
@@ -225,7 +207,7 @@ impl AppConfig {
             let value = parts.next().unwrap_or("").trim();
 
             if key.eq_ignore_ascii_case("theme") {
-                if let Some(theme) = Theme::from_str(value) {
+                if let Some(theme) = parse_theme_id(value) {
                     config.theme = theme;
                 }
             }

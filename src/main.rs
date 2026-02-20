@@ -5,14 +5,13 @@ mod config;
 mod terminal;
 mod terminal_grid;
 mod terminal_view;
-mod themes;
 
+#[cfg(target_os = "macos")]
+use gpui::SystemMenuType;
 use gpui::{
     App, Application, Bounds, KeyBinding, Menu, MenuItem, WindowBounds, WindowOptions, actions,
     prelude::*, px, size,
 };
-#[cfg(target_os = "macos")]
-use gpui::SystemMenuType;
 use terminal_view::TerminalView;
 
 actions!(terminal, [Quit, OpenConfig]);

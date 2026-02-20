@@ -20,7 +20,7 @@ use std::{
 };
 
 #[cfg(target_os = "macos")]
-use auto_update::{AutoUpdater, UpdateState};
+use termy_auto_update::{AutoUpdater, UpdateState};
 
 const MIN_FONT_SIZE: f32 = 8.0;
 const MAX_FONT_SIZE: f32 = 40.0;
@@ -183,7 +183,7 @@ impl TerminalView {
         let config = AppConfig::load_or_create();
         let config_path = config::ensure_config_file();
         let config_last_modified = config_path.as_ref().and_then(Self::config_last_modified);
-        let colors = TerminalColors::from_theme(config.theme);
+        let colors = TerminalColors::from_theme(&config.theme);
         let base_font_size = config.font_size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
         let padding_x = config.padding_x.max(0.0);
         let padding_y = config.padding_y.max(0.0);
@@ -251,7 +251,7 @@ impl TerminalView {
     }
 
     fn apply_runtime_config(&mut self, config: AppConfig) -> bool {
-        self.colors = TerminalColors::from_theme(config.theme);
+        self.colors = TerminalColors::from_theme(&config.theme);
         self.use_tabs = config.use_tabs;
         self.tab_title = config.tab_title.clone();
         self.tab_shell_integration = TabTitleShellIntegration {

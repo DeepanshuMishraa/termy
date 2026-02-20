@@ -510,20 +510,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
-name = "auto_update"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "flume",
- "gpui",
- "log",
- "semver",
- "serde",
- "serde_json",
- "ureq",
-]
-
-[[package]]
 name = "autocfg"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5195,7 +5181,6 @@ version = "0.1.8"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
- "auto_update",
  "core-text",
  "env_logger",
  "flume",
@@ -5204,7 +5189,30 @@ dependencies = [
  "log",
  "parking_lot",
  "smol",
+ "termy_auto_update",
+ "termy_themes",
  "winresource",
+]
+
+[[package]]
+name = "termy_auto_update"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "flume",
+ "gpui",
+ "log",
+ "semver",
+ "serde",
+ "serde_json",
+ "ureq",
+]
+
+[[package]]
+name = "termy_themes"
+version = "0.1.0"
+dependencies = [
+ "gpui",
 ]
 
 [[package]]

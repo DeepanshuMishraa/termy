@@ -1,7 +1,6 @@
 use alacritty_terminal::vte::ansi::{Color as AnsiColor, NamedColor, Rgb as AnsiRgb};
 use gpui::Rgba;
-
-use crate::{config::Theme, themes};
+use termy_themes as themes;
 
 /// Default terminal color palette (based on typical terminal colors)
 #[derive(Clone)]
@@ -47,22 +46,8 @@ impl Default for TerminalColors {
 }
 
 impl TerminalColors {
-    pub fn from_theme(theme: Theme) -> Self {
-        let theme_colors = match theme {
-            Theme::Termy => themes::termy(),
-            Theme::TokyoNight => themes::tokyo_night(),
-            Theme::Catppuccin => themes::catppuccin_mocha(),
-            Theme::Dracula => themes::dracula(),
-            Theme::GruvboxDark => themes::gruvbox_dark(),
-            Theme::Nord => themes::nord(),
-            Theme::SolarizedDark => themes::solarized_dark(),
-            Theme::OneDark => themes::one_dark(),
-            Theme::Monokai => themes::monokai(),
-            Theme::MaterialDark => themes::material_dark(),
-            Theme::Palenight => themes::palenight(),
-            Theme::TomorrowNight => themes::tomorrow_night(),
-            Theme::OceanicNext => themes::oceanic_next(),
-        };
+    pub fn from_theme(theme: &str) -> Self {
+        let theme_colors = themes::resolve_theme(theme).unwrap_or_else(themes::termy);
 
         Self::from_theme_colors(theme_colors)
     }

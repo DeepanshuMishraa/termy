@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/auto_update"]
+members = [".", "crates/auto_update", "crates/themes"]
 resolver = "2"
 
 [package]
@@ -32,7 +32,8 @@ log = "0.4"
 env_logger = "0.11"
 
 # Auto-update
-auto_update = { path = "crates/auto_update" }
+termy_auto_update = { path = "crates/auto_update" }
+termy_themes = { path = "crates/themes" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Pin core-text to 21.0.0 to avoid core-graphics version conflict on macOS.
