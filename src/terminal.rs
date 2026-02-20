@@ -7,7 +7,7 @@ use alacritty_terminal::{
     tty::{self, Options as PtyOptions, Shell},
 };
 use flume::{Receiver, Sender, unbounded};
-use gpui::{Pixels, px};
+use gpui::{Keystroke, Pixels, px};
 use std::{collections::HashMap, env, path::Path, sync::Arc};
 
 fn login_shell_args(shell_path: &str) -> Vec<String> {
@@ -271,8 +271,11 @@ impl Terminal {
     }
 }
 
-/// Convert a keystroke to terminal escape sequence
-pub fn keystroke_to_input(key: &str, modifiers: gpui::Modifiers) -> Option<Vec<u8>> {
+/// Convert a GPUI keystroke into bytes for the terminal PTY.
+pub fn keystroke_to_input(keystroke: &Keystroke) -> Option<Vec<u8>> {
+    let key = keystroke.key.as_str();
+    let modifiers = keystroke.modifiers;
+
     // Handle special keys
     let input = match key {
         "enter" => Some(vec![b'\r']),
@@ -297,7 +300,7 @@ pub fn keystroke_to_input(key: &str, modifiers: gpui::Modifiers) -> Option<Vec<u
     }
 
     // Handle control key combinations
-    if modifiers.control && key.len() == 1 {
+    if modifiers.control && !modifiers.platform && !modifiers.function && key.len() == 1 {
         let c = key.chars().next().unwrap();
         if c.is_ascii_alphabetic() {
             // Ctrl+A = 0x01, Ctrl+B = 0x02, etc.
@@ -306,8 +309,18 @@ pub fn keystroke_to_input(key: &str, modifiers: gpui::Modifiers) -> Option<Vec<u
         }
     }
 
-    // Handle regular characters
-    if key.len() == 1 {
+    // Prefer actual text input provided by the platform for regular typing.
+    if !modifiers.control
+        && !modifiers.platform
+        && !modifiers.function
+        && let Some(key_char) = keystroke.key_char.as_deref()
+        && !key_char.is_empty()
+    {
+        return Some(key_char.as_bytes().to_vec());
+    }
+
+    // Fallback for printable single-key input when key_char is unavailable.
+    if !modifiers.control && !modifiers.platform && !modifiers.function && key.len() == 1 {
         let c = key.chars().next().unwrap();
         if c.is_ascii() {
             return Some(vec![c as u8]);
