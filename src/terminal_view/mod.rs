@@ -407,8 +407,4 @@ impl TerminalView {
     fn active_terminal(&self) -> &Terminal {
         &self.tabs[self.active_tab].terminal
     }
-
-    fn active_terminal_mut(&mut self) -> &mut Terminal {
-        &mut self.tabs[self.active_tab].terminal
-    }
 }

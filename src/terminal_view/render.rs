@@ -393,6 +393,32 @@ impl Render for TerminalView {
                             .child(format!("v{} installed — restart to complete", version))
                             .child(
                                 div()
+                                    .id("update-restart-btn")
+                                    .px(px(8.0))
+                                    .py(px(2.0))
+                                    .rounded_sm()
+                                    .bg(colors.cursor)
+                                    .text_color(colors.background)
+                                    .text_size(px(11.0))
+                                    .cursor_pointer()
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(move |this, _event, _window, cx| {
+                                            match this.restart_application() {
+                                                Ok(()) => cx.quit(),
+                                                Err(error) => {
+                                                    termy_toast::error(format!(
+                                                        "Restart failed: {}",
+                                                        error
+                                                    ));
+                                                }
+                                            }
+                                        }),
+                                    )
+                                    .child("Restart"),
+                            )
+                            .child(
+                                div()
                                     .id("update-dismiss-btn")
                                     .px(px(6.0))
                                     .rounded_sm()

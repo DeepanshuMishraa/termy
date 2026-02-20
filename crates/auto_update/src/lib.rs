@@ -321,15 +321,32 @@ fn do_install(dmg_path: &PathBuf) -> Result<()> {
                 .context("Mounted app bundle is missing file name")?,
         );
 
-        let cp_result = Command::new("cp")
-            .arg("-Rf")
+        if target_app.exists() {
+            let rm_result = Command::new("rm")
+                .arg("-rf")
+                .arg(&target_app)
+                .output()
+                .context("Failed to remove old app bundle in /Applications")?;
+            if !rm_result.status.success() {
+                anyhow::bail!(
+                    "failed removing existing app: {}",
+                    String::from_utf8_lossy(&rm_result.stderr)
+                );
+            }
+        }
+
+        // Use ditto for macOS app bundles to preserve metadata and avoid nested .app copies.
+        let copy_result = Command::new("ditto")
             .arg(&app_path)
             .arg(&target_app)
             .output()
             .context("Failed to copy app bundle to /Applications")?;
 
-        if !cp_result.status.success() {
-            anyhow::bail!("cp failed: {}", String::from_utf8_lossy(&cp_result.stderr));
+        if !copy_result.status.success() {
+            anyhow::bail!(
+                "ditto failed: {}",
+                String::from_utf8_lossy(&copy_result.stderr)
+            );
         }
 
         Ok(())

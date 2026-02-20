@@ -20,7 +20,10 @@ impl TerminalView {
                 termy_toast::info(format!("Installing v{}...", version));
             }
             Some(UpdateState::Installed { version }) => {
-                termy_toast::success(format!("v{} installed. Restart to finish update", version));
+                termy_toast::success(format!(
+                    "v{} installed. Reopen Termy from /Applications to use the new version",
+                    version
+                ));
             }
             Some(UpdateState::Error(message)) => {
                 termy_toast::error(format!("Update failed: {}", message));

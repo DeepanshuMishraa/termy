@@ -254,6 +254,40 @@ impl TerminalView {
         }
     }
 
+    pub(super) fn restart_application(&self) -> Result<(), String> {
+        let exe = std::env::current_exe().map_err(|e| format!("current_exe failed: {}", e))?;
+
+        #[cfg(target_os = "macos")]
+        {
+            let app_bundle = exe
+                .ancestors()
+                .find(|path| {
+                    path.extension()
+                        .and_then(|ext| ext.to_str())
+                        .map(|ext| ext.eq_ignore_ascii_case("app"))
+                        .unwrap_or(false)
+                })
+                .map(PathBuf::from);
+
+            if let Some(app_bundle) = app_bundle {
+                let status = Command::new("open")
+                    .arg("-n")
+                    .arg(&app_bundle)
+                    .status()
+                    .map_err(|e| format!("failed to launch app bundle: {}", e))?;
+                if status.success() {
+                    return Ok(());
+                }
+                return Err(format!("open returned non-success status: {}", status));
+            }
+        }
+
+        Command::new(&exe)
+            .spawn()
+            .map_err(|e| format!("failed to spawn executable: {}", e))?;
+        Ok(())
+    }
+
     pub(super) fn is_link_modifier(modifiers: gpui::Modifiers) -> bool {
         modifiers.secondary() && !modifiers.alt && !modifiers.function
     }
@@ -315,14 +349,20 @@ impl TerminalView {
         let cols = (terminal_width / cell_width).floor().max(2.0) as u16;
         let rows = (terminal_height / cell_height).floor().max(1.0) as u16;
 
-        let current = self.active_terminal().size();
-        if current.cols != cols || current.rows != rows {
-            self.active_terminal_mut().resize(TerminalSize {
-                cols,
-                rows,
-                cell_width: cell_size.width,
-                cell_height: cell_size.height,
-            });
+        for tab in &mut self.tabs {
+            let current = tab.terminal.size();
+            if current.cols != cols
+                || current.rows != rows
+                || current.cell_width != cell_size.width
+                || current.cell_height != cell_size.height
+            {
+                tab.terminal.resize(TerminalSize {
+                    cols,
+                    rows,
+                    cell_width: cell_size.width,
+                    cell_height: cell_size.height,
+                });
+            }
         }
     }
 
