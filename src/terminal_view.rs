@@ -18,10 +18,14 @@ const TABBAR_HEIGHT: f32 = 40.0;
 const TITLEBAR_PLUS_SIZE: f32 = 22.0;
 const TITLEBAR_SIDE_PADDING: f32 = 12.0;
 const TAB_HORIZONTAL_PADDING: f32 = 12.0;
-const TAB_PILL_WIDTH: f32 = 180.0;
+const TAB_PILL_HEIGHT: f32 = 32.0;
+const TAB_PILL_NORMAL_PADDING: f32 = 10.0;
+const TAB_PILL_COMPACT_PADDING: f32 = 6.0;
+const TAB_PILL_COMPACT_THRESHOLD: f32 = 120.0;
 const TAB_PILL_GAP: f32 = 8.0;
-const TAB_CLOSE_HITBOX: f32 = 26.0;
-const MAX_TAB_TITLE_CHARS: usize = 28;
+const TAB_CLOSE_HITBOX: f32 = 22.0;
+const TAB_CLOSE_MIN_WIDTH: f32 = 120.0;
+const MAX_TAB_TITLE_CHARS: usize = 96;
 const SELECTION_BG_ALPHA: f32 = 0.35;
 const DIM_TEXT_FACTOR: f32 = 0.66;
 
@@ -179,11 +183,32 @@ impl TerminalView {
     }
 
     fn truncate_tab_title(title: &str) -> String {
-        let mut next = title.trim().to_string();
-        if next.chars().count() > MAX_TAB_TITLE_CHARS {
-            next = next.chars().take(MAX_TAB_TITLE_CHARS).collect();
+        // Keep titles single-line so shell-provided newlines do not break tab layout.
+        let normalized = title.split_whitespace().collect::<Vec<_>>().join(" ");
+        if normalized.chars().count() > MAX_TAB_TITLE_CHARS {
+            return normalized.chars().take(MAX_TAB_TITLE_CHARS).collect();
         }
-        next
+        normalized
+    }
+
+    fn tab_pill_width(&self, viewport_width: f32) -> f32 {
+        let tab_count = self.tabs.len().max(1) as f32;
+        let total_gap = (self.tabs.len().saturating_sub(1) as f32) * TAB_PILL_GAP;
+        let available =
+            (viewport_width - (TAB_HORIZONTAL_PADDING * 2.0) - total_gap).max(tab_count);
+        (available / tab_count).max(1.0)
+    }
+
+    fn tab_pill_padding_x(tab_pill_width: f32) -> f32 {
+        if tab_pill_width >= TAB_PILL_COMPACT_THRESHOLD {
+            TAB_PILL_NORMAL_PADDING
+        } else {
+            TAB_PILL_COMPACT_PADDING
+        }
+    }
+
+    fn tab_shows_close(tab_pill_width: f32) -> bool {
+        tab_pill_width >= TAB_CLOSE_MIN_WIDTH
     }
 
     fn add_tab(&mut self, cx: &mut Context<Self>) {
@@ -712,7 +737,7 @@ impl TerminalView {
     fn handle_tabbar_mouse_down(
         &mut self,
         event: &MouseDownEvent,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if event.button != MouseButton::Left || !self.show_tab_bar() {
@@ -725,21 +750,28 @@ impl TerminalView {
             return;
         }
 
-        let slot_width = TAB_PILL_WIDTH + TAB_PILL_GAP;
+        let viewport = window.viewport_size();
+        let tab_pill_width = self.tab_pill_width(viewport.width.into());
+        let tab_padding_x = Self::tab_pill_padding_x(tab_pill_width);
+        let show_close = Self::tab_shows_close(tab_pill_width);
+        let slot_width = tab_pill_width + TAB_PILL_GAP;
         let index = (x / slot_width).floor() as usize;
         if index >= self.tabs.len() {
             return;
         }
 
         let x_in_slot = x - (index as f32 * slot_width);
-        if x_in_slot > TAB_PILL_WIDTH {
+        if x_in_slot > tab_pill_width {
             return;
         }
 
-        let close_left = TAB_PILL_WIDTH - TAB_CLOSE_HITBOX;
-        if x_in_slot >= close_left {
-            self.close_tab(index, cx);
-            return;
+        if show_close {
+            let close_left = (tab_pill_width - tab_padding_x - TAB_CLOSE_HITBOX).max(0.0);
+            let close_right = (tab_pill_width - tab_padding_x).max(0.0);
+            if x_in_slot >= close_left && x_in_slot <= close_right {
+                self.close_tab(index, cx);
+                return;
+            }
         }
 
         if event.click_count >= 2 {
@@ -878,20 +910,28 @@ impl Render for TerminalView {
         let mut titlebar_plus_text = colors.foreground;
         titlebar_plus_text.a = if self.use_tabs { 0.92 } else { 0.0 };
         let mut tabbar_bg = colors.background;
-        tabbar_bg.a = if show_tab_bar { 0.9 } else { 0.0 };
+        tabbar_bg.a = if show_tab_bar { 0.92 } else { 0.0 };
         let mut tabbar_border = colors.cursor;
-        tabbar_border.a = if show_tab_bar { 0.12 } else { 0.0 };
+        tabbar_border.a = if show_tab_bar { 0.14 } else { 0.0 };
         let mut active_tab_bg = colors.cursor;
         active_tab_bg.a = 0.2;
+        let mut active_tab_border = colors.cursor;
+        active_tab_border.a = 0.32;
         let mut active_tab_text = colors.foreground;
         active_tab_text.a = 0.95;
         let mut inactive_tab_bg = colors.background;
-        inactive_tab_bg.a = 0.65;
+        inactive_tab_bg.a = 0.56;
+        let mut inactive_tab_border = colors.cursor;
+        inactive_tab_border.a = 0.12;
         let mut inactive_tab_text = colors.foreground;
-        inactive_tab_text.a = 0.58;
+        inactive_tab_text.a = 0.68;
         let mut selection_bg = colors.cursor;
         selection_bg.a = SELECTION_BG_ALPHA;
         let selection_fg = colors.background;
+        let viewport = window.viewport_size();
+        let tab_pill_width = self.tab_pill_width(viewport.width.into());
+        let tab_pill_padding = Self::tab_pill_padding_x(tab_pill_width);
+        let show_tab_close = Self::tab_shows_close(tab_pill_width);
 
         let mut tabs_row = div()
             .w_full()
@@ -904,9 +944,9 @@ impl Render for TerminalView {
             for (index, tab) in self.tabs.iter().enumerate() {
                 let is_active = index == self.active_tab;
                 let label = if self.renaming_tab == Some(index) {
-                    format!("{}  {}|", index + 1, self.rename_buffer)
+                    format!("{}|", self.rename_buffer)
                 } else {
-                    format!("{}  {}", index + 1, tab.title)
+                    tab.title.clone()
                 };
 
                 tabs_row = tabs_row.child(
@@ -916,15 +956,21 @@ impl Render for TerminalView {
                         } else {
                             inactive_tab_bg
                         })
-                        .w(px(TAB_PILL_WIDTH))
-                        .px(px(10.0))
-                        .py(px(7.0))
+                        .border_1()
+                        .border_color(if is_active {
+                            active_tab_border
+                        } else {
+                            inactive_tab_border
+                        })
+                        .w(px(tab_pill_width))
+                        .h(px(TAB_PILL_HEIGHT))
+                        .px(px(tab_pill_padding))
                         .flex()
                         .items_center()
                         .child(
                             div()
                                 .flex_1()
-                                .overflow_hidden()
+                                .truncate()
                                 .text_color(if is_active {
                                     active_tab_text
                                 } else {
@@ -933,17 +979,21 @@ impl Render for TerminalView {
                                 .text_size(px(12.0))
                                 .child(label),
                         )
-                        .child(
+                        .children(show_tab_close.then(|| {
                             div()
                                 .w(px(TAB_CLOSE_HITBOX))
+                                .h(px(TAB_CLOSE_HITBOX))
+                                .flex()
+                                .items_center()
+                                .justify_center()
                                 .text_color(if is_active {
                                     active_tab_text
                                 } else {
                                     inactive_tab_text
                                 })
-                                .text_size(px(12.0))
-                                .child("×"),
-                        ),
+                                .text_size(px(13.0))
+                                .child("×")
+                        })),
                 );
 
                 if index + 1 < self.tabs.len() {
