@@ -35,6 +35,13 @@ struct CellPos {
     row: usize,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct TabBarLayout {
+    tab_pill_width: f32,
+    tab_padding_x: f32,
+    slot_width: f32,
+}
+
 struct TerminalTab {
     terminal: Terminal,
     title: String,
@@ -191,12 +198,18 @@ impl TerminalView {
         normalized
     }
 
-    fn tab_pill_width(&self, viewport_width: f32) -> f32 {
+    fn tab_bar_layout(&self, viewport_width: f32) -> TabBarLayout {
         let tab_count = self.tabs.len().max(1) as f32;
         let total_gap = (self.tabs.len().saturating_sub(1) as f32) * TAB_PILL_GAP;
         let available =
             (viewport_width - (TAB_HORIZONTAL_PADDING * 2.0) - total_gap).max(tab_count);
-        (available / tab_count).max(1.0)
+        let tab_pill_width = (available / tab_count).max(1.0);
+
+        TabBarLayout {
+            tab_pill_width,
+            tab_padding_x: Self::tab_pill_padding_x(tab_pill_width),
+            slot_width: tab_pill_width + TAB_PILL_GAP,
+        }
     }
 
     fn tab_pill_padding_x(tab_pill_width: f32) -> f32 {
@@ -762,24 +775,24 @@ impl TerminalView {
         }
 
         let viewport = window.viewport_size();
-        let tab_pill_width = self.tab_pill_width(viewport.width.into());
-        let tab_padding_x = Self::tab_pill_padding_x(tab_pill_width);
-        let slot_width = tab_pill_width + TAB_PILL_GAP;
-        let index = (x / slot_width).floor() as usize;
+        let layout = self.tab_bar_layout(viewport.width.into());
+        let index = (x / layout.slot_width).floor() as usize;
         if index >= self.tabs.len() {
             return;
         }
 
-        let x_in_slot = x - (index as f32 * slot_width);
-        if x_in_slot > tab_pill_width {
+        let x_in_slot = x - (index as f32 * layout.slot_width);
+        if x_in_slot > layout.tab_pill_width {
             return;
         }
 
         let is_active = index == self.active_tab;
-        let show_close = Self::tab_shows_close(tab_pill_width, is_active, tab_padding_x);
+        let show_close =
+            Self::tab_shows_close(layout.tab_pill_width, is_active, layout.tab_padding_x);
         if show_close {
-            let close_left = (tab_pill_width - tab_padding_x - TAB_CLOSE_HITBOX).max(0.0);
-            let close_right = (tab_pill_width - tab_padding_x).max(0.0);
+            let close_left =
+                (layout.tab_pill_width - layout.tab_padding_x - TAB_CLOSE_HITBOX).max(0.0);
+            let close_right = (layout.tab_pill_width - layout.tab_padding_x).max(0.0);
             if x_in_slot >= close_left && x_in_slot <= close_right {
                 self.close_tab(index, cx);
                 return;
@@ -911,6 +924,7 @@ impl Render for TerminalView {
         let terminal_size = self.active_terminal().size();
         let focus_handle = self.focus_handle.clone();
         let show_tab_bar = self.show_tab_bar();
+        let show_titlebar_plus = self.use_tabs;
         let mut titlebar_bg = colors.background;
         titlebar_bg.a = 0.96;
         let mut titlebar_border = colors.cursor;
@@ -918,9 +932,9 @@ impl Render for TerminalView {
         let mut titlebar_text = colors.foreground;
         titlebar_text.a = 0.82;
         let mut titlebar_plus_bg = colors.cursor;
-        titlebar_plus_bg.a = if self.use_tabs { 0.2 } else { 0.0 };
+        titlebar_plus_bg.a = if show_titlebar_plus { 0.2 } else { 0.0 };
         let mut titlebar_plus_text = colors.foreground;
-        titlebar_plus_text.a = if self.use_tabs { 0.92 } else { 0.0 };
+        titlebar_plus_text.a = if show_titlebar_plus { 0.92 } else { 0.0 };
         let mut tabbar_bg = colors.background;
         tabbar_bg.a = if show_tab_bar { 0.92 } else { 0.0 };
         let mut tabbar_border = colors.cursor;
@@ -941,8 +955,7 @@ impl Render for TerminalView {
         selection_bg.a = SELECTION_BG_ALPHA;
         let selection_fg = colors.background;
         let viewport = window.viewport_size();
-        let tab_pill_width = self.tab_pill_width(viewport.width.into());
-        let tab_pill_padding = Self::tab_pill_padding_x(tab_pill_width);
+        let tab_layout = self.tab_bar_layout(viewport.width.into());
 
         let mut tabs_row = div()
             .w_full()
@@ -954,8 +967,16 @@ impl Render for TerminalView {
         if show_tab_bar {
             for (index, tab) in self.tabs.iter().enumerate() {
                 let is_active = index == self.active_tab;
-                let show_tab_close =
-                    Self::tab_shows_close(tab_pill_width, is_active, tab_pill_padding);
+                let show_tab_close = Self::tab_shows_close(
+                    tab_layout.tab_pill_width,
+                    is_active,
+                    tab_layout.tab_padding_x,
+                );
+                let close_slot_width = if show_tab_close {
+                    TAB_CLOSE_HITBOX
+                } else {
+                    0.0
+                };
                 let label = if self.renaming_tab == Some(index) {
                     format!("{}|", self.rename_buffer)
                 } else {
@@ -975,15 +996,17 @@ impl Render for TerminalView {
                         } else {
                             inactive_tab_border
                         })
-                        .w(px(tab_pill_width))
+                        .w(px(tab_layout.tab_pill_width))
                         .h(px(TAB_PILL_HEIGHT))
-                        .px(px(tab_pill_padding))
+                        .px(px(tab_layout.tab_padding_x))
                         .flex()
                         .items_center()
+                        .child(div().w(px(close_slot_width)).h(px(TAB_CLOSE_HITBOX)))
                         .child(
                             div()
                                 .flex_1()
                                 .truncate()
+                                .text_center()
                                 .text_color(if is_active {
                                     active_tab_text
                                 } else {
@@ -994,7 +1017,7 @@ impl Render for TerminalView {
                         )
                         .children(show_tab_close.then(|| {
                             div()
-                                .w(px(TAB_CLOSE_HITBOX))
+                                .w(px(close_slot_width))
                                 .h(px(TAB_CLOSE_HITBOX))
                                 .flex()
                                 .items_center()
@@ -1063,7 +1086,7 @@ impl Render for TerminalView {
                                     .bg(titlebar_plus_bg)
                                     .text_color(titlebar_plus_text)
                                     .text_size(px(16.0))
-                                    .child(if self.use_tabs { "+" } else { "" }),
+                                    .child(if show_titlebar_plus { "+" } else { "" }),
                             ),
                     ),
             )
