@@ -39,7 +39,7 @@ Output:
 
 ## Config
 
-Yes config file is inspired by ghostty
+The config file is inspired by Ghostty.
 
 Config file:
 - `~/.config/termy/config.txt`
@@ -58,8 +58,8 @@ padding_x = 12
 padding_y = 8
 ```
 
-Themes:
-- `termy`, `tokyonight`, `catppuccin`, `dracula`, `gruvbox`, `nord`, `solarized`, `onedark`, `monokai`, `material`, `palenight`, `tomorrow`, `oceanic`
+Full configuration reference:
+- `docs/configuration.md`
 
 ## License
 

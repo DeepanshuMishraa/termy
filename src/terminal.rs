@@ -10,6 +10,12 @@ use flume::{Receiver, Sender, unbounded};
 use gpui::{Keystroke, Pixels, px};
 use std::{collections::HashMap, env, path::Path, sync::Arc};
 
+#[derive(Debug, Clone)]
+pub struct TabTitleShellIntegration {
+    pub enabled: bool,
+    pub explicit_prefix: String,
+}
+
 fn login_shell_args(shell_path: &str) -> Vec<String> {
     match Path::new(shell_path)
         .file_name()
@@ -20,7 +26,9 @@ fn login_shell_args(shell_path: &str) -> Vec<String> {
     }
 }
 
-fn pty_env_overrides() -> HashMap<String, String> {
+fn pty_env_overrides(
+    shell_integration: Option<&TabTitleShellIntegration>,
+) -> HashMap<String, String> {
     let mut env_overrides = HashMap::new();
     let mut path_entries: Vec<String> = env::var("PATH")
         .unwrap_or_else(|_| "/usr/bin:/bin:/usr/sbin:/sbin".to_string())
@@ -40,6 +48,24 @@ fn pty_env_overrides() -> HashMap<String, String> {
     }
 
     env_overrides.insert("PATH".to_string(), path_entries.join(":"));
+    env_overrides.insert("TERM_PROGRAM".to_string(), "termy".to_string());
+
+    let shell_integration_enabled = shell_integration.map(|cfg| cfg.enabled).unwrap_or(false);
+    env_overrides.insert(
+        "TERMY_SHELL_INTEGRATION".to_string(),
+        if shell_integration_enabled { "1" } else { "0" }.to_string(),
+    );
+
+    if shell_integration_enabled {
+        let prefix = shell_integration
+            .and_then(|cfg| {
+                let trimmed = cfg.explicit_prefix.trim();
+                (!trimmed.is_empty()).then_some(trimmed)
+            })
+            .unwrap_or("termy:tab:");
+        env_overrides.insert("TERMY_TAB_TITLE_PREFIX".to_string(), prefix.to_string());
+    }
+
     env_overrides
 }
 
@@ -73,6 +99,8 @@ pub enum TerminalEvent {
     /// Terminal title changed
     #[allow(dead_code)]
     Title(String),
+    /// Terminal title reset
+    ResetTitle,
     /// Bell character received
     Bell,
     /// Terminal exited
@@ -81,11 +109,24 @@ pub enum TerminalEvent {
 
 /// Event listener that forwards alacritty events to our channel
 #[derive(Clone)]
-pub struct JsonEventListener(pub Sender<AlacEvent>);
+pub struct JsonEventListener {
+    events_tx: Sender<AlacEvent>,
+    wake_tx: Option<Sender<()>>,
+}
+
+impl JsonEventListener {
+    fn new(events_tx: Sender<AlacEvent>, wake_tx: Option<Sender<()>>) -> Self {
+        Self { events_tx, wake_tx }
+    }
+}
 
 impl EventListener for JsonEventListener {
     fn send_event(&self, event: AlacEvent) {
-        let _ = self.0.send(event);
+        let _ = self.events_tx.send(event);
+        if let Some(wake_tx) = &self.wake_tx {
+            // Wakeups are coalesced by using a bounded channel in the view.
+            let _ = wake_tx.try_send(());
+        }
     }
 }
 
@@ -163,7 +204,12 @@ pub struct Terminal {
 
 impl Terminal {
     /// Create a new terminal with the given size
-    pub fn new(size: TerminalSize, configured_working_dir: Option<&str>) -> anyhow::Result<Self> {
+    pub fn new(
+        size: TerminalSize,
+        configured_working_dir: Option<&str>,
+        event_wakeup_tx: Option<Sender<()>>,
+        tab_title_shell_integration: Option<&TabTitleShellIntegration>,
+    ) -> anyhow::Result<Self> {
         // Create event channels
         let (events_tx, events_rx) = unbounded();
 
@@ -179,7 +225,7 @@ impl Terminal {
         let pty_options = PtyOptions {
             shell: Some(shell),
             working_directory,
-            env: pty_env_overrides(),
+            env: pty_env_overrides(tab_title_shell_integration),
             drain_on_exit: true,
         };
 
@@ -187,7 +233,8 @@ impl Terminal {
         let term_config = TermConfig::default();
 
         // Create the terminal emulator
-        let term = Term::new(term_config, &size, JsonEventListener(events_tx.clone()));
+        let listener = JsonEventListener::new(events_tx.clone(), event_wakeup_tx);
+        let term = Term::new(term_config, &size, listener.clone());
         let term = Arc::new(FairMutex::new(term));
 
         // Create PTY
@@ -195,13 +242,7 @@ impl Terminal {
         let pty = tty::new(&pty_options, size.into(), window_id)?;
 
         // Create and spawn the event loop
-        let event_loop = EventLoop::new(
-            term.clone(),
-            JsonEventListener(events_tx),
-            pty,
-            false,
-            false,
-        )?;
+        let event_loop = EventLoop::new(term.clone(), listener, pty, false, false)?;
         let pty_tx = Notifier(event_loop.channel());
         let _io_thread = event_loop.spawn();
 
@@ -243,6 +284,7 @@ impl Terminal {
             match event {
                 AlacEvent::Wakeup => events.push(TerminalEvent::Wakeup),
                 AlacEvent::Title(title) => events.push(TerminalEvent::Title(title)),
+                AlacEvent::ResetTitle => events.push(TerminalEvent::ResetTitle),
                 AlacEvent::Bell => events.push(TerminalEvent::Bell),
                 AlacEvent::Exit => events.push(TerminalEvent::Exit),
                 _ => {}

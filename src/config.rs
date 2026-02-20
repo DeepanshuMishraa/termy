@@ -4,12 +4,29 @@ use std::{
     process::Command,
 };
 
+const DEFAULT_TAB_TITLE_FALLBACK: &str = "Terminal";
+const DEFAULT_TAB_TITLE_EXPLICIT_PREFIX: &str = "termy:tab:";
+const DEFAULT_TAB_TITLE_PROMPT_FORMAT: &str = "{cwd}";
+const DEFAULT_TAB_TITLE_COMMAND_FORMAT: &str = "{command}";
+
 const DEFAULT_CONFIG: &str = "# Will be comments using #\n\
 theme = termy\n\
 # Startup directory for new terminal sessions\n\
 # working_dir = ~/Documents\n\
 # Show tab bar above the terminal grid\n\
 # use_tabs = true\n\
+# Tab title mode. Supported values: smart, shell, explicit, static\n\
+# smart = manual rename > explicit title > shell/app title > fallback\n\
+tab_title_mode = smart\n\
+# Export TERMY_* env vars for optional shell tab-title integration\n\
+tab_title_shell_integration = true\n\
+# Optional: static fallback tab title\n\
+# tab_title_fallback = Terminal\n\
+# Advanced tab-title options are documented in docs/configuration.md:\n\
+# tab_title_priority = manual, explicit, shell, fallback\n\
+# tab_title_explicit_prefix = termy:tab:\n\
+# tab_title_prompt_format = {cwd}\n\
+# tab_title_command_format = {command}\n\
 # Startup window size in pixels\n\
 window_width = 1100\n\
 window_height = 720\n\
@@ -61,11 +78,99 @@ impl Theme {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TabTitleSource {
+    Manual,
+    Explicit,
+    Shell,
+    Fallback,
+}
+
+impl TabTitleSource {
+    fn from_str(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "manual" => Some(Self::Manual),
+            "explicit" => Some(Self::Explicit),
+            "shell" | "app" | "terminal" => Some(Self::Shell),
+            "fallback" | "default" => Some(Self::Fallback),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TabTitleMode {
+    Smart,
+    Shell,
+    Explicit,
+    Static,
+}
+
+impl TabTitleMode {
+    fn from_str(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "smart" => Some(Self::Smart),
+            "shell" => Some(Self::Shell),
+            "explicit" => Some(Self::Explicit),
+            "static" => Some(Self::Static),
+            _ => None,
+        }
+    }
+
+    fn default_priority(self) -> Vec<TabTitleSource> {
+        match self {
+            Self::Smart => vec![
+                TabTitleSource::Manual,
+                TabTitleSource::Explicit,
+                TabTitleSource::Shell,
+                TabTitleSource::Fallback,
+            ],
+            Self::Shell => vec![
+                TabTitleSource::Manual,
+                TabTitleSource::Shell,
+                TabTitleSource::Fallback,
+            ],
+            Self::Explicit => vec![
+                TabTitleSource::Manual,
+                TabTitleSource::Explicit,
+                TabTitleSource::Fallback,
+            ],
+            Self::Static => vec![TabTitleSource::Manual, TabTitleSource::Fallback],
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TabTitleConfig {
+    pub mode: TabTitleMode,
+    pub priority: Vec<TabTitleSource>,
+    pub fallback: String,
+    pub explicit_prefix: String,
+    pub shell_integration: bool,
+    pub prompt_format: String,
+    pub command_format: String,
+}
+
+impl Default for TabTitleConfig {
+    fn default() -> Self {
+        Self {
+            mode: TabTitleMode::Smart,
+            priority: TabTitleMode::Smart.default_priority(),
+            fallback: DEFAULT_TAB_TITLE_FALLBACK.to_string(),
+            explicit_prefix: DEFAULT_TAB_TITLE_EXPLICIT_PREFIX.to_string(),
+            shell_integration: true,
+            prompt_format: DEFAULT_TAB_TITLE_PROMPT_FORMAT.to_string(),
+            command_format: DEFAULT_TAB_TITLE_COMMAND_FORMAT.to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AppConfig {
     pub theme: Theme,
     pub working_dir: Option<String>,
     pub use_tabs: bool,
+    pub tab_title: TabTitleConfig,
     pub window_width: f32,
     pub window_height: f32,
     pub font_family: String,
@@ -80,6 +185,7 @@ impl Default for AppConfig {
             theme: Theme::Termy,
             working_dir: None,
             use_tabs: false,
+            tab_title: TabTitleConfig::default(),
             window_width: 1100.0,
             window_height: 720.0,
             font_family: "JetBrains Mono".to_string(),
@@ -106,6 +212,7 @@ impl AppConfig {
 
     fn from_contents(contents: &str) -> Self {
         let mut config = Self::default();
+        let mut tab_title_priority_overridden = false;
         for line in contents.lines() {
             let line = line.trim();
             if line.is_empty() || line.starts_with('#') {
@@ -132,6 +239,49 @@ impl AppConfig {
                 }
             }
 
+            if key.eq_ignore_ascii_case("tab_title_priority") {
+                if let Some(priority) = parse_tab_title_priority(value) {
+                    config.tab_title.priority = priority;
+                    tab_title_priority_overridden = true;
+                }
+            }
+
+            if key.eq_ignore_ascii_case("tab_title_mode") {
+                if let Some(mode) = TabTitleMode::from_str(value) {
+                    config.tab_title.mode = mode;
+                }
+            }
+
+            if key.eq_ignore_ascii_case("tab_title_fallback") {
+                if let Some(fallback) = parse_string_value(value) {
+                    config.tab_title.fallback = fallback;
+                }
+            }
+
+            if key.eq_ignore_ascii_case("tab_title_explicit_prefix") {
+                if let Some(prefix) = parse_string_value(value) {
+                    config.tab_title.explicit_prefix = prefix;
+                }
+            }
+
+            if key.eq_ignore_ascii_case("tab_title_shell_integration") {
+                if let Some(enabled) = parse_bool(value) {
+                    config.tab_title.shell_integration = enabled;
+                }
+            }
+
+            if key.eq_ignore_ascii_case("tab_title_prompt_format") {
+                if let Some(format) = parse_string_value(value) {
+                    config.tab_title.prompt_format = format;
+                }
+            }
+
+            if key.eq_ignore_ascii_case("tab_title_command_format") {
+                if let Some(format) = parse_string_value(value) {
+                    config.tab_title.command_format = format;
+                }
+            }
+
             if key.eq_ignore_ascii_case("window_width") {
                 if let Ok(window_width) = value.parse::<f32>() {
                     if window_width > 0.0 {
@@ -148,18 +298,9 @@ impl AppConfig {
                 }
             }
 
-            if key.eq_ignore_ascii_case("font_family") && !value.is_empty() {
-                let trimmed = value.trim();
-                let unquoted = if (trimmed.starts_with('"') && trimmed.ends_with('"'))
-                    || (trimmed.starts_with('\'') && trimmed.ends_with('\''))
-                {
-                    &trimmed[1..trimmed.len() - 1]
-                } else {
-                    trimmed
-                };
-
-                if !unquoted.is_empty() {
-                    config.font_family = unquoted.to_string();
+            if key.eq_ignore_ascii_case("font_family") {
+                if let Some(font_family) = parse_string_value(value) {
+                    config.font_family = font_family;
                 }
             }
 
@@ -188,6 +329,10 @@ impl AppConfig {
             }
         }
 
+        if !tab_title_priority_overridden {
+            config.tab_title.priority = config.tab_title.mode.default_priority();
+        }
+
         config
     }
 }
@@ -198,6 +343,47 @@ fn parse_bool(value: &str) -> Option<bool> {
         "false" | "0" | "no" | "off" => Some(false),
         _ => None,
     }
+}
+
+fn parse_string_value(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let unquoted = if (trimmed.starts_with('"') && trimmed.ends_with('"'))
+        || (trimmed.starts_with('\'') && trimmed.ends_with('\''))
+    {
+        &trimmed[1..trimmed.len() - 1]
+    } else {
+        trimmed
+    };
+
+    let unquoted = unquoted.trim();
+    if unquoted.is_empty() {
+        return None;
+    }
+
+    Some(unquoted.to_string())
+}
+
+fn parse_tab_title_priority(value: &str) -> Option<Vec<TabTitleSource>> {
+    let mut priority = Vec::new();
+    for token in value.split(',') {
+        let Some(source) = TabTitleSource::from_str(token) else {
+            continue;
+        };
+
+        if !priority.contains(&source) {
+            priority.push(source);
+        }
+    }
+
+    if priority.is_empty() {
+        return None;
+    }
+
+    Some(priority)
 }
 
 pub fn ensure_config_file() -> Option<PathBuf> {
@@ -242,4 +428,52 @@ fn config_path() -> Option<PathBuf> {
     env::current_dir()
         .ok()
         .map(|dir| dir.join(".config/termy/config.txt"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AppConfig, TabTitleMode, TabTitleSource};
+
+    #[test]
+    fn tab_title_mode_sets_default_priority() {
+        let config = AppConfig::from_contents(
+            "tab_title_mode = static\n\
+             tab_title_fallback = Session\n",
+        );
+
+        assert_eq!(config.tab_title.mode, TabTitleMode::Static);
+        assert_eq!(
+            config.tab_title.priority,
+            vec![TabTitleSource::Manual, TabTitleSource::Fallback]
+        );
+        assert_eq!(config.tab_title.fallback, "Session");
+    }
+
+    #[test]
+    fn tab_title_priority_overrides_mode() {
+        let config = AppConfig::from_contents(
+            "tab_title_mode = static\n\
+             tab_title_priority = shell, explicit, fallback\n\
+             tab_title_fallback = Session\n\
+             tab_title_explicit_prefix = termy:custom:\n\
+             tab_title_shell_integration = false\n\
+             tab_title_prompt_format = cwd:{cwd}\n\
+             tab_title_command_format = run:{command}\n",
+        );
+
+        assert_eq!(config.tab_title.mode, TabTitleMode::Static);
+        assert_eq!(
+            config.tab_title.priority,
+            vec![
+                TabTitleSource::Shell,
+                TabTitleSource::Explicit,
+                TabTitleSource::Fallback
+            ]
+        );
+        assert_eq!(config.tab_title.fallback, "Session");
+        assert_eq!(config.tab_title.explicit_prefix, "termy:custom:");
+        assert!(!config.tab_title.shell_integration);
+        assert_eq!(config.tab_title.prompt_format, "cwd:{cwd}");
+        assert_eq!(config.tab_title.command_format, "run:{command}");
+    }
 }
