@@ -473,7 +473,7 @@ impl Render for TerminalView {
         };
         let command_palette_overlay = self
             .command_palette_open
-            .then(|| self.render_command_palette_modal());
+            .then(|| self.render_command_palette_modal(cx));
         let toast_overlay = if self.toast_manager.active().is_empty() {
             None
         } else {
@@ -715,6 +715,7 @@ impl Render for TerminalView {
                                 div()
                                     .w(px(TITLEBAR_PLUS_SIZE))
                                     .h(px(TITLEBAR_PLUS_SIZE))
+                                    .rounded_sm()
                                     .flex()
                                     .items_center()
                                     .justify_center()

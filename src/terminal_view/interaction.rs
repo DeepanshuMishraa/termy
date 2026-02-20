@@ -36,7 +36,15 @@ impl TerminalView {
                 && !modifiers.function
                 && key.eq_ignore_ascii_case("c")
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "windows")]
+        {
+            modifiers.control
+                && !modifiers.platform
+                && !modifiers.alt
+                && !modifiers.function
+                && key.eq_ignore_ascii_case("c")
+        }
+        #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
         {
             modifiers.control
                 && modifiers.shift
@@ -55,7 +63,15 @@ impl TerminalView {
                 && !modifiers.function
                 && key.eq_ignore_ascii_case("v")
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "windows")]
+        {
+            modifiers.control
+                && !modifiers.platform
+                && !modifiers.alt
+                && !modifiers.function
+                && key.eq_ignore_ascii_case("v")
+        }
+        #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
         {
             modifiers.control
                 && modifiers.shift
@@ -386,8 +402,8 @@ impl TerminalView {
         if Self::is_copy_shortcut(key, modifiers) {
             if let Some(selected) = self.selected_text() {
                 cx.write_to_clipboard(ClipboardItem::new_string(selected));
+                return;
             }
-            return;
         }
 
         if Self::is_paste_shortcut(key, modifiers) {
@@ -395,8 +411,8 @@ impl TerminalView {
                 self.active_terminal().write(text.as_bytes());
                 self.clear_selection();
                 cx.notify();
+                return;
             }
-            return;
         }
 
         if self.use_tabs

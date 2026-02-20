@@ -159,6 +159,7 @@ pub struct TerminalView {
     command_palette_open: bool,
     command_palette_query: String,
     command_palette_selected: usize,
+    command_palette_query_select_all: bool,
     command_palette_opened_at: Option<Instant>,
     /// Cached cell dimensions
     cell_size: Option<Size<Pixels>>,
@@ -268,6 +269,7 @@ impl TerminalView {
             command_palette_open: false,
             command_palette_query: String::new(),
             command_palette_selected: 0,
+            command_palette_query_select_all: false,
             command_palette_opened_at: None,
             cell_size: None,
             #[cfg(target_os = "macos")]

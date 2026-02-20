@@ -5,13 +5,14 @@ impl TerminalView {
         modifiers.secondary()
             && !modifiers.alt
             && !modifiers.function
-            && (key.eq_ignore_ascii_case("p") || key.eq_ignore_ascii_case("k"))
+            && key.eq_ignore_ascii_case("p")
     }
 
     pub(super) fn open_command_palette(&mut self, cx: &mut Context<Self>) {
         self.command_palette_open = true;
         self.command_palette_query.clear();
         self.command_palette_selected = 0;
+        self.command_palette_query_select_all = false;
         self.command_palette_opened_at = Some(Instant::now());
 
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
@@ -46,6 +47,7 @@ impl TerminalView {
         self.command_palette_open = false;
         self.command_palette_query.clear();
         self.command_palette_selected = 0;
+        self.command_palette_query_select_all = false;
         self.command_palette_opened_at = None;
         cx.notify();
     }
@@ -145,6 +147,16 @@ impl TerminalView {
         modifiers: gpui::Modifiers,
         cx: &mut Context<Self>,
     ) {
+        if modifiers.secondary()
+            && !modifiers.alt
+            && !modifiers.function
+            && key.eq_ignore_ascii_case("a")
+        {
+            self.command_palette_query_select_all = !self.command_palette_query.is_empty();
+            cx.notify();
+            return;
+        }
+
         match key {
             "escape" => {
                 self.close_command_palette(cx);
@@ -170,7 +182,16 @@ impl TerminalView {
                 return;
             }
             "backspace" => {
+                if self.command_palette_query_select_all {
+                    self.command_palette_query.clear();
+                    self.command_palette_query_select_all = false;
+                    let len = self.filtered_command_palette_items().len();
+                    self.clamp_command_palette_selection(len);
+                    cx.notify();
+                    return;
+                }
                 if self.command_palette_query.pop().is_some() {
+                    self.command_palette_query_select_all = false;
                     let len = self.filtered_command_palette_items().len();
                     self.clamp_command_palette_selection(len);
                     cx.notify();
@@ -183,6 +204,10 @@ impl TerminalView {
                     && !modifiers.alt
                     && !modifiers.function =>
             {
+                if self.command_palette_query_select_all {
+                    self.command_palette_query.clear();
+                    self.command_palette_query_select_all = false;
+                }
                 self.command_palette_query.push(' ');
                 let len = self.filtered_command_palette_items().len();
                 self.clamp_command_palette_selection(len);
@@ -199,6 +224,10 @@ impl TerminalView {
             && let Some(input) = key_char
             && !input.is_empty()
         {
+            if self.command_palette_query_select_all {
+                self.command_palette_query.clear();
+                self.command_palette_query_select_all = false;
+            }
             self.command_palette_query.push_str(input);
             let len = self.filtered_command_palette_items().len();
             self.clamp_command_palette_selection(len);
@@ -264,7 +293,7 @@ impl TerminalView {
         }
     }
 
-    pub(super) fn render_command_palette_modal(&self) -> AnyElement {
+    pub(super) fn render_command_palette_modal(&self, cx: &mut Context<Self>) -> AnyElement {
         let items = self.filtered_command_palette_items();
         let selected = if items.is_empty() {
             0
@@ -344,6 +373,12 @@ impl TerminalView {
             .top_0()
             .left_0()
             .occlude()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _event, _window, cx| {
+                    this.close_command_palette(cx);
+                }),
+            )
             .child(div().size_full().bg(overlay_bg).absolute().top_0().left_0())
             .child(
                 div()
@@ -364,6 +399,12 @@ impl TerminalView {
                             .bg(panel_bg)
                             .border_1()
                             .border_color(panel_border)
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|_this, _event, _window, cx| {
+                                    cx.stop_propagation();
+                                }),
+                            )
                             .child(
                                 div()
                                     .w_full()
@@ -374,7 +415,11 @@ impl TerminalView {
                                     .border_1()
                                     .border_color(panel_border)
                                     .text_size(px(13.0))
-                                    .text_color(primary_text)
+                                    .text_color(if self.command_palette_query_select_all {
+                                        self.colors.cursor
+                                    } else {
+                                        primary_text
+                                    })
                                     .child(format!(
                                         "{}{}",
                                         self.command_palette_query,
