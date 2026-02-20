@@ -12,6 +12,7 @@ const DEFAULT_TAB_TITLE_COMMAND_FORMAT: &str = "{command}";
 const DEFAULT_CONFIG: &str = "# Will be comments using #\n\
 theme = termy\n\
 # Startup directory for new terminal sessions\n\
+# On Windows, leaving this unset defaults to your user home directory.\n\
 # working_dir = ~/Documents\n\
 # Show tab bar above the terminal grid\n\
 # use_tabs = true\n\
@@ -421,7 +422,30 @@ pub fn open_config_file() {
 }
 
 fn config_path() -> Option<PathBuf> {
-    if let Ok(home) = env::var("HOME") {
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(app_data) = env::var("APPDATA")
+            && !app_data.trim().is_empty()
+        {
+            return Some(Path::new(&app_data).join("termy").join("config.txt"));
+        }
+
+        if let Ok(user_profile) = env::var("USERPROFILE")
+            && !user_profile.trim().is_empty()
+        {
+            return Some(Path::new(&user_profile).join(".config/termy/config.txt"));
+        }
+    }
+
+    if let Ok(xdg_config_home) = env::var("XDG_CONFIG_HOME")
+        && !xdg_config_home.trim().is_empty()
+    {
+        return Some(Path::new(&xdg_config_home).join("termy/config.txt"));
+    }
+
+    if let Ok(home) = env::var("HOME")
+        && !home.trim().is_empty()
+    {
         return Some(Path::new(&home).join(".config/termy/config.txt"));
     }
 

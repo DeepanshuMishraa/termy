@@ -1,5 +1,5 @@
 use crate::colors::TerminalColors;
-use crate::config::{AppConfig, TabTitleConfig, TabTitleSource};
+use crate::config::{self, AppConfig, TabTitleConfig, TabTitleSource};
 use crate::terminal::{
     TabTitleShellIntegration, Terminal, TerminalEvent, TerminalSize, keystroke_to_input,
 };
@@ -11,7 +11,11 @@ use gpui::{
     MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Render, SharedString, Size, Styled,
     TextAlign, TextRun, WeakEntity, Window, WindowControlArea, div, point, px, quad,
 };
-use std::time::Duration;
+use std::{
+    fs,
+    path::PathBuf,
+    time::{Duration, SystemTime},
+};
 
 const MIN_FONT_SIZE: f32 = 8.0;
 const MAX_FONT_SIZE: f32 = 40.0;
@@ -19,6 +23,8 @@ const ZOOM_STEP: f32 = 1.0;
 const TITLEBAR_HEIGHT: f32 = 34.0;
 const TABBAR_HEIGHT: f32 = 40.0;
 const TITLEBAR_PLUS_SIZE: f32 = 22.0;
+const WINDOWS_TITLEBAR_BUTTON_WIDTH: f32 = 46.0;
+const WINDOWS_TITLEBAR_CONTROLS_WIDTH: f32 = WINDOWS_TITLEBAR_BUTTON_WIDTH * 3.0;
 const TITLEBAR_SIDE_PADDING: f32 = 12.0;
 const TAB_HORIZONTAL_PADDING: f32 = 12.0;
 const TAB_PILL_HEIGHT: f32 = 32.0;
@@ -31,6 +37,7 @@ const TAB_INACTIVE_CLOSE_MIN_WIDTH: f32 = 120.0;
 const MAX_TAB_TITLE_CHARS: usize = 96;
 const DEFAULT_TAB_TITLE: &str = "Terminal";
 const COMMAND_TITLE_DELAY_MS: u64 = 250;
+const CONFIG_WATCH_INTERVAL_MS: u64 = 750;
 const SELECTION_BG_ALPHA: f32 = 0.35;
 const DIM_TEXT_FACTOR: f32 = 0.66;
 
@@ -90,6 +97,8 @@ pub struct TerminalView {
     tab_title: TabTitleConfig,
     tab_shell_integration: TabTitleShellIntegration,
     configured_working_dir: Option<String>,
+    config_path: Option<PathBuf>,
+    config_last_modified: Option<SystemTime>,
     font_family: SharedString,
     base_font_size: f32,
     font_size: Pixels,
@@ -105,6 +114,10 @@ pub struct TerminalView {
 }
 
 impl TerminalView {
+    fn config_last_modified(path: &PathBuf) -> Option<SystemTime> {
+        fs::metadata(path).ok()?.modified().ok()
+    }
+
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
         let (event_wakeup_tx, event_wakeup_rx) = bounded(1);
@@ -130,7 +143,29 @@ impl TerminalView {
         })
         .detach();
 
+        // Poll config file timestamp and hot-reload UI settings on change.
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            loop {
+                smol::Timer::after(Duration::from_millis(CONFIG_WATCH_INTERVAL_MS)).await;
+                let result = cx.update(|cx| {
+                    this.update(cx, |view, cx| {
+                        if view.reload_config_if_changed() {
+                            cx.notify();
+                        }
+                    })
+                });
+                if result.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+
         let config = AppConfig::load_or_create();
+        let config_path = config::ensure_config_file();
+        let config_last_modified = config_path
+            .as_ref()
+            .and_then(Self::config_last_modified);
         let colors = TerminalColors::from_theme(config.theme);
         let base_font_size = config.font_size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
         let padding_x = config.padding_x.max(0.0);
@@ -161,6 +196,8 @@ impl TerminalView {
             tab_title,
             tab_shell_integration,
             configured_working_dir,
+            config_path,
+            config_last_modified,
             font_family: config.font_family.into(),
             base_font_size,
             font_size: px(base_font_size),
@@ -175,6 +212,55 @@ impl TerminalView {
         };
         view.refresh_tab_title(0);
         view
+    }
+
+    fn apply_runtime_config(&mut self, config: AppConfig) -> bool {
+        self.colors = TerminalColors::from_theme(config.theme);
+        self.use_tabs = config.use_tabs;
+        self.tab_title = config.tab_title.clone();
+        self.tab_shell_integration = TabTitleShellIntegration {
+            enabled: self.tab_title.shell_integration,
+            explicit_prefix: self.tab_title.explicit_prefix.clone(),
+        };
+        self.configured_working_dir = config.working_dir.clone();
+        self.font_family = config.font_family.into();
+        self.base_font_size = config.font_size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
+        self.font_size = px(self.base_font_size);
+        self.padding_x = config.padding_x.max(0.0);
+        self.padding_y = config.padding_y.max(0.0);
+
+        for index in 0..self.tabs.len() {
+            self.refresh_tab_title(index);
+        }
+
+        true
+    }
+
+    fn reload_config_if_changed(&mut self) -> bool {
+        let path = match self.config_path.clone() {
+            Some(path) => path,
+            None => {
+                self.config_path = config::ensure_config_file();
+                match self.config_path.clone() {
+                    Some(path) => path,
+                    None => return false,
+                }
+            }
+        };
+
+        let Some(modified) = Self::config_last_modified(&path) else {
+            return false;
+        };
+
+        if let Some(last) = self.config_last_modified
+            && modified <= last
+        {
+            return false;
+        }
+
+        self.config_last_modified = Some(modified);
+        let config = AppConfig::load_or_create();
+        self.apply_runtime_config(config)
     }
 
     fn process_terminal_events(&mut self, cx: &mut Context<Self>) -> bool {
@@ -1074,7 +1160,7 @@ impl TerminalView {
             return;
         }
 
-        if self.use_tabs {
+        if self.use_tabs && !cfg!(target_os = "windows") {
             let viewport = window.viewport_size();
             let viewport_width: f32 = viewport.width.into();
             let x: f32 = event.position.x.into();
@@ -1181,7 +1267,13 @@ impl Render for TerminalView {
         let terminal_size = self.active_terminal().size();
         let focus_handle = self.focus_handle.clone();
         let show_tab_bar = self.show_tab_bar();
-        let show_titlebar_plus = self.use_tabs;
+        let show_windows_controls = cfg!(target_os = "windows");
+        let show_titlebar_plus = self.use_tabs && !show_windows_controls;
+        let titlebar_side_slot_width = if show_windows_controls {
+            WINDOWS_TITLEBAR_CONTROLS_WIDTH
+        } else {
+            TITLEBAR_PLUS_SIZE
+        };
         let mut titlebar_bg = colors.background;
         titlebar_bg.a = 0.96;
         let mut titlebar_border = colors.cursor;
@@ -1323,7 +1415,11 @@ impl Render for TerminalView {
                             .flex()
                             .items_center()
                             .px(px(TITLEBAR_SIDE_PADDING))
-                            .child(div().w(px(TITLEBAR_PLUS_SIZE)).h(px(TITLEBAR_PLUS_SIZE)))
+                            .child(
+                                div()
+                                    .w(px(titlebar_side_slot_width))
+                                    .h(px(TITLEBAR_PLUS_SIZE)),
+                            )
                             .child(
                                 div()
                                     .flex_1()
@@ -1333,7 +1429,49 @@ impl Render for TerminalView {
                                     .text_size(px(12.0))
                                     .child("Termy"),
                             )
-                            .child(
+                            .child(if show_windows_controls {
+                                div()
+                                    .w(px(WINDOWS_TITLEBAR_CONTROLS_WIDTH))
+                                    .h(px(TITLEBAR_HEIGHT))
+                                    .flex()
+                                    .items_center()
+                                    .child(
+                                        div()
+                                            .w(px(WINDOWS_TITLEBAR_BUTTON_WIDTH))
+                                            .h(px(TITLEBAR_HEIGHT))
+                                            .window_control_area(WindowControlArea::Min)
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .text_color(titlebar_text)
+                                            .text_size(px(12.0))
+                                            .child("-"),
+                                    )
+                                    .child(
+                                        div()
+                                            .w(px(WINDOWS_TITLEBAR_BUTTON_WIDTH))
+                                            .h(px(TITLEBAR_HEIGHT))
+                                            .window_control_area(WindowControlArea::Max)
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .text_color(titlebar_text)
+                                            .text_size(px(12.0))
+                                            .child("+"),
+                                    )
+                                    .child(
+                                        div()
+                                            .w(px(WINDOWS_TITLEBAR_BUTTON_WIDTH))
+                                            .h(px(TITLEBAR_HEIGHT))
+                                            .window_control_area(WindowControlArea::Close)
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .text_color(titlebar_text)
+                                            .text_size(px(12.0))
+                                            .child("x"),
+                                    )
+                            } else {
                                 div()
                                     .w(px(TITLEBAR_PLUS_SIZE))
                                     .h(px(TITLEBAR_PLUS_SIZE))
@@ -1343,8 +1481,8 @@ impl Render for TerminalView {
                                     .bg(titlebar_plus_bg)
                                     .text_color(titlebar_plus_text)
                                     .text_size(px(16.0))
-                                    .child(if show_titlebar_plus { "+" } else { "" }),
-                            ),
+                                    .child(if show_titlebar_plus { "+" } else { "" })
+                            }),
                     ),
             )
             .child(

@@ -8,7 +8,14 @@ use alacritty_terminal::{
 };
 use flume::{Receiver, Sender, unbounded};
 use gpui::{Keystroke, Pixels, px};
-use std::{collections::HashMap, env, path::Path, sync::Arc};
+use std::{
+    collections::HashMap,
+    env,
+    path::PathBuf,
+    sync::Arc,
+};
+#[cfg(not(target_os = "windows"))]
+use std::path::Path;
 
 #[derive(Debug, Clone)]
 pub struct TabTitleShellIntegration {
@@ -17,6 +24,13 @@ pub struct TabTitleShellIntegration {
 }
 
 fn login_shell_args(shell_path: &str) -> Vec<String> {
+    #[cfg(target_os = "windows")]
+    {
+        let _ = shell_path;
+        Vec::new()
+    }
+
+    #[cfg(not(target_os = "windows"))]
     match Path::new(shell_path)
         .file_name()
         .and_then(|name| name.to_str())
@@ -26,28 +40,89 @@ fn login_shell_args(shell_path: &str) -> Vec<String> {
     }
 }
 
+fn resolve_shell_path() -> String {
+    if let Ok(shell) = env::var("SHELL")
+        && !shell.trim().is_empty()
+    {
+        return shell;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(comspec) = env::var("COMSPEC")
+            && !comspec.trim().is_empty()
+        {
+            return comspec;
+        }
+        "C:\\Windows\\System32\\cmd.exe".to_string()
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        "/bin/bash".to_string()
+    }
+}
+
+fn user_home_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(user_profile) = env::var("USERPROFILE")
+            && !user_profile.trim().is_empty()
+        {
+            return Some(PathBuf::from(user_profile));
+        }
+
+        if let (Ok(home_drive), Ok(home_path)) = (env::var("HOMEDRIVE"), env::var("HOMEPATH"))
+            && !home_drive.trim().is_empty()
+            && !home_path.trim().is_empty()
+        {
+            return Some(PathBuf::from(format!("{home_drive}{home_path}")));
+        }
+    }
+
+    if let Ok(home) = env::var("HOME")
+        && !home.trim().is_empty()
+    {
+        return Some(PathBuf::from(home));
+    }
+
+    None
+}
+
 fn pty_env_overrides(
     shell_integration: Option<&TabTitleShellIntegration>,
 ) -> HashMap<String, String> {
     let mut env_overrides = HashMap::new();
-    let mut path_entries: Vec<String> = env::var("PATH")
-        .unwrap_or_else(|_| "/usr/bin:/bin:/usr/sbin:/sbin".to_string())
-        .split(':')
-        .map(ToString::to_string)
-        .collect();
 
-    for extra in [
-        "/opt/homebrew/bin",
-        "/opt/homebrew/sbin",
-        "/usr/local/bin",
-        "/usr/local/sbin",
-    ] {
-        if !path_entries.iter().any(|entry| entry == extra) {
-            path_entries.push(extra.to_string());
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut path_entries: Vec<PathBuf> = env::var_os("PATH")
+            .map(|paths| env::split_paths(&paths).collect())
+            .unwrap_or_default();
+
+        if path_entries.is_empty() {
+            for extra in ["/usr/bin", "/bin", "/usr/sbin", "/sbin"] {
+                path_entries.push(PathBuf::from(extra));
+            }
+        }
+
+        for extra in [
+            "/opt/homebrew/bin",
+            "/opt/homebrew/sbin",
+            "/usr/local/bin",
+            "/usr/local/sbin",
+        ] {
+            let extra_path = PathBuf::from(extra);
+            if !path_entries.iter().any(|entry| entry == &extra_path) {
+                path_entries.push(extra_path);
+            }
+        }
+
+        if let Ok(path) = env::join_paths(path_entries.iter()) {
+            env_overrides.insert("PATH".to_string(), path.to_string_lossy().into_owned());
         }
     }
 
-    env_overrides.insert("PATH".to_string(), path_entries.join(":"));
     env_overrides.insert("TERM_PROGRAM".to_string(), "termy".to_string());
 
     let shell_integration_enabled = shell_integration.map(|cfg| cfg.enabled).unwrap_or(false);
@@ -75,20 +150,31 @@ fn resolve_working_directory(configured: Option<&str>) -> Option<std::path::Path
         return None;
     }
 
-    let expanded = if configured == "~" || configured.starts_with("~/") {
-        env::var("HOME").ok().map(|home| {
-            if configured == "~" {
-                home
-            } else {
-                format!("{home}/{}", &configured[2..])
-            }
-        })?
+    let path = if configured == "~" {
+        user_home_dir()?
+    } else if let Some(relative) = configured
+        .strip_prefix("~/")
+        .or_else(|| configured.strip_prefix("~\\"))
+    {
+        user_home_dir()?.join(relative)
     } else {
-        configured.to_string()
+        PathBuf::from(configured)
     };
 
-    let path = std::path::PathBuf::from(expanded);
     if path.is_dir() { Some(path) } else { None }
+}
+
+fn default_working_directory() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(home) = user_home_dir()
+            && home.is_dir()
+        {
+            return Some(home);
+        }
+    }
+
+    env::current_dir().ok()
 }
 
 /// Events sent from the terminal to the view
@@ -213,13 +299,13 @@ impl Terminal {
         // Create event channels
         let (events_tx, events_rx) = unbounded();
 
-        // Get shell from environment or default to bash
-        let shell_path = env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+        // Get shell from environment or default to an OS-appropriate shell.
+        let shell_path = resolve_shell_path();
         let shell = Shell::new(shell_path.clone(), login_shell_args(&shell_path));
 
         // Get working directory
         let working_directory =
-            resolve_working_directory(configured_working_dir).or_else(|| env::current_dir().ok());
+            resolve_working_directory(configured_working_dir).or_else(default_working_directory);
 
         // Configure PTY
         let pty_options = PtyOptions {
@@ -227,6 +313,8 @@ impl Terminal {
             working_directory,
             env: pty_env_overrides(tab_title_shell_integration),
             drain_on_exit: true,
+            #[cfg(target_os = "windows")]
+            escape_args: false,
         };
 
         // Create terminal config

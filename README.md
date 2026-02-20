@@ -37,6 +37,23 @@ Create app + DMG:
 Output:
 - `target/release/Termy-<version>-macos-<arch>.dmg`
 
+## Build Setup.exe (Windows)
+
+Install Inno Setup once:
+
+```powershell
+winget install JRSoftware.InnoSetup
+```
+
+Create Windows installer:
+
+```powershell
+./scripts/build-setup.ps1 -Version 0.1.0 -Arch x64 -Target x86_64-pc-windows-msvc
+```
+
+Output:
+- `target/dist/Termy-<version>-<arch>-Setup.exe`
+
 ## Config
 
 The config file is inspired by Ghostty.

@@ -12,8 +12,6 @@ icon = ["assets/termy.icns"]
 
 [dependencies]
 gpui = { git = "https://github.com/zed-industries/zed", package = "gpui" }
-# Pin core-text to 21.0.0 to avoid core-graphics version conflict
-core-text = "=21.0.0"
 
 # Terminal emulation
 alacritty_terminal = { git = "https://github.com/alacritty/alacritty", rev = "4225cea231432fb23442b1da2463b4ec9dfd726c" }
@@ -28,3 +26,10 @@ anyhow = "1.0"
 # Logging
 log = "0.4"
 env_logger = "0.11"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Pin core-text to 21.0.0 to avoid core-graphics version conflict on macOS.
+core-text = "=21.0.0"
+
+[target.'cfg(target_os = "windows")'.build-dependencies]
+winresource = "0.1"
