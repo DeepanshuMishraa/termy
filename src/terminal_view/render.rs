@@ -604,6 +604,9 @@ impl Render for TerminalView {
         } else {
             let mut container = div().flex().flex_col().gap(px(8.0));
             for toast in self.toast_manager.active().iter() {
+                let toast_id = toast.id;
+                let toast_message = toast.message.clone();
+                let is_hovered = self.hovered_toast == Some(toast_id);
                 let (symbol, accent) = match toast.kind {
                     termy_toast::ToastKind::Info => (
                         "i",
@@ -649,10 +652,16 @@ impl Render for TerminalView {
                 border.a = 0.2;
                 let mut text = colors.foreground;
                 text.a = 0.96;
+                let mut action_text = colors.foreground;
+                action_text.a = 0.72;
+                let mut action_hover_bg = colors.cursor;
+                action_hover_bg.a = 0.16;
+                let mut action_hover_text = colors.foreground;
+                action_hover_text.a = 1.0;
 
                 container = container.child(
                     div()
-                        .id(("toast", toast.id))
+                        .id(("toast", toast_id))
                         .max_w(px(440.0))
                         .rounded_md()
                         .bg(bg)
@@ -666,6 +675,7 @@ impl Render for TerminalView {
                                 .child(div().w(px(3.0)).h_full().bg(accent))
                                 .child(
                                     div()
+                                        .w_full()
                                         .px(px(12.0))
                                         .py(px(10.0))
                                         .flex()
@@ -687,10 +697,93 @@ impl Render for TerminalView {
                                         .child(
                                             div()
                                                 .flex_1()
+                                                .truncate()
                                                 .text_size(px(12.0))
                                                 .text_color(text)
-                                                .child(toast.message.clone()),
-                                        ),
+                                                .child(toast_message.clone()),
+                                        )
+                                        .children(is_hovered.then(|| {
+                                            div()
+                                                .flex()
+                                                .items_center()
+                                                .gap(px(6.0))
+                                                .child(
+                                                    div()
+                                                        .w(px(20.0))
+                                                        .h(px(20.0))
+                                                        .rounded_sm()
+                                                        .flex()
+                                                        .items_center()
+                                                        .justify_center()
+                                                        .text_size(px(11.0))
+                                                        .text_color(action_text)
+                                                        .hover(|style| {
+                                                            style
+                                                                .bg(action_hover_bg)
+                                                                .text_color(action_hover_text)
+                                                        })
+                                                        .cursor_pointer()
+                                                        .on_mouse_down(
+                                                            MouseButton::Left,
+                                                            cx.listener(
+                                                            move |_this, _event, _window, cx| {
+                                                                cx.write_to_clipboard(
+                                                                    ClipboardItem::new_string(
+                                                                        toast_message.clone(),
+                                                                    ),
+                                                                );
+                                                                termy_toast::success(
+                                                                    "Copied toast to clipboard",
+                                                                );
+                                                                cx.stop_propagation();
+                                                            },
+                                                        ),
+                                                        )
+                                                        .child("⧉"),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .w(px(20.0))
+                                                        .h(px(20.0))
+                                                        .rounded_sm()
+                                                        .flex()
+                                                        .items_center()
+                                                        .justify_center()
+                                                        .text_size(px(12.0))
+                                                        .text_color(action_text)
+                                                        .hover(|style| {
+                                                            style
+                                                                .bg(action_hover_bg)
+                                                                .text_color(action_hover_text)
+                                                        })
+                                                        .cursor_pointer()
+                                                        .on_mouse_down(
+                                                            MouseButton::Left,
+                                                            cx.listener(
+                                                            move |this, _event, _window, cx| {
+                                                                this.toast_manager.dismiss(toast_id);
+                                                                if this.hovered_toast
+                                                                    == Some(toast_id)
+                                                                {
+                                                                    this.hovered_toast = None;
+                                                                }
+                                                                cx.notify();
+                                                                cx.stop_propagation();
+                                                            },
+                                                        ),
+                                                        )
+                                                        .child("x"),
+                                                )
+                                        }))
+                                        .on_mouse_move(cx.listener(
+                                            move |this, _event, _window, cx| {
+                                                if this.hovered_toast != Some(toast_id) {
+                                                    this.hovered_toast = Some(toast_id);
+                                                    cx.notify();
+                                                }
+                                                cx.stop_propagation();
+                                            },
+                                        )),
                                 ),
                         ),
                 );
@@ -711,6 +804,12 @@ impl Render for TerminalView {
                             .justify_end()
                             .pr(px(16.0))
                             .pb(px(16.0))
+                            .on_mouse_move(cx.listener(|this, _event, _window, cx| {
+                                if this.hovered_toast.is_some() {
+                                    this.hovered_toast = None;
+                                    cx.notify();
+                                }
+                            }))
                             .child(container),
                     )
                     .into_any(),
@@ -766,5 +865,3 @@ impl Render for TerminalView {
             .children(toast_overlay)
     }
 }
-
-

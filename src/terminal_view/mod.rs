@@ -24,7 +24,7 @@ use termy_toast::ToastManager;
 #[cfg(target_os = "macos")]
 use termy_auto_update::{AutoUpdater, UpdateState};
 #[cfg(target_os = "macos")]
-use gpui::Entity;
+use gpui::{AppContext, Entity};
 
 mod command_palette;
 mod interaction;
@@ -162,6 +162,7 @@ pub struct TerminalView {
     selection_dragging: bool,
     selection_moved: bool,
     hovered_link: Option<HoveredLink>,
+    hovered_toast: Option<u64>,
     toast_manager: ToastManager,
     command_palette_open: bool,
     command_palette_query: String,
@@ -274,6 +275,7 @@ impl TerminalView {
             selection_dragging: false,
             selection_moved: false,
             hovered_link: None,
+            hovered_toast: None,
             toast_manager: ToastManager::new(),
             command_palette_open: false,
             command_palette_query: String::new(),

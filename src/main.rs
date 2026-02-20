@@ -66,15 +66,17 @@ fn main() {
         }]);
 
         let app_config = config::AppConfig::load_or_create();
-        let mut window_width = app_config.window_width;
-        let mut window_height = app_config.window_height;
+        let window_width = app_config.window_width;
+        let window_height = app_config.window_height;
         #[cfg(target_os = "windows")]
-        if (window_width - LEGACY_DEFAULT_WINDOW_WIDTH).abs() < f32::EPSILON
-            && (window_height - LEGACY_DEFAULT_WINDOW_HEIGHT).abs() < f32::EPSILON
-        {
-            window_width = WINDOWS_DEFAULT_WINDOW_WIDTH;
-            window_height = WINDOWS_DEFAULT_WINDOW_HEIGHT;
-        }
+        let (window_width, window_height) =
+            if (window_width - LEGACY_DEFAULT_WINDOW_WIDTH).abs() < f32::EPSILON
+                && (window_height - LEGACY_DEFAULT_WINDOW_HEIGHT).abs() < f32::EPSILON
+            {
+                (WINDOWS_DEFAULT_WINDOW_WIDTH, WINDOWS_DEFAULT_WINDOW_HEIGHT)
+            } else {
+                (window_width, window_height)
+            };
         let window_width = window_width.max(MIN_WINDOW_WIDTH);
         let window_height = window_height.max(MIN_WINDOW_HEIGHT);
         let bounds = Bounds::centered(None, size(px(window_width), px(window_height)), cx);
