@@ -24,7 +24,7 @@ const TAB_PILL_COMPACT_PADDING: f32 = 6.0;
 const TAB_PILL_COMPACT_THRESHOLD: f32 = 120.0;
 const TAB_PILL_GAP: f32 = 8.0;
 const TAB_CLOSE_HITBOX: f32 = 22.0;
-const TAB_CLOSE_MIN_WIDTH: f32 = 120.0;
+const TAB_INACTIVE_CLOSE_MIN_WIDTH: f32 = 120.0;
 const MAX_TAB_TITLE_CHARS: usize = 96;
 const SELECTION_BG_ALPHA: f32 = 0.35;
 const DIM_TEXT_FACTOR: f32 = 0.66;
@@ -207,8 +207,19 @@ impl TerminalView {
         }
     }
 
-    fn tab_shows_close(tab_pill_width: f32) -> bool {
-        tab_pill_width >= TAB_CLOSE_MIN_WIDTH
+    fn tab_shows_close(tab_pill_width: f32, is_active: bool, tab_padding_x: f32) -> bool {
+        // Keep close affordance visible on the active tab whenever there is
+        // enough room for the hit target and side padding.
+        let min_hit_target_width = TAB_CLOSE_HITBOX + (tab_padding_x * 2.0);
+        if tab_pill_width < min_hit_target_width {
+            return false;
+        }
+
+        if is_active {
+            return true;
+        }
+
+        tab_pill_width >= TAB_INACTIVE_CLOSE_MIN_WIDTH
     }
 
     fn add_tab(&mut self, cx: &mut Context<Self>) {
@@ -753,7 +764,6 @@ impl TerminalView {
         let viewport = window.viewport_size();
         let tab_pill_width = self.tab_pill_width(viewport.width.into());
         let tab_padding_x = Self::tab_pill_padding_x(tab_pill_width);
-        let show_close = Self::tab_shows_close(tab_pill_width);
         let slot_width = tab_pill_width + TAB_PILL_GAP;
         let index = (x / slot_width).floor() as usize;
         if index >= self.tabs.len() {
@@ -765,6 +775,8 @@ impl TerminalView {
             return;
         }
 
+        let is_active = index == self.active_tab;
+        let show_close = Self::tab_shows_close(tab_pill_width, is_active, tab_padding_x);
         if show_close {
             let close_left = (tab_pill_width - tab_padding_x - TAB_CLOSE_HITBOX).max(0.0);
             let close_right = (tab_pill_width - tab_padding_x).max(0.0);
@@ -931,7 +943,6 @@ impl Render for TerminalView {
         let viewport = window.viewport_size();
         let tab_pill_width = self.tab_pill_width(viewport.width.into());
         let tab_pill_padding = Self::tab_pill_padding_x(tab_pill_width);
-        let show_tab_close = Self::tab_shows_close(tab_pill_width);
 
         let mut tabs_row = div()
             .w_full()
@@ -943,6 +954,8 @@ impl Render for TerminalView {
         if show_tab_bar {
             for (index, tab) in self.tabs.iter().enumerate() {
                 let is_active = index == self.active_tab;
+                let show_tab_close =
+                    Self::tab_shows_close(tab_pill_width, is_active, tab_pill_padding);
                 let label = if self.renaming_tab == Some(index) {
                     format!("{}|", self.rename_buffer)
                 } else {
