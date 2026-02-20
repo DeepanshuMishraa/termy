@@ -5,30 +5,30 @@ use gpui::{
 
 /// Info needed to render a single cell.
 #[derive(Clone)]
-pub(crate) struct CellRenderInfo {
-    pub(crate) col: usize,
-    pub(crate) row: usize,
-    pub(crate) char: char,
-    pub(crate) fg: Hsla,
-    pub(crate) bg: Hsla,
-    pub(crate) bold: bool,
-    pub(crate) render_text: bool,
-    pub(crate) is_cursor: bool,
-    pub(crate) selected: bool,
+pub struct CellRenderInfo {
+    pub col: usize,
+    pub row: usize,
+    pub char: char,
+    pub fg: Hsla,
+    pub bg: Hsla,
+    pub bold: bool,
+    pub render_text: bool,
+    pub is_cursor: bool,
+    pub selected: bool,
 }
 
 /// Custom element for rendering the terminal grid.
-pub(crate) struct TerminalGrid {
-    pub(crate) cells: Vec<CellRenderInfo>,
-    pub(crate) cell_size: Size<Pixels>,
-    pub(crate) cols: usize,
-    pub(crate) rows: usize,
-    pub(crate) cursor_color: Hsla,
-    pub(crate) selection_bg: Hsla,
-    pub(crate) selection_fg: Hsla,
-    pub(crate) hovered_link_range: Option<(usize, usize, usize)>,
-    pub(crate) font_family: SharedString,
-    pub(crate) font_size: Pixels,
+pub struct TerminalGrid {
+    pub cells: Vec<CellRenderInfo>,
+    pub cell_size: Size<Pixels>,
+    pub cols: usize,
+    pub rows: usize,
+    pub cursor_color: Hsla,
+    pub selection_bg: Hsla,
+    pub selection_fg: Hsla,
+    pub hovered_link_range: Option<(usize, usize, usize)>,
+    pub font_family: SharedString,
+    pub font_size: Pixels,
 }
 
 impl IntoElement for TerminalGrid {
@@ -183,17 +183,19 @@ impl Element for TerminalGrid {
                 font,
                 color: fg_color,
                 background_color: None,
-                underline: self.hovered_link_range.and_then(|(row, start_col, end_col)| {
-                    if cell.row == row && cell.col >= start_col && cell.col <= end_col {
-                        Some(UnderlineStyle {
-                            thickness: px(1.0),
-                            color: Some(fg_color),
-                            wavy: false,
-                        })
-                    } else {
-                        None
-                    }
-                }),
+                underline: self
+                    .hovered_link_range
+                    .and_then(|(row, start_col, end_col)| {
+                        if cell.row == row && cell.col >= start_col && cell.col <= end_col {
+                            Some(UnderlineStyle {
+                                thickness: px(1.0),
+                                color: Some(fg_color),
+                                wavy: false,
+                            })
+                        } else {
+                            None
+                        }
+                    }),
                 strikethrough: None,
             };
 

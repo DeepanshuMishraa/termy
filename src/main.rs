@@ -2,8 +2,6 @@
 
 mod colors;
 mod config;
-mod terminal;
-mod terminal_grid;
 mod terminal_view;
 
 #[cfg(target_os = "macos")]

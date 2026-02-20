@@ -5177,7 +5177,7 @@ dependencies = [
 
 [[package]]
 name = "termy"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -5190,7 +5190,9 @@ dependencies = [
  "parking_lot",
  "smol",
  "termy_auto_update",
+ "termy_terminal_ui",
  "termy_themes",
+ "termy_toast",
  "winresource",
 ]
 
@@ -5209,11 +5211,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "termy_terminal_ui"
+version = "0.1.0"
+dependencies = [
+ "alacritty_terminal",
+ "anyhow",
+ "flume",
+ "gpui",
+]
+
+[[package]]
 name = "termy_themes"
 version = "0.1.0"
 dependencies = [
  "gpui",
 ]
+
+[[package]]
+name = "termy_toast"
+version = "0.1.0"
 
 [[package]]
 name = "thiserror"

@@ -1,10 +1,10 @@
 [workspace]
-members = [".", "crates/auto_update", "crates/themes"]
+members = [".", "crates/auto_update", "crates/themes", "crates/terminal_ui", "crates/toast_sdk"]
 resolver = "2"
 
 [package]
 name = "termy"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2024"
 
 [package.metadata.bundle]
@@ -34,6 +34,8 @@ env_logger = "0.11"
 # Auto-update
 termy_auto_update = { path = "crates/auto_update" }
 termy_themes = { path = "crates/themes" }
+termy_terminal_ui = { path = "crates/terminal_ui" }
+termy_toast = { path = "crates/toast_sdk" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Pin core-text to 21.0.0 to avoid core-graphics version conflict on macOS.

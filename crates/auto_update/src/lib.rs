@@ -268,7 +268,7 @@ fn do_install(dmg_path: &PathBuf) -> Result<()> {
 
     // Mount the DMG
     let mount = Command::new("hdiutil")
-        .args(["attach", "-nobrowse", "-quiet"])
+        .args(["attach", "-nobrowse", "-readonly"])
         .arg(dmg_path)
         .output()
         .context("Failed to mount DMG")?;
@@ -280,22 +280,69 @@ fn do_install(dmg_path: &PathBuf) -> Result<()> {
         );
     }
 
-    // Copy the app bundle
-    let cp_result = Command::new("cp")
-        .args(["-rf", "/Volumes/Termy/Termy.app", "/Applications/Termy.app"])
-        .output()
-        .context("Failed to copy Termy.app")?;
+    let mount_stdout = String::from_utf8_lossy(&mount.stdout);
+    let mount_point = mount_stdout
+        .lines()
+        .find_map(|line| {
+            line.find("/Volumes/")
+                .map(|start| PathBuf::from(line[start..].trim()))
+        })
+        .context(format!(
+            "Could not determine mounted volume from hdiutil output: {}",
+            mount_stdout.trim()
+        ))?;
 
-    // Always try to detach, even if copy failed
+    let install_result: Result<()> = (|| {
+        let mut app_path = None;
+        for entry in std::fs::read_dir(&mount_point).context("Failed to read mounted volume")? {
+            let entry = entry?;
+            let path = entry.path();
+            let is_app = path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| ext.eq_ignore_ascii_case("app"))
+                .unwrap_or(false);
+            if !is_app {
+                continue;
+            }
+            if path.file_name().and_then(|n| n.to_str()) == Some("Termy.app") {
+                app_path = Some(path);
+                break;
+            }
+            if app_path.is_none() {
+                app_path = Some(path);
+            }
+        }
+
+        let app_path = app_path.context("No .app bundle found inside mounted DMG")?;
+        let target_app = PathBuf::from("/Applications").join(
+            app_path
+                .file_name()
+                .context("Mounted app bundle is missing file name")?,
+        );
+
+        let cp_result = Command::new("cp")
+            .arg("-Rf")
+            .arg(&app_path)
+            .arg(&target_app)
+            .output()
+            .context("Failed to copy app bundle to /Applications")?;
+
+        if !cp_result.status.success() {
+            anyhow::bail!("cp failed: {}", String::from_utf8_lossy(&cp_result.stderr));
+        }
+
+        Ok(())
+    })();
+
+    // Always try to detach, even if install failed.
     let _ = Command::new("hdiutil")
-        .args(["detach", "/Volumes/Termy", "-quiet"])
+        .arg("detach")
+        .arg(&mount_point)
+        .arg("-quiet")
         .output();
 
-    if !cp_result.status.success() {
-        anyhow::bail!("cp failed: {}", String::from_utf8_lossy(&cp_result.stderr));
-    }
-
-    Ok(())
+    install_result
 }
 
 #[cfg(not(target_os = "macos"))]
