@@ -6,7 +6,7 @@ use gpui::{
     AnyElement, App, AppContext, AsyncApp, ClipboardItem, Context, Element, Entity, FocusHandle,
     Focusable, Font, FontWeight, InteractiveElement, IntoElement, KeyDownEvent, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Render, SharedString,
-    Size, Styled, WeakEntity, Window, WindowControlArea, div, px,
+    Size, StatefulInteractiveElement, Styled, WeakEntity, Window, WindowControlArea, div, px,
 };
 use std::{
     fs,

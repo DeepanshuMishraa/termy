@@ -249,9 +249,18 @@ impl TerminalView {
         let index = self.command_palette_selected.min(items.len() - 1);
         let action = items[index].action;
 
+        self.execute_command_palette_action(action, cx);
+    }
+
+    fn execute_command_palette_action(
+        &mut self,
+        action: CommandPaletteAction,
+        cx: &mut Context<Self>,
+    ) {
         self.command_palette_open = false;
         self.command_palette_query.clear();
         self.command_palette_selected = 0;
+        self.command_palette_query_select_all = false;
 
         match action {
             CommandPaletteAction::RestartApp => match self.restart_application() {
@@ -334,6 +343,12 @@ impl TerminalView {
         let mut selected_border = self.colors.cursor;
         selected_border.a = 0.35;
 
+        let mut hover_bg = self.colors.cursor;
+        hover_bg.a = 0.12;
+
+        let mut hover_border = self.colors.cursor;
+        hover_border.a = 0.24;
+
         let mut transparent = self.colors.background;
         transparent.a = 0.0;
 
@@ -354,8 +369,10 @@ impl TerminalView {
                 .enumerate()
             {
                 let is_selected = index == selected;
+                let action = item.action;
                 list = list.child(
                     div()
+                        .id(("command-palette-item", index))
                         .w_full()
                         .px(px(10.0))
                         .py(px(8.0))
@@ -371,6 +388,12 @@ impl TerminalView {
                         } else {
                             transparent
                         })
+                        .hover(|style| style.bg(hover_bg).border_color(hover_border))
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |this, _event, _window, cx| {
+                            this.execute_command_palette_action(action, cx);
+                            cx.stop_propagation();
+                        }))
                         .text_size(px(12.0))
                         .text_color(primary_text)
                         .child(item.title),
@@ -385,12 +408,9 @@ impl TerminalView {
             .top_0()
             .left_0()
             .occlude()
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _event, _window, cx| {
-                    this.close_command_palette(cx);
-                }),
-            )
+            .on_click(cx.listener(|this, _event, _window, cx| {
+                this.close_command_palette(cx);
+            }))
             .child(div().size_full().bg(overlay_bg).absolute().top_0().left_0())
             .child(
                 div()
@@ -404,6 +424,7 @@ impl TerminalView {
                     .pt(px(36.0))
                     .child(
                         div()
+                            .id("command-palette-panel")
                             .w(px(COMMAND_PALETTE_WIDTH))
                             .px(px(10.0))
                             .py(px(10.0))
@@ -411,12 +432,9 @@ impl TerminalView {
                             .bg(panel_bg)
                             .border_1()
                             .border_color(panel_border)
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|_this, _event, _window, cx| {
-                                    cx.stop_propagation();
-                                }),
-                            )
+                            .on_click(cx.listener(|_this, _event, _window, cx| {
+                                cx.stop_propagation();
+                            }))
                             .child(
                                 div()
                                     .w_full()
