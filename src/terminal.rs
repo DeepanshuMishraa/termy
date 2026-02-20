@@ -81,11 +81,24 @@ pub enum TerminalEvent {
 
 /// Event listener that forwards alacritty events to our channel
 #[derive(Clone)]
-pub struct JsonEventListener(pub Sender<AlacEvent>);
+pub struct JsonEventListener {
+    events_tx: Sender<AlacEvent>,
+    wake_tx: Option<Sender<()>>,
+}
+
+impl JsonEventListener {
+    fn new(events_tx: Sender<AlacEvent>, wake_tx: Option<Sender<()>>) -> Self {
+        Self { events_tx, wake_tx }
+    }
+}
 
 impl EventListener for JsonEventListener {
     fn send_event(&self, event: AlacEvent) {
-        let _ = self.0.send(event);
+        let _ = self.events_tx.send(event);
+        if let Some(wake_tx) = &self.wake_tx {
+            // Wakeups are coalesced by using a bounded channel in the view.
+            let _ = wake_tx.try_send(());
+        }
     }
 }
 
@@ -163,7 +176,11 @@ pub struct Terminal {
 
 impl Terminal {
     /// Create a new terminal with the given size
-    pub fn new(size: TerminalSize, configured_working_dir: Option<&str>) -> anyhow::Result<Self> {
+    pub fn new(
+        size: TerminalSize,
+        configured_working_dir: Option<&str>,
+        event_wakeup_tx: Option<Sender<()>>,
+    ) -> anyhow::Result<Self> {
         // Create event channels
         let (events_tx, events_rx) = unbounded();
 
@@ -187,7 +204,8 @@ impl Terminal {
         let term_config = TermConfig::default();
 
         // Create the terminal emulator
-        let term = Term::new(term_config, &size, JsonEventListener(events_tx.clone()));
+        let listener = JsonEventListener::new(events_tx.clone(), event_wakeup_tx);
+        let term = Term::new(term_config, &size, listener.clone());
         let term = Arc::new(FairMutex::new(term));
 
         // Create PTY
@@ -195,13 +213,7 @@ impl Terminal {
         let pty = tty::new(&pty_options, size.into(), window_id)?;
 
         // Create and spawn the event loop
-        let event_loop = EventLoop::new(
-            term.clone(),
-            JsonEventListener(events_tx),
-            pty,
-            false,
-            false,
-        )?;
+        let event_loop = EventLoop::new(term.clone(), listener, pty, false, false)?;
         let pty_tx = Notifier(event_loop.channel());
         let _io_thread = event_loop.spawn();
 

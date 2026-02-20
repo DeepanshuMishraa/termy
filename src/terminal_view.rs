@@ -2,13 +2,13 @@ use crate::colors::TerminalColors;
 use crate::config::AppConfig;
 use crate::terminal::{Terminal, TerminalEvent, TerminalSize, keystroke_to_input};
 use alacritty_terminal::term::cell::Flags;
+use flume::{Sender, bounded};
 use gpui::{
     App, AsyncApp, Bounds, ClipboardItem, Context, Element, FocusHandle, Focusable, Font,
     FontWeight, Hsla, InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Render, SharedString, Size, Styled,
     TextAlign, TextRun, WeakEntity, Window, WindowControlArea, div, point, px, quad,
 };
-use std::time::Duration;
 
 const MIN_FONT_SIZE: f32 = 8.0;
 const MAX_FONT_SIZE: f32 = 40.0;
@@ -42,6 +42,7 @@ pub struct TerminalView {
     active_tab: usize,
     renaming_tab: Option<usize>,
     rename_buffer: String,
+    event_wakeup_tx: Sender<()>,
     focus_handle: FocusHandle,
     colors: TerminalColors,
     use_tabs: bool,
@@ -63,50 +64,18 @@ pub struct TerminalView {
 impl TerminalView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
+        let (event_wakeup_tx, event_wakeup_rx) = bounded(1);
 
         // Focus the terminal immediately
         focus_handle.focus(window, cx);
 
-        // Start a timer to poll for terminal events
+        // Process terminal events only when terminals signal activity.
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            loop {
-                smol::Timer::after(Duration::from_millis(16)).await;
+            while event_wakeup_rx.recv_async().await.is_ok() {
+                while event_wakeup_rx.try_recv().is_ok() {}
                 let result = cx.update(|cx| {
                     this.update(cx, |view, cx| {
-                        let mut should_redraw = false;
-                        let active_tab = view.active_tab;
-
-                        for index in 0..view.tabs.len() {
-                            let events = view.tabs[index].terminal.process_events();
-                            for event in events {
-                                match event {
-                                    TerminalEvent::Wakeup
-                                    | TerminalEvent::Bell
-                                    | TerminalEvent::Exit => {
-                                        if index == active_tab {
-                                            should_redraw = true;
-                                        }
-                                    }
-                                    TerminalEvent::Title(title) => {
-                                        let title = title.trim();
-                                        if !title.is_empty() && view.use_tabs {
-                                            let next = Self::truncate_tab_title(title);
-
-                                            if view.tabs[index].title != next
-                                                && view.renaming_tab != Some(index)
-                                            {
-                                                view.tabs[index].title = next;
-                                                if view.show_tab_bar() {
-                                                    should_redraw = true;
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        if should_redraw {
+                        if view.process_terminal_events() {
                             cx.notify();
                         }
                     })
@@ -124,8 +93,12 @@ impl TerminalView {
         let padding_x = config.padding_x.max(0.0);
         let padding_y = config.padding_y.max(0.0);
         let configured_working_dir = config.working_dir.clone();
-        let terminal = Terminal::new(TerminalSize::default(), configured_working_dir.as_deref())
-            .expect("Failed to create terminal");
+        let terminal = Terminal::new(
+            TerminalSize::default(),
+            configured_working_dir.as_deref(),
+            Some(event_wakeup_tx.clone()),
+        )
+        .expect("Failed to create terminal");
 
         Self {
             tabs: vec![TerminalTab {
@@ -135,6 +108,7 @@ impl TerminalView {
             active_tab: 0,
             renaming_tab: None,
             rename_buffer: String::new(),
+            event_wakeup_tx,
             focus_handle,
             colors,
             use_tabs: config.use_tabs,
@@ -151,6 +125,38 @@ impl TerminalView {
             selection_moved: false,
             cell_size: None,
         }
+    }
+
+    fn process_terminal_events(&mut self) -> bool {
+        let mut should_redraw = false;
+        let active_tab = self.active_tab;
+
+        for index in 0..self.tabs.len() {
+            let events = self.tabs[index].terminal.process_events();
+            for event in events {
+                match event {
+                    TerminalEvent::Wakeup | TerminalEvent::Bell | TerminalEvent::Exit => {
+                        if index == active_tab {
+                            should_redraw = true;
+                        }
+                    }
+                    TerminalEvent::Title(title) => {
+                        let title = title.trim();
+                        if !title.is_empty() && self.use_tabs {
+                            let next = Self::truncate_tab_title(title);
+                            if self.tabs[index].title != next && self.renaming_tab != Some(index) {
+                                self.tabs[index].title = next;
+                                if self.show_tab_bar() {
+                                    should_redraw = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        should_redraw
     }
 
     fn clear_selection(&mut self) {
@@ -188,6 +194,7 @@ impl TerminalView {
         let terminal = Terminal::new(
             TerminalSize::default(),
             self.configured_working_dir.as_deref(),
+            Some(self.event_wakeup_tx.clone()),
         )
         .expect("Failed to create terminal tab");
 
