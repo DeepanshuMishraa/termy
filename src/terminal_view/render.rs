@@ -35,6 +35,10 @@ impl Render for TerminalView {
         let font_family = self.font_family.clone();
         let font_size = self.font_size;
         let background_opacity = self.transparent_background_opacity;
+        #[cfg(target_os = "windows")]
+        let effective_background_opacity = if background_opacity < 1.0 { 1.0 } else { background_opacity };
+        #[cfg(not(target_os = "windows"))]
+        let effective_background_opacity = background_opacity;
 
         self.sync_terminal_size(window, cell_size);
 
@@ -59,24 +63,6 @@ impl Render for TerminalView {
                 let mut bg = colors.convert(cell_content.bg);
                 if cell_content.flags.contains(Flags::INVERSE) {
                     std::mem::swap(&mut fg, &mut bg);
-                }
-                let final_bg_is_default = if cell_content.flags.contains(Flags::INVERSE) {
-                    matches!(
-                        cell_content.fg,
-                        alacritty_terminal::vte::ansi::Color::Named(
-                            alacritty_terminal::vte::ansi::NamedColor::Background
-                        )
-                    )
-                } else {
-                    matches!(
-                        cell_content.bg,
-                        alacritty_terminal::vte::ansi::Color::Named(
-                            alacritty_terminal::vte::ansi::NamedColor::Background
-                        )
-                    )
-                };
-                if final_bg_is_default {
-                    bg.a *= background_opacity;
                 }
                 if cell_content.flags.contains(Flags::DIM) {
                     fg.r *= DIM_TEXT_FACTOR;
@@ -503,12 +489,15 @@ impl Render for TerminalView {
         };
         #[cfg(not(target_os = "macos"))]
         let banner_element: Option<AnyElement> = None;
+        let mut terminal_surface_bg = colors.background;
+        terminal_surface_bg.a *= effective_background_opacity;
 
         let terminal_grid = TerminalGrid {
             cells: cells_to_render,
             cell_size,
             cols: terminal_size.cols as usize,
             rows: terminal_size.rows as usize,
+            default_bg: terminal_surface_bg.into(),
             cursor_color: colors.cursor.into(),
             selection_bg: selection_bg.into(),
             selection_fg: selection_fg.into(),
@@ -615,10 +604,7 @@ impl Render for TerminalView {
         } else {
             let mut container = div().flex().flex_col().gap(px(8.0));
             for toast in self.toast_manager.active().iter() {
-                let mut bg = colors.background;
-                let mut border = colors.cursor;
-                let mut text = colors.foreground;
-                let (symbol, symbol_color) = match toast.kind {
+                let (symbol, accent) = match toast.kind {
                     termy_toast::ToastKind::Info => (
                         "i",
                         gpui::Rgba {
@@ -629,7 +615,7 @@ impl Render for TerminalView {
                         },
                     ),
                     termy_toast::ToastKind::Success => (
-                        "✓",
+                        "+",
                         gpui::Rgba {
                             r: 0.44,
                             g: 0.85,
@@ -647,7 +633,7 @@ impl Render for TerminalView {
                         },
                     ),
                     termy_toast::ToastKind::Error => (
-                        "✕",
+                        "x",
                         gpui::Rgba {
                             r: 0.98,
                             g: 0.48,
@@ -657,86 +643,54 @@ impl Render for TerminalView {
                     ),
                 };
 
-                match toast.kind {
-                    termy_toast::ToastKind::Info => {
-                        bg.a = 0.94;
-                        border.a = 0.24;
-                    }
-                    termy_toast::ToastKind::Success => {
-                        bg = gpui::Rgba {
-                            r: 0.16,
-                            g: 0.26,
-                            b: 0.18,
-                            a: 0.96,
-                        };
-                        border = gpui::Rgba {
-                            r: 0.32,
-                            g: 0.55,
-                            b: 0.36,
-                            a: 0.9,
-                        };
-                    }
-                    termy_toast::ToastKind::Warning => {
-                        bg = gpui::Rgba {
-                            r: 0.30,
-                            g: 0.24,
-                            b: 0.14,
-                            a: 0.96,
-                        };
-                        border = gpui::Rgba {
-                            r: 0.67,
-                            g: 0.52,
-                            b: 0.20,
-                            a: 0.9,
-                        };
-                    }
-                    termy_toast::ToastKind::Error => {
-                        bg = gpui::Rgba {
-                            r: 0.30,
-                            g: 0.15,
-                            b: 0.15,
-                            a: 0.96,
-                        };
-                        border = gpui::Rgba {
-                            r: 0.72,
-                            g: 0.28,
-                            b: 0.28,
-                            a: 0.9,
-                        };
-                    }
-                }
+                let mut bg = colors.background;
+                bg.a = 0.94;
+                let mut border = colors.cursor;
+                border.a = 0.2;
+                let mut text = colors.foreground;
                 text.a = 0.96;
 
                 container = container.child(
                     div()
                         .id(("toast", toast.id))
-                        .max_w(px(420.0))
-                        .px(px(12.0))
-                        .py(px(10.0))
+                        .max_w(px(440.0))
                         .rounded_md()
                         .bg(bg)
                         .border_1()
                         .border_color(border)
-                        .text_size(px(12.0))
                         .child(
                             div()
                                 .w_full()
                                 .flex()
                                 .items_center()
-                                .gap(px(10.0))
+                                .child(div().w(px(3.0)).h_full().bg(accent))
                                 .child(
                                     div()
-                                        .w(px(16.0))
-                                        .h(px(16.0))
+                                        .px(px(12.0))
+                                        .py(px(10.0))
                                         .flex()
                                         .items_center()
-                                        .justify_center()
-                                        .text_size(px(13.0))
-                                        .text_color(symbol_color)
-                                        .child(symbol),
-                                )
-                                .child(
-                                    div().flex_1().text_color(text).child(toast.message.clone()),
+                                        .gap(px(10.0))
+                                        .child(
+                                            div()
+                                                .w(px(16.0))
+                                                .h(px(16.0))
+                                                .rounded_full()
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .bg(accent)
+                                                .text_size(px(11.0))
+                                                .text_color(colors.background)
+                                                .child(symbol),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .text_size(px(12.0))
+                                                .text_color(text)
+                                                .child(toast.message.clone()),
+                                        ),
                                 ),
                         ),
                 );
@@ -763,7 +717,7 @@ impl Render for TerminalView {
             )
         };
         let mut root_bg = colors.background;
-        root_bg.a *= background_opacity;
+        root_bg.a *= effective_background_opacity;
 
         div()
             .id("termy-root")
@@ -803,6 +757,7 @@ impl Render for TerminalView {
                     .px(px(self.padding_x))
                     .py(px(self.padding_y))
                     .overflow_hidden()
+                    .bg(terminal_surface_bg)
                     .font_family(font_family.clone())
                     .text_size(font_size)
                     .child(terminal_grid)
@@ -811,3 +766,5 @@ impl Render for TerminalView {
             .children(toast_overlay)
     }
 }
+
+

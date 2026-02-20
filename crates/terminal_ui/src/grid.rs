@@ -23,6 +23,7 @@ pub struct TerminalGrid {
     pub cell_size: Size<Pixels>,
     pub cols: usize,
     pub rows: usize,
+    pub default_bg: Hsla,
     pub cursor_color: Hsla,
     pub selection_bg: Hsla,
     pub selection_fg: Hsla,
@@ -102,6 +103,21 @@ impl Element for TerminalGrid {
         cx: &mut App,
     ) {
         let origin = bounds.origin;
+        let grid_bounds = Bounds {
+            origin,
+            size: bounds.size,
+        };
+
+        // Always clear the full terminal surface first to avoid ghosting artifacts
+        // when scrolled content reveals previously untouched cells.
+        window.paint_quad(quad(
+            grid_bounds,
+            px(0.0),
+            self.default_bg,
+            gpui::Edges::default(),
+            Hsla::transparent_black(),
+            gpui::BorderStyle::default(),
+        ));
 
         // Paint background colors and cursor first.
         for cell in &self.cells {
