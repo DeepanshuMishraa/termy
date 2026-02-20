@@ -1,18 +1,26 @@
 use crate::colors::TerminalColors;
 use crate::config::{self, AppConfig, TabTitleConfig, TabTitleSource};
-use crate::terminal_grid::{CellRenderInfo, TerminalGrid};
 use crate::terminal::{
     TabTitleShellIntegration, Terminal, TerminalEvent, TerminalSize, keystroke_to_input,
 };
+use crate::terminal_grid::{CellRenderInfo, TerminalGrid};
 use alacritty_terminal::term::cell::Flags;
 use flume::{Sender, bounded};
 use gpui::{
-    App, AsyncApp, ClipboardItem, Context, FocusHandle, Focusable, Font, FontWeight,
-    InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, ParentElement, Pixels, Render, SharedString, Size, Styled, WeakEntity, Window,
-    WindowControlArea, div, px,
+    AnyElement, App, AppContext, AsyncApp, ClipboardItem, Context, Element, Entity, FocusHandle,
+    Focusable, Font, FontWeight, InteractiveElement, IntoElement, KeyDownEvent, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Render, SharedString,
+    Size, Styled, WeakEntity, Window, WindowControlArea, div, px,
 };
-use std::{fs, path::PathBuf, process::Command, time::{Duration, SystemTime}};
+use std::{
+    fs,
+    path::PathBuf,
+    process::Command,
+    time::{Duration, SystemTime},
+};
+
+#[cfg(target_os = "macos")]
+use auto_update::{AutoUpdater, UpdateState};
 
 const MIN_FONT_SIZE: f32 = 8.0;
 const MAX_FONT_SIZE: f32 = 40.0;
@@ -37,6 +45,7 @@ const COMMAND_TITLE_DELAY_MS: u64 = 250;
 const CONFIG_WATCH_INTERVAL_MS: u64 = 750;
 const SELECTION_BG_ALPHA: f32 = 0.35;
 const DIM_TEXT_FACTOR: f32 = 0.66;
+const UPDATE_BANNER_HEIGHT: f32 = 32.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct CellPos {
@@ -117,6 +126,10 @@ pub struct TerminalView {
     hovered_link: Option<HoveredLink>,
     /// Cached cell dimensions
     cell_size: Option<Size<Pixels>>,
+    #[cfg(target_os = "macos")]
+    auto_updater: Option<Entity<AutoUpdater>>,
+    #[cfg(target_os = "macos")]
+    show_update_banner: bool,
 }
 
 impl TerminalView {
@@ -169,9 +182,7 @@ impl TerminalView {
 
         let config = AppConfig::load_or_create();
         let config_path = config::ensure_config_file();
-        let config_last_modified = config_path
-            .as_ref()
-            .and_then(Self::config_last_modified);
+        let config_last_modified = config_path.as_ref().and_then(Self::config_last_modified);
         let colors = TerminalColors::from_theme(config.theme);
         let base_font_size = config.font_size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
         let padding_x = config.padding_x.max(0.0);
@@ -216,8 +227,26 @@ impl TerminalView {
             selection_moved: false,
             hovered_link: None,
             cell_size: None,
+            #[cfg(target_os = "macos")]
+            auto_updater: None,
+            #[cfg(target_os = "macos")]
+            show_update_banner: false,
         };
         view.refresh_tab_title(0);
+
+        #[cfg(target_os = "macos")]
+        {
+            let updater = cx.new(|_| AutoUpdater::new(crate::APP_VERSION));
+            cx.observe(&updater, |_, _, cx| cx.notify()).detach();
+            let weak = updater.downgrade();
+            cx.spawn(async move |_this: WeakEntity<Self>, cx: &mut AsyncApp| {
+                smol::Timer::after(Duration::from_millis(5000)).await;
+                let _ = cx.update(|cx| AutoUpdater::check(weak, cx));
+            })
+            .detach();
+            view.auto_updater = Some(updater);
+        }
+
         view
     }
 
@@ -883,8 +912,7 @@ impl TerminalView {
     fn edge_trim_char(c: char) -> bool {
         matches!(
             c,
-            '\''
-                | '"'
+            '\'' | '"'
                 | '`'
                 | ','
                 | '.'
@@ -1438,8 +1466,16 @@ impl TerminalView {
         }
     }
 
+    fn update_banner_height(&self) -> f32 {
+        #[cfg(target_os = "macos")]
+        if self.show_update_banner {
+            return UPDATE_BANNER_HEIGHT;
+        }
+        0.0
+    }
+
     fn chrome_height(&self) -> f32 {
-        self.titlebar_height() + self.tab_bar_height()
+        self.titlebar_height() + self.tab_bar_height() + self.update_banner_height()
     }
 }
 
@@ -1451,6 +1487,24 @@ impl Focusable for TerminalView {
 
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Compute update banner state
+        #[cfg(target_os = "macos")]
+        let banner_state = self.auto_updater.as_ref().map(|e| e.read(cx).state.clone());
+        #[cfg(target_os = "macos")]
+        {
+            self.show_update_banner = matches!(
+                &banner_state,
+                Some(
+                    UpdateState::Available { .. }
+                        | UpdateState::Downloading { .. }
+                        | UpdateState::Downloaded { .. }
+                        | UpdateState::Installing { .. }
+                        | UpdateState::Installed { .. }
+                        | UpdateState::Error(_)
+                )
+            );
+        }
+
         let cell_size = self.calculate_cell_size(window, cx);
         let colors = self.colors.clone();
         let font_family = self.font_family.clone();
@@ -1634,6 +1688,245 @@ impl Render for TerminalView {
             }
         }
 
+        // Build update banner element (macOS only)
+        #[cfg(target_os = "macos")]
+        let banner_element: Option<AnyElement> = if self.show_update_banner {
+            let mut banner_bg = colors.cursor;
+            banner_bg.a = 0.15;
+            let banner_text_color = colors.foreground;
+
+            match &banner_state {
+                Some(UpdateState::Available { version, .. }) => {
+                    let version = version.clone();
+                    let updater_weak = self.auto_updater.as_ref().map(|e| e.downgrade());
+                    let updater_weak2 = updater_weak.clone();
+                    Some(
+                        div()
+                            .id("update-banner")
+                            .w_full()
+                            .h(px(UPDATE_BANNER_HEIGHT))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .gap(px(12.0))
+                            .bg(banner_bg)
+                            .text_color(banner_text_color)
+                            .text_size(px(12.0))
+                            .child(format!("Update v{} available", version))
+                            .child(
+                                div()
+                                    .id("update-install-btn")
+                                    .px(px(8.0))
+                                    .py(px(2.0))
+                                    .bg(colors.cursor)
+                                    .text_color(colors.background)
+                                    .text_size(px(11.0))
+                                    .cursor_pointer()
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(move |_this, _event, _window, cx| {
+                                            if let Some(ref weak) = updater_weak {
+                                                if let Some(entity) = weak.upgrade() {
+                                                    AutoUpdater::install(entity.downgrade(), cx);
+                                                }
+                                            }
+                                        }),
+                                    )
+                                    .child("Install"),
+                            )
+                            .child(
+                                div()
+                                    .id("update-dismiss-btn")
+                                    .px(px(6.0))
+                                    .cursor_pointer()
+                                    .text_size(px(13.0))
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(move |_this, _event, _window, cx| {
+                                            if let Some(ref weak) = updater_weak2 {
+                                                if let Some(entity) = weak.upgrade() {
+                                                    entity.update(cx, |u, cx| u.dismiss(cx));
+                                                }
+                                            }
+                                        }),
+                                    )
+                                    .child("\u{00d7}"),
+                            )
+                            .into_any(),
+                    )
+                }
+                Some(UpdateState::Downloading {
+                    version,
+                    downloaded,
+                    total,
+                }) => {
+                    let progress_text = if *total > 0 {
+                        format!(
+                            "Downloading v{}... {}%",
+                            version,
+                            (*downloaded as f64 / *total as f64 * 100.0) as u32
+                        )
+                    } else {
+                        format!("Downloading v{}... {} KB", version, *downloaded / 1024)
+                    };
+                    Some(
+                        div()
+                            .id("update-banner")
+                            .w_full()
+                            .h(px(UPDATE_BANNER_HEIGHT))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .bg(banner_bg)
+                            .text_color(banner_text_color)
+                            .text_size(px(12.0))
+                            .child(progress_text)
+                            .into_any(),
+                    )
+                }
+                Some(UpdateState::Downloaded { version, .. }) => {
+                    let version = version.clone();
+                    let updater_weak = self.auto_updater.as_ref().map(|e| e.downgrade());
+                    Some(
+                        div()
+                            .id("update-banner")
+                            .w_full()
+                            .h(px(UPDATE_BANNER_HEIGHT))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .gap(px(12.0))
+                            .bg(banner_bg)
+                            .text_color(banner_text_color)
+                            .text_size(px(12.0))
+                            .child(format!("v{} downloaded", version))
+                            .child(
+                                div()
+                                    .id("update-install-btn")
+                                    .px(px(8.0))
+                                    .py(px(2.0))
+                                    .bg(colors.cursor)
+                                    .text_color(colors.background)
+                                    .text_size(px(11.0))
+                                    .cursor_pointer()
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(move |_this, _event, _window, cx| {
+                                            if let Some(ref weak) = updater_weak {
+                                                if let Some(entity) = weak.upgrade() {
+                                                    AutoUpdater::complete_install(
+                                                        entity.downgrade(),
+                                                        cx,
+                                                    );
+                                                }
+                                            }
+                                        }),
+                                    )
+                                    .child("Install Now"),
+                            )
+                            .into_any(),
+                    )
+                }
+                Some(UpdateState::Installing { version }) => Some(
+                    div()
+                        .id("update-banner")
+                        .w_full()
+                        .h(px(UPDATE_BANNER_HEIGHT))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .bg(banner_bg)
+                        .text_color(banner_text_color)
+                        .text_size(px(12.0))
+                        .child(format!("Installing v{}...", version))
+                        .into_any(),
+                ),
+                Some(UpdateState::Installed { version }) => {
+                    let updater_weak = self.auto_updater.as_ref().map(|e| e.downgrade());
+                    Some(
+                        div()
+                            .id("update-banner")
+                            .w_full()
+                            .h(px(UPDATE_BANNER_HEIGHT))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .gap(px(12.0))
+                            .bg(banner_bg)
+                            .text_color(banner_text_color)
+                            .text_size(px(12.0))
+                            .child(format!("v{} installed — restart to complete", version))
+                            .child(
+                                div()
+                                    .id("update-dismiss-btn")
+                                    .px(px(6.0))
+                                    .cursor_pointer()
+                                    .text_size(px(13.0))
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(move |_this, _event, _window, cx| {
+                                            if let Some(ref weak) = updater_weak {
+                                                if let Some(entity) = weak.upgrade() {
+                                                    entity.update(cx, |u, cx| u.dismiss(cx));
+                                                }
+                                            }
+                                        }),
+                                    )
+                                    .child("\u{00d7}"),
+                            )
+                            .into_any(),
+                    )
+                }
+                Some(UpdateState::Error(msg)) => {
+                    let updater_weak = self.auto_updater.as_ref().map(|e| e.downgrade());
+                    Some(
+                        div()
+                            .id("update-banner")
+                            .w_full()
+                            .h(px(UPDATE_BANNER_HEIGHT))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .gap(px(12.0))
+                            .bg(banner_bg)
+                            .text_color(banner_text_color)
+                            .text_size(px(12.0))
+                            .child(format!("Update error: {}", msg))
+                            .child(
+                                div()
+                                    .id("update-dismiss-btn")
+                                    .px(px(6.0))
+                                    .cursor_pointer()
+                                    .text_size(px(13.0))
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(move |_this, _event, _window, cx| {
+                                            if let Some(ref weak) = updater_weak {
+                                                if let Some(entity) = weak.upgrade() {
+                                                    entity.update(cx, |u, cx| u.dismiss(cx));
+                                                }
+                                            }
+                                        }),
+                                    )
+                                    .child("\u{00d7}"),
+                            )
+                            .into_any(),
+                    )
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+        #[cfg(not(target_os = "macos"))]
+        let banner_element: Option<AnyElement> = None;
+
         div()
             .id("termy-root")
             .flex()
@@ -1748,6 +2041,7 @@ impl Render for TerminalView {
                     )
                     .child(tabs_row),
             )
+            .children(banner_element)
             .child(
                 div()
                     .id("terminal")

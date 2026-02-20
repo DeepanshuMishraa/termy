@@ -17,6 +17,8 @@ use terminal_view::TerminalView;
 
 actions!(terminal, [Quit, OpenConfig]);
 
+pub(crate) const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 const MIN_WINDOW_WIDTH: f32 = 480.0;
 const MIN_WINDOW_HEIGHT: f32 = 320.0;
 
