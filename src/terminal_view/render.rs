@@ -548,7 +548,7 @@ impl Render for TerminalView {
         } else {
             None
         };
-        let key_context = if self.command_palette_open || self.renaming_tab.is_some() {
+        let key_context = if self.has_active_inline_input() {
             "Terminal InlineInput"
         } else {
             "Terminal"

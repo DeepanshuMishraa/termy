@@ -392,7 +392,7 @@ impl TerminalView {
     }
 
     fn command_shortcuts_suspended(&self) -> bool {
-        self.command_palette_open || self.renaming_tab.is_some()
+        self.has_active_inline_input()
     }
 
     pub(super) fn execute_command_action(

@@ -390,7 +390,7 @@ impl TerminalView {
         }
 
         if self.command_palette_open {
-            self.command_palette_query_changed(cx);
+            self.refresh_command_palette_matches(true, cx);
         }
 
         true

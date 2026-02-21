@@ -50,11 +50,11 @@ impl TerminalView {
         }
     }
 
-    fn command_palette_command_shortcut(
-        &self,
-        action: CommandAction,
-        window: &Window,
-    ) -> Option<String> {
+    fn command_palette_shortcut(&self, action: CommandAction, window: &Window) -> Option<String> {
+        if !self.command_palette_show_keybinds {
+            return None;
+        }
+
         match action {
             CommandAction::Quit => self.command_palette_binding_badge(&commands::Quit, window),
             CommandAction::OpenConfig => {
@@ -89,14 +89,6 @@ impl TerminalView {
                 self.command_palette_binding_badge(&commands::ZoomReset, window)
             }
         }
-    }
-
-    fn command_palette_shortcut(&self, action: CommandAction, window: &Window) -> Option<String> {
-        if !self.command_palette_show_keybinds {
-            return None;
-        }
-
-        self.command_palette_command_shortcut(action, window)
     }
 
     pub(super) fn open_command_palette(&mut self, cx: &mut Context<Self>) {

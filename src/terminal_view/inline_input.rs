@@ -15,6 +15,12 @@ enum InlineInputCharClass {
     Other,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InlineInputTarget {
+    CommandPalette,
+    RenameTab,
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct InlineInputState {
     text: String,
@@ -851,6 +857,20 @@ impl IntoElement for InlineInputElement {
 }
 
 impl TerminalView {
+    fn active_inline_input_target(&self) -> Option<InlineInputTarget> {
+        if self.command_palette_open {
+            Some(InlineInputTarget::CommandPalette)
+        } else if self.renaming_tab.is_some() {
+            Some(InlineInputTarget::RenameTab)
+        } else {
+            None
+        }
+    }
+
+    pub(super) fn has_active_inline_input(&self) -> bool {
+        self.active_inline_input_target().is_some()
+    }
+
     pub(super) fn render_inline_input_layer(
         &self,
         font: Font,
@@ -893,22 +913,16 @@ impl TerminalView {
     }
 
     fn active_inline_input_state(&self) -> Option<&InlineInputState> {
-        if self.command_palette_open {
-            Some(&self.command_palette_input)
-        } else if self.renaming_tab.is_some() {
-            Some(&self.rename_input)
-        } else {
-            None
+        match self.active_inline_input_target()? {
+            InlineInputTarget::CommandPalette => Some(&self.command_palette_input),
+            InlineInputTarget::RenameTab => Some(&self.rename_input),
         }
     }
 
     fn active_inline_input_state_mut(&mut self) -> Option<&mut InlineInputState> {
-        if self.command_palette_open {
-            Some(&mut self.command_palette_input)
-        } else if self.renaming_tab.is_some() {
-            Some(&mut self.rename_input)
-        } else {
-            None
+        match self.active_inline_input_target()? {
+            InlineInputTarget::CommandPalette => Some(&mut self.command_palette_input),
+            InlineInputTarget::RenameTab => Some(&mut self.rename_input),
         }
     }
 
@@ -943,16 +957,17 @@ impl TerminalView {
     ) {
         self.reset_cursor_blink_phase();
 
-        if self.command_palette_open {
-            mutate(&mut self.command_palette_input);
-            self.command_palette_query_changed(cx);
-            return;
-        }
-
-        if self.renaming_tab.is_some() {
-            mutate(&mut self.rename_input);
-            self.enforce_tab_rename_limit();
-            cx.notify();
+        match self.active_inline_input_target() {
+            Some(InlineInputTarget::CommandPalette) => {
+                mutate(&mut self.command_palette_input);
+                self.command_palette_query_changed(cx);
+            }
+            Some(InlineInputTarget::RenameTab) => {
+                mutate(&mut self.rename_input);
+                self.enforce_tab_rename_limit();
+                cx.notify();
+            }
+            None => {}
         }
     }
 
@@ -1221,7 +1236,7 @@ impl EntityInputHandler for TerminalView {
     }
 
     fn accepts_text_input(&self, _window: &mut Window, _cx: &mut Context<Self>) -> bool {
-        self.active_inline_input_state().is_some()
+        self.has_active_inline_input()
     }
 }
 
