@@ -917,15 +917,7 @@ impl TerminalView {
     }
 
     pub(super) fn command_palette_query_changed(&mut self, cx: &mut Context<Self>) {
-        let len = self.filtered_command_palette_items().len();
-        self.clamp_command_palette_selection(len);
-        if len > 0 {
-            self.animate_command_palette_to_selected(len, cx);
-        } else {
-            self.command_palette_scroll_target_y = None;
-            self.command_palette_scroll_max_y = 0.0;
-            self.command_palette_scroll_animating = false;
-        }
+        self.refresh_command_palette_matches(true, cx);
         cx.notify();
     }
 

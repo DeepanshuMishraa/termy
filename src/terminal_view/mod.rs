@@ -17,7 +17,7 @@ use std::{
     fs,
     path::PathBuf,
     process::Command,
-    time::{Duration, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 use termy_terminal_ui::{
     CellRenderInfo, TabTitleShellIntegration, Terminal, TerminalCursorStyle, TerminalEvent,
@@ -167,11 +167,13 @@ pub struct TerminalView {
     toast_manager: ToastManager,
     command_palette_open: bool,
     command_palette_input: InlineInputState,
+    command_palette_filtered_items: Vec<CommandPaletteItem>,
     command_palette_selected: usize,
     command_palette_scroll_handle: UniformListScrollHandle,
     command_palette_scroll_target_y: Option<f32>,
     command_palette_scroll_max_y: f32,
     command_palette_scroll_animating: bool,
+    command_palette_scroll_last_tick: Option<Instant>,
     command_palette_show_keybinds: bool,
     inline_input_selecting: bool,
     terminal_scroll_accumulator_y: f32,
@@ -323,11 +325,13 @@ impl TerminalView {
             toast_manager: ToastManager::new(),
             command_palette_open: false,
             command_palette_input: InlineInputState::new(String::new()),
+            command_palette_filtered_items: Vec::new(),
             command_palette_selected: 0,
             command_palette_scroll_handle: UniformListScrollHandle::new(),
             command_palette_scroll_target_y: None,
             command_palette_scroll_max_y: 0.0,
             command_palette_scroll_animating: false,
+            command_palette_scroll_last_tick: None,
             command_palette_show_keybinds: config.command_palette_show_keybinds,
             inline_input_selecting: false,
             terminal_scroll_accumulator_y: 0.0,
@@ -383,6 +387,10 @@ impl TerminalView {
 
         for index in 0..self.tabs.len() {
             self.refresh_tab_title(index);
+        }
+
+        if self.command_palette_open {
+            self.command_palette_query_changed(cx);
         }
 
         true

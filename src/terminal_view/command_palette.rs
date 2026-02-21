@@ -3,13 +3,27 @@ use gpui::{point, uniform_list};
 use std::ops::Range;
 
 impl TerminalView {
-    fn reset_command_palette_state(&mut self) {
-        self.command_palette_input.clear();
-        self.command_palette_selected = 0;
-        self.command_palette_scroll_handle = UniformListScrollHandle::new();
+    fn command_palette_base_scroll_handle(&self) -> gpui::ScrollHandle {
+        self.command_palette_scroll_handle
+            .0
+            .borrow()
+            .base_handle
+            .clone()
+    }
+
+    fn reset_command_palette_scroll_animation_state(&mut self) {
         self.command_palette_scroll_target_y = None;
         self.command_palette_scroll_max_y = 0.0;
         self.command_palette_scroll_animating = false;
+        self.command_palette_scroll_last_tick = None;
+    }
+
+    fn reset_command_palette_state(&mut self) {
+        self.command_palette_input.clear();
+        self.command_palette_filtered_items.clear();
+        self.command_palette_selected = 0;
+        self.command_palette_scroll_handle = UniformListScrollHandle::new();
+        self.reset_command_palette_scroll_animation_state();
         self.inline_input_selecting = false;
     }
 
@@ -88,6 +102,7 @@ impl TerminalView {
     pub(super) fn open_command_palette(&mut self, cx: &mut Context<Self>) {
         self.command_palette_open = true;
         self.reset_command_palette_state();
+        self.refresh_command_palette_matches(false, cx);
         self.reset_cursor_blink_phase();
 
         cx.notify();
@@ -174,11 +189,30 @@ impl TerminalView {
         items
     }
 
-    pub(super) fn filtered_command_palette_items(&self) -> Vec<CommandPaletteItem> {
-        Self::filter_command_palette_items_by_query(
+    pub(super) fn filtered_command_palette_items(&self) -> &[CommandPaletteItem] {
+        &self.command_palette_filtered_items
+    }
+
+    pub(super) fn refresh_command_palette_matches(
+        &mut self,
+        animate_selection: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.command_palette_filtered_items = Self::filter_command_palette_items_by_query(
             self.command_palette_items(),
             self.command_palette_query(),
-        )
+        );
+        let len = self.command_palette_filtered_items.len();
+        self.clamp_command_palette_selection(len);
+
+        if len == 0 {
+            self.reset_command_palette_scroll_animation_state();
+            return;
+        }
+
+        if animate_selection {
+            self.animate_command_palette_to_selected(len, cx);
+        }
     }
 
     fn filter_command_palette_items_by_query(
@@ -244,44 +278,86 @@ impl TerminalView {
             .max(0.0)
     }
 
+    fn command_palette_target_scroll_y(
+        current_y: f32,
+        selected_index: usize,
+        item_count: usize,
+    ) -> Option<f32> {
+        if item_count == 0 {
+            return None;
+        }
+
+        let viewport_height = Self::command_palette_viewport_height();
+        let max_scroll = Self::command_palette_max_scroll_for_count(item_count);
+        let row_top = selected_index as f32 * COMMAND_PALETTE_ROW_HEIGHT;
+        let row_bottom = row_top + COMMAND_PALETTE_ROW_HEIGHT;
+
+        let target = if row_top < current_y {
+            row_top
+        } else if row_bottom > current_y + viewport_height {
+            row_bottom - viewport_height
+        } else {
+            current_y
+        };
+
+        Some(target.clamp(0.0, max_scroll))
+    }
+
+    fn command_palette_next_scroll_y(
+        current_y: f32,
+        target_y: f32,
+        max_scroll: f32,
+        dt_seconds: f32,
+    ) -> f32 {
+        let target_y = target_y.clamp(0.0, max_scroll);
+        let delta = target_y - current_y;
+        if delta.abs() <= 0.5 {
+            return target_y;
+        }
+
+        let dt = dt_seconds.clamp(1.0 / 240.0, 0.05);
+        let smoothing = 1.0 - (-18.0 * dt).exp();
+        let desired_step = delta * smoothing;
+        let max_step = 1800.0 * dt;
+        let step = desired_step.clamp(-max_step, max_step);
+        let next_y = (current_y + step).clamp(0.0, max_scroll);
+
+        if (target_y - next_y).abs() <= 0.5 {
+            target_y
+        } else {
+            next_y
+        }
+    }
+
     pub(super) fn animate_command_palette_to_selected(
         &mut self,
         item_count: usize,
         cx: &mut Context<Self>,
     ) {
         if item_count == 0 {
-            self.command_palette_scroll_target_y = None;
-            self.command_palette_scroll_max_y = 0.0;
-            self.command_palette_scroll_animating = false;
+            self.reset_command_palette_scroll_animation_state();
             return;
         }
 
-        let viewport_height = Self::command_palette_viewport_height();
         let max_scroll = Self::command_palette_max_scroll_for_count(item_count);
         self.command_palette_scroll_max_y = max_scroll;
 
-        let scroll_handle = self
-            .command_palette_scroll_handle
-            .0
-            .borrow()
-            .base_handle
-            .clone();
+        let scroll_handle = self.command_palette_base_scroll_handle();
         let offset = scroll_handle.offset();
         let current_y = -Into::<f32>::into(offset.y);
-
-        let row_top = self.command_palette_selected as f32 * COMMAND_PALETTE_ROW_HEIGHT;
-        let row_bottom = row_top + COMMAND_PALETTE_ROW_HEIGHT;
-        let mut target_y = current_y;
-        if row_top < current_y {
-            target_y = row_top;
-        } else if row_bottom > current_y + viewport_height {
-            target_y = row_bottom - viewport_height;
-        }
-        target_y = target_y.clamp(0.0, max_scroll);
+        let Some(target_y) = Self::command_palette_target_scroll_y(
+            current_y,
+            self.command_palette_selected,
+            item_count,
+        ) else {
+            self.reset_command_palette_scroll_animation_state();
+            return;
+        };
 
         if (target_y - current_y).abs() <= f32::EPSILON {
             self.command_palette_scroll_target_y = None;
             self.command_palette_scroll_animating = false;
+            self.command_palette_scroll_last_tick = None;
             return;
         }
 
@@ -294,6 +370,7 @@ impl TerminalView {
             return;
         }
         self.command_palette_scroll_animating = true;
+        self.command_palette_scroll_last_tick = Some(Instant::now());
 
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             loop {
@@ -321,50 +398,40 @@ impl TerminalView {
 
     fn tick_command_palette_scroll_animation(&mut self) -> bool {
         if !self.command_palette_open {
-            self.command_palette_scroll_target_y = None;
-            self.command_palette_scroll_animating = false;
+            self.reset_command_palette_scroll_animation_state();
             return false;
         }
 
         let Some(target_y) = self.command_palette_scroll_target_y else {
             self.command_palette_scroll_animating = false;
+            self.command_palette_scroll_last_tick = None;
             return false;
         };
 
-        let scroll_handle = self
-            .command_palette_scroll_handle
-            .0
-            .borrow()
-            .base_handle
-            .clone();
+        let scroll_handle = self.command_palette_base_scroll_handle();
         let offset = scroll_handle.offset();
         let current_y = -Into::<f32>::into(offset.y);
         let max_offset_from_handle: f32 = scroll_handle.max_offset().height.into();
         let max_scroll = max_offset_from_handle
             .max(self.command_palette_scroll_max_y)
             .max(0.0);
-        let target_y = target_y.clamp(0.0, max_scroll);
-        let delta = target_y - current_y;
+        let now = Instant::now();
+        let dt = self
+            .command_palette_scroll_last_tick
+            .map(|last| (now - last).as_secs_f32())
+            .unwrap_or(1.0 / 60.0);
+        self.command_palette_scroll_last_tick = Some(now);
 
-        if delta.abs() <= 0.5 {
-            if delta.abs() > f32::EPSILON {
-                scroll_handle.set_offset(point(offset.x, px(-target_y)));
-            }
+        let next_y = Self::command_palette_next_scroll_y(current_y, target_y, max_scroll, dt);
+        scroll_handle.set_offset(point(offset.x, px(-next_y)));
+
+        if (target_y - next_y).abs() <= 0.5 {
             self.command_palette_scroll_target_y = None;
             self.command_palette_scroll_animating = false;
+            self.command_palette_scroll_last_tick = None;
             return true;
         }
 
-        let eased_step = (delta * 0.32).clamp(-18.0, 18.0);
-        let min_step = if delta.is_sign_positive() { 0.6 } else { -0.6 };
-        let next_y = if eased_step.abs() < 0.6 {
-            current_y + min_step
-        } else {
-            current_y + eased_step
-        }
-        .clamp(0.0, max_scroll);
-
-        scroll_handle.set_offset(point(offset.x, px(-next_y)));
         true
     }
 
@@ -444,12 +511,7 @@ impl TerminalView {
         viewport_height: f32,
         item_count: usize,
     ) -> Option<(f32, f32)> {
-        let scroll_handle = self
-            .command_palette_scroll_handle
-            .0
-            .borrow()
-            .base_handle
-            .clone();
+        let scroll_handle = self.command_palette_base_scroll_handle();
         let max_offset_from_handle: f32 = scroll_handle.max_offset().height.into();
         let estimated_content_height = item_count as f32 * COMMAND_PALETTE_ROW_HEIGHT;
         let estimated_max_offset = (estimated_content_height - viewport_height).max(0.0);
@@ -812,5 +874,42 @@ mod tests {
                 CommandAction::ZoomReset
             ]
         );
+    }
+
+    #[test]
+    fn target_scroll_y_only_moves_when_selection_leaves_viewport() {
+        // Viewport fits 8 rows at 30px each => 240px.
+        assert_eq!(
+            TerminalView::command_palette_target_scroll_y(0.0, 2, 12),
+            Some(0.0)
+        );
+        assert_eq!(
+            TerminalView::command_palette_target_scroll_y(0.0, 9, 12),
+            Some(60.0)
+        );
+        assert_eq!(
+            TerminalView::command_palette_target_scroll_y(90.0, 0, 12),
+            Some(0.0)
+        );
+        assert_eq!(
+            TerminalView::command_palette_target_scroll_y(0.0, 0, 0),
+            None
+        );
+    }
+
+    #[test]
+    fn next_scroll_y_is_dt_based_and_respects_bounds() {
+        let slow = TerminalView::command_palette_next_scroll_y(0.0, 120.0, 300.0, 1.0 / 240.0);
+        let fast = TerminalView::command_palette_next_scroll_y(0.0, 120.0, 300.0, 0.05);
+        assert!(fast > slow);
+        assert!(fast <= 300.0);
+
+        // Close enough should snap to target.
+        let snapped = TerminalView::command_palette_next_scroll_y(59.7, 60.0, 300.0, 1.0 / 60.0);
+        assert_eq!(snapped, 60.0);
+
+        // Must clamp to max scroll.
+        let clamped = TerminalView::command_palette_next_scroll_y(280.0, 400.0, 300.0, 0.05);
+        assert!(clamped <= 300.0);
     }
 }
