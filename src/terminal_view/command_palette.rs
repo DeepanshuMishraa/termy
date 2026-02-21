@@ -24,39 +24,67 @@ impl TerminalView {
         }
     }
 
+    fn command_palette_keybind_shortcut(
+        &self,
+        action: actions::KeybindAction,
+        window: &Window,
+    ) -> (String, bool) {
+        match action {
+            actions::KeybindAction::Quit => {
+                self.command_palette_binding_badge(&actions::Quit, window)
+            }
+            actions::KeybindAction::OpenConfig => {
+                self.command_palette_binding_badge(&actions::OpenConfig, window)
+            }
+            actions::KeybindAction::AppInfo => {
+                self.command_palette_binding_badge(&actions::AppInfo, window)
+            }
+            actions::KeybindAction::RestartApp => {
+                self.command_palette_binding_badge(&actions::RestartApp, window)
+            }
+            actions::KeybindAction::RenameTab => {
+                self.command_palette_binding_badge(&actions::RenameTab, window)
+            }
+            actions::KeybindAction::CheckForUpdates => {
+                self.command_palette_binding_badge(&actions::CheckForUpdates, window)
+            }
+            actions::KeybindAction::ToggleCommandPalette => {
+                self.command_palette_binding_badge(&actions::ToggleCommandPalette, window)
+            }
+            actions::KeybindAction::NewTab => {
+                self.command_palette_binding_badge(&actions::NewTab, window)
+            }
+            actions::KeybindAction::CloseTab => {
+                self.command_palette_binding_badge(&actions::CloseTab, window)
+            }
+            actions::KeybindAction::Copy => {
+                self.command_palette_binding_badge(&actions::Copy, window)
+            }
+            actions::KeybindAction::Paste => {
+                self.command_palette_binding_badge(&actions::Paste, window)
+            }
+            actions::KeybindAction::ZoomIn => {
+                self.command_palette_binding_badge(&actions::ZoomIn, window)
+            }
+            actions::KeybindAction::ZoomOut => {
+                self.command_palette_binding_badge(&actions::ZoomOut, window)
+            }
+            actions::KeybindAction::ZoomReset => {
+                self.command_palette_binding_badge(&actions::ZoomReset, window)
+            }
+        }
+    }
+
     fn command_palette_shortcut(
         &self,
-        action: CommandPaletteAction,
+        action: actions::KeybindAction,
         window: &Window,
     ) -> Option<(String, bool)> {
         if !self.command_palette_show_keybinds {
             return None;
         }
 
-        match action {
-            CommandPaletteAction::NewTab => {
-                Some(self.command_palette_binding_badge(&actions::NewTab, window))
-            }
-            CommandPaletteAction::CloseTab => {
-                Some(self.command_palette_binding_badge(&actions::CloseTab, window))
-            }
-            CommandPaletteAction::OpenConfig => {
-                Some(self.command_palette_binding_badge(&actions::OpenConfig, window))
-            }
-            CommandPaletteAction::ZoomIn => {
-                Some(self.command_palette_binding_badge(&actions::ZoomIn, window))
-            }
-            CommandPaletteAction::ZoomOut => {
-                Some(self.command_palette_binding_badge(&actions::ZoomOut, window))
-            }
-            CommandPaletteAction::ResetZoom => {
-                Some(self.command_palette_binding_badge(&actions::ZoomReset, window))
-            }
-            CommandPaletteAction::AppInfo | CommandPaletteAction::RestartApp => None,
-            CommandPaletteAction::RenameTab => None,
-            #[cfg(target_os = "macos")]
-            CommandPaletteAction::CheckForUpdates => None,
-        }
+        Some(self.command_palette_keybind_shortcut(action, window))
     }
 
     pub(super) fn open_command_palette(&mut self, cx: &mut Context<Self>) {
@@ -117,32 +145,32 @@ impl TerminalView {
             CommandPaletteItem {
                 title: "App Info",
                 keywords: "information version about build",
-                action: CommandPaletteAction::AppInfo,
+                action: actions::KeybindAction::AppInfo,
             },
             CommandPaletteItem {
                 title: "Restart App",
                 keywords: "relaunch reopen restart",
-                action: CommandPaletteAction::RestartApp,
+                action: actions::KeybindAction::RestartApp,
             },
             CommandPaletteItem {
                 title: "Open Config",
                 keywords: "settings preferences",
-                action: CommandPaletteAction::OpenConfig,
+                action: actions::KeybindAction::OpenConfig,
             },
             CommandPaletteItem {
                 title: "Zoom In",
                 keywords: "font increase",
-                action: CommandPaletteAction::ZoomIn,
+                action: actions::KeybindAction::ZoomIn,
             },
             CommandPaletteItem {
                 title: "Zoom Out",
                 keywords: "font decrease",
-                action: CommandPaletteAction::ZoomOut,
+                action: actions::KeybindAction::ZoomOut,
             },
             CommandPaletteItem {
                 title: "Reset Zoom",
                 keywords: "font default",
-                action: CommandPaletteAction::ResetZoom,
+                action: actions::KeybindAction::ZoomReset,
             },
         ];
 
@@ -152,7 +180,7 @@ impl TerminalView {
                 CommandPaletteItem {
                     title: "Rename Tab",
                     keywords: "title name",
-                    action: CommandPaletteAction::RenameTab,
+                    action: actions::KeybindAction::RenameTab,
                 },
             );
             items.insert(
@@ -160,7 +188,7 @@ impl TerminalView {
                 CommandPaletteItem {
                     title: "Close Tab",
                     keywords: "remove tab",
-                    action: CommandPaletteAction::CloseTab,
+                    action: actions::KeybindAction::CloseTab,
                 },
             );
             items.insert(
@@ -168,7 +196,7 @@ impl TerminalView {
                 CommandPaletteItem {
                     title: "New Tab",
                     keywords: "create tab",
-                    action: CommandPaletteAction::NewTab,
+                    action: actions::KeybindAction::NewTab,
                 },
             );
         }
@@ -177,7 +205,7 @@ impl TerminalView {
         items.push(CommandPaletteItem {
             title: "Check for Updates",
             keywords: "release version updater",
-            action: CommandPaletteAction::CheckForUpdates,
+            action: actions::KeybindAction::CheckForUpdates,
         });
 
         items
@@ -390,7 +418,7 @@ impl TerminalView {
 
     fn execute_command_palette_action(
         &mut self,
-        action: CommandPaletteAction,
+        action: actions::KeybindAction,
         cx: &mut Context<Self>,
     ) {
         self.command_palette_open = false;
@@ -399,71 +427,26 @@ impl TerminalView {
         self.command_palette_scroll_offset = 0;
         self.command_palette_query_select_all = false;
 
+        self.execute_keybind_action(action, false, cx);
+
         match action {
-            CommandPaletteAction::AppInfo => {
-                let config_path = self
-                    .config_path
-                    .as_ref()
-                    .map(|path| path.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| "unknown".to_string());
-                let message = format!(
-                    "Termy v{} | {}-{} | config: {}",
-                    crate::APP_VERSION,
-                    std::env::consts::OS,
-                    std::env::consts::ARCH,
-                    config_path
-                );
-                termy_toast::info(message);
-                cx.notify();
-            }
-            CommandPaletteAction::RestartApp => match self.restart_application() {
-                Ok(()) => cx.quit(),
-                Err(error) => {
-                    termy_toast::error(format!("Restart failed: {}", error));
-                    cx.notify();
-                }
-            },
-            CommandPaletteAction::NewTab => {
-                self.add_tab(cx);
-                termy_toast::success("Opened new tab");
-            }
-            CommandPaletteAction::CloseTab => {
-                self.close_active_tab(cx);
-                termy_toast::info("Closed active tab");
-            }
-            CommandPaletteAction::RenameTab => {
-                self.renaming_tab = Some(self.active_tab);
-                self.rename_buffer = self.tabs[self.active_tab].title.clone();
-                termy_toast::info("Rename mode enabled");
-                cx.notify();
-            }
-            CommandPaletteAction::OpenConfig => {
-                config::open_config_file();
+            actions::KeybindAction::OpenConfig => {
                 termy_toast::info("Opened config file");
                 cx.notify();
             }
-            CommandPaletteAction::ZoomIn => {
-                let current: f32 = self.font_size.into();
-                self.update_zoom(current + ZOOM_STEP, cx);
-                termy_toast::info("Zoomed in");
-            }
-            CommandPaletteAction::ZoomOut => {
-                let current: f32 = self.font_size.into();
-                self.update_zoom(current - ZOOM_STEP, cx);
-                termy_toast::info("Zoomed out");
-            }
-            CommandPaletteAction::ResetZoom => {
-                self.update_zoom(self.base_font_size, cx);
-                termy_toast::info("Zoom reset");
-            }
-            #[cfg(target_os = "macos")]
-            CommandPaletteAction::CheckForUpdates => {
-                if let Some(updater) = self.auto_updater.as_ref() {
-                    AutoUpdater::check(updater.downgrade(), cx);
-                }
-                termy_toast::info("Checking for updates");
-                cx.notify();
-            }
+            actions::KeybindAction::NewTab => termy_toast::success("Opened new tab"),
+            actions::KeybindAction::CloseTab => termy_toast::info("Closed active tab"),
+            actions::KeybindAction::ZoomIn => termy_toast::info("Zoomed in"),
+            actions::KeybindAction::ZoomOut => termy_toast::info("Zoomed out"),
+            actions::KeybindAction::ZoomReset => termy_toast::info("Zoom reset"),
+            actions::KeybindAction::Quit
+            | actions::KeybindAction::AppInfo
+            | actions::KeybindAction::RestartApp
+            | actions::KeybindAction::RenameTab
+            | actions::KeybindAction::CheckForUpdates
+            | actions::KeybindAction::ToggleCommandPalette
+            | actions::KeybindAction::Copy
+            | actions::KeybindAction::Paste => {}
         }
     }
 

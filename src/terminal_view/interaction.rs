@@ -334,17 +334,147 @@ impl TerminalView {
         self.command_palette_open || self.renaming_tab.is_some()
     }
 
+    pub(super) fn execute_keybind_action(
+        &mut self,
+        action: actions::KeybindAction,
+        respect_shortcut_suspend: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let shortcuts_suspended = respect_shortcut_suspend && self.command_shortcuts_suspended();
+
+        match action {
+            actions::KeybindAction::ToggleCommandPalette => {
+                if self.command_palette_open {
+                    self.close_command_palette(cx);
+                } else {
+                    self.open_command_palette(cx);
+                }
+            }
+            _ if shortcuts_suspended => {}
+            actions::KeybindAction::Quit => cx.quit(),
+            actions::KeybindAction::OpenConfig => config::open_config_file(),
+            actions::KeybindAction::AppInfo => {
+                let config_path = self
+                    .config_path
+                    .as_ref()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "unknown".to_string());
+                let message = format!(
+                    "Termy v{} | {}-{} | config: {}",
+                    crate::APP_VERSION,
+                    std::env::consts::OS,
+                    std::env::consts::ARCH,
+                    config_path
+                );
+                termy_toast::info(message);
+                cx.notify();
+            }
+            actions::KeybindAction::RestartApp => match self.restart_application() {
+                Ok(()) => cx.quit(),
+                Err(error) => {
+                    termy_toast::error(format!("Restart failed: {}", error));
+                    cx.notify();
+                }
+            },
+            actions::KeybindAction::RenameTab => {
+                if !self.use_tabs {
+                    return;
+                }
+
+                self.renaming_tab = Some(self.active_tab);
+                self.rename_buffer = self.tabs[self.active_tab].title.clone();
+                termy_toast::info("Rename mode enabled");
+                cx.notify();
+            }
+            actions::KeybindAction::CheckForUpdates => {
+                #[cfg(target_os = "macos")]
+                {
+                    if let Some(updater) = self.auto_updater.as_ref() {
+                        AutoUpdater::check(updater.downgrade(), cx);
+                    }
+                    termy_toast::info("Checking for updates");
+                    cx.notify();
+                }
+
+                #[cfg(not(target_os = "macos"))]
+                {
+                    termy_toast::info("Auto updates are only available on macOS");
+                    cx.notify();
+                }
+            }
+            actions::KeybindAction::NewTab => self.add_tab(cx),
+            actions::KeybindAction::CloseTab => self.close_active_tab(cx),
+            actions::KeybindAction::Copy => {
+                if let Some(selected) = self.selected_text() {
+                    cx.write_to_clipboard(ClipboardItem::new_string(selected));
+                } else {
+                    self.write_copy_fallback_input(cx);
+                }
+            }
+            actions::KeybindAction::Paste => {
+                if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                    self.active_terminal().write(text.as_bytes());
+                    self.clear_selection();
+                    cx.notify();
+                } else {
+                    self.write_paste_fallback_input(cx);
+                }
+            }
+            actions::KeybindAction::ZoomIn => {
+                let current: f32 = self.font_size.into();
+                self.update_zoom(current + ZOOM_STEP, cx);
+            }
+            actions::KeybindAction::ZoomOut => {
+                let current: f32 = self.font_size.into();
+                self.update_zoom(current - ZOOM_STEP, cx);
+            }
+            actions::KeybindAction::ZoomReset => self.update_zoom(self.base_font_size, cx),
+        }
+    }
+
     pub(super) fn handle_toggle_command_palette_action(
         &mut self,
         _: &actions::ToggleCommandPalette,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.command_palette_open {
-            self.close_command_palette(cx);
-        } else {
-            self.open_command_palette(cx);
-        }
+        self.execute_keybind_action(actions::KeybindAction::ToggleCommandPalette, true, cx);
+    }
+
+    pub(super) fn handle_app_info_action(
+        &mut self,
+        _: &actions::AppInfo,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.execute_keybind_action(actions::KeybindAction::AppInfo, true, cx);
+    }
+
+    pub(super) fn handle_restart_app_action(
+        &mut self,
+        _: &actions::RestartApp,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.execute_keybind_action(actions::KeybindAction::RestartApp, true, cx);
+    }
+
+    pub(super) fn handle_rename_tab_action(
+        &mut self,
+        _: &actions::RenameTab,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.execute_keybind_action(actions::KeybindAction::RenameTab, true, cx);
+    }
+
+    pub(super) fn handle_check_for_updates_action(
+        &mut self,
+        _: &actions::CheckForUpdates,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.execute_keybind_action(actions::KeybindAction::CheckForUpdates, true, cx);
     }
 
     pub(super) fn handle_new_tab_action(
@@ -353,10 +483,7 @@ impl TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.command_shortcuts_suspended() {
-            return;
-        }
-        self.add_tab(cx);
+        self.execute_keybind_action(actions::KeybindAction::NewTab, true, cx);
     }
 
     pub(super) fn handle_close_tab_action(
@@ -365,10 +492,7 @@ impl TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.command_shortcuts_suspended() {
-            return;
-        }
-        self.close_active_tab(cx);
+        self.execute_keybind_action(actions::KeybindAction::CloseTab, true, cx);
     }
 
     pub(super) fn handle_copy_action(
@@ -377,16 +501,7 @@ impl TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.command_shortcuts_suspended() {
-            return;
-        }
-
-        if let Some(selected) = self.selected_text() {
-            cx.write_to_clipboard(ClipboardItem::new_string(selected));
-            return;
-        }
-
-        self.write_copy_fallback_input(cx);
+        self.execute_keybind_action(actions::KeybindAction::Copy, true, cx);
     }
 
     pub(super) fn handle_paste_action(
@@ -395,18 +510,7 @@ impl TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.command_shortcuts_suspended() {
-            return;
-        }
-
-        if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-            self.active_terminal().write(text.as_bytes());
-            self.clear_selection();
-            cx.notify();
-            return;
-        }
-
-        self.write_paste_fallback_input(cx);
+        self.execute_keybind_action(actions::KeybindAction::Paste, true, cx);
     }
 
     pub(super) fn handle_zoom_in_action(
@@ -415,12 +519,7 @@ impl TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.command_shortcuts_suspended() {
-            return;
-        }
-
-        let current: f32 = self.font_size.into();
-        self.update_zoom(current + ZOOM_STEP, cx);
+        self.execute_keybind_action(actions::KeybindAction::ZoomIn, true, cx);
     }
 
     pub(super) fn handle_zoom_out_action(
@@ -429,12 +528,7 @@ impl TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.command_shortcuts_suspended() {
-            return;
-        }
-
-        let current: f32 = self.font_size.into();
-        self.update_zoom(current - ZOOM_STEP, cx);
+        self.execute_keybind_action(actions::KeybindAction::ZoomOut, true, cx);
     }
 
     pub(super) fn handle_zoom_reset_action(
@@ -443,10 +537,7 @@ impl TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.command_shortcuts_suspended() {
-            return;
-        }
-        self.update_zoom(self.base_font_size, cx);
+        self.execute_keybind_action(actions::KeybindAction::ZoomReset, true, cx);
     }
 
     pub(super) fn handle_key_down(

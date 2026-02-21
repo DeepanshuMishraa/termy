@@ -52,6 +52,10 @@ Configurable actions:
 
 - `quit`
 - `open_config`
+- `app_info` (unbound by default)
+- `restart_app` (unbound by default)
+- `rename_tab` (unbound by default)
+- `check_for_updates` (unbound by default, macOS only behavior)
 - `toggle_command_palette`
 - `new_tab`
 - `close_tab`
@@ -107,4 +111,12 @@ keybind = cmd-u=zoom_reset
 ```txt
 keybind = secondary-p=toggle_command_palette
 keybind = secondary-t=new_tab
+```
+
+### 7) Bind advanced command palette actions
+
+```txt
+keybind = secondary-i=app_info
+keybind = secondary-r=restart_app
+keybind = secondary-e=rename_tab
 ```

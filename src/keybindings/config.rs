@@ -286,4 +286,48 @@ mod tests {
             }]
         );
     }
+
+    #[test]
+    fn parses_unbound_by_default_actions() {
+        let lines = vec![
+            KeybindConfigLine {
+                line_number: 2,
+                value: "secondary-i=app_info".to_string(),
+            },
+            KeybindConfigLine {
+                line_number: 3,
+                value: "secondary-r=restart_app".to_string(),
+            },
+            KeybindConfigLine {
+                line_number: 4,
+                value: "secondary-e=rename_tab".to_string(),
+            },
+        ];
+
+        let (directives, warnings) = parse_keybind_directives(&lines);
+        assert!(warnings.is_empty());
+        let app_info_trigger =
+            canonicalize_trigger("secondary-i").expect("valid app_info trigger");
+        let restart_trigger =
+            canonicalize_trigger("secondary-r").expect("valid restart_app trigger");
+        let rename_trigger =
+            canonicalize_trigger("secondary-e").expect("valid rename_tab trigger");
+        assert_eq!(
+            directives,
+            vec![
+                KeybindDirective::Bind {
+                    trigger: app_info_trigger,
+                    action: KeybindAction::AppInfo
+                },
+                KeybindDirective::Bind {
+                    trigger: restart_trigger,
+                    action: KeybindAction::RestartApp
+                },
+                KeybindDirective::Bind {
+                    trigger: rename_trigger,
+                    action: KeybindAction::RenameTab
+                },
+            ]
+        );
+    }
 }

@@ -5,6 +5,10 @@ actions!(
     [
         Quit,
         OpenConfig,
+        AppInfo,
+        RestartApp,
+        RenameTab,
+        CheckForUpdates,
         ToggleCommandPalette,
         NewTab,
         CloseTab,
@@ -20,6 +24,10 @@ actions!(
 pub enum KeybindAction {
     Quit,
     OpenConfig,
+    AppInfo,
+    RestartApp,
+    RenameTab,
+    CheckForUpdates,
     ToggleCommandPalette,
     NewTab,
     CloseTab,
@@ -30,9 +38,13 @@ pub enum KeybindAction {
     ZoomReset,
 }
 
-const ALL_KEYBIND_ACTIONS: [KeybindAction; 10] = [
+const ALL_KEYBIND_ACTIONS: [KeybindAction; 14] = [
     KeybindAction::Quit,
     KeybindAction::OpenConfig,
+    KeybindAction::AppInfo,
+    KeybindAction::RestartApp,
+    KeybindAction::RenameTab,
+    KeybindAction::CheckForUpdates,
     KeybindAction::ToggleCommandPalette,
     KeybindAction::NewTab,
     KeybindAction::CloseTab,
@@ -52,6 +64,10 @@ impl KeybindAction {
         match self {
             Self::Quit => "quit",
             Self::OpenConfig => "open_config",
+            Self::AppInfo => "app_info",
+            Self::RestartApp => "restart_app",
+            Self::RenameTab => "rename_tab",
+            Self::CheckForUpdates => "check_for_updates",
             Self::ToggleCommandPalette => "toggle_command_palette",
             Self::NewTab => "new_tab",
             Self::CloseTab => "close_tab",
@@ -79,6 +95,10 @@ impl KeybindAction {
         match self {
             Self::Quit => KeyBinding::new(trigger, Quit, None),
             Self::OpenConfig => KeyBinding::new(trigger, OpenConfig, None),
+            Self::AppInfo => KeyBinding::new(trigger, AppInfo, Some("Terminal")),
+            Self::RestartApp => KeyBinding::new(trigger, RestartApp, Some("Terminal")),
+            Self::RenameTab => KeyBinding::new(trigger, RenameTab, Some("Terminal")),
+            Self::CheckForUpdates => KeyBinding::new(trigger, CheckForUpdates, Some("Terminal")),
             Self::ToggleCommandPalette => {
                 KeyBinding::new(trigger, ToggleCommandPalette, Some("Terminal"))
             }

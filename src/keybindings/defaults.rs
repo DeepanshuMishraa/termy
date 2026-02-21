@@ -88,4 +88,29 @@ mod tests {
         assert!(zoom_in_triggers.contains(&"secondary-="));
         assert!(zoom_in_triggers.contains(&"secondary-+"));
     }
+
+    #[test]
+    fn advanced_palette_actions_are_unbound_by_default() {
+        let defaults = default_keybinds();
+        assert!(
+            defaults
+                .iter()
+                .all(|binding| binding.action != KeybindAction::AppInfo)
+        );
+        assert!(
+            defaults
+                .iter()
+                .all(|binding| binding.action != KeybindAction::RestartApp)
+        );
+        assert!(
+            defaults
+                .iter()
+                .all(|binding| binding.action != KeybindAction::RenameTab)
+        );
+        assert!(
+            defaults
+                .iter()
+                .all(|binding| binding.action != KeybindAction::CheckForUpdates)
+        );
+    }
 }

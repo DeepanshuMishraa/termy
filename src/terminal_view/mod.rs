@@ -115,26 +115,11 @@ struct HoveredLink {
     target: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CommandPaletteAction {
-    AppInfo,
-    RestartApp,
-    NewTab,
-    CloseTab,
-    RenameTab,
-    OpenConfig,
-    ZoomIn,
-    ZoomOut,
-    ResetZoom,
-    #[cfg(target_os = "macos")]
-    CheckForUpdates,
-}
-
 #[derive(Clone, Copy, Debug)]
 struct CommandPaletteItem {
     title: &'static str,
     keywords: &'static str,
-    action: CommandPaletteAction,
+    action: actions::KeybindAction,
 }
 
 /// The main terminal view component
