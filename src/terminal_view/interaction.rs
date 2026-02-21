@@ -1,5 +1,9 @@
 use super::*;
 
+const TERMINAL_SCROLL_LINE_MULTIPLIER: f32 = 3.0;
+const TERMINAL_SCROLL_PIXELS_PER_LINE: f32 = 24.0;
+const MAX_TERMINAL_SCROLL_LINES_PER_EVENT: i32 = 15;
+
 impl TerminalView {
     pub(super) fn has_selection(&self) -> bool {
         matches!((self.selection_anchor, self.selection_head), (Some(anchor), Some(head)) if self.selection_moved || anchor != head)
@@ -269,7 +273,7 @@ impl TerminalView {
         cx.notify();
     }
 
-    pub(super) fn calculate_cell_size(&self, window: &mut Window, _cx: &App) -> Size<Pixels> {
+    pub(super) fn calculate_cell_size(&mut self, window: &mut Window, _cx: &App) -> Size<Pixels> {
         if let Some(cell_size) = self.cell_size {
             return cell_size;
         }
@@ -290,10 +294,12 @@ impl TerminalView {
 
         let cell_height = self.font_size * self.line_height;
 
-        Size {
+        let cell_size = Size {
             width: cell_width,
             height: cell_height,
-        }
+        };
+        self.cell_size = Some(cell_size);
+        cell_size
     }
 
     pub(super) fn sync_terminal_size(&mut self, window: &Window, cell_size: Size<Pixels>) {
@@ -327,6 +333,27 @@ impl TerminalView {
                     cell_height: cell_size.height,
                 });
             }
+        }
+    }
+
+    pub(super) fn terminal_scroll_delta_to_lines(delta: ScrollDelta) -> i32 {
+        let lines = match delta {
+            ScrollDelta::Pixels(delta) => {
+                let y: f32 = delta.y.into();
+                y / TERMINAL_SCROLL_PIXELS_PER_LINE
+            }
+            ScrollDelta::Lines(delta) => delta.y * TERMINAL_SCROLL_LINE_MULTIPLIER,
+        };
+
+        if lines.abs() < f32::EPSILON {
+            return 0;
+        }
+
+        let magnitude = (lines.abs().ceil() as i32).clamp(1, MAX_TERMINAL_SCROLL_LINES_PER_EVENT);
+        if lines.is_sign_negative() {
+            -magnitude
+        } else {
+            magnitude
         }
     }
 
@@ -714,74 +741,14 @@ impl TerminalView {
         cx.notify();
     }
 
-    pub(super) fn handle_tabbar_mouse_down(
-        &mut self,
-        event: &MouseDownEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if event.button != MouseButton::Left || !self.show_tab_bar() {
-            return;
-        }
-
-        let mut x: f32 = event.position.x.into();
-        x -= TAB_HORIZONTAL_PADDING;
-        if x < 0.0 {
-            return;
-        }
-
-        let viewport = window.viewport_size();
-        let layout = self.tab_bar_layout(viewport.width.into());
-        let index = (x / layout.slot_width).floor() as usize;
-        if index >= self.tabs.len() {
-            return;
-        }
-
-        let x_in_slot = x - (index as f32 * layout.slot_width);
-        if x_in_slot > layout.tab_pill_width {
-            return;
-        }
-
-        let is_active = index == self.active_tab;
-        let show_close =
-            Self::tab_shows_close(layout.tab_pill_width, is_active, layout.tab_padding_x);
-        if show_close {
-            let close_left =
-                (layout.tab_pill_width - layout.tab_padding_x - TAB_CLOSE_HITBOX).max(0.0);
-            let close_right = (layout.tab_pill_width - layout.tab_padding_x).max(0.0);
-            if x_in_slot >= close_left && x_in_slot <= close_right {
-                self.close_tab(index, cx);
-                return;
-            }
-        }
-
-        self.switch_tab(index, cx);
-    }
-
     pub(super) fn handle_titlebar_mouse_down(
         &mut self,
         event: &MouseDownEvent,
         window: &mut Window,
-        cx: &mut Context<Self>,
+        _cx: &mut Context<Self>,
     ) {
         if event.button != MouseButton::Left {
             return;
-        }
-
-        if self.use_tabs && !cfg!(target_os = "windows") {
-            let viewport = window.viewport_size();
-            let viewport_width: f32 = viewport.width.into();
-            let x: f32 = event.position.x.into();
-            let y: f32 = event.position.y.into();
-            let plus_left = viewport_width - TITLEBAR_SIDE_PADDING - TITLEBAR_PLUS_SIZE;
-            let plus_top = (self.titlebar_height() - TITLEBAR_PLUS_SIZE) * 0.5;
-            let plus_right = plus_left + TITLEBAR_PLUS_SIZE;
-            let plus_bottom = plus_top + TITLEBAR_PLUS_SIZE;
-
-            if x >= plus_left && x <= plus_right && y >= plus_top && y <= plus_bottom {
-                self.add_tab(cx);
-                return;
-            }
         }
 
         if event.click_count == 2 {
@@ -793,6 +760,22 @@ impl TerminalView {
         }
 
         window.start_window_move();
+    }
+
+    pub(super) fn handle_terminal_scroll_wheel(
+        &mut self,
+        event: &ScrollWheelEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let delta_lines = Self::terminal_scroll_delta_to_lines(event.delta);
+        if delta_lines == 0 {
+            return;
+        }
+
+        if self.active_terminal().scroll_display(delta_lines) {
+            cx.notify();
+        }
     }
 
     pub(super) fn tab_bar_height(&self) -> f32 {
@@ -824,5 +807,43 @@ impl TerminalView {
 
     pub(super) fn chrome_height(&self) -> f32 {
         self.titlebar_height() + self.tab_bar_height() + self.update_banner_height()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn terminal_scroll_lines_scale_line_delta() {
+        let delta = ScrollDelta::Lines(gpui::point(0.0, 1.0));
+        assert_eq!(TerminalView::terminal_scroll_delta_to_lines(delta), 3);
+    }
+
+    #[test]
+    fn terminal_scroll_lines_scale_pixel_delta() {
+        let delta = ScrollDelta::Pixels(gpui::point(px(0.0), px(48.0)));
+        assert_eq!(TerminalView::terminal_scroll_delta_to_lines(delta), 2);
+    }
+
+    #[test]
+    fn terminal_scroll_lines_preserve_sign() {
+        let delta = ScrollDelta::Lines(gpui::point(0.0, -1.0));
+        assert_eq!(TerminalView::terminal_scroll_delta_to_lines(delta), -3);
+    }
+
+    #[test]
+    fn terminal_scroll_lines_clamp_large_deltas() {
+        let delta = ScrollDelta::Lines(gpui::point(0.0, 999.0));
+        assert_eq!(
+            TerminalView::terminal_scroll_delta_to_lines(delta),
+            MAX_TERMINAL_SCROLL_LINES_PER_EVENT
+        );
+    }
+
+    #[test]
+    fn terminal_scroll_lines_ignore_zero_delta() {
+        let delta = ScrollDelta::Pixels(gpui::point(px(0.0), px(0.0)));
+        assert_eq!(TerminalView::terminal_scroll_delta_to_lines(delta), 0);
     }
 }

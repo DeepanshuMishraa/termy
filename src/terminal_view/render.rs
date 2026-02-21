@@ -150,6 +150,8 @@ impl Render for TerminalView {
 
         if show_tab_bar {
             for (index, tab) in self.tabs.iter().enumerate() {
+                let switch_tab_index = index;
+                let close_tab_index = index;
                 let is_active = index == self.active_tab;
                 let show_tab_close = Self::tab_shows_close(
                     tab_layout.tab_pill_width,
@@ -185,6 +187,13 @@ impl Render for TerminalView {
                         .px(px(tab_layout.tab_padding_x))
                         .flex()
                         .items_center()
+                        .cursor_pointer()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _event, _window, cx| {
+                                this.switch_tab(switch_tab_index, cx);
+                            }),
+                        )
                         .child(div().w(px(close_slot_width)).h(px(TAB_CLOSE_HITBOX)))
                         .child(
                             div()
@@ -212,6 +221,14 @@ impl Render for TerminalView {
                                     inactive_tab_text
                                 })
                                 .text_size(px(13.0))
+                                .cursor_pointer()
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |this, _event, _window, cx| {
+                                        this.close_tab(close_tab_index, cx);
+                                        cx.stop_propagation();
+                                    }),
+                                )
                                 .child("×")
                         })),
                 );
@@ -591,17 +608,38 @@ impl Render for TerminalView {
                                         .child("x"),
                                 )
                         } else {
-                            div()
-                                .w(px(TITLEBAR_PLUS_SIZE))
-                                .h(px(TITLEBAR_PLUS_SIZE))
-                                .rounded_sm()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .bg(titlebar_plus_bg)
-                                .text_color(titlebar_plus_text)
-                                .text_size(px(16.0))
-                                .child(if show_titlebar_plus { "+" } else { "" })
+                            if show_titlebar_plus {
+                                div()
+                                    .w(px(TITLEBAR_PLUS_SIZE))
+                                    .h(px(TITLEBAR_PLUS_SIZE))
+                                    .rounded_sm()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .bg(titlebar_plus_bg)
+                                    .text_color(titlebar_plus_text)
+                                    .text_size(px(16.0))
+                                    .cursor_pointer()
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(|this, _event, _window, cx| {
+                                            this.add_tab(cx);
+                                            cx.stop_propagation();
+                                        }),
+                                    )
+                                    .child("+")
+                            } else {
+                                div()
+                                    .w(px(TITLEBAR_PLUS_SIZE))
+                                    .h(px(TITLEBAR_PLUS_SIZE))
+                                    .rounded_sm()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .bg(titlebar_plus_bg)
+                                    .text_color(titlebar_plus_text)
+                                    .text_size(px(16.0))
+                            }
                         }),
                 )
                 .into_any()
@@ -842,10 +880,6 @@ impl Render for TerminalView {
                     .bg(tabbar_bg)
                     .border_b(px(if show_tab_bar { 1.0 } else { 0.0 }))
                     .border_color(tabbar_border)
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(Self::handle_tabbar_mouse_down),
-                    )
                     .child(tabs_row),
             )
             .children(banner_element)
@@ -867,6 +901,7 @@ impl Render for TerminalView {
                     .on_action(cx.listener(Self::handle_zoom_out_action))
                     .on_action(cx.listener(Self::handle_zoom_reset_action))
                     .on_key_down(cx.listener(Self::handle_key_down))
+                    .on_scroll_wheel(cx.listener(Self::handle_terminal_scroll_wheel))
                     .on_mouse_down(MouseButton::Left, cx.listener(Self::handle_mouse_down))
                     .on_mouse_move(cx.listener(Self::handle_mouse_move))
                     .on_mouse_up(MouseButton::Left, cx.listener(Self::handle_mouse_up))

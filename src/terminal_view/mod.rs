@@ -75,7 +75,6 @@ struct CellPos {
 struct TabBarLayout {
     tab_pill_width: f32,
     tab_padding_x: f32,
-    slot_width: f32,
 }
 
 struct TerminalTab {
@@ -331,6 +330,7 @@ impl TerminalView {
         self.font_family = config.font_family.into();
         self.base_font_size = config.font_size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
         self.font_size = px(self.base_font_size);
+        self.cell_size = None;
         self.transparent_background_opacity = config.transparent_background_opacity;
         self.padding_x = config.padding_x.max(0.0);
         self.padding_y = config.padding_y.max(0.0);

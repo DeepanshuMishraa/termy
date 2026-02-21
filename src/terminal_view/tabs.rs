@@ -11,7 +11,6 @@ impl TerminalView {
         TabBarLayout {
             tab_pill_width,
             tab_padding_x: Self::tab_pill_padding_x(tab_pill_width),
-            slot_width: tab_pill_width + TAB_PILL_GAP,
         }
     }
 

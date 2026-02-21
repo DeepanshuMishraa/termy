@@ -57,7 +57,11 @@ define_command_actions!(
     (RestartApp, "restart_app", TERMINAL_CONTEXT),
     (RenameTab, "rename_tab", TERMINAL_CONTEXT),
     (CheckForUpdates, "check_for_updates", TERMINAL_CONTEXT),
-    (ToggleCommandPalette, "toggle_command_palette", TERMINAL_CONTEXT),
+    (
+        ToggleCommandPalette,
+        "toggle_command_palette",
+        TERMINAL_CONTEXT
+    ),
     (NewTab, "new_tab", TERMINAL_CONTEXT),
     (CloseTab, "close_tab", TERMINAL_CONTEXT),
     (Copy, "copy", TERMINAL_CONTEXT),
