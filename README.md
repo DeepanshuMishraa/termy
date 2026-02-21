@@ -65,6 +65,7 @@ Example:
 
 ```txt
 theme = termy
+term = xterm-256color
 working_dir = ~/Documents
 use_tabs = true
 window_width = 1100

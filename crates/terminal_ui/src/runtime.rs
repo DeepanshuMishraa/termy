@@ -8,19 +8,56 @@ use alacritty_terminal::{
 };
 use flume::{Receiver, Sender, unbounded};
 use gpui::{Keystroke, Pixels, px};
-use std::{
-    collections::HashMap,
-    env,
-    path::PathBuf,
-    sync::Arc,
-};
 #[cfg(not(target_os = "windows"))]
 use std::path::Path;
+use std::{collections::HashMap, env, path::PathBuf, sync::Arc};
 
 #[derive(Debug, Clone)]
 pub struct TabTitleShellIntegration {
     pub enabled: bool,
     pub explicit_prefix: String,
+}
+
+const DEFAULT_TERM: &str = "xterm-256color";
+const DEFAULT_COLORTERM: &str = "truecolor";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkingDirFallback {
+    Home,
+    Process,
+}
+
+impl Default for WorkingDirFallback {
+    fn default() -> Self {
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        {
+            Self::Home
+        }
+
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        {
+            Self::Process
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TerminalRuntimeConfig {
+    pub shell: Option<String>,
+    pub term: String,
+    pub colorterm: Option<String>,
+    pub working_dir_fallback: WorkingDirFallback,
+}
+
+impl Default for TerminalRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            shell: None,
+            term: DEFAULT_TERM.to_string(),
+            colorterm: Some(DEFAULT_COLORTERM.to_string()),
+            working_dir_fallback: WorkingDirFallback::default(),
+        }
+    }
 }
 
 fn login_shell_args(shell_path: &str) -> Vec<String> {
@@ -40,7 +77,14 @@ fn login_shell_args(shell_path: &str) -> Vec<String> {
     }
 }
 
-fn resolve_shell_path() -> String {
+fn resolve_shell_path(configured_shell: Option<&str>) -> String {
+    if let Some(shell) = configured_shell
+        .map(str::trim)
+        .filter(|shell| !shell.is_empty())
+    {
+        return shell.to_string();
+    }
+
     if let Ok(shell) = env::var("SHELL")
         && !shell.trim().is_empty()
     {
@@ -57,7 +101,12 @@ fn resolve_shell_path() -> String {
         "C:\\Windows\\System32\\cmd.exe".to_string()
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
+    {
+        "/bin/zsh".to_string()
+    }
+
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
     {
         "/bin/bash".to_string()
     }
@@ -91,6 +140,7 @@ fn user_home_dir() -> Option<PathBuf> {
 
 fn pty_env_overrides(
     shell_integration: Option<&TabTitleShellIntegration>,
+    runtime_config: &TerminalRuntimeConfig,
 ) -> HashMap<String, String> {
     let mut env_overrides = HashMap::new();
 
@@ -121,6 +171,19 @@ fn pty_env_overrides(
         if let Ok(path) = env::join_paths(path_entries.iter()) {
             env_overrides.insert("PATH".to_string(), path.to_string_lossy().into_owned());
         }
+    }
+
+    let term = runtime_config.term.trim();
+    let term = if term.is_empty() { DEFAULT_TERM } else { term };
+    env_overrides.insert("TERM".to_string(), term.to_string());
+
+    if let Some(colorterm) = runtime_config
+        .colorterm
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        env_overrides.insert("COLORTERM".to_string(), colorterm.to_string());
     }
 
     env_overrides.insert("TERM_PROGRAM".to_string(), "termy".to_string());
@@ -164,14 +227,12 @@ fn resolve_working_directory(configured: Option<&str>) -> Option<std::path::Path
     if path.is_dir() { Some(path) } else { None }
 }
 
-fn default_working_directory() -> Option<PathBuf> {
-    #[cfg(target_os = "windows")]
+fn default_working_directory_with_fallback(fallback: WorkingDirFallback) -> Option<PathBuf> {
+    if fallback == WorkingDirFallback::Home
+        && let Some(home) = user_home_dir()
+        && home.is_dir()
     {
-        if let Some(home) = user_home_dir()
-            && home.is_dir()
-        {
-            return Some(home);
-        }
+        return Some(home);
     }
 
     env::current_dir().ok()
@@ -295,23 +356,26 @@ impl Terminal {
         configured_working_dir: Option<&str>,
         event_wakeup_tx: Option<Sender<()>>,
         tab_title_shell_integration: Option<&TabTitleShellIntegration>,
+        runtime_config: Option<&TerminalRuntimeConfig>,
     ) -> anyhow::Result<Self> {
         // Create event channels
         let (events_tx, events_rx) = unbounded();
+        let runtime_config = runtime_config.cloned().unwrap_or_default();
 
-        // Get shell from environment or default to an OS-appropriate shell.
-        let shell_path = resolve_shell_path();
+        // Get shell from config/env or default to an OS-appropriate shell.
+        let shell_path = resolve_shell_path(runtime_config.shell.as_deref());
         let shell = Shell::new(shell_path.clone(), login_shell_args(&shell_path));
 
         // Get working directory
-        let working_directory =
-            resolve_working_directory(configured_working_dir).or_else(default_working_directory);
+        let working_directory = resolve_working_directory(configured_working_dir).or_else(|| {
+            default_working_directory_with_fallback(runtime_config.working_dir_fallback)
+        });
 
         // Configure PTY
         let pty_options = PtyOptions {
             shell: Some(shell),
             working_directory,
-            env: pty_env_overrides(tab_title_shell_integration),
+            env: pty_env_overrides(tab_title_shell_integration, &runtime_config),
             drain_on_exit: true,
             #[cfg(target_os = "windows")]
             escape_args: false,
@@ -483,4 +547,30 @@ pub fn keystroke_to_input(keystroke: &Keystroke) -> Option<Vec<u8>> {
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DEFAULT_TERM, TerminalRuntimeConfig, pty_env_overrides, resolve_shell_path};
+
+    #[test]
+    fn env_overrides_set_term_by_default() {
+        let env = pty_env_overrides(None, &TerminalRuntimeConfig::default());
+        assert_eq!(env.get("TERM").map(String::as_str), Some(DEFAULT_TERM));
+    }
+
+    #[test]
+    fn env_overrides_allow_disabling_colorterm() {
+        let config = TerminalRuntimeConfig {
+            colorterm: None,
+            ..TerminalRuntimeConfig::default()
+        };
+        let env = pty_env_overrides(None, &config);
+        assert!(!env.contains_key("COLORTERM"));
+    }
+
+    #[test]
+    fn explicit_shell_path_wins() {
+        assert_eq!(resolve_shell_path(Some("/bin/custom")), "/bin/custom");
+    }
 }

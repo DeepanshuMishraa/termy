@@ -8,11 +8,14 @@ const DEFAULT_TAB_TITLE_FALLBACK: &str = "Terminal";
 const DEFAULT_TAB_TITLE_EXPLICIT_PREFIX: &str = "termy:tab:";
 const DEFAULT_TAB_TITLE_PROMPT_FORMAT: &str = "{cwd}";
 const DEFAULT_TAB_TITLE_COMMAND_FORMAT: &str = "{command}";
+const DEFAULT_TERM: &str = "xterm-256color";
+const DEFAULT_COLORTERM: &str = "truecolor";
 
-const DEFAULT_CONFIG: &str = "# Will be comments using #\n\
+const DEFAULT_CONFIG: &str = "# Main settings\n\
 theme = termy\n\
-# Startup directory for new terminal sessions\n\
-# On Windows, leaving this unset defaults to your user home directory.\n\
+# TERM value for child shells and terminal apps\n\
+term = xterm-256color\n\
+# Startup directory for new terminal sessions (~ supported)\n\
 # working_dir = ~/Documents\n\
 # Show tab bar above the terminal grid\n\
 # use_tabs = true\n\
@@ -39,7 +42,15 @@ font_size = 14\n\
 # transparent_background_opacity = 1.0\n\
 # Inner terminal padding in pixels\n\
 padding_x = 12\n\
-padding_y = 8\n";
+padding_y = 8\n\
+\n\
+# Advanced runtime settings (usually leave these as defaults)\n\
+# Preferred shell executable path\n\
+# shell = /bin/zsh\n\
+# Fallback startup directory when working_dir is unset: home or process\n\
+# working_dir_fallback = home\n\
+# Advertise 24-bit color support to child apps\n\
+# colorterm = truecolor\n";
 
 pub type ThemeId = String;
 
@@ -154,8 +165,12 @@ impl Default for TabTitleConfig {
 pub struct AppConfig {
     pub theme: ThemeId,
     pub working_dir: Option<String>,
+    pub working_dir_fallback: WorkingDirFallback,
     pub use_tabs: bool,
     pub tab_title: TabTitleConfig,
+    pub shell: Option<String>,
+    pub term: String,
+    pub colorterm: Option<String>,
     pub window_width: f32,
     pub window_height: f32,
     pub font_family: String,
@@ -170,8 +185,12 @@ impl Default for AppConfig {
         Self {
             theme: DEFAULT_THEME_ID.to_string(),
             working_dir: None,
+            working_dir_fallback: WorkingDirFallback::default(),
             use_tabs: false,
             tab_title: TabTitleConfig::default(),
+            shell: None,
+            term: DEFAULT_TERM.to_string(),
+            colorterm: Some(DEFAULT_COLORTERM.to_string()),
             window_width: 1280.0,
             window_height: 820.0,
             font_family: "JetBrains Mono".to_string(),
@@ -218,6 +237,14 @@ impl AppConfig {
 
             if key.eq_ignore_ascii_case("working_dir") && !value.is_empty() {
                 config.working_dir = Some(value.to_string());
+            }
+
+            if key.eq_ignore_ascii_case("working_dir_fallback")
+                || key.eq_ignore_ascii_case("default_working_dir")
+            {
+                if let Some(fallback) = WorkingDirFallback::from_str(value) {
+                    config.working_dir_fallback = fallback;
+                }
             }
 
             if key.eq_ignore_ascii_case("use_tabs") {
@@ -267,6 +294,20 @@ impl AppConfig {
                 if let Some(format) = parse_string_value(value) {
                     config.tab_title.command_format = format;
                 }
+            }
+
+            if key.eq_ignore_ascii_case("shell") {
+                config.shell = parse_optional_string_value(value);
+            }
+
+            if key.eq_ignore_ascii_case("term") {
+                if let Some(term) = parse_string_value(value) {
+                    config.term = term;
+                }
+            }
+
+            if key.eq_ignore_ascii_case("colorterm") {
+                config.colorterm = parse_optional_string_value(value);
             }
 
             if key.eq_ignore_ascii_case("window_width") {
@@ -362,6 +403,45 @@ fn parse_string_value(value: &str) -> Option<String> {
     Some(unquoted.to_string())
 }
 
+fn parse_optional_string_value(value: &str) -> Option<String> {
+    let parsed = parse_string_value(value)?;
+    let normalized = parsed.trim().to_ascii_lowercase();
+    if matches!(normalized.as_str(), "none" | "unset" | "default" | "auto") {
+        return None;
+    }
+    Some(parsed)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkingDirFallback {
+    Home,
+    Process,
+}
+
+impl WorkingDirFallback {
+    fn from_str(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "home" | "user" => Some(Self::Home),
+            "process" | "cwd" => Some(Self::Process),
+            _ => None,
+        }
+    }
+}
+
+impl Default for WorkingDirFallback {
+    fn default() -> Self {
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        {
+            Self::Home
+        }
+
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        {
+            Self::Process
+        }
+    }
+}
+
 fn parse_tab_title_priority(value: &str) -> Option<Vec<TabTitleSource>> {
     let mut priority = Vec::new();
     for token in value.split(',') {
@@ -450,7 +530,7 @@ fn config_path() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppConfig, TabTitleMode, TabTitleSource};
+    use super::{AppConfig, TabTitleMode, TabTitleSource, WorkingDirFallback};
 
     #[test]
     fn tab_title_mode_sets_default_priority() {
@@ -493,5 +573,20 @@ mod tests {
         assert!(!config.tab_title.shell_integration);
         assert_eq!(config.tab_title.prompt_format, "cwd:{cwd}");
         assert_eq!(config.tab_title.command_format, "run:{command}");
+    }
+
+    #[test]
+    fn runtime_env_options_parse() {
+        let config = AppConfig::from_contents(
+            "term = screen-256color\n\
+             shell = /bin/zsh\n\
+             working_dir_fallback = process\n\
+             colorterm = none\n",
+        );
+
+        assert_eq!(config.term, "screen-256color");
+        assert_eq!(config.shell.as_deref(), Some("/bin/zsh"));
+        assert_eq!(config.working_dir_fallback, WorkingDirFallback::Process);
+        assert!(config.colorterm.is_none());
     }
 }

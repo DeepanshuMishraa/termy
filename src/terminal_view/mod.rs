@@ -6,8 +6,8 @@ use gpui::{
     AnyElement, App, AsyncApp, ClipboardItem, Context, Element, FocusHandle, Focusable, Font,
     FontWeight, InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Render, ScrollDelta, ScrollWheelEvent,
-    SharedString, Size,
-    StatefulInteractiveElement, Styled, WeakEntity, Window, WindowControlArea, div, px,
+    SharedString, Size, StatefulInteractiveElement, Styled, WeakEntity, Window, WindowControlArea,
+    div, px,
 };
 use std::{
     fs,
@@ -16,15 +16,16 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 use termy_terminal_ui::{
-    CellRenderInfo, TabTitleShellIntegration, Terminal, TerminalEvent, TerminalGrid, TerminalSize,
+    CellRenderInfo, TabTitleShellIntegration, Terminal, TerminalEvent, TerminalGrid,
+    TerminalRuntimeConfig, TerminalSize, WorkingDirFallback as RuntimeWorkingDirFallback,
     find_link_in_line, keystroke_to_input,
 };
 use termy_toast::ToastManager;
 
 #[cfg(target_os = "macos")]
-use termy_auto_update::{AutoUpdater, UpdateState};
-#[cfg(target_os = "macos")]
 use gpui::{AppContext, Entity};
+#[cfg(target_os = "macos")]
+use termy_auto_update::{AutoUpdater, UpdateState};
 
 mod command_palette;
 mod interaction;
@@ -148,6 +149,7 @@ pub struct TerminalView {
     tab_title: TabTitleConfig,
     tab_shell_integration: TabTitleShellIntegration,
     configured_working_dir: Option<String>,
+    terminal_runtime: TerminalRuntimeConfig,
     config_path: Option<PathBuf>,
     config_last_modified: Option<SystemTime>,
     font_family: SharedString,
@@ -181,6 +183,20 @@ pub struct TerminalView {
 }
 
 impl TerminalView {
+    fn runtime_config_from_app_config(config: &AppConfig) -> TerminalRuntimeConfig {
+        let working_dir_fallback = match config.working_dir_fallback {
+            config::WorkingDirFallback::Home => RuntimeWorkingDirFallback::Home,
+            config::WorkingDirFallback::Process => RuntimeWorkingDirFallback::Process,
+        };
+
+        TerminalRuntimeConfig {
+            shell: config.shell.clone(),
+            term: config.term.clone(),
+            colorterm: config.colorterm.clone(),
+            working_dir_fallback,
+        }
+    }
+
     fn config_last_modified(path: &PathBuf) -> Option<SystemTime> {
         fs::metadata(path).ok()?.modified().ok()
     }
@@ -241,11 +257,13 @@ impl TerminalView {
             enabled: tab_title.shell_integration,
             explicit_prefix: tab_title.explicit_prefix.clone(),
         };
+        let terminal_runtime = Self::runtime_config_from_app_config(&config);
         let terminal = Terminal::new(
             TerminalSize::default(),
             configured_working_dir.as_deref(),
             Some(event_wakeup_tx.clone()),
             Some(&tab_shell_integration),
+            Some(&terminal_runtime),
         )
         .expect("Failed to create terminal");
 
@@ -261,6 +279,7 @@ impl TerminalView {
             tab_title,
             tab_shell_integration,
             configured_working_dir,
+            terminal_runtime,
             config_path,
             config_last_modified,
             font_family: config.font_family.into(),
@@ -318,6 +337,7 @@ impl TerminalView {
             explicit_prefix: self.tab_title.explicit_prefix.clone(),
         };
         self.configured_working_dir = config.working_dir.clone();
+        self.terminal_runtime = Self::runtime_config_from_app_config(&config);
         self.font_family = config.font_family.into();
         self.base_font_size = config.font_size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
         self.font_size = px(self.base_font_size);

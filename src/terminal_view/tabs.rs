@@ -52,6 +52,7 @@ impl TerminalView {
             self.configured_working_dir.as_deref(),
             Some(self.event_wakeup_tx.clone()),
             Some(&self.tab_shell_integration),
+            Some(&self.terminal_runtime),
         )
         .expect("Failed to create terminal tab");
 
