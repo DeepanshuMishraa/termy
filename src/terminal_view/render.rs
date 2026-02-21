@@ -511,7 +511,7 @@ impl Render for TerminalView {
         };
         let command_palette_overlay = self
             .command_palette_open
-            .then(|| self.render_command_palette_modal(cx));
+            .then(|| self.render_command_palette_modal(window, cx));
         let titlebar_element: Option<AnyElement> = (titlebar_height > 0.0).then(|| {
             div()
                 .id("titlebar")
@@ -854,6 +854,18 @@ impl Render for TerminalView {
                     .id("terminal")
                     .track_focus(&focus_handle)
                     .key_context("Terminal")
+                    .on_action(cx.listener(Self::handle_toggle_command_palette_action))
+                    .on_action(cx.listener(Self::handle_app_info_action))
+                    .on_action(cx.listener(Self::handle_restart_app_action))
+                    .on_action(cx.listener(Self::handle_rename_tab_action))
+                    .on_action(cx.listener(Self::handle_check_for_updates_action))
+                    .on_action(cx.listener(Self::handle_new_tab_action))
+                    .on_action(cx.listener(Self::handle_close_tab_action))
+                    .on_action(cx.listener(Self::handle_copy_action))
+                    .on_action(cx.listener(Self::handle_paste_action))
+                    .on_action(cx.listener(Self::handle_zoom_in_action))
+                    .on_action(cx.listener(Self::handle_zoom_out_action))
+                    .on_action(cx.listener(Self::handle_zoom_reset_action))
                     .on_key_down(cx.listener(Self::handle_key_down))
                     .on_mouse_down(MouseButton::Left, cx.listener(Self::handle_mouse_down))
                     .on_mouse_move(cx.listener(Self::handle_mouse_move))

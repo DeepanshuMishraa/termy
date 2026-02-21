@@ -74,10 +74,12 @@ font_family = "JetBrains Mono"
 font_size = 14
 padding_x = 12
 padding_y = 8
+keybind = cmd-p=toggle_command_palette
 ```
 
 Full configuration reference:
 - `docs/configuration.md`
+- `docs/keybindings.md`
 
 ## License
 

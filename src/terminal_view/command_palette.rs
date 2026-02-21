@@ -1,11 +1,76 @@
 use super::*;
 
 impl TerminalView {
-    pub(super) fn is_command_palette_shortcut(key: &str, modifiers: gpui::Modifiers) -> bool {
-        modifiers.secondary()
-            && !modifiers.alt
-            && !modifiers.function
-            && key.eq_ignore_ascii_case("p")
+    fn format_keybinding_label(binding: &gpui::KeyBinding) -> String {
+        binding
+            .keystrokes()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    fn command_palette_binding_badge<A: gpui::Action>(
+        &self,
+        action: &A,
+        window: &Window,
+    ) -> Option<String> {
+        if let Some(binding) =
+            window.highest_precedence_binding_for_action_in(action, &self.focus_handle)
+        {
+            Some(Self::format_keybinding_label(&binding))
+        } else {
+            None
+        }
+    }
+
+    fn command_palette_command_shortcut(
+        &self,
+        action: CommandAction,
+        window: &Window,
+    ) -> Option<String> {
+        match action {
+            CommandAction::Quit => self.command_palette_binding_badge(&commands::Quit, window),
+            CommandAction::OpenConfig => {
+                self.command_palette_binding_badge(&commands::OpenConfig, window)
+            }
+            CommandAction::AppInfo => {
+                self.command_palette_binding_badge(&commands::AppInfo, window)
+            }
+            CommandAction::RestartApp => {
+                self.command_palette_binding_badge(&commands::RestartApp, window)
+            }
+            CommandAction::RenameTab => {
+                self.command_palette_binding_badge(&commands::RenameTab, window)
+            }
+            CommandAction::CheckForUpdates => {
+                self.command_palette_binding_badge(&commands::CheckForUpdates, window)
+            }
+            CommandAction::ToggleCommandPalette => {
+                self.command_palette_binding_badge(&commands::ToggleCommandPalette, window)
+            }
+            CommandAction::NewTab => self.command_palette_binding_badge(&commands::NewTab, window),
+            CommandAction::CloseTab => {
+                self.command_palette_binding_badge(&commands::CloseTab, window)
+            }
+            CommandAction::Copy => self.command_palette_binding_badge(&commands::Copy, window),
+            CommandAction::Paste => self.command_palette_binding_badge(&commands::Paste, window),
+            CommandAction::ZoomIn => self.command_palette_binding_badge(&commands::ZoomIn, window),
+            CommandAction::ZoomOut => {
+                self.command_palette_binding_badge(&commands::ZoomOut, window)
+            }
+            CommandAction::ZoomReset => {
+                self.command_palette_binding_badge(&commands::ZoomReset, window)
+            }
+        }
+    }
+
+    fn command_palette_shortcut(&self, action: CommandAction, window: &Window) -> Option<String> {
+        if !self.command_palette_show_keybinds {
+            return None;
+        }
+
+        self.command_palette_command_shortcut(action, window)
     }
 
     pub(super) fn open_command_palette(&mut self, cx: &mut Context<Self>) {
@@ -66,32 +131,32 @@ impl TerminalView {
             CommandPaletteItem {
                 title: "App Info",
                 keywords: "information version about build",
-                action: CommandPaletteAction::AppInfo,
+                action: CommandAction::AppInfo,
             },
             CommandPaletteItem {
                 title: "Restart App",
                 keywords: "relaunch reopen restart",
-                action: CommandPaletteAction::RestartApp,
+                action: CommandAction::RestartApp,
             },
             CommandPaletteItem {
                 title: "Open Config",
                 keywords: "settings preferences",
-                action: CommandPaletteAction::OpenConfig,
+                action: CommandAction::OpenConfig,
             },
             CommandPaletteItem {
                 title: "Zoom In",
                 keywords: "font increase",
-                action: CommandPaletteAction::ZoomIn,
+                action: CommandAction::ZoomIn,
             },
             CommandPaletteItem {
                 title: "Zoom Out",
                 keywords: "font decrease",
-                action: CommandPaletteAction::ZoomOut,
+                action: CommandAction::ZoomOut,
             },
             CommandPaletteItem {
                 title: "Reset Zoom",
                 keywords: "font default",
-                action: CommandPaletteAction::ResetZoom,
+                action: CommandAction::ZoomReset,
             },
         ];
 
@@ -101,7 +166,7 @@ impl TerminalView {
                 CommandPaletteItem {
                     title: "Rename Tab",
                     keywords: "title name",
-                    action: CommandPaletteAction::RenameTab,
+                    action: CommandAction::RenameTab,
                 },
             );
             items.insert(
@@ -109,7 +174,7 @@ impl TerminalView {
                 CommandPaletteItem {
                     title: "Close Tab",
                     keywords: "remove tab",
-                    action: CommandPaletteAction::CloseTab,
+                    action: CommandAction::CloseTab,
                 },
             );
             items.insert(
@@ -117,7 +182,7 @@ impl TerminalView {
                 CommandPaletteItem {
                     title: "New Tab",
                     keywords: "create tab",
-                    action: CommandPaletteAction::NewTab,
+                    action: CommandAction::NewTab,
                 },
             );
         }
@@ -126,7 +191,7 @@ impl TerminalView {
         items.push(CommandPaletteItem {
             title: "Check for Updates",
             keywords: "release version updater",
-            action: CommandPaletteAction::CheckForUpdates,
+            action: CommandAction::CheckForUpdates,
         });
 
         items
@@ -337,86 +402,41 @@ impl TerminalView {
         self.execute_command_palette_action(action, cx);
     }
 
-    fn execute_command_palette_action(
-        &mut self,
-        action: CommandPaletteAction,
-        cx: &mut Context<Self>,
-    ) {
+    fn execute_command_palette_action(&mut self, action: CommandAction, cx: &mut Context<Self>) {
         self.command_palette_open = false;
         self.command_palette_query.clear();
         self.command_palette_selected = 0;
         self.command_palette_scroll_offset = 0;
         self.command_palette_query_select_all = false;
 
+        self.execute_command_action(action, false, cx);
+
         match action {
-            CommandPaletteAction::AppInfo => {
-                let config_path = self
-                    .config_path
-                    .as_ref()
-                    .map(|path| path.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| "unknown".to_string());
-                let message = format!(
-                    "Termy v{} | {}-{} | config: {}",
-                    crate::APP_VERSION,
-                    std::env::consts::OS,
-                    std::env::consts::ARCH,
-                    config_path
-                );
-                termy_toast::info(message);
-                cx.notify();
-            }
-            CommandPaletteAction::RestartApp => match self.restart_application() {
-                Ok(()) => cx.quit(),
-                Err(error) => {
-                    termy_toast::error(format!("Restart failed: {}", error));
-                    cx.notify();
-                }
-            },
-            CommandPaletteAction::NewTab => {
-                self.add_tab(cx);
-                termy_toast::success("Opened new tab");
-            }
-            CommandPaletteAction::CloseTab => {
-                self.close_active_tab(cx);
-                termy_toast::info("Closed active tab");
-            }
-            CommandPaletteAction::RenameTab => {
-                self.renaming_tab = Some(self.active_tab);
-                self.rename_buffer = self.tabs[self.active_tab].title.clone();
-                termy_toast::info("Rename mode enabled");
-                cx.notify();
-            }
-            CommandPaletteAction::OpenConfig => {
-                config::open_config_file();
+            CommandAction::OpenConfig => {
                 termy_toast::info("Opened config file");
                 cx.notify();
             }
-            CommandPaletteAction::ZoomIn => {
-                let current: f32 = self.font_size.into();
-                self.update_zoom(current + ZOOM_STEP, cx);
-                termy_toast::info("Zoomed in");
-            }
-            CommandPaletteAction::ZoomOut => {
-                let current: f32 = self.font_size.into();
-                self.update_zoom(current - ZOOM_STEP, cx);
-                termy_toast::info("Zoomed out");
-            }
-            CommandPaletteAction::ResetZoom => {
-                self.update_zoom(self.base_font_size, cx);
-                termy_toast::info("Zoom reset");
-            }
-            #[cfg(target_os = "macos")]
-            CommandPaletteAction::CheckForUpdates => {
-                if let Some(updater) = self.auto_updater.as_ref() {
-                    AutoUpdater::check(updater.downgrade(), cx);
-                }
-                termy_toast::info("Checking for updates");
-                cx.notify();
-            }
+            CommandAction::NewTab => termy_toast::success("Opened new tab"),
+            CommandAction::CloseTab => termy_toast::info("Closed active tab"),
+            CommandAction::ZoomIn => termy_toast::info("Zoomed in"),
+            CommandAction::ZoomOut => termy_toast::info("Zoomed out"),
+            CommandAction::ZoomReset => termy_toast::info("Zoom reset"),
+            CommandAction::Quit
+            | CommandAction::AppInfo
+            | CommandAction::RestartApp
+            | CommandAction::RenameTab
+            | CommandAction::CheckForUpdates
+            | CommandAction::ToggleCommandPalette
+            | CommandAction::Copy
+            | CommandAction::Paste => {}
         }
     }
 
-    pub(super) fn render_command_palette_modal(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_command_palette_modal(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let items = self.filtered_command_palette_items();
         let selected = if items.is_empty() {
             0
@@ -464,6 +484,13 @@ impl TerminalView {
         let mut scrollbar_thumb = self.colors.cursor;
         scrollbar_thumb.a = 0.42;
 
+        let mut shortcut_bg = self.colors.cursor;
+        shortcut_bg.a = 0.1;
+        let mut shortcut_border = self.colors.cursor;
+        shortcut_border.a = 0.22;
+        let mut shortcut_text = self.colors.foreground;
+        shortcut_text.a = 0.8;
+
         let mut list = div().flex_1().flex().flex_col().gap(px(4.0));
         if items.is_empty() {
             list = list.child(
@@ -483,12 +510,13 @@ impl TerminalView {
             {
                 let is_selected = index == selected;
                 let action = item.action;
+                let shortcut = self.command_palette_shortcut(action, window);
                 list = list.child(
                     div()
                         .id(("command-palette-item", index))
                         .w_full()
                         .px(px(10.0))
-                        .py(px(8.0))
+                        .py(px(6.0))
                         .rounded_sm()
                         .bg(if is_selected {
                             selected_bg
@@ -509,15 +537,39 @@ impl TerminalView {
                         }))
                         .text_size(px(12.0))
                         .text_color(primary_text)
-                        .child(item.title),
+                        .child(
+                            div()
+                                .w_full()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .gap(px(8.0))
+                                .child(div().flex_1().truncate().child(item.title))
+                                .children(shortcut.map(|label| {
+                                    div()
+                                        .flex_none()
+                                        .h(px(20.0))
+                                        .px(px(6.0))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .rounded_sm()
+                                        .bg(shortcut_bg)
+                                        .border_1()
+                                        .border_color(shortcut_border)
+                                        .text_size(px(10.0))
+                                        .text_color(shortcut_text)
+                                        .child(label)
+                                })),
+                        ),
                 );
             }
         }
         let visible_count = items.len().min(COMMAND_PALETTE_MAX_ITEMS);
-        let row_height = 34.0;
+        let row_height = 30.0;
         let row_gap = 4.0;
-        let track_height =
-            (visible_count as f32 * row_height) + (visible_count.saturating_sub(1) as f32 * row_gap);
+        let track_height = (visible_count as f32 * row_height)
+            + (visible_count.saturating_sub(1) as f32 * row_gap);
         let max_scroll_start = items.len().saturating_sub(COMMAND_PALETTE_MAX_ITEMS);
         let thumb_height = if items.len() > COMMAND_PALETTE_MAX_ITEMS {
             ((visible_count as f32 / items.len() as f32) * track_height).max(18.0)
@@ -587,9 +639,7 @@ impl TerminalView {
                             .on_click(cx.listener(|_this, _event, _window, cx| {
                                 cx.stop_propagation();
                             }))
-                            .on_scroll_wheel(cx.listener(
-                                Self::handle_command_palette_scroll_wheel,
-                            ))
+                            .on_scroll_wheel(cx.listener(Self::handle_command_palette_scroll_wheel))
                             .child(
                                 div()
                                     .w_full()

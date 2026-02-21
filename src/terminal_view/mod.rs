@@ -1,5 +1,7 @@
 use crate::colors::TerminalColors;
+use crate::commands::{self, CommandAction};
 use crate::config::{self, AppConfig, TabTitleConfig, TabTitleSource};
+use crate::keybindings;
 use alacritty_terminal::term::cell::Flags;
 use flume::{Sender, bounded};
 use gpui::{
@@ -114,26 +116,11 @@ struct HoveredLink {
     target: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CommandPaletteAction {
-    AppInfo,
-    RestartApp,
-    NewTab,
-    CloseTab,
-    RenameTab,
-    OpenConfig,
-    ZoomIn,
-    ZoomOut,
-    ResetZoom,
-    #[cfg(target_os = "macos")]
-    CheckForUpdates,
-}
-
 #[derive(Clone, Copy, Debug)]
 struct CommandPaletteItem {
     title: &'static str,
     keywords: &'static str,
-    action: CommandPaletteAction,
+    action: CommandAction,
 }
 
 /// The main terminal view component
@@ -171,6 +158,7 @@ pub struct TerminalView {
     command_palette_selected: usize,
     command_palette_scroll_offset: usize,
     command_palette_query_select_all: bool,
+    command_palette_show_keybinds: bool,
     command_palette_opened_at: Option<Instant>,
     /// Cached cell dimensions
     cell_size: Option<Size<Pixels>>,
@@ -232,7 +220,7 @@ impl TerminalView {
                 smol::Timer::after(Duration::from_millis(CONFIG_WATCH_INTERVAL_MS)).await;
                 let result = cx.update(|cx| {
                     this.update(cx, |view, cx| {
-                        if view.reload_config_if_changed() {
+                        if view.reload_config_if_changed(cx) {
                             cx.notify();
                         }
                     })
@@ -301,6 +289,7 @@ impl TerminalView {
             command_palette_selected: 0,
             command_palette_scroll_offset: 0,
             command_palette_query_select_all: false,
+            command_palette_show_keybinds: config.command_palette_show_keybinds,
             command_palette_opened_at: None,
             cell_size: None,
             #[cfg(target_os = "macos")]
@@ -328,7 +317,8 @@ impl TerminalView {
         view
     }
 
-    fn apply_runtime_config(&mut self, config: AppConfig) -> bool {
+    fn apply_runtime_config(&mut self, config: AppConfig, cx: &mut Context<Self>) -> bool {
+        keybindings::install_keybindings(cx, &config);
         self.colors = TerminalColors::from_theme(&config.theme);
         self.use_tabs = config.use_tabs;
         self.tab_title = config.tab_title.clone();
@@ -344,6 +334,7 @@ impl TerminalView {
         self.transparent_background_opacity = config.transparent_background_opacity;
         self.padding_x = config.padding_x.max(0.0);
         self.padding_y = config.padding_y.max(0.0);
+        self.command_palette_show_keybinds = config.command_palette_show_keybinds;
 
         for index in 0..self.tabs.len() {
             self.refresh_tab_title(index);
@@ -352,7 +343,7 @@ impl TerminalView {
         true
     }
 
-    fn reload_config_if_changed(&mut self) -> bool {
+    fn reload_config_if_changed(&mut self, cx: &mut Context<Self>) -> bool {
         let path = match self.config_path.clone() {
             Some(path) => path,
             None => {
@@ -376,7 +367,7 @@ impl TerminalView {
 
         self.config_last_modified = Some(modified);
         let config = AppConfig::load_or_create();
-        let changed = self.apply_runtime_config(config);
+        let changed = self.apply_runtime_config(config, cx);
         if changed {
             termy_toast::info("Configuration reloaded");
         }

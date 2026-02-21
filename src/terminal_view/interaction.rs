@@ -27,57 +27,21 @@ impl TerminalView {
         here >= (start.row, start.col) && here <= (end.row, end.col)
     }
 
-    pub(super) fn is_copy_shortcut(key: &str, modifiers: gpui::Modifiers) -> bool {
-        #[cfg(target_os = "macos")]
+    fn write_copy_fallback_input(&mut self, _cx: &mut Context<Self>) {
+        #[cfg(not(target_os = "macos"))]
         {
-            modifiers.platform
-                && !modifiers.control
-                && !modifiers.alt
-                && !modifiers.function
-                && key.eq_ignore_ascii_case("c")
-        }
-        #[cfg(target_os = "windows")]
-        {
-            modifiers.control
-                && !modifiers.platform
-                && !modifiers.alt
-                && !modifiers.function
-                && key.eq_ignore_ascii_case("c")
-        }
-        #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
-        {
-            modifiers.control
-                && modifiers.shift
-                && !modifiers.alt
-                && !modifiers.function
-                && key.eq_ignore_ascii_case("c")
+            self.active_terminal().write(&[0x03]);
+            self.clear_selection();
+            _cx.notify();
         }
     }
 
-    pub(super) fn is_paste_shortcut(key: &str, modifiers: gpui::Modifiers) -> bool {
-        #[cfg(target_os = "macos")]
+    fn write_paste_fallback_input(&mut self, _cx: &mut Context<Self>) {
+        #[cfg(not(target_os = "macos"))]
         {
-            modifiers.platform
-                && !modifiers.control
-                && !modifiers.alt
-                && !modifiers.function
-                && key.eq_ignore_ascii_case("v")
-        }
-        #[cfg(target_os = "windows")]
-        {
-            modifiers.control
-                && !modifiers.platform
-                && !modifiers.alt
-                && !modifiers.function
-                && key.eq_ignore_ascii_case("v")
-        }
-        #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
-        {
-            modifiers.control
-                && modifiers.shift
-                && !modifiers.alt
-                && !modifiers.function
-                && key.eq_ignore_ascii_case("v")
+            self.active_terminal().write(&[0x16]);
+            self.clear_selection();
+            _cx.notify();
         }
     }
 
@@ -366,6 +330,216 @@ impl TerminalView {
         }
     }
 
+    fn command_shortcuts_suspended(&self) -> bool {
+        self.command_palette_open || self.renaming_tab.is_some()
+    }
+
+    pub(super) fn execute_command_action(
+        &mut self,
+        action: CommandAction,
+        respect_shortcut_suspend: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let shortcuts_suspended = respect_shortcut_suspend && self.command_shortcuts_suspended();
+
+        match action {
+            CommandAction::ToggleCommandPalette => {
+                if self.command_palette_open {
+                    self.close_command_palette(cx);
+                } else {
+                    self.open_command_palette(cx);
+                }
+            }
+            _ if shortcuts_suspended => {}
+            CommandAction::Quit => cx.quit(),
+            CommandAction::OpenConfig => config::open_config_file(),
+            CommandAction::AppInfo => {
+                let config_path = self
+                    .config_path
+                    .as_ref()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "unknown".to_string());
+                let message = format!(
+                    "Termy v{} | {}-{} | config: {}",
+                    crate::APP_VERSION,
+                    std::env::consts::OS,
+                    std::env::consts::ARCH,
+                    config_path
+                );
+                termy_toast::info(message);
+                cx.notify();
+            }
+            CommandAction::RestartApp => match self.restart_application() {
+                Ok(()) => cx.quit(),
+                Err(error) => {
+                    termy_toast::error(format!("Restart failed: {}", error));
+                    cx.notify();
+                }
+            },
+            CommandAction::RenameTab => {
+                if !self.use_tabs {
+                    return;
+                }
+
+                self.renaming_tab = Some(self.active_tab);
+                self.rename_buffer = self.tabs[self.active_tab].title.clone();
+                termy_toast::info("Rename mode enabled");
+                cx.notify();
+            }
+            CommandAction::CheckForUpdates => {
+                #[cfg(target_os = "macos")]
+                {
+                    if let Some(updater) = self.auto_updater.as_ref() {
+                        AutoUpdater::check(updater.downgrade(), cx);
+                    }
+                    termy_toast::info("Checking for updates");
+                    cx.notify();
+                }
+
+                #[cfg(not(target_os = "macos"))]
+                {
+                    termy_toast::info("Auto updates are only available on macOS");
+                    cx.notify();
+                }
+            }
+            CommandAction::NewTab => self.add_tab(cx),
+            CommandAction::CloseTab => self.close_active_tab(cx),
+            CommandAction::Copy => {
+                if let Some(selected) = self.selected_text() {
+                    cx.write_to_clipboard(ClipboardItem::new_string(selected));
+                } else {
+                    self.write_copy_fallback_input(cx);
+                }
+            }
+            CommandAction::Paste => {
+                if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                    self.active_terminal().write(text.as_bytes());
+                    self.clear_selection();
+                    cx.notify();
+                } else {
+                    self.write_paste_fallback_input(cx);
+                }
+            }
+            CommandAction::ZoomIn => {
+                let current: f32 = self.font_size.into();
+                self.update_zoom(current + ZOOM_STEP, cx);
+            }
+            CommandAction::ZoomOut => {
+                let current: f32 = self.font_size.into();
+                self.update_zoom(current - ZOOM_STEP, cx);
+            }
+            CommandAction::ZoomReset => self.update_zoom(self.base_font_size, cx),
+        }
+    }
+
+    pub(super) fn handle_toggle_command_palette_action(
+        &mut self,
+        _: &commands::ToggleCommandPalette,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.execute_command_action(CommandAction::ToggleCommandPalette, true, cx);
+    }
+
+    pub(super) fn handle_app_info_action(
+        &mut self,
+        _: &commands::AppInfo,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.execute_command_action(CommandAction::AppInfo, true, cx);
+    }
+
+    pub(super) fn handle_restart_app_action(
+        &mut self,
+        _: &commands::RestartApp,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.execute_command_action(CommandAction::RestartApp, true, cx);
+    }
+
+    pub(super) fn handle_rename_tab_action(
+        &mut self,
+        _: &commands::RenameTab,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.execute_command_action(CommandAction::RenameTab, true, cx);
+    }
+
+    pub(super) fn handle_check_for_updates_action(
+        &mut self,
+        _: &commands::CheckForUpdates,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.execute_command_action(CommandAction::CheckForUpdates, true, cx);
+    }
+
+    pub(super) fn handle_new_tab_action(
+        &mut self,
+        _: &commands::NewTab,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.execute_command_action(CommandAction::NewTab, true, cx);
+    }
+
+    pub(super) fn handle_close_tab_action(
+        &mut self,
+        _: &commands::CloseTab,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.execute_command_action(CommandAction::CloseTab, true, cx);
+    }
+
+    pub(super) fn handle_copy_action(
+        &mut self,
+        _: &commands::Copy,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.execute_command_action(CommandAction::Copy, true, cx);
+    }
+
+    pub(super) fn handle_paste_action(
+        &mut self,
+        _: &commands::Paste,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.execute_command_action(CommandAction::Paste, true, cx);
+    }
+
+    pub(super) fn handle_zoom_in_action(
+        &mut self,
+        _: &commands::ZoomIn,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.execute_command_action(CommandAction::ZoomIn, true, cx);
+    }
+
+    pub(super) fn handle_zoom_out_action(
+        &mut self,
+        _: &commands::ZoomOut,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.execute_command_action(CommandAction::ZoomOut, true, cx);
+    }
+
+    pub(super) fn handle_zoom_reset_action(
+        &mut self,
+        _: &commands::ZoomReset,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.execute_command_action(CommandAction::ZoomReset, true, cx);
+    }
+
     pub(super) fn handle_key_down(
         &mut self,
         event: &KeyDownEvent,
@@ -375,15 +549,6 @@ impl TerminalView {
         let key = event.keystroke.key.as_str();
         let modifiers = event.keystroke.modifiers;
         let key_char = event.keystroke.key_char.as_deref();
-
-        if Self::is_command_palette_shortcut(key, modifiers) {
-            if self.command_palette_open {
-                self.close_command_palette(cx);
-            } else {
-                self.open_command_palette(cx);
-            }
-            return;
-        }
 
         if self.command_palette_open {
             self.handle_command_palette_key_down(key, key_char, modifiers, cx);
@@ -436,61 +601,6 @@ impl TerminalView {
                     return;
                 }
                 _ => return,
-            }
-        }
-
-        if Self::is_copy_shortcut(key, modifiers) {
-            if let Some(selected) = self.selected_text() {
-                cx.write_to_clipboard(ClipboardItem::new_string(selected));
-                return;
-            }
-        }
-
-        if Self::is_paste_shortcut(key, modifiers) {
-            if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-                self.active_terminal().write(text.as_bytes());
-                self.clear_selection();
-                cx.notify();
-                return;
-            }
-        }
-
-        if self.use_tabs
-            && modifiers.secondary()
-            && !modifiers.alt
-            && !modifiers.function
-            && key.eq_ignore_ascii_case("w")
-        {
-            self.close_active_tab(cx);
-            return;
-        }
-
-        if self.use_tabs
-            && modifiers.secondary()
-            && !modifiers.alt
-            && !modifiers.function
-            && key.eq_ignore_ascii_case("t")
-        {
-            self.add_tab(cx);
-            return;
-        }
-
-        if modifiers.secondary() && !modifiers.alt && !modifiers.function {
-            let current: f32 = self.font_size.into();
-            match key {
-                "=" | "+" | "plus" => {
-                    self.update_zoom(current + ZOOM_STEP, cx);
-                    return;
-                }
-                "-" | "_" | "minus" => {
-                    self.update_zoom(current - ZOOM_STEP, cx);
-                    return;
-                }
-                "0" => {
-                    self.update_zoom(self.base_font_size, cx);
-                    return;
-                }
-                _ => {}
             }
         }
 
