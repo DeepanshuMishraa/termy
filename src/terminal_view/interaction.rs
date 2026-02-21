@@ -1,9 +1,5 @@
 use super::*;
 
-const TERMINAL_SCROLL_LINE_MULTIPLIER: f32 = 3.0;
-const TERMINAL_SCROLL_PIXELS_PER_LINE: f32 = 24.0;
-const MAX_TERMINAL_SCROLL_LINES_PER_EVENT: i32 = 15;
-
 impl TerminalView {
     pub(super) fn has_selection(&self) -> bool {
         matches!((self.selection_anchor, self.selection_head), (Some(anchor), Some(head)) if self.selection_moved || anchor != head)
@@ -29,6 +25,13 @@ impl TerminalView {
 
         let here = (row, col);
         here >= (start.row, start.col) && here <= (end.row, end.col)
+    }
+
+    pub(super) fn viewport_row_from_term_line(
+        term_line: i32,
+        display_offset: usize,
+    ) -> Option<usize> {
+        usize::try_from(term_line + display_offset as i32).ok()
     }
 
     fn write_copy_fallback_input(&mut self, _cx: &mut Context<Self>) {
@@ -105,12 +108,11 @@ impl TerminalView {
         self.active_terminal().with_term(|term| {
             let content = term.renderable_content();
             for cell in content.display_iter {
-                let row = cell.point.line.0;
-                if row < 0 {
+                let Some(row) =
+                    Self::viewport_row_from_term_line(cell.point.line.0, content.display_offset)
+                else {
                     continue;
-                }
-
-                let row = row as usize;
+                };
                 let col = cell.point.column.0;
                 if row >= rows || col >= cols {
                     continue;
@@ -157,8 +159,12 @@ impl TerminalView {
         self.active_terminal().with_term(|term| {
             let content = term.renderable_content();
             for cell in content.display_iter {
-                let cell_row = cell.point.line.0;
-                if cell_row < 0 || cell_row as usize != row {
+                let Some(cell_row) =
+                    Self::viewport_row_from_term_line(cell.point.line.0, content.display_offset)
+                else {
+                    continue;
+                };
+                if cell_row != row {
                     continue;
                 }
 
@@ -336,24 +342,52 @@ impl TerminalView {
         }
     }
 
-    pub(super) fn terminal_scroll_delta_to_lines(delta: ScrollDelta) -> i32 {
-        let lines = match delta {
-            ScrollDelta::Pixels(delta) => {
-                let y: f32 = delta.y.into();
-                y / TERMINAL_SCROLL_PIXELS_PER_LINE
-            }
-            ScrollDelta::Lines(delta) => delta.y * TERMINAL_SCROLL_LINE_MULTIPLIER,
-        };
-
-        if lines.abs() < f32::EPSILON {
+    pub(super) fn terminal_scroll_lines_from_pixels(
+        accumulated_pixels: &mut f32,
+        delta_pixels: f32,
+        line_height: f32,
+        viewport_height: f32,
+    ) -> i32 {
+        if line_height <= f32::EPSILON {
             return 0;
         }
 
-        let magnitude = (lines.abs().ceil() as i32).clamp(1, MAX_TERMINAL_SCROLL_LINES_PER_EVENT);
-        if lines.is_sign_negative() {
-            -magnitude
-        } else {
-            magnitude
+        let old_offset = (*accumulated_pixels / line_height) as i32;
+        *accumulated_pixels += delta_pixels;
+        let new_offset = (*accumulated_pixels / line_height) as i32;
+
+        if viewport_height > 0.0 {
+            *accumulated_pixels %= viewport_height;
+        }
+
+        new_offset - old_offset
+    }
+
+    pub(super) fn terminal_scroll_delta_to_lines(&mut self, event: &ScrollWheelEvent) -> i32 {
+        match event.touch_phase {
+            TouchPhase::Started => {
+                self.terminal_scroll_accumulator_y = 0.0;
+                0
+            }
+            TouchPhase::Ended => 0,
+            TouchPhase::Moved => {
+                let size = self.active_terminal().size();
+                if size.rows == 0 {
+                    return 0;
+                }
+
+                let line_height: f32 = size.cell_height.into();
+                let viewport_height = line_height * f32::from(size.rows);
+                let raw_delta_pixels: f32 = event.delta.pixel_delta(size.cell_height).y.into();
+                let delta_pixels = raw_delta_pixels * self.mouse_scroll_multiplier;
+
+                Self::terminal_scroll_lines_from_pixels(
+                    &mut self.terminal_scroll_accumulator_y,
+                    delta_pixels,
+                    line_height,
+                    viewport_height,
+                )
+            }
         }
     }
 
@@ -768,13 +802,15 @@ impl TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let delta_lines = Self::terminal_scroll_delta_to_lines(event.delta);
+        let delta_lines = self.terminal_scroll_delta_to_lines(event);
         if delta_lines == 0 {
             return;
         }
 
         if self.active_terminal().scroll_display(delta_lines) {
             cx.notify();
+        } else {
+            self.terminal_scroll_accumulator_y = 0.0;
         }
     }
 
@@ -815,35 +851,63 @@ mod tests {
     use super::*;
 
     #[test]
-    fn terminal_scroll_lines_scale_line_delta() {
-        let delta = ScrollDelta::Lines(gpui::point(0.0, 1.0));
-        assert_eq!(TerminalView::terminal_scroll_delta_to_lines(delta), 3);
+    fn viewport_row_maps_scrollback_lines_into_viewport() {
+        assert_eq!(TerminalView::viewport_row_from_term_line(-3, 3), Some(0));
+        assert_eq!(TerminalView::viewport_row_from_term_line(4, 3), Some(7));
     }
 
     #[test]
-    fn terminal_scroll_lines_scale_pixel_delta() {
-        let delta = ScrollDelta::Pixels(gpui::point(px(0.0), px(48.0)));
-        assert_eq!(TerminalView::terminal_scroll_delta_to_lines(delta), 2);
-    }
-
-    #[test]
-    fn terminal_scroll_lines_preserve_sign() {
-        let delta = ScrollDelta::Lines(gpui::point(0.0, -1.0));
-        assert_eq!(TerminalView::terminal_scroll_delta_to_lines(delta), -3);
-    }
-
-    #[test]
-    fn terminal_scroll_lines_clamp_large_deltas() {
-        let delta = ScrollDelta::Lines(gpui::point(0.0, 999.0));
+    fn terminal_scroll_lines_track_single_line_steps() {
+        let mut accumulated = 0.0;
         assert_eq!(
-            TerminalView::terminal_scroll_delta_to_lines(delta),
-            MAX_TERMINAL_SCROLL_LINES_PER_EVENT
+            TerminalView::terminal_scroll_lines_from_pixels(&mut accumulated, 24.0, 24.0, 480.0),
+            1
         );
     }
 
     #[test]
-    fn terminal_scroll_lines_ignore_zero_delta() {
-        let delta = ScrollDelta::Pixels(gpui::point(px(0.0), px(0.0)));
-        assert_eq!(TerminalView::terminal_scroll_delta_to_lines(delta), 0);
+    fn terminal_scroll_lines_accumulate_fractional_pixels() {
+        let mut accumulated = 0.0;
+        assert_eq!(
+            TerminalView::terminal_scroll_lines_from_pixels(&mut accumulated, 8.0, 24.0, 480.0),
+            0
+        );
+        assert_eq!(
+            TerminalView::terminal_scroll_lines_from_pixels(&mut accumulated, 8.0, 24.0, 480.0),
+            0
+        );
+        assert_eq!(
+            TerminalView::terminal_scroll_lines_from_pixels(&mut accumulated, 8.0, 24.0, 480.0),
+            1
+        );
+    }
+
+    #[test]
+    fn terminal_scroll_lines_preserve_sign() {
+        let mut accumulated = 0.0;
+        assert_eq!(
+            TerminalView::terminal_scroll_lines_from_pixels(&mut accumulated, -30.0, 24.0, 480.0),
+            -1
+        );
+    }
+
+    #[test]
+    fn terminal_scroll_lines_wrap_accumulator_by_viewport_height() {
+        let mut accumulated = 24.0 * 19.0;
+        assert_eq!(
+            TerminalView::terminal_scroll_lines_from_pixels(&mut accumulated, 24.0, 24.0, 480.0),
+            1
+        );
+        assert!(accumulated.abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn terminal_scroll_lines_ignore_zero_line_height() {
+        let mut accumulated = 12.0;
+        assert_eq!(
+            TerminalView::terminal_scroll_lines_from_pixels(&mut accumulated, 24.0, 0.0, 480.0),
+            0
+        );
+        assert_eq!(accumulated, 12.0);
     }
 }

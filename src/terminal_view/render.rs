@@ -52,14 +52,15 @@ impl Render for TerminalView {
 
         self.active_terminal().with_term(|term| {
             let content = term.renderable_content();
+            let show_cursor = content.display_offset == 0;
             for cell in content.display_iter {
                 let point = cell.point;
                 let cell_content = &cell.cell;
-                let row = point.line.0;
-                if row < 0 {
+                let Some(row) =
+                    Self::viewport_row_from_term_line(point.line.0, content.display_offset)
+                else {
                     continue;
-                }
-                let row = row as usize;
+                };
                 let col = point.column.0;
 
                 // Get foreground and background colors
@@ -75,7 +76,7 @@ impl Render for TerminalView {
                 }
 
                 let c = cell_content.c;
-                let is_cursor = col == cursor_col && row == cursor_row;
+                let is_cursor = show_cursor && col == cursor_col && row == cursor_row;
                 let selected = self.cell_is_selected(col, row);
 
                 cells_to_render.push(CellRenderInfo {

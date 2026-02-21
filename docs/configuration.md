@@ -196,6 +196,11 @@ Explicit payload examples:
 - Default: `8`
 - Values: non-negative number
 
+`mouse_scroll_multiplier`
+- Default: `3`
+- Values: any finite number (clamped to `0.1..=1000`)
+- What it does: multiplies mouse wheel scroll distance. For example, `3` scrolls about three lines per wheel tick.
+
 `keybind`
 - Default: built-in platform shortcuts
 - Values: repeated `keybind` directives (see `docs/keybindings.md`)

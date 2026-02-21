@@ -8,8 +8,8 @@ use gpui::{
     AnyElement, App, AsyncApp, ClipboardItem, Context, Element, FocusHandle, Focusable, Font,
     FontWeight, InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Render, ScrollDelta, ScrollWheelEvent,
-    SharedString, Size, StatefulInteractiveElement, Styled, WeakEntity, Window, WindowControlArea,
-    div, px,
+    SharedString, Size, StatefulInteractiveElement, Styled, TouchPhase, WeakEntity, Window,
+    WindowControlArea, div, px,
 };
 use std::{
     fs,
@@ -144,6 +144,7 @@ pub struct TerminalView {
     transparent_background_opacity: f32,
     padding_x: f32,
     padding_y: f32,
+    mouse_scroll_multiplier: f32,
     line_height: f32,
     selection_anchor: Option<CellPos>,
     selection_head: Option<CellPos>,
@@ -159,6 +160,7 @@ pub struct TerminalView {
     command_palette_query_select_all: bool,
     command_palette_show_keybinds: bool,
     command_palette_opened_at: Option<Instant>,
+    terminal_scroll_accumulator_y: f32,
     /// Cached cell dimensions
     cell_size: Option<Size<Pixels>>,
     #[cfg(target_os = "macos")]
@@ -275,6 +277,7 @@ impl TerminalView {
             transparent_background_opacity: config.transparent_background_opacity,
             padding_x,
             padding_y,
+            mouse_scroll_multiplier: config.mouse_scroll_multiplier,
             line_height: 1.4,
             selection_anchor: None,
             selection_head: None,
@@ -290,6 +293,7 @@ impl TerminalView {
             command_palette_query_select_all: false,
             command_palette_show_keybinds: config.command_palette_show_keybinds,
             command_palette_opened_at: None,
+            terminal_scroll_accumulator_y: 0.0,
             cell_size: None,
             #[cfg(target_os = "macos")]
             auto_updater: None,
@@ -334,6 +338,7 @@ impl TerminalView {
         self.transparent_background_opacity = config.transparent_background_opacity;
         self.padding_x = config.padding_x.max(0.0);
         self.padding_y = config.padding_y.max(0.0);
+        self.mouse_scroll_multiplier = config.mouse_scroll_multiplier;
         self.command_palette_show_keybinds = config.command_palette_show_keybinds;
 
         for index in 0..self.tabs.len() {

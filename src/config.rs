@@ -10,6 +10,9 @@ const DEFAULT_TAB_TITLE_PROMPT_FORMAT: &str = "{cwd}";
 const DEFAULT_TAB_TITLE_COMMAND_FORMAT: &str = "{command}";
 const DEFAULT_TERM: &str = "xterm-256color";
 const DEFAULT_COLORTERM: &str = "truecolor";
+const DEFAULT_MOUSE_SCROLL_MULTIPLIER: f32 = 3.0;
+const MIN_MOUSE_SCROLL_MULTIPLIER: f32 = 0.1;
+const MAX_MOUSE_SCROLL_MULTIPLIER: f32 = 1_000.0;
 
 const DEFAULT_CONFIG: &str = "# Main settings\n\
 theme = termy\n\
@@ -43,6 +46,8 @@ font_size = 14\n\
 # Inner terminal padding in pixels\n\
 padding_x = 12\n\
 padding_y = 8\n\
+# Mouse wheel scroll speed multiplier\n\
+# mouse_scroll_multiplier = 3\n\
 \n\
 # Advanced runtime settings (usually leave these as defaults)\n\
 # Preferred shell executable path\n\
@@ -185,6 +190,7 @@ pub struct AppConfig {
     pub transparent_background_opacity: f32,
     pub padding_x: f32,
     pub padding_y: f32,
+    pub mouse_scroll_multiplier: f32,
     pub command_palette_show_keybinds: bool,
     pub keybind_lines: Vec<KeybindConfigLine>,
 }
@@ -213,6 +219,7 @@ impl Default for AppConfig {
             transparent_background_opacity: 1.0,
             padding_x: 12.0,
             padding_y: 8.0,
+            mouse_scroll_multiplier: DEFAULT_MOUSE_SCROLL_MULTIPLIER,
             command_palette_show_keybinds: true,
             keybind_lines: Vec::new(),
         }
@@ -378,6 +385,15 @@ impl AppConfig {
                     if padding_y >= 0.0 {
                         config.padding_y = padding_y;
                     }
+                }
+            }
+
+            if key.eq_ignore_ascii_case("mouse_scroll_multiplier") {
+                if let Ok(multiplier) = value.parse::<f32>()
+                    && multiplier.is_finite()
+                {
+                    config.mouse_scroll_multiplier =
+                        multiplier.clamp(MIN_MOUSE_SCROLL_MULTIPLIER, MAX_MOUSE_SCROLL_MULTIPLIER);
                 }
             }
 
@@ -653,5 +669,20 @@ mod tests {
 
         let disabled = AppConfig::from_contents("command_palette_show_keybinds = false\n");
         assert!(!disabled.command_palette_show_keybinds);
+    }
+
+    #[test]
+    fn mouse_scroll_multiplier_parses_and_clamps() {
+        let defaults = AppConfig::from_contents("");
+        assert_eq!(defaults.mouse_scroll_multiplier, 3.0);
+
+        let custom = AppConfig::from_contents("mouse_scroll_multiplier = 2.5\n");
+        assert_eq!(custom.mouse_scroll_multiplier, 2.5);
+
+        let clamped_low = AppConfig::from_contents("mouse_scroll_multiplier = -1\n");
+        assert_eq!(clamped_low.mouse_scroll_multiplier, 0.1);
+
+        let clamped_high = AppConfig::from_contents("mouse_scroll_multiplier = 20000\n");
+        assert_eq!(clamped_high.mouse_scroll_multiplier, 1_000.0);
     }
 }
