@@ -175,24 +175,48 @@ impl TerminalView {
     }
 
     pub(super) fn filtered_command_palette_items(&self) -> Vec<CommandPaletteItem> {
-        let query = self.command_palette_query().trim().to_ascii_lowercase();
-        let query_terms: Vec<&str> = query
+        Self::filter_command_palette_items_by_query(
+            self.command_palette_items(),
+            self.command_palette_query(),
+        )
+    }
+
+    fn filter_command_palette_items_by_query(
+        items: Vec<CommandPaletteItem>,
+        query: &str,
+    ) -> Vec<CommandPaletteItem> {
+        let query = query.trim().to_ascii_lowercase();
+        let query_terms: Vec<String> = query
             .split_whitespace()
             .filter(|term| !term.is_empty())
+            .map(ToOwned::to_owned)
             .collect();
 
-        self.command_palette_items()
+        if query_terms.is_empty() {
+            return items;
+        }
+
+        let has_title_matches = items
+            .iter()
+            .any(|item| Self::command_palette_text_matches_terms(item.title, &query_terms));
+
+        items
             .into_iter()
-            .filter(|item| Self::command_palette_item_matches_terms(item, &query_terms))
+            .filter(|item| {
+                let title_match =
+                    Self::command_palette_text_matches_terms(item.title, &query_terms);
+                if has_title_matches {
+                    title_match
+                } else {
+                    title_match
+                        || Self::command_palette_text_matches_terms(item.keywords, &query_terms)
+                }
+            })
             .collect()
     }
 
-    fn command_palette_item_matches_terms(item: &CommandPaletteItem, query_terms: &[&str]) -> bool {
-        if query_terms.is_empty() {
-            return true;
-        }
-
-        let searchable = format!("{} {}", item.title, item.keywords).to_ascii_lowercase();
+    fn command_palette_text_matches_terms(text: &str, query_terms: &[String]) -> bool {
+        let searchable = text.to_ascii_lowercase();
         let words: Vec<&str> = searchable
             .split(|ch: char| !ch.is_ascii_alphanumeric())
             .filter(|word| !word.is_empty())
@@ -715,43 +739,78 @@ mod tests {
     use super::*;
 
     #[test]
-    fn query_re_uses_word_prefix_matching() {
-        let new_tab = CommandPaletteItem {
-            title: "New Tab",
-            keywords: "create tab",
-            action: CommandAction::NewTab,
-        };
-        let rename_tab = CommandPaletteItem {
-            title: "Rename Tab",
-            keywords: "title name",
-            action: CommandAction::RenameTab,
-        };
-        let restart_app = CommandPaletteItem {
-            title: "Restart App",
-            keywords: "relaunch reopen restart",
-            action: CommandAction::RestartApp,
-        };
-        let reset_zoom = CommandPaletteItem {
-            title: "Reset Zoom",
-            keywords: "font default",
-            action: CommandAction::ZoomReset,
-        };
+    fn query_re_prefers_title_matches_over_keywords() {
+        let items = vec![
+            CommandPaletteItem {
+                title: "Close Tab",
+                keywords: "remove tab",
+                action: CommandAction::CloseTab,
+            },
+            CommandPaletteItem {
+                title: "Rename Tab",
+                keywords: "title name",
+                action: CommandAction::RenameTab,
+            },
+            CommandPaletteItem {
+                title: "Restart App",
+                keywords: "relaunch reopen restart",
+                action: CommandAction::RestartApp,
+            },
+            CommandPaletteItem {
+                title: "Reset Zoom",
+                keywords: "font default",
+                action: CommandAction::ZoomReset,
+            },
+            CommandPaletteItem {
+                title: "Check for Updates",
+                keywords: "release version updater",
+                action: CommandAction::CheckForUpdates,
+            },
+        ];
 
-        assert!(!TerminalView::command_palette_item_matches_terms(
-            &new_tab,
-            &["re"]
-        ));
-        assert!(TerminalView::command_palette_item_matches_terms(
-            &rename_tab,
-            &["re"]
-        ));
-        assert!(TerminalView::command_palette_item_matches_terms(
-            &restart_app,
-            &["re"]
-        ));
-        assert!(TerminalView::command_palette_item_matches_terms(
-            &reset_zoom,
-            &["re"]
-        ));
+        let filtered = TerminalView::filter_command_palette_items_by_query(items, "re");
+        let actions: Vec<CommandAction> = filtered.into_iter().map(|item| item.action).collect();
+
+        assert_eq!(
+            actions,
+            vec![
+                CommandAction::RenameTab,
+                CommandAction::RestartApp,
+                CommandAction::ZoomReset
+            ]
+        );
+    }
+
+    #[test]
+    fn query_uses_keywords_when_no_titles_match() {
+        let items = vec![
+            CommandPaletteItem {
+                title: "Zoom In",
+                keywords: "font increase",
+                action: CommandAction::ZoomIn,
+            },
+            CommandPaletteItem {
+                title: "Zoom Out",
+                keywords: "font decrease",
+                action: CommandAction::ZoomOut,
+            },
+            CommandPaletteItem {
+                title: "Reset Zoom",
+                keywords: "font default",
+                action: CommandAction::ZoomReset,
+            },
+        ];
+
+        let filtered = TerminalView::filter_command_palette_items_by_query(items, "font");
+        let actions: Vec<CommandAction> = filtered.into_iter().map(|item| item.action).collect();
+
+        assert_eq!(
+            actions,
+            vec![
+                CommandAction::ZoomIn,
+                CommandAction::ZoomOut,
+                CommandAction::ZoomReset
+            ]
+        );
     }
 }
