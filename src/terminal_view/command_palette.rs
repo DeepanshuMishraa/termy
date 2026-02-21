@@ -65,11 +65,7 @@ impl TerminalView {
         }
     }
 
-    fn command_palette_shortcut(
-        &self,
-        action: CommandAction,
-        window: &Window,
-    ) -> Option<String> {
+    fn command_palette_shortcut(&self, action: CommandAction, window: &Window) -> Option<String> {
         if !self.command_palette_show_keybinds {
             return None;
         }
