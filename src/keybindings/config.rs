@@ -42,7 +42,7 @@ pub fn parse_keybind_directives(
             continue;
         }
 
-        let Some((trigger_raw, action_raw)) = value.split_once('=') else {
+        let Some((trigger_raw, action_raw)) = value.rsplit_once('=') else {
             warnings.push(KeybindWarning {
                 line_number: line.line_number,
                 message: "expected `keybind = <trigger>=<action>` or `keybind = clear`".to_string(),
@@ -50,7 +50,7 @@ pub fn parse_keybind_directives(
             continue;
         };
 
-        let trigger_raw = trigger_raw.trim();
+        let mut trigger_raw = trigger_raw.trim().to_string();
         let action_raw = action_raw.trim();
         if trigger_raw.is_empty() || action_raw.is_empty() {
             warnings.push(KeybindWarning {
@@ -60,18 +60,20 @@ pub fn parse_keybind_directives(
             continue;
         }
 
-        let trigger = match canonicalize_trigger(trigger_raw) {
-            Ok(trigger) => trigger,
-            Err(message) => {
-                warnings.push(KeybindWarning {
-                    line_number: line.line_number,
-                    message,
-                });
-                continue;
-            }
-        };
-
         if action_raw.eq_ignore_ascii_case("unbind") {
+            if should_treat_trailing_dash_as_equal_key(&trigger_raw) {
+                trigger_raw.push('=');
+            }
+            let trigger = match canonicalize_trigger(&trigger_raw) {
+                Ok(trigger) => trigger,
+                Err(message) => {
+                    warnings.push(KeybindWarning {
+                        line_number: line.line_number,
+                        message,
+                    });
+                    continue;
+                }
+            };
             directives.push(KeybindDirective::Unbind { trigger });
             continue;
         }
@@ -82,16 +84,39 @@ pub fn parse_keybind_directives(
                 message: format!(
                     "unknown keybind action `{}`; expected one of: {}",
                     action_raw,
-                    KeybindAction::all_config_names().join(", ")
+                    KeybindAction::all_config_names()
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 ),
             });
             continue;
+        };
+
+        if should_treat_trailing_dash_as_equal_key(&trigger_raw) {
+            trigger_raw.push('=');
+        }
+        let trigger = match canonicalize_trigger(&trigger_raw) {
+            Ok(trigger) => trigger,
+            Err(message) => {
+                warnings.push(KeybindWarning {
+                    line_number: line.line_number,
+                    message,
+                });
+                continue;
+            }
         };
 
         directives.push(KeybindDirective::Bind { trigger, action });
     }
 
     (directives, warnings)
+}
+
+fn should_treat_trailing_dash_as_equal_key(trigger: &str) -> bool {
+    // `keybind = <trigger>=<action>` uses `=` as the directive separator, so
+    // users often write `cmd-=zoom_in` for the equals key. Interpret a trailing
+    // single dash as an implicit equals key in that case; `cmd--` remains minus.
+    trigger.ends_with('-') && !trigger.ends_with("--")
 }
 
 pub(crate) fn canonicalize_trigger(trigger: &str) -> Result<String, String> {
@@ -115,7 +140,7 @@ pub(crate) fn canonicalize_trigger(trigger: &str) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{KeybindDirective, KeybindWarning, parse_keybind_directives};
+    use super::{KeybindDirective, KeybindWarning, canonicalize_trigger, parse_keybind_directives};
     use crate::config::KeybindConfigLine;
     use crate::keybindings::actions::KeybindAction;
 
@@ -201,6 +226,64 @@ mod tests {
             warnings
                 .iter()
                 .all(|warning: &KeybindWarning| { !warning.message.trim().is_empty() })
+        );
+    }
+
+    #[test]
+    fn parses_equal_key_shortcut_forms() {
+        let lines = vec![
+            KeybindConfigLine {
+                line_number: 2,
+                value: "cmd-=zoom_in".to_string(),
+            },
+            KeybindConfigLine {
+                line_number: 3,
+                value: "cmd-==zoom_out".to_string(),
+            },
+            KeybindConfigLine {
+                line_number: 4,
+                value: "cmd-=unbind".to_string(),
+            },
+        ];
+
+        let (directives, warnings) = parse_keybind_directives(&lines);
+
+        assert!(warnings.is_empty());
+        assert_eq!(
+            directives,
+            vec![
+                KeybindDirective::Bind {
+                    trigger: "cmd-=".to_string(),
+                    action: KeybindAction::ZoomIn
+                },
+                KeybindDirective::Bind {
+                    trigger: "cmd-=".to_string(),
+                    action: KeybindAction::ZoomOut
+                },
+                KeybindDirective::Unbind {
+                    trigger: "cmd-=".to_string()
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn keeps_minus_key_syntax_unchanged() {
+        let lines = vec![KeybindConfigLine {
+            line_number: 2,
+            value: "cmd--=zoom_out".to_string(),
+        }];
+
+        let (directives, warnings) = parse_keybind_directives(&lines);
+        assert!(warnings.is_empty());
+
+        let expected = canonicalize_trigger("cmd--").expect("valid minus trigger");
+        assert_eq!(
+            directives,
+            vec![KeybindDirective::Bind {
+                trigger: expected,
+                action: KeybindAction::ZoomOut
+            }]
         );
     }
 }

@@ -17,6 +17,7 @@ These are installed by default before any user `keybind` directives are applied:
 - `secondary-t` -> `new_tab`
 - `secondary-w` -> `close_tab`
 - `secondary-=` -> `zoom_in`
+- `secondary-+` -> `zoom_in`
 - `secondary--` -> `zoom_out`
 - `secondary-0` -> `zoom_reset`
 

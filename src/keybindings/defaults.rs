@@ -33,6 +33,10 @@ pub fn default_keybinds() -> Vec<DefaultKeybind> {
             action: KeybindAction::ZoomIn,
         },
         DefaultKeybind {
+            trigger: "secondary-+",
+            action: KeybindAction::ZoomIn,
+        },
+        DefaultKeybind {
             trigger: "secondary--",
             action: KeybindAction::ZoomOut,
         },
@@ -67,4 +71,21 @@ pub fn default_keybinds() -> Vec<DefaultKeybind> {
     }
 
     bindings
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zoom_in_has_equal_and_plus_defaults() {
+        let zoom_in_triggers = default_keybinds()
+            .into_iter()
+            .filter(|binding| binding.action == KeybindAction::ZoomIn)
+            .map(|binding| binding.trigger)
+            .collect::<Vec<_>>();
+
+        assert!(zoom_in_triggers.contains(&"secondary-="));
+        assert!(zoom_in_triggers.contains(&"secondary-+"));
+    }
 }
