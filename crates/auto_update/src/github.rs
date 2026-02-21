@@ -68,13 +68,39 @@ fn find_platform_asset<'a>(assets: &'a [GithubAsset], arch: &str) -> Option<&'a 
         .or_else(|| assets.iter().find(|a| a.name.ends_with(".exe")))
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(target_os = "linux")]
+fn find_platform_asset<'a>(assets: &'a [GithubAsset], arch: &str) -> Option<&'a GithubAsset> {
+    // Map Rust arch names to Linux tarball naming conventions
+    let linux_arch = match arch {
+        "arm64" => "aarch64",
+        _ => arch,
+    };
+
+    // Look for .tar.gz tarball with matching architecture
+    assets
+        .iter()
+        .find(|a| {
+            a.name.contains("linux")
+                && (a.name.contains(arch) || a.name.contains(linux_arch))
+                && a.name.ends_with(".tar.gz")
+        })
+        .or_else(|| {
+            // Fall back to any Linux tarball
+            assets
+                .iter()
+                .find(|a| a.name.contains("linux") && a.name.ends_with(".tar.gz"))
+        })
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 fn find_platform_asset<'a>(_assets: &'a [GithubAsset], _arch: &str) -> Option<&'a GithubAsset> {
     None
 }
 
 fn get_extension(name: &str) -> String {
-    if name.ends_with(".dmg") {
+    if name.ends_with(".tar.gz") {
+        "tar.gz".to_string()
+    } else if name.ends_with(".dmg") {
         "dmg".to_string()
     } else if name.ends_with(".msi") {
         "msi".to_string()

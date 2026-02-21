@@ -30,7 +30,12 @@ impl TerminalView {
                     "v{} installed. Restart Termy to use the new version",
                     version
                 ));
-                #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+                #[cfg(target_os = "linux")]
+                termy_toast::success(format!(
+                    "v{} installed to ~/.local/bin. Restart Termy to use the new version",
+                    version
+                ));
+                #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
                 termy_toast::success(format!("v{} installed. Restart Termy to use the new version", version));
             }
             Some(UpdateState::Error(message)) => {

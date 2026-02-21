@@ -246,7 +246,21 @@ fn cache_installer_path(version: &str, extension: &str) -> PathBuf {
     cache_dir.join(format!("update-{}.{}", version, extension))
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(target_os = "linux")]
+fn cache_installer_path(version: &str, extension: &str) -> PathBuf {
+    // Use XDG_CACHE_HOME or ~/.cache
+    let cache_dir = std::env::var("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+            PathBuf::from(home).join(".cache")
+        })
+        .join("termy");
+    let _ = std::fs::create_dir_all(&cache_dir);
+    cache_dir.join(format!("update-{}.{}", version, extension))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 fn cache_installer_path(version: &str, extension: &str) -> PathBuf {
     let cache_dir = std::env::temp_dir().join("termy-updates");
     let _ = std::fs::create_dir_all(&cache_dir);
@@ -438,7 +452,89 @@ fn do_install(installer_path: &PathBuf) -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(target_os = "linux")]
+fn do_install(tarball_path: &PathBuf) -> Result<()> {
+    use std::process::Command;
+
+    // Determine install directory: prefer ~/.local/bin, fall back to ~/bin
+    let home = std::env::var("HOME").context("HOME environment variable not set")?;
+    let home_path = PathBuf::from(&home);
+
+    let install_dir = if home_path.join(".local/bin").exists() {
+        home_path.join(".local/bin")
+    } else {
+        let local_bin = home_path.join(".local/bin");
+        std::fs::create_dir_all(&local_bin).context("Failed to create ~/.local/bin")?;
+        local_bin
+    };
+
+    // Extract tarball to temp directory
+    let temp_dir = std::env::temp_dir().join("termy-update-extract");
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).context("Failed to create temp extraction directory")?;
+
+    let tar_result = Command::new("tar")
+        .args([
+            "-xzf",
+            &tarball_path.to_string_lossy(),
+            "-C",
+            &temp_dir.to_string_lossy(),
+        ])
+        .output()
+        .context("Failed to extract tarball")?;
+
+    if !tar_result.status.success() {
+        anyhow::bail!(
+            "tar extraction failed: {}",
+            String::from_utf8_lossy(&tar_result.stderr)
+        );
+    }
+
+    // Find the termy binary in the extracted contents
+    let binary_path = temp_dir.join("termy/termy");
+    let alt_binary_path = temp_dir.join("termy");
+
+    let source_binary = if binary_path.exists() {
+        binary_path
+    } else if alt_binary_path.is_file() {
+        alt_binary_path
+    } else {
+        // Search for the binary
+        let mut found = None;
+        for entry in std::fs::read_dir(&temp_dir).context("Failed to read temp directory")? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                let potential = path.join("termy");
+                if potential.exists() {
+                    found = Some(potential);
+                    break;
+                }
+            }
+        }
+        found.context("Could not find termy binary in extracted tarball")?
+    };
+
+    // Copy binary to install directory
+    let target_binary = install_dir.join("termy");
+    std::fs::copy(&source_binary, &target_binary).context("Failed to copy binary to install directory")?;
+
+    // Make it executable
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&target_binary)?.permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&target_binary, perms)?;
+    }
+
+    // Cleanup
+    let _ = std::fs::remove_dir_all(&temp_dir);
+
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 fn do_install(_installer_path: &PathBuf) -> Result<()> {
-    anyhow::bail!("Auto-install is only supported on macOS and Windows")
+    anyhow::bail!("Auto-install is only supported on macOS, Windows, and Linux")
 }
