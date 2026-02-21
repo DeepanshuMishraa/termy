@@ -471,7 +471,7 @@
         const groups = [
           { title: "macOS", assets: macAssets },
           { title: "Windows", assets: windowsAssets },
-          { title: "Linux", assets: linuxAssets },
+          { title: "Linux", assets: linuxAssets, showInstallScript: true },
         ].filter((group) => group.assets.length > 0);
 
         if (groups.length === 0) {
@@ -492,6 +492,17 @@
           heading.className = "text-sm font-semibold text-white";
           heading.textContent = `${group.title} (${group.assets.length})`;
           section.appendChild(heading);
+
+          // Add install script for Linux
+          if (group.showInstallScript) {
+            const scriptBox = document.createElement("div");
+            scriptBox.className = "mt-3 rounded-lg border border-[#30385a] bg-[#0a0f1d] p-3";
+            scriptBox.innerHTML = `
+              <p class="text-xs text-[#9eabc7] mb-2">Or install with one command:</p>
+              <code class="block text-xs text-[#a7e9a3] font-mono break-all select-all">curl -fsSL https://raw.githubusercontent.com/lassejlv/termy/main/scripts/install-linux.sh | bash</code>
+            `;
+            section.appendChild(scriptBox);
+          }
 
           const list = document.createElement("ul");
           list.className = "mt-3 grid gap-2";
