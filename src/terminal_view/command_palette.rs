@@ -14,13 +14,13 @@ impl TerminalView {
         &self,
         action: &A,
         window: &Window,
-    ) -> (String, bool) {
+    ) -> Option<String> {
         if let Some(binding) =
             window.highest_precedence_binding_for_action_in(action, &self.focus_handle)
         {
-            (Self::format_keybinding_label(&binding), false)
+            Some(Self::format_keybinding_label(&binding))
         } else {
-            ("Unbound".to_string(), true)
+            None
         }
     }
 
@@ -28,7 +28,7 @@ impl TerminalView {
         &self,
         action: CommandAction,
         window: &Window,
-    ) -> (String, bool) {
+    ) -> Option<String> {
         match action {
             CommandAction::Quit => self.command_palette_binding_badge(&commands::Quit, window),
             CommandAction::OpenConfig => {
@@ -69,12 +69,12 @@ impl TerminalView {
         &self,
         action: CommandAction,
         window: &Window,
-    ) -> Option<(String, bool)> {
+    ) -> Option<String> {
         if !self.command_palette_show_keybinds {
             return None;
         }
 
-        Some(self.command_palette_command_shortcut(action, window))
+        self.command_palette_command_shortcut(action, window)
     }
 
     pub(super) fn open_command_palette(&mut self, cx: &mut Context<Self>) {
@@ -494,8 +494,6 @@ impl TerminalView {
         shortcut_border.a = 0.22;
         let mut shortcut_text = self.colors.foreground;
         shortcut_text.a = 0.8;
-        let mut shortcut_unbound_text = self.colors.foreground;
-        shortcut_unbound_text.a = 0.45;
 
         let mut list = div().flex_1().flex().flex_col().gap(px(4.0));
         if items.is_empty() {
@@ -551,7 +549,7 @@ impl TerminalView {
                                 .justify_between()
                                 .gap(px(8.0))
                                 .child(div().flex_1().truncate().child(item.title))
-                                .children(shortcut.map(|(label, is_unbound)| {
+                                .children(shortcut.map(|label| {
                                     div()
                                         .flex_none()
                                         .h(px(20.0))
@@ -564,11 +562,7 @@ impl TerminalView {
                                         .border_1()
                                         .border_color(shortcut_border)
                                         .text_size(px(10.0))
-                                        .text_color(if is_unbound {
-                                            shortcut_unbound_text
-                                        } else {
-                                            shortcut_text
-                                        })
+                                        .text_color(shortcut_text)
                                         .child(label)
                                 })),
                         ),
