@@ -85,6 +85,7 @@ impl TerminalView {
     pub(super) fn open_command_palette(&mut self, cx: &mut Context<Self>) {
         self.command_palette_open = true;
         self.reset_command_palette_state();
+        self.reset_cursor_blink_phase();
 
         cx.notify();
     }
@@ -262,6 +263,35 @@ impl TerminalView {
         }
     }
 
+    fn command_palette_scrollbar_metrics(
+        &self,
+        viewport_height: f32,
+        item_count: usize,
+    ) -> Option<(f32, f32)> {
+        let scroll_handle = self
+            .command_palette_scroll_handle
+            .0
+            .borrow()
+            .base_handle
+            .clone();
+        let max_offset_from_handle: f32 = scroll_handle.max_offset().height.into();
+        let estimated_content_height = item_count as f32 * COMMAND_PALETTE_ROW_HEIGHT;
+        let estimated_max_offset = (estimated_content_height - viewport_height).max(0.0);
+        let max_offset = max_offset_from_handle.max(estimated_max_offset);
+        if max_offset <= f32::EPSILON {
+            return None;
+        }
+
+        let offset: f32 = scroll_handle.offset().y.into();
+        let progress = (-offset / max_offset).clamp(0.0, 1.0);
+        let content_height = viewport_height + max_offset;
+        let thumb_height = ((viewport_height / content_height) * viewport_height)
+            .clamp(COMMAND_PALETTE_SCROLLBAR_MIN_THUMB_HEIGHT, viewport_height);
+        let travel = (viewport_height - thumb_height).max(0.0);
+
+        Some((travel * progress, thumb_height))
+    }
+
     fn render_command_palette_rows(
         &mut self,
         range: Range<usize>,
@@ -305,7 +335,7 @@ impl TerminalView {
                 div()
                     .id(("command-palette-item", index))
                     .w_full()
-                    .h(px(30.0))
+                    .h(px(COMMAND_PALETTE_ROW_HEIGHT))
                     .px(px(10.0))
                     .rounded_sm()
                     .bg(if is_selected {
@@ -369,8 +399,7 @@ impl TerminalView {
 
     pub(super) fn render_command_palette_modal(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let items = self.filtered_command_palette_items();
-        let list_height = (COMMAND_PALETTE_MAX_ITEMS as f32 * 30.0)
-            + (COMMAND_PALETTE_MAX_ITEMS.saturating_sub(1) as f32 * 4.0);
+        let list_height = COMMAND_PALETTE_MAX_ITEMS as f32 * COMMAND_PALETTE_ROW_HEIGHT;
 
         let mut overlay_bg = self.colors.background;
         overlay_bg.a = 0.78;
@@ -390,6 +419,10 @@ impl TerminalView {
         };
         let mut input_selection = self.colors.cursor;
         input_selection.a = 0.28;
+        let mut scrollbar_track = self.colors.cursor;
+        scrollbar_track.a = 0.1;
+        let mut scrollbar_thumb = self.colors.cursor;
+        scrollbar_thumb.a = 0.42;
 
         let list = if items.is_empty() {
             div()
@@ -404,15 +437,53 @@ impl TerminalView {
                 )
                 .into_any_element()
         } else {
-            uniform_list(
+            let list = uniform_list(
                 "command-palette-list",
                 items.len(),
                 cx.processor(Self::render_command_palette_rows),
             )
-            .w_full()
+            .flex_1()
             .h(px(list_height))
             .track_scroll(&self.command_palette_scroll_handle)
-            .into_any_element()
+            .into_any_element();
+            let mut list_container = div()
+                .w_full()
+                .h(px(list_height))
+                .flex()
+                .items_start()
+                .child(list);
+
+            if let Some((thumb_top, thumb_height)) =
+                self.command_palette_scrollbar_metrics(list_height, items.len())
+            {
+                list_container = list_container.child(
+                    div()
+                        .w(px(COMMAND_PALETTE_SCROLLBAR_WIDTH + 4.0))
+                        .h_full()
+                        .pl(px(2.0))
+                        .pr(px(2.0))
+                        .child(
+                            div()
+                                .relative()
+                                .w(px(COMMAND_PALETTE_SCROLLBAR_WIDTH))
+                                .h_full()
+                                .rounded_full()
+                                .bg(scrollbar_track)
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .top(px(thumb_top))
+                                        .left_0()
+                                        .right_0()
+                                        .h(px(thumb_height))
+                                        .rounded_full()
+                                        .bg(scrollbar_thumb),
+                                ),
+                        ),
+                );
+            }
+
+            list_container.into_any_element()
         };
 
         div()

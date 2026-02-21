@@ -49,10 +49,13 @@ impl Render for TerminalView {
         // Collect cells to render
         let mut cells_to_render: Vec<CellRenderInfo> = Vec::new();
         let (cursor_col, cursor_row) = self.active_terminal().cursor_position();
+        let terminal_cursor_active = !self.command_palette_open && self.renaming_tab.is_none();
+        let cursor_visible = terminal_cursor_active
+            && self.cursor_visible_for_focus(self.focus_handle.is_focused(window));
 
         self.active_terminal().with_term(|term| {
             let content = term.renderable_content();
-            let show_cursor = content.display_offset == 0;
+            let show_cursor = content.display_offset == 0 && cursor_visible;
             for cell in content.display_iter {
                 let point = cell.point;
                 let cell_content = &cell.cell;
@@ -538,6 +541,7 @@ impl Render for TerminalView {
             hovered_link_range,
             font_family: font_family.clone(),
             font_size,
+            cursor_style: self.terminal_cursor_style(),
         };
         let command_palette_overlay = if self.command_palette_open {
             Some(self.render_command_palette_modal(cx))

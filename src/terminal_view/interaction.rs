@@ -445,6 +445,7 @@ impl TerminalView {
                 self.renaming_tab = Some(self.active_tab);
                 self.rename_input
                     .set_text(self.tabs[self.active_tab].title.clone());
+                self.reset_cursor_blink_phase();
                 self.inline_input_selecting = false;
                 termy_toast::info("Rename mode enabled");
                 cx.notify();
@@ -609,6 +610,7 @@ impl TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.reset_cursor_blink_phase();
         let key = event.keystroke.key.as_str();
 
         if self.command_palette_open {
@@ -646,6 +648,7 @@ impl TerminalView {
     ) {
         // Focus the terminal on click
         self.focus_handle.focus(window, cx);
+        self.reset_cursor_blink_phase();
 
         if event.button != MouseButton::Left {
             return;

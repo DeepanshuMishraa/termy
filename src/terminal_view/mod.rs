@@ -1,6 +1,8 @@
 use crate::colors::TerminalColors;
 use crate::commands::{self, CommandAction};
-use crate::config::{self, AppConfig, TabTitleConfig, TabTitleSource};
+use crate::config::{
+    self, AppConfig, CursorStyle as AppCursorStyle, TabTitleConfig, TabTitleSource,
+};
 use crate::keybindings;
 use alacritty_terminal::term::cell::Flags;
 use flume::{Sender, bounded};
@@ -18,9 +20,9 @@ use std::{
     time::{Duration, SystemTime},
 };
 use termy_terminal_ui::{
-    CellRenderInfo, TabTitleShellIntegration, Terminal, TerminalEvent, TerminalGrid,
-    TerminalRuntimeConfig, TerminalSize, WorkingDirFallback as RuntimeWorkingDirFallback,
-    find_link_in_line, keystroke_to_input,
+    CellRenderInfo, TabTitleShellIntegration, Terminal, TerminalCursorStyle, TerminalEvent,
+    TerminalGrid, TerminalRuntimeConfig, TerminalSize,
+    WorkingDirFallback as RuntimeWorkingDirFallback, find_link_in_line, keystroke_to_input,
 };
 use termy_toast::ToastManager;
 
@@ -61,12 +63,16 @@ const MAX_TAB_TITLE_CHARS: usize = 96;
 const DEFAULT_TAB_TITLE: &str = "Terminal";
 const COMMAND_TITLE_DELAY_MS: u64 = 250;
 const CONFIG_WATCH_INTERVAL_MS: u64 = 750;
+const CURSOR_BLINK_INTERVAL_MS: u64 = 530;
 const SELECTION_BG_ALPHA: f32 = 0.35;
 const DIM_TEXT_FACTOR: f32 = 0.66;
 #[cfg(target_os = "macos")]
 const UPDATE_BANNER_HEIGHT: f32 = 32.0;
 const COMMAND_PALETTE_WIDTH: f32 = 640.0;
 const COMMAND_PALETTE_MAX_ITEMS: usize = 8;
+const COMMAND_PALETTE_ROW_HEIGHT: f32 = 30.0;
+const COMMAND_PALETTE_SCROLLBAR_WIDTH: f32 = 8.0;
+const COMMAND_PALETTE_SCROLLBAR_MIN_THUMB_HEIGHT: f32 = 18.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct CellPos {
@@ -144,6 +150,9 @@ pub struct TerminalView {
     font_family: SharedString,
     base_font_size: f32,
     font_size: Pixels,
+    cursor_style: AppCursorStyle,
+    cursor_blink: bool,
+    cursor_blink_visible: bool,
     transparent_background_opacity: f32,
     padding_x: f32,
     padding_y: f32,
@@ -235,6 +244,24 @@ impl TerminalView {
         })
         .detach();
 
+        // Toggle cursor visibility for blink in both terminal and inline inputs.
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            loop {
+                smol::Timer::after(Duration::from_millis(CURSOR_BLINK_INTERVAL_MS)).await;
+                let result = cx.update(|cx| {
+                    this.update(cx, |view, cx| {
+                        if view.tick_cursor_blink() {
+                            cx.notify();
+                        }
+                    })
+                });
+                if result.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+
         let config = AppConfig::load_or_create();
         let config_path = config::ensure_config_file();
         let config_last_modified = config_path.as_ref().and_then(Self::config_last_modified);
@@ -276,6 +303,9 @@ impl TerminalView {
             font_family: config.font_family.into(),
             base_font_size,
             font_size: px(base_font_size),
+            cursor_style: config.cursor_style,
+            cursor_blink: config.cursor_blink,
+            cursor_blink_visible: true,
             transparent_background_opacity: config.transparent_background_opacity,
             padding_x,
             padding_y,
@@ -335,6 +365,9 @@ impl TerminalView {
         self.font_family = config.font_family.into();
         self.base_font_size = config.font_size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
         self.font_size = px(self.base_font_size);
+        self.cursor_style = config.cursor_style;
+        self.cursor_blink = config.cursor_blink;
+        self.cursor_blink_visible = true;
         self.cell_size = None;
         self.transparent_background_opacity = config.transparent_background_opacity;
         self.padding_x = config.padding_x.max(0.0);
@@ -378,6 +411,34 @@ impl TerminalView {
             termy_toast::info("Configuration reloaded");
         }
         changed
+    }
+
+    fn tick_cursor_blink(&mut self) -> bool {
+        if !self.cursor_blink {
+            if self.cursor_blink_visible {
+                return false;
+            }
+            self.cursor_blink_visible = true;
+            return true;
+        }
+
+        self.cursor_blink_visible = !self.cursor_blink_visible;
+        true
+    }
+
+    pub(super) fn reset_cursor_blink_phase(&mut self) {
+        self.cursor_blink_visible = true;
+    }
+
+    pub(super) fn cursor_visible_for_focus(&self, focused: bool) -> bool {
+        !self.cursor_blink || !focused || self.cursor_blink_visible
+    }
+
+    pub(super) fn terminal_cursor_style(&self) -> TerminalCursorStyle {
+        match self.cursor_style {
+            AppCursorStyle::Line => TerminalCursorStyle::Line,
+            AppCursorStyle::Block => TerminalCursorStyle::Block,
+        }
     }
 
     fn process_terminal_events(&mut self, cx: &mut Context<Self>) -> bool {

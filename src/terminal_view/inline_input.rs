@@ -622,19 +622,35 @@ impl IntoElement for InlineInputElement {
                     size(bounds.size.width, line_height),
                 );
 
-                let (text, selected_range, cursor_offset, marked_range, focused) = prepaint_view
-                    .read(cx)
-                    .active_inline_input_state()
-                    .map(|state| {
-                        (
-                            state.text().to_string(),
-                            state.selected_range(),
-                            state.cursor_offset(),
-                            state.marked_range.clone(),
-                            prepaint_focus_handle.is_focused(window),
-                        )
-                    })
-                    .unwrap_or_else(|| (String::new(), 0..0, 0, None, false));
+                let (
+                    text,
+                    selected_range,
+                    cursor_offset,
+                    marked_range,
+                    focused,
+                    cursor_visible,
+                    cursor_style,
+                ) = {
+                    let view = prepaint_view.read(cx);
+                    let focused = prepaint_focus_handle.is_focused(window);
+                    let cursor_visible = view.cursor_visible_for_focus(focused);
+                    let cursor_style = view.cursor_style;
+                    view.active_inline_input_state()
+                        .map(|state| {
+                            (
+                                state.text().to_string(),
+                                state.selected_range(),
+                                state.cursor_offset(),
+                                state.marked_range.clone(),
+                                focused,
+                                cursor_visible,
+                                cursor_style,
+                            )
+                        })
+                        .unwrap_or_else(|| {
+                            (String::new(), 0..0, 0, None, focused, false, cursor_style)
+                        })
+                };
 
                 let line = if text.is_empty() {
                     None
@@ -730,7 +746,7 @@ impl IntoElement for InlineInputElement {
                     None
                 };
 
-                let cursor = if focused && selection_start == selection_end {
+                let cursor = if focused && cursor_visible && selection_start == selection_end {
                     let cursor_x = line
                         .as_ref()
                         .map(|line| line.x_for_index(cursor_utf8))
@@ -739,6 +755,30 @@ impl IntoElement for InlineInputElement {
                         let x: f32 = cursor_x.into();
                         x.round()
                     });
+                    let cursor_width = match cursor_style {
+                        AppCursorStyle::Line => px(1.0),
+                        AppCursorStyle::Block => {
+                            let fallback_width = (font_size_value * 0.62).round().max(1.0);
+                            let width = text
+                                .get(cursor_utf8..)
+                                .and_then(|slice| slice.chars().next())
+                                .map(|ch| cursor_utf8 + ch.len_utf8())
+                                .and_then(|next_utf8| {
+                                    line.as_ref()
+                                        .map(|line| line.x_for_index(next_utf8) - cursor_x)
+                                })
+                                .map(|delta| {
+                                    let width: f32 = delta.into();
+                                    width.max(1.0)
+                                })
+                                .unwrap_or(fallback_width);
+                            px(width)
+                        }
+                    };
+                    let cursor_color = match cursor_style {
+                        AppCursorStyle::Line => text_color,
+                        AppCursorStyle::Block => selection_color,
+                    };
 
                     Some(fill(
                         Bounds::new(
@@ -746,9 +786,9 @@ impl IntoElement for InlineInputElement {
                                 line_bounds.left() + line_offset_x + cursor_x,
                                 line_bounds.top(),
                             ),
-                            size(px(1.0), line_bounds.size.height),
+                            size(cursor_width, line_bounds.size.height),
                         ),
-                        text_color,
+                        cursor_color,
                     ))
                 } else {
                     None
@@ -906,6 +946,8 @@ impl TerminalView {
         mutate: impl FnOnce(&mut InlineInputState),
         cx: &mut Context<Self>,
     ) {
+        self.reset_cursor_blink_phase();
+
         if self.command_palette_open {
             mutate(&mut self.command_palette_input);
             self.command_palette_query_changed(cx);

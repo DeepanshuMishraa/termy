@@ -17,6 +17,12 @@ pub struct CellRenderInfo {
     pub selected: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TerminalCursorStyle {
+    Line,
+    Block,
+}
+
 /// Custom element for rendering the terminal grid.
 pub struct TerminalGrid {
     pub cells: Vec<CellRenderInfo>,
@@ -30,6 +36,7 @@ pub struct TerminalGrid {
     pub hovered_link_range: Option<(usize, usize, usize)>,
     pub font_family: SharedString,
     pub font_size: Pixels,
+    pub cursor_style: TerminalCursorStyle,
 }
 
 impl IntoElement for TerminalGrid {
@@ -129,16 +136,7 @@ impl Element for TerminalGrid {
                 size: self.cell_size,
             };
 
-            if cell.is_cursor {
-                window.paint_quad(quad(
-                    cell_bounds,
-                    px(0.0),
-                    self.cursor_color,
-                    gpui::Edges::default(),
-                    Hsla::transparent_black(),
-                    gpui::BorderStyle::default(),
-                ));
-            } else if cell.selected {
+            if cell.selected {
                 window.paint_quad(quad(
                     cell_bounds,
                     px(0.0),
@@ -157,6 +155,32 @@ impl Element for TerminalGrid {
                     gpui::BorderStyle::default(),
                 ));
             }
+
+            if cell.is_cursor {
+                let cursor_bounds = match self.cursor_style {
+                    TerminalCursorStyle::Block => cell_bounds,
+                    TerminalCursorStyle::Line => {
+                        let cell_width: f32 = self.cell_size.width.into();
+                        let cursor_width = px(cell_width.clamp(1.0, 2.0));
+                        Bounds::new(
+                            cell_bounds.origin,
+                            Size {
+                                width: cursor_width,
+                                height: cell_bounds.size.height,
+                            },
+                        )
+                    }
+                };
+
+                window.paint_quad(quad(
+                    cursor_bounds,
+                    px(0.0),
+                    self.cursor_color,
+                    gpui::Edges::default(),
+                    Hsla::transparent_black(),
+                    gpui::BorderStyle::default(),
+                ));
+            }
         }
 
         for cell in &self.cells {
@@ -168,7 +192,7 @@ impl Element for TerminalGrid {
             let x = origin.x + self.cell_size.width * cell.col as f32;
             let y = origin.y + self.cell_size.height * cell.row as f32;
 
-            let fg_color = if cell.is_cursor {
+            let fg_color = if cell.is_cursor && self.cursor_style == TerminalCursorStyle::Block {
                 Hsla {
                     h: 0.0,
                     s: 0.0,
