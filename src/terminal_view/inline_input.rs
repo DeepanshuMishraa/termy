@@ -8,6 +8,13 @@ use std::ops::Range;
 
 const INLINE_INPUT_LINE_HEIGHT_MULTIPLIER: f32 = 1.35;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InlineInputCharClass {
+    Word,
+    Whitespace,
+    Other,
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct InlineInputState {
     text: String,
@@ -20,6 +27,17 @@ pub(super) struct InlineInputState {
 }
 
 impl InlineInputState {
+    #[inline]
+    fn char_class(ch: char) -> InlineInputCharClass {
+        if ch.is_alphanumeric() || ch == '_' {
+            InlineInputCharClass::Word
+        } else if ch.is_whitespace() {
+            InlineInputCharClass::Whitespace
+        } else {
+            InlineInputCharClass::Other
+        }
+    }
+
     pub(super) fn new(text: String) -> Self {
         let mut state = Self {
             text,
@@ -69,10 +87,6 @@ impl InlineInputState {
     pub(super) fn select_all(&mut self) {
         self.selection_reversed = false;
         self.selected_range = 0..self.text.len();
-    }
-
-    pub(super) fn has_selection(&self) -> bool {
-        !self.selected_range.is_empty()
     }
 
     fn set_cursor_utf8(&mut self, offset: usize) {
@@ -136,10 +150,6 @@ impl InlineInputState {
         self.text.len()
     }
 
-    fn is_word_char(ch: char) -> bool {
-        ch.is_alphanumeric() || ch == '_'
-    }
-
     fn previous_word_boundary(&self, offset: usize) -> usize {
         if offset == 0 {
             return 0;
@@ -148,7 +158,7 @@ impl InlineInputState {
         let mut boundary = 0;
         let mut seen_word = false;
         for (idx, ch) in self.text[..offset].char_indices().rev() {
-            if Self::is_word_char(ch) {
+            if Self::char_class(ch) == InlineInputCharClass::Word {
                 seen_word = true;
                 boundary = idx;
                 continue;
@@ -169,7 +179,7 @@ impl InlineInputState {
 
         let mut seen_word = false;
         for (rel_idx, ch) in self.text[offset..].char_indices() {
-            let is_word = Self::is_word_char(ch);
+            let is_word = Self::char_class(ch) == InlineInputCharClass::Word;
             if is_word {
                 seen_word = true;
             } else if seen_word {
@@ -177,6 +187,69 @@ impl InlineInputState {
             }
         }
         self.text.len()
+    }
+
+    fn select_range_utf8(&mut self, range: Range<usize>) {
+        let start = Self::clamp_utf8_index(&self.text, range.start.min(self.text.len()));
+        let end = Self::clamp_utf8_index(&self.text, range.end.min(self.text.len()));
+        if end < start {
+            self.selected_range = end..start;
+        } else {
+            self.selected_range = start..end;
+        }
+        self.selection_reversed = false;
+        self.marked_range = None;
+    }
+
+    fn token_range_at_utf8(&self, offset: usize) -> Range<usize> {
+        if self.text.is_empty() {
+            return 0..0;
+        }
+
+        let mut anchor = Self::clamp_utf8_index(&self.text, offset.min(self.text.len()));
+        if anchor == self.text.len() && anchor > 0 {
+            anchor = self.previous_char_boundary(anchor);
+        }
+        if anchor >= self.text.len() {
+            return self.text.len()..self.text.len();
+        }
+
+        let Some(anchor_char) = self.text[anchor..].chars().next() else {
+            return self.text.len()..self.text.len();
+        };
+        let class = Self::char_class(anchor_char);
+
+        let mut start = anchor;
+        while start > 0 {
+            let prev = self.previous_char_boundary(start);
+            let Some(prev_char) = self.text[prev..start].chars().next() else {
+                break;
+            };
+            if Self::char_class(prev_char) != class {
+                break;
+            }
+            start = prev;
+        }
+
+        let mut end = self.next_char_boundary(anchor);
+        while end < self.text.len() {
+            let next_end = self.next_char_boundary(end);
+            let Some(next_char) = self.text[end..next_end].chars().next() else {
+                break;
+            };
+            if Self::char_class(next_char) != class {
+                break;
+            }
+            end = next_end;
+        }
+
+        start..end
+    }
+
+    fn select_token_at_utf16(&mut self, offset_utf16: usize) {
+        let utf8_offset = Self::utf16_to_utf8_in_text(&self.text, offset_utf16);
+        let range = self.token_range_at_utf8(utf8_offset);
+        self.select_range_utf8(range);
     }
 
     fn delete_range_utf8(&mut self, range: Range<usize>) {
@@ -549,21 +622,19 @@ impl IntoElement for InlineInputElement {
                     size(bounds.size.width, line_height),
                 );
 
-                let (text, selected_range, cursor_offset, marked_range, has_selection, focused) =
-                    prepaint_view
-                        .read(cx)
-                        .active_inline_input_state()
-                        .map(|state| {
-                            (
-                                state.text().to_string(),
-                                state.selected_range(),
-                                state.cursor_offset(),
-                                state.marked_range.clone(),
-                                state.has_selection(),
-                                prepaint_focus_handle.is_focused(window),
-                            )
-                        })
-                        .unwrap_or_else(|| (String::new(), 0..0, 0, None, false, false));
+                let (text, selected_range, cursor_offset, marked_range, focused) = prepaint_view
+                    .read(cx)
+                    .active_inline_input_state()
+                    .map(|state| {
+                        (
+                            state.text().to_string(),
+                            state.selected_range(),
+                            state.cursor_offset(),
+                            state.marked_range.clone(),
+                            prepaint_focus_handle.is_focused(window),
+                        )
+                    })
+                    .unwrap_or_else(|| (String::new(), 0..0, 0, None, false));
 
                 let line = if text.is_empty() {
                     None
@@ -659,7 +730,7 @@ impl IntoElement for InlineInputElement {
                     None
                 };
 
-                let cursor = if focused && !has_selection {
+                let cursor = if focused && selection_start == selection_end {
                     let cursor_x = line
                         .as_ref()
                         .map(|line| line.x_for_index(cursor_utf8))
@@ -869,6 +940,8 @@ impl TerminalView {
             |state| {
                 if event.modifiers.shift {
                     state.select_to_utf16(target_utf16);
+                } else if event.click_count >= 2 {
+                    state.select_token_at_utf16(target_utf16);
                 } else {
                     state.set_cursor_utf16(target_utf16);
                 }
@@ -1061,10 +1134,8 @@ impl EntityInputHandler for TerminalView {
         state.marked_text_range()
     }
 
-    fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
-        if let Some(state) = self.active_inline_input_state_mut() {
-            state.unmark_text();
-        }
+    fn unmark_text(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.apply_inline_input_mutation(InlineInputState::unmark_text, cx);
     }
 
     fn replace_text_in_range(
@@ -1074,18 +1145,7 @@ impl EntityInputHandler for TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.command_palette_open {
-            self.command_palette_input
-                .replace_text_in_range(range, text);
-            self.command_palette_query_changed(cx);
-            return;
-        }
-
-        if self.renaming_tab.is_some() {
-            self.rename_input.replace_text_in_range(range, text);
-            self.enforce_tab_rename_limit();
-            cx.notify();
-        }
+        self.apply_inline_input_mutation(move |state| state.replace_text_in_range(range, text), cx);
     }
 
     fn replace_and_mark_text_in_range(
@@ -1096,22 +1156,10 @@ impl EntityInputHandler for TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.command_palette_open {
-            self.command_palette_input.replace_and_mark_text_in_range(
-                range,
-                new_text,
-                new_selected_range,
-            );
-            self.command_palette_query_changed(cx);
-            return;
-        }
-
-        if self.renaming_tab.is_some() {
-            self.rename_input
-                .replace_and_mark_text_in_range(range, new_text, new_selected_range);
-            self.enforce_tab_rename_limit();
-            cx.notify();
-        }
+        self.apply_inline_input_mutation(
+            move |state| state.replace_and_mark_text_in_range(range, new_text, new_selected_range),
+            cx,
+        );
     }
 
     fn bounds_for_range(
@@ -1181,15 +1229,6 @@ mod tests {
     }
 
     #[test]
-    fn has_selection_reflects_selected_range() {
-        let mut state = InlineInputState::new("termy".to_string());
-        state.selected_range = 2..2;
-        assert!(!state.has_selection());
-        state.selected_range = 1..3;
-        assert!(state.has_selection());
-    }
-
-    #[test]
     fn delete_to_start_removes_prefix() {
         let mut state = InlineInputState::new("hello world".to_string());
         state.set_cursor_utf8(5);
@@ -1213,5 +1252,27 @@ mod tests {
         state.set_cursor_utf16(1);
         state.select_to_utf16(4);
         assert_eq!(state.selected_range(), 1..6);
+    }
+
+    #[test]
+    fn select_token_at_utf16_selects_word_and_whitespace_runs() {
+        let mut state = InlineInputState::new("hello  world".to_string());
+
+        state.select_token_at_utf16(1);
+        assert_eq!(state.selected_range(), 0..5);
+
+        state.select_token_at_utf16(5);
+        assert_eq!(state.selected_range(), 5..7);
+    }
+
+    #[test]
+    fn select_token_at_utf16_handles_punctuation_and_end_of_line() {
+        let mut state = InlineInputState::new("foo==bar".to_string());
+
+        state.select_token_at_utf16(3);
+        assert_eq!(state.selected_range(), 3..5);
+
+        state.select_token_at_utf16(8);
+        assert_eq!(state.selected_range(), 5..8);
     }
 }
