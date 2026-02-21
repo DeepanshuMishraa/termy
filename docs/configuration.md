@@ -48,6 +48,11 @@ Keybinding syntax, defaults, and override examples now live in:
 
 - `docs/keybindings.md`
 
+`command_palette_show_keybinds`
+- Default: `true`
+- Values: `true`/`false`
+- What it does: shows shortcut badges on the right side of command palette command rows.
+
 ## Tab Titles
 
 ### Basic (recommended)
@@ -194,6 +199,10 @@ Explicit payload examples:
 `keybind`
 - Default: built-in platform shortcuts
 - Values: repeated `keybind` directives (see `docs/keybindings.md`)
+
+`command_palette_show_keybinds`
+- Default: `true`
+- Values: `true`/`false`
 
 ## Shell Integration Snippets
 

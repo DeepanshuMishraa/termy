@@ -172,6 +172,7 @@ pub struct TerminalView {
     command_palette_selected: usize,
     command_palette_scroll_offset: usize,
     command_palette_query_select_all: bool,
+    command_palette_show_keybinds: bool,
     command_palette_opened_at: Option<Instant>,
     /// Cached cell dimensions
     cell_size: Option<Size<Pixels>>,
@@ -302,6 +303,7 @@ impl TerminalView {
             command_palette_selected: 0,
             command_palette_scroll_offset: 0,
             command_palette_query_select_all: false,
+            command_palette_show_keybinds: config.command_palette_show_keybinds,
             command_palette_opened_at: None,
             cell_size: None,
             #[cfg(target_os = "macos")]
@@ -346,6 +348,7 @@ impl TerminalView {
         self.transparent_background_opacity = config.transparent_background_opacity;
         self.padding_x = config.padding_x.max(0.0);
         self.padding_y = config.padding_y.max(0.0);
+        self.command_palette_show_keybinds = config.command_palette_show_keybinds;
 
         for index in 0..self.tabs.len() {
             self.refresh_tab_title(index);

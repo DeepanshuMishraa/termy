@@ -29,6 +29,10 @@ impl TerminalView {
         action: CommandPaletteAction,
         window: &Window,
     ) -> Option<(String, bool)> {
+        if !self.command_palette_show_keybinds {
+            return None;
+        }
+
         match action {
             CommandPaletteAction::NewTab => {
                 Some(self.command_palette_binding_badge(&actions::NewTab, window))

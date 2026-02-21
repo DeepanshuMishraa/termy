@@ -55,7 +55,9 @@ padding_y = 8\n\
 # keybind = cmd-p=toggle_command_palette\n\
 # keybind = cmd-c=copy\n\
 # keybind = cmd-c=unbind\n\
-# keybind = clear\n";
+# keybind = clear\n\
+# Show/hide shortcut badges in command palette\n\
+# command_palette_show_keybinds = true\n";
 
 pub type ThemeId = String;
 
@@ -183,6 +185,7 @@ pub struct AppConfig {
     pub transparent_background_opacity: f32,
     pub padding_x: f32,
     pub padding_y: f32,
+    pub command_palette_show_keybinds: bool,
     pub keybind_lines: Vec<KeybindConfigLine>,
 }
 
@@ -210,6 +213,7 @@ impl Default for AppConfig {
             transparent_background_opacity: 1.0,
             padding_x: 12.0,
             padding_y: 8.0,
+            command_palette_show_keybinds: true,
             keybind_lines: Vec::new(),
         }
     }
@@ -374,6 +378,12 @@ impl AppConfig {
                     if padding_y >= 0.0 {
                         config.padding_y = padding_y;
                     }
+                }
+            }
+
+            if key.eq_ignore_ascii_case("command_palette_show_keybinds") {
+                if let Some(show) = parse_bool(value) {
+                    config.command_palette_show_keybinds = show;
                 }
             }
 
@@ -634,5 +644,14 @@ mod tests {
         assert_eq!(config.keybind_lines[2].value, "cmd-c=unbind");
         assert_eq!(config.keybind_lines[3].line_number, 5);
         assert_eq!(config.keybind_lines[3].value, "clear");
+    }
+
+    #[test]
+    fn command_palette_show_keybinds_parses_and_defaults() {
+        let defaults = AppConfig::from_contents("");
+        assert!(defaults.command_palette_show_keybinds);
+
+        let disabled = AppConfig::from_contents("command_palette_show_keybinds = false\n");
+        assert!(!disabled.command_palette_show_keybinds);
     }
 }

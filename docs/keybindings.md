@@ -44,6 +44,10 @@ Behavior:
 - `unbind` removes the current mapping for a trigger.
 - Invalid lines are ignored (with warnings).
 
+Related UI option:
+
+- `command_palette_show_keybinds = true|false` controls whether command palette rows show shortcut badges.
+
 Configurable actions:
 
 - `quit`
