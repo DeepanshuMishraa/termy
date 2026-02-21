@@ -60,7 +60,7 @@ impl TerminalView {
         self.refresh_tab_title(self.active_tab);
         self.renaming_tab = None;
         self.rename_input.clear();
-        self.sync_inline_input_target();
+        self.inline_input_selecting = false;
         self.clear_selection();
         cx.notify();
     }
@@ -82,7 +82,7 @@ impl TerminalView {
             Some(editing) if editing == index => {
                 self.renaming_tab = None;
                 self.rename_input.clear();
-                self.sync_inline_input_target();
+                self.inline_input_selecting = false;
             }
             Some(editing) if editing > index => {
                 self.renaming_tab = Some(editing - 1);
@@ -106,7 +106,7 @@ impl TerminalView {
         self.active_tab = index;
         self.renaming_tab = None;
         self.rename_input.clear();
-        self.sync_inline_input_target();
+        self.inline_input_selecting = false;
         self.clear_selection();
         cx.notify();
     }
@@ -124,7 +124,7 @@ impl TerminalView {
 
         self.renaming_tab = None;
         self.rename_input.clear();
-        self.sync_inline_input_target();
+        self.inline_input_selecting = false;
         cx.notify();
     }
 
@@ -135,7 +135,7 @@ impl TerminalView {
 
         self.renaming_tab = None;
         self.rename_input.clear();
-        self.sync_inline_input_target();
+        self.inline_input_selecting = false;
         cx.notify();
     }
 }

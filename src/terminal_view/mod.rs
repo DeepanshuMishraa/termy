@@ -38,7 +38,7 @@ mod titles;
 #[cfg(target_os = "macos")]
 mod update_toasts;
 
-use inline_input::{InlineInputElement, InlineInputState, InlineInputTarget};
+use inline_input::{InlineInputElement, InlineInputState};
 
 const MIN_FONT_SIZE: f32 = 8.0;
 const MAX_FONT_SIZE: f32 = 40.0;
@@ -157,11 +157,11 @@ pub struct TerminalView {
     hovered_toast: Option<u64>,
     toast_manager: ToastManager,
     command_palette_open: bool,
-    inline_input_target: Option<InlineInputTarget>,
     command_palette_input: InlineInputState,
     command_palette_selected: usize,
     command_palette_scroll_handle: UniformListScrollHandle,
     command_palette_show_keybinds: bool,
+    inline_input_selecting: bool,
     terminal_scroll_accumulator_y: f32,
     /// Cached cell dimensions
     cell_size: Option<Size<Pixels>>,
@@ -289,11 +289,11 @@ impl TerminalView {
             hovered_toast: None,
             toast_manager: ToastManager::new(),
             command_palette_open: false,
-            inline_input_target: None,
             command_palette_input: InlineInputState::new(String::new()),
             command_palette_selected: 0,
             command_palette_scroll_handle: UniformListScrollHandle::new(),
             command_palette_show_keybinds: config.command_palette_show_keybinds,
+            inline_input_selecting: false,
             terminal_scroll_accumulator_y: 0.0,
             cell_size: None,
             #[cfg(target_os = "macos")]

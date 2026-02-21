@@ -56,6 +56,7 @@ pub fn install_keybindings(cx: &mut App, config: &AppConfig) {
             .iter()
             .map(|binding| binding.action.to_key_binding(&binding.trigger)),
     );
+    cx.bind_keys(crate::commands::inline_input_keybindings());
     cx.set_menus(vec![crate::app_menu()]);
 }
 

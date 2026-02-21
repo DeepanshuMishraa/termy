@@ -443,9 +443,9 @@ impl TerminalView {
                 }
 
                 self.renaming_tab = Some(self.active_tab);
-                self.sync_inline_input_target();
                 self.rename_input
                     .set_text(self.tabs[self.active_tab].title.clone());
+                self.inline_input_selecting = false;
                 termy_toast::info("Rename mode enabled");
                 cx.notify();
             }
@@ -610,10 +610,9 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) {
         let key = event.keystroke.key.as_str();
-        let modifiers = event.keystroke.modifiers;
 
         if self.command_palette_open {
-            self.handle_command_palette_key_down(key, modifiers, cx);
+            self.handle_command_palette_key_down(key, cx);
             return;
         }
 

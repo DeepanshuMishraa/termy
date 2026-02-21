@@ -3,6 +3,13 @@ use gpui::{ScrollStrategy, uniform_list};
 use std::ops::Range;
 
 impl TerminalView {
+    fn reset_command_palette_state(&mut self) {
+        self.command_palette_input.clear();
+        self.command_palette_selected = 0;
+        self.command_palette_scroll_handle = UniformListScrollHandle::new();
+        self.inline_input_selecting = false;
+    }
+
     fn format_keybinding_label(binding: &gpui::KeyBinding) -> String {
         binding
             .keystrokes()
@@ -77,10 +84,7 @@ impl TerminalView {
 
     pub(super) fn open_command_palette(&mut self, cx: &mut Context<Self>) {
         self.command_palette_open = true;
-        self.sync_inline_input_target();
-        self.command_palette_input.clear();
-        self.command_palette_selected = 0;
-        self.command_palette_scroll_handle = UniformListScrollHandle::new();
+        self.reset_command_palette_state();
 
         cx.notify();
     }
@@ -91,10 +95,7 @@ impl TerminalView {
         }
 
         self.command_palette_open = false;
-        self.sync_inline_input_target();
-        self.command_palette_input.clear();
-        self.command_palette_selected = 0;
-        self.command_palette_scroll_handle = UniformListScrollHandle::new();
+        self.reset_command_palette_state();
         cx.notify();
     }
 
@@ -189,12 +190,7 @@ impl TerminalView {
         }
     }
 
-    pub(super) fn handle_command_palette_key_down(
-        &mut self,
-        key: &str,
-        modifiers: gpui::Modifiers,
-        cx: &mut Context<Self>,
-    ) {
+    pub(super) fn handle_command_palette_key_down(&mut self, key: &str, cx: &mut Context<Self>) {
         match key {
             "escape" => {
                 self.close_command_palette(cx);
@@ -225,16 +221,6 @@ impl TerminalView {
             }
             _ => {}
         }
-
-        if modifiers.secondary()
-            && !modifiers.alt
-            && !modifiers.function
-            && key.eq_ignore_ascii_case("a")
-            && !self.command_palette_query().is_empty()
-        {
-            self.command_palette_input.select_all();
-            cx.notify();
-        }
     }
 
     fn execute_command_palette_selection(&mut self, cx: &mut Context<Self>) {
@@ -251,10 +237,7 @@ impl TerminalView {
 
     fn execute_command_palette_action(&mut self, action: CommandAction, cx: &mut Context<Self>) {
         self.command_palette_open = false;
-        self.sync_inline_input_target();
-        self.command_palette_input.clear();
-        self.command_palette_selected = 0;
-        self.command_palette_scroll_handle = UniformListScrollHandle::new();
+        self.reset_command_palette_state();
 
         self.execute_command_action(action, false, cx);
 
@@ -474,18 +457,46 @@ impl TerminalView {
                                     .border_color(panel_border)
                                     .text_size(px(13.0))
                                     .text_color(primary_text)
-                                    .child(self.command_palette_input.text_with_cursor())
                                     .child(
                                         div()
-                                            .absolute()
-                                            .top_0()
-                                            .left_0()
-                                            .right_0()
-                                            .bottom_0()
-                                            .child(InlineInputElement::new(
-                                                cx.entity(),
-                                                self.focus_handle.clone(),
-                                            )),
+                                            .w_full()
+                                            .h_full()
+                                            .relative()
+                                            .child(self.command_palette_input.text_with_cursor())
+                                            .child(
+                                                div()
+                                                    .absolute()
+                                                    .top_0()
+                                                    .left_0()
+                                                    .right_0()
+                                                    .bottom_0()
+                                                    .on_mouse_down(
+                                                        MouseButton::Left,
+                                                        cx.listener(
+                                                            Self::handle_inline_input_mouse_down,
+                                                        ),
+                                                    )
+                                                    .on_mouse_move(cx.listener(
+                                                        Self::handle_inline_input_mouse_move,
+                                                    ))
+                                                    .on_mouse_up(
+                                                        MouseButton::Left,
+                                                        cx.listener(
+                                                            Self::handle_inline_input_mouse_up,
+                                                        ),
+                                                    )
+                                                    .on_mouse_up_out(
+                                                        MouseButton::Left,
+                                                        cx.listener(
+                                                            Self::handle_inline_input_mouse_up,
+                                                        ),
+                                                    )
+                                                    .child(InlineInputElement::new(
+                                                        cx.entity(),
+                                                        self.focus_handle.clone(),
+                                                        px(13.0),
+                                                    )),
+                                            ),
                                     ),
                             )
                             .child(div().h(px(8.0)))

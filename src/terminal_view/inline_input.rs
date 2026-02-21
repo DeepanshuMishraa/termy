@@ -1,15 +1,9 @@
 use super::*;
 use gpui::{
     Bounds, ElementInputHandler, Entity, EntityInputHandler, IntoElement, Pixels, ScrollStrategy,
-    UTF16Selection, Window, canvas,
+    TextRun, UTF16Selection, Window, canvas, point,
 };
 use std::ops::Range;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum InlineInputTarget {
-    CommandPalette,
-    TabRename,
-}
 
 #[derive(Clone, Debug)]
 pub(super) struct InlineInputState {
@@ -17,6 +11,8 @@ pub(super) struct InlineInputState {
     selected_range: Range<usize>,
     selection_reversed: bool,
     marked_range: Option<Range<usize>>,
+    last_layout: Option<gpui::ShapedLine>,
+    last_bounds: Option<Bounds<Pixels>>,
 }
 
 impl InlineInputState {
@@ -26,6 +22,8 @@ impl InlineInputState {
             selected_range: 0..0,
             selection_reversed: false,
             marked_range: None,
+            last_layout: None,
+            last_bounds: None,
         };
         state.move_to_end();
         state
@@ -39,6 +37,7 @@ impl InlineInputState {
         self.text = text;
         self.marked_range = None;
         self.selection_reversed = false;
+        self.invalidate_layout();
         self.move_to_end();
     }
 
@@ -47,8 +46,7 @@ impl InlineInputState {
     }
 
     pub(super) fn move_to_end(&mut self) {
-        let end = self.text.len();
-        self.selected_range = end..end;
+        self.set_cursor_utf8(self.text.len());
     }
 
     pub(super) fn cursor_offset(&self) -> usize {
@@ -66,6 +64,228 @@ impl InlineInputState {
     pub(super) fn select_all(&mut self) {
         self.selection_reversed = false;
         self.selected_range = 0..self.text.len();
+    }
+
+    fn set_cursor_utf8(&mut self, offset: usize) {
+        let offset = Self::clamp_utf8_index(&self.text, offset);
+        self.selected_range = offset..offset;
+        self.selection_reversed = false;
+        self.marked_range = None;
+    }
+
+    fn select_to_utf8(&mut self, offset: usize) {
+        let offset = Self::clamp_utf8_index(&self.text, offset);
+        if self.selection_reversed {
+            self.selected_range.start = offset;
+        } else {
+            self.selected_range.end = offset;
+        }
+        if self.selected_range.end < self.selected_range.start {
+            self.selection_reversed = !self.selection_reversed;
+            self.selected_range = self.selected_range.end..self.selected_range.start;
+        }
+        self.marked_range = None;
+    }
+
+    fn set_cursor_utf16(&mut self, offset: usize) {
+        let utf8_offset = Self::utf16_to_utf8_in_text(&self.text, offset);
+        self.set_cursor_utf8(utf8_offset);
+    }
+
+    fn select_to_utf16(&mut self, offset: usize) {
+        let utf8_offset = Self::utf16_to_utf8_in_text(&self.text, offset);
+        self.select_to_utf8(utf8_offset);
+    }
+
+    fn previous_char_boundary(&self, offset: usize) -> usize {
+        if offset == 0 {
+            return 0;
+        }
+
+        let mut index = offset.min(self.text.len());
+        while index > 0 {
+            index -= 1;
+            if self.text.is_char_boundary(index) {
+                return index;
+            }
+        }
+        0
+    }
+
+    fn next_char_boundary(&self, offset: usize) -> usize {
+        if offset >= self.text.len() {
+            return self.text.len();
+        }
+
+        let mut index = offset + 1;
+        while index < self.text.len() {
+            if self.text.is_char_boundary(index) {
+                return index;
+            }
+            index += 1;
+        }
+        self.text.len()
+    }
+
+    fn is_word_char(ch: char) -> bool {
+        ch.is_alphanumeric() || ch == '_'
+    }
+
+    fn previous_word_boundary(&self, offset: usize) -> usize {
+        if offset == 0 {
+            return 0;
+        }
+
+        let mut boundary = 0;
+        let mut seen_word = false;
+        for (idx, ch) in self.text[..offset].char_indices().rev() {
+            if Self::is_word_char(ch) {
+                seen_word = true;
+                boundary = idx;
+                continue;
+            }
+            if seen_word {
+                boundary = idx + ch.len_utf8();
+                break;
+            }
+            boundary = idx;
+        }
+        boundary
+    }
+
+    fn next_word_boundary(&self, offset: usize) -> usize {
+        if offset >= self.text.len() {
+            return self.text.len();
+        }
+
+        let mut iter = self.text[offset..].char_indices().peekable();
+        let mut seen_word = false;
+        while let Some((rel_idx, ch)) = iter.next() {
+            let is_word = Self::is_word_char(ch);
+            if is_word {
+                seen_word = true;
+            } else if seen_word {
+                return offset + rel_idx;
+            }
+        }
+        self.text.len()
+    }
+
+    fn delete_range_utf8(&mut self, range: Range<usize>) {
+        if range.start >= range.end || range.end > self.text.len() {
+            return;
+        }
+        self.text.replace_range(range.clone(), "");
+        self.set_cursor_utf8(range.start);
+        self.invalidate_layout();
+    }
+
+    fn delete_selected_or(&mut self, fallback: Range<usize>) {
+        let range = if self.selected_range.is_empty() {
+            fallback
+        } else {
+            self.selected_range.clone()
+        };
+        self.delete_range_utf8(range);
+    }
+
+    pub(super) fn move_left(&mut self) {
+        if !self.selected_range.is_empty() {
+            self.set_cursor_utf8(self.selected_range.start);
+            return;
+        }
+        let cursor = self.cursor_offset();
+        self.set_cursor_utf8(self.previous_char_boundary(cursor));
+    }
+
+    pub(super) fn move_right(&mut self) {
+        if !self.selected_range.is_empty() {
+            self.set_cursor_utf8(self.selected_range.end);
+            return;
+        }
+        let cursor = self.cursor_offset();
+        self.set_cursor_utf8(self.next_char_boundary(cursor));
+    }
+
+    pub(super) fn select_left(&mut self) {
+        let cursor = self.cursor_offset();
+        self.select_to_utf8(self.previous_char_boundary(cursor));
+    }
+
+    pub(super) fn select_right(&mut self) {
+        let cursor = self.cursor_offset();
+        self.select_to_utf8(self.next_char_boundary(cursor));
+    }
+
+    pub(super) fn move_to_start(&mut self) {
+        self.set_cursor_utf8(0);
+    }
+
+    pub(super) fn delete_backward(&mut self) {
+        let cursor = self.cursor_offset();
+        let start = self.previous_char_boundary(cursor);
+        self.delete_selected_or(start..cursor);
+    }
+
+    pub(super) fn delete_forward(&mut self) {
+        let cursor = self.cursor_offset();
+        let end = self.next_char_boundary(cursor);
+        self.delete_selected_or(cursor..end);
+    }
+
+    pub(super) fn delete_word_backward(&mut self) {
+        let cursor = self.cursor_offset();
+        let start = self.previous_word_boundary(cursor);
+        self.delete_selected_or(start..cursor);
+    }
+
+    pub(super) fn delete_word_forward(&mut self) {
+        let cursor = self.cursor_offset();
+        let end = self.next_word_boundary(cursor);
+        self.delete_selected_or(cursor..end);
+    }
+
+    pub(super) fn delete_to_start(&mut self) {
+        let cursor = self.cursor_offset();
+        self.delete_selected_or(0..cursor);
+    }
+
+    pub(super) fn delete_to_end(&mut self) {
+        let cursor = self.cursor_offset();
+        self.delete_selected_or(cursor..self.text.len());
+    }
+
+    fn invalidate_layout(&mut self) {
+        self.last_layout = None;
+    }
+
+    pub(super) fn update_layout(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        font_size: Pixels,
+        window: &mut Window,
+    ) {
+        self.last_bounds = Some(bounds);
+        if self.text.is_empty() {
+            self.last_layout = None;
+            return;
+        }
+
+        let style = window.text_style();
+        let run = TextRun {
+            len: self.text.len(),
+            font: style.font(),
+            color: style.color,
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        self.last_layout = Some(window.text_system().shape_line(
+            self.text.clone().into(),
+            font_size,
+            &[run],
+            None,
+        ));
     }
 
     pub(super) fn text_with_cursor(&self) -> String {
@@ -140,6 +360,10 @@ impl InlineInputState {
         Self::range_to_utf16_for_text(&self.text, range_utf8)
     }
 
+    fn utf8_to_utf16(&self, utf8_offset: usize) -> usize {
+        Self::utf8_to_utf16_in_text(&self.text, utf8_offset)
+    }
+
     fn replacement_range(&self, range_utf16: Option<Range<usize>>) -> Range<usize> {
         range_utf16
             .as_ref()
@@ -158,6 +382,28 @@ impl InlineInputState {
         self.text[range].to_string()
     }
 
+    pub(super) fn bounds_for_range(
+        &self,
+        range_utf16: Range<usize>,
+        fallback_bounds: Bounds<Pixels>,
+    ) -> Bounds<Pixels> {
+        let bounds = self.last_bounds.unwrap_or(fallback_bounds);
+        let range = self.range_from_utf16(&range_utf16);
+        let (start_x, end_x) = if let Some(layout) = self.last_layout.as_ref() {
+            (
+                layout.x_for_index(range.start),
+                layout.x_for_index(range.end),
+            )
+        } else {
+            (px(0.0), px(0.0))
+        };
+
+        Bounds::from_corners(
+            point(bounds.left() + start_x, bounds.top()),
+            point(bounds.left() + end_x, bounds.bottom()),
+        )
+    }
+
     pub(super) fn selected_text_range(&self) -> UTF16Selection {
         UTF16Selection {
             range: self.range_to_utf16(&self.selected_range),
@@ -171,6 +417,36 @@ impl InlineInputState {
             .map(|range| self.range_to_utf16(range))
     }
 
+    pub(super) fn character_index_for_point(&self, point: gpui::Point<Pixels>) -> usize {
+        if self.text.is_empty() {
+            return 0;
+        }
+
+        let Some(bounds) = self.last_bounds else {
+            return self.range_to_utf16(&self.selected_range).start;
+        };
+
+        if point.y < bounds.top() {
+            return 0;
+        }
+        if point.y > bounds.bottom() {
+            return self.utf8_to_utf16(self.text.len());
+        }
+
+        let local_x = if point.x <= bounds.left() {
+            px(0.0)
+        } else {
+            point.x - bounds.left()
+        };
+
+        let utf8_index = self
+            .last_layout
+            .as_ref()
+            .map(|layout| layout.closest_index_for_x(local_x))
+            .unwrap_or(0);
+        self.utf8_to_utf16(utf8_index)
+    }
+
     pub(super) fn unmark_text(&mut self) {
         self.marked_range = None;
     }
@@ -182,6 +458,7 @@ impl InlineInputState {
         self.selected_range = cursor..cursor;
         self.selection_reversed = false;
         self.marked_range = None;
+        self.invalidate_layout();
     }
 
     pub(super) fn replace_and_mark_text_in_range(
@@ -209,17 +486,27 @@ impl InlineInputState {
             let cursor = range.start + new_text.len();
             self.selected_range = cursor..cursor;
         }
+        self.invalidate_layout();
     }
 }
 
 pub(super) struct InlineInputElement {
     view: Entity<TerminalView>,
     focus_handle: FocusHandle,
+    font_size: Pixels,
 }
 
 impl InlineInputElement {
-    pub(super) fn new(view: Entity<TerminalView>, focus_handle: FocusHandle) -> Self {
-        Self { view, focus_handle }
+    pub(super) fn new(
+        view: Entity<TerminalView>,
+        focus_handle: FocusHandle,
+        font_size: Pixels,
+    ) -> Self {
+        Self {
+            view,
+            focus_handle,
+            font_size,
+        }
     }
 }
 
@@ -229,10 +516,14 @@ impl IntoElement for InlineInputElement {
     fn into_element(self) -> Self::Element {
         let focus_handle = self.focus_handle;
         let view = self.view;
+        let font_size = self.font_size;
 
         canvas(
             |_bounds, _window, _cx| (),
             move |bounds, _, window, cx| {
+                view.update(cx, |this, _cx| {
+                    this.update_active_inline_layout(bounds, font_size, window);
+                });
                 window.handle_input(
                     &focus_handle,
                     ElementInputHandler::new(bounds, view.clone()),
@@ -245,39 +536,34 @@ impl IntoElement for InlineInputElement {
 }
 
 impl TerminalView {
-    pub(super) fn sync_inline_input_target(&mut self) {
-        self.inline_input_target = if self.command_palette_open {
-            Some(InlineInputTarget::CommandPalette)
+    fn active_inline_input_state(&self) -> Option<&InlineInputState> {
+        if self.command_palette_open {
+            Some(&self.command_palette_input)
         } else if self.renaming_tab.is_some() {
-            Some(InlineInputTarget::TabRename)
+            Some(&self.rename_input)
         } else {
             None
-        };
-    }
-
-    pub(super) fn active_inline_input_target(&self) -> Option<InlineInputTarget> {
-        match self.inline_input_target {
-            Some(InlineInputTarget::CommandPalette) if self.command_palette_open => {
-                Some(InlineInputTarget::CommandPalette)
-            }
-            Some(InlineInputTarget::TabRename) if self.renaming_tab.is_some() => {
-                Some(InlineInputTarget::TabRename)
-            }
-            _ => None,
-        }
-    }
-
-    fn active_inline_input_state(&self) -> Option<&InlineInputState> {
-        match self.active_inline_input_target()? {
-            InlineInputTarget::CommandPalette => Some(&self.command_palette_input),
-            InlineInputTarget::TabRename => Some(&self.rename_input),
         }
     }
 
     fn active_inline_input_state_mut(&mut self) -> Option<&mut InlineInputState> {
-        match self.active_inline_input_target()? {
-            InlineInputTarget::CommandPalette => Some(&mut self.command_palette_input),
-            InlineInputTarget::TabRename => Some(&mut self.rename_input),
+        if self.command_palette_open {
+            Some(&mut self.command_palette_input)
+        } else if self.renaming_tab.is_some() {
+            Some(&mut self.rename_input)
+        } else {
+            None
+        }
+    }
+
+    fn update_active_inline_layout(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        font_size: Pixels,
+        window: &mut Window,
+    ) {
+        if let Some(state) = self.active_inline_input_state_mut() {
+            state.update_layout(bounds, font_size, window);
         }
     }
 
@@ -308,6 +594,205 @@ impl TerminalView {
             .take(MAX_TAB_TITLE_CHARS)
             .collect();
         self.rename_input.set_text(truncated);
+    }
+
+    fn apply_inline_input_mutation(
+        &mut self,
+        mutate: impl FnOnce(&mut InlineInputState),
+        cx: &mut Context<Self>,
+    ) {
+        if self.command_palette_open {
+            mutate(&mut self.command_palette_input);
+            self.command_palette_query_changed(cx);
+            return;
+        }
+
+        if self.renaming_tab.is_some() {
+            mutate(&mut self.rename_input);
+            self.enforce_tab_rename_limit();
+            cx.notify();
+        }
+    }
+
+    pub(super) fn handle_inline_input_mouse_down(
+        &mut self,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if event.button != MouseButton::Left {
+            return;
+        }
+
+        self.focus_handle.focus(window, cx);
+
+        let target_utf16 = match self.active_inline_input_state() {
+            Some(state) => state.character_index_for_point(event.position),
+            None => return,
+        };
+
+        self.apply_inline_input_mutation(
+            |state| {
+                if event.modifiers.shift {
+                    state.select_to_utf16(target_utf16);
+                } else {
+                    state.set_cursor_utf16(target_utf16);
+                }
+            },
+            cx,
+        );
+        self.inline_input_selecting = true;
+        cx.stop_propagation();
+    }
+
+    pub(super) fn handle_inline_input_mouse_move(
+        &mut self,
+        event: &MouseMoveEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.inline_input_selecting || !event.dragging() {
+            return;
+        }
+
+        let target_utf16 = match self.active_inline_input_state() {
+            Some(state) => state.character_index_for_point(event.position),
+            None => return,
+        };
+
+        self.apply_inline_input_mutation(|state| state.select_to_utf16(target_utf16), cx);
+        cx.stop_propagation();
+    }
+
+    pub(super) fn handle_inline_input_mouse_up(
+        &mut self,
+        event: &MouseUpEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if event.button != MouseButton::Left {
+            return;
+        }
+
+        self.inline_input_selecting = false;
+        cx.stop_propagation();
+    }
+
+    pub(super) fn handle_inline_backspace_action(
+        &mut self,
+        _: &crate::commands::InlineBackspace,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_inline_input_mutation(InlineInputState::delete_backward, cx);
+    }
+
+    pub(super) fn handle_inline_delete_action(
+        &mut self,
+        _: &crate::commands::InlineDelete,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_inline_input_mutation(InlineInputState::delete_forward, cx);
+    }
+
+    pub(super) fn handle_inline_move_left_action(
+        &mut self,
+        _: &crate::commands::InlineMoveLeft,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_inline_input_mutation(InlineInputState::move_left, cx);
+    }
+
+    pub(super) fn handle_inline_move_right_action(
+        &mut self,
+        _: &crate::commands::InlineMoveRight,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_inline_input_mutation(InlineInputState::move_right, cx);
+    }
+
+    pub(super) fn handle_inline_select_left_action(
+        &mut self,
+        _: &crate::commands::InlineSelectLeft,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_inline_input_mutation(InlineInputState::select_left, cx);
+    }
+
+    pub(super) fn handle_inline_select_right_action(
+        &mut self,
+        _: &crate::commands::InlineSelectRight,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_inline_input_mutation(InlineInputState::select_right, cx);
+    }
+
+    pub(super) fn handle_inline_select_all_action(
+        &mut self,
+        _: &crate::commands::InlineSelectAll,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_inline_input_mutation(InlineInputState::select_all, cx);
+    }
+
+    pub(super) fn handle_inline_move_to_start_action(
+        &mut self,
+        _: &crate::commands::InlineMoveToStart,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_inline_input_mutation(InlineInputState::move_to_start, cx);
+    }
+
+    pub(super) fn handle_inline_move_to_end_action(
+        &mut self,
+        _: &crate::commands::InlineMoveToEnd,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_inline_input_mutation(InlineInputState::move_to_end, cx);
+    }
+
+    pub(super) fn handle_inline_delete_word_backward_action(
+        &mut self,
+        _: &crate::commands::InlineDeleteWordBackward,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_inline_input_mutation(InlineInputState::delete_word_backward, cx);
+    }
+
+    pub(super) fn handle_inline_delete_word_forward_action(
+        &mut self,
+        _: &crate::commands::InlineDeleteWordForward,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_inline_input_mutation(InlineInputState::delete_word_forward, cx);
+    }
+
+    pub(super) fn handle_inline_delete_to_start_action(
+        &mut self,
+        _: &crate::commands::InlineDeleteToStart,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_inline_input_mutation(InlineInputState::delete_to_start, cx);
+    }
+
+    pub(super) fn handle_inline_delete_to_end_action(
+        &mut self,
+        _: &crate::commands::InlineDeleteToEnd,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_inline_input_mutation(InlineInputState::delete_to_end, cx);
     }
 }
 
@@ -355,21 +840,17 @@ impl EntityInputHandler for TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(target) = self.active_inline_input_target() else {
+        if self.command_palette_open {
+            self.command_palette_input
+                .replace_text_in_range(range, text);
+            self.command_palette_query_changed(cx);
             return;
-        };
+        }
 
-        let Some(state) = self.active_inline_input_state_mut() else {
-            return;
-        };
-        state.replace_text_in_range(range, text);
-
-        match target {
-            InlineInputTarget::CommandPalette => self.command_palette_query_changed(cx),
-            InlineInputTarget::TabRename => {
-                self.enforce_tab_rename_limit();
-                cx.notify();
-            }
+        if self.renaming_tab.is_some() {
+            self.rename_input.replace_text_in_range(range, text);
+            self.enforce_tab_rename_limit();
+            cx.notify();
         }
     }
 
@@ -381,46 +862,47 @@ impl EntityInputHandler for TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(target) = self.active_inline_input_target() else {
+        if self.command_palette_open {
+            self.command_palette_input.replace_and_mark_text_in_range(
+                range,
+                new_text,
+                new_selected_range,
+            );
+            self.command_palette_query_changed(cx);
             return;
-        };
+        }
 
-        let Some(state) = self.active_inline_input_state_mut() else {
-            return;
-        };
-        state.replace_and_mark_text_in_range(range, new_text, new_selected_range);
-
-        match target {
-            InlineInputTarget::CommandPalette => self.command_palette_query_changed(cx),
-            InlineInputTarget::TabRename => {
-                self.enforce_tab_rename_limit();
-                cx.notify();
-            }
+        if self.renaming_tab.is_some() {
+            self.rename_input
+                .replace_and_mark_text_in_range(range, new_text, new_selected_range);
+            self.enforce_tab_rename_limit();
+            cx.notify();
         }
     }
 
     fn bounds_for_range(
         &mut self,
-        _range_utf16: Range<usize>,
+        range_utf16: Range<usize>,
         element_bounds: Bounds<Pixels>,
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
-        self.active_inline_input_target().map(|_| element_bounds)
+        let state = self.active_inline_input_state()?;
+        Some(state.bounds_for_range(range_utf16, element_bounds))
     }
 
     fn character_index_for_point(
         &mut self,
-        _point: gpui::Point<Pixels>,
+        point: gpui::Point<Pixels>,
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<usize> {
         let state = self.active_inline_input_state()?;
-        Some(state.selected_text_range().range.start)
+        Some(state.character_index_for_point(point))
     }
 
     fn accepts_text_input(&self, _window: &mut Window, _cx: &mut Context<Self>) -> bool {
-        self.active_inline_input_target().is_some()
+        self.active_inline_input_state().is_some()
     }
 }
 
@@ -469,5 +951,31 @@ mod tests {
         let mut state = InlineInputState::new("termy".to_string());
         state.selected_range = 2..2;
         assert_eq!(state.text_with_cursor(), "te▌rmy");
+    }
+
+    #[test]
+    fn delete_to_start_removes_prefix() {
+        let mut state = InlineInputState::new("hello world".to_string());
+        state.set_cursor_utf8(5);
+        state.delete_to_start();
+        assert_eq!(state.text(), " world");
+        assert_eq!(state.selected_range(), 0..0);
+    }
+
+    #[test]
+    fn delete_word_backward_removes_previous_word() {
+        let mut state = InlineInputState::new("hello world".to_string());
+        state.set_cursor_utf8(11);
+        state.delete_word_backward();
+        assert_eq!(state.text(), "hello ");
+        assert_eq!(state.selected_range(), 6..6);
+    }
+
+    #[test]
+    fn select_to_utf16_extends_selection() {
+        let mut state = InlineInputState::new("a😄b".to_string());
+        state.set_cursor_utf16(1);
+        state.select_to_utf16(4);
+        assert_eq!(state.selected_range(), 1..6);
     }
 }

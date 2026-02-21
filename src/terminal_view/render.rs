@@ -201,7 +201,18 @@ impl Render for TerminalView {
                             div()
                                 .flex_1()
                                 .relative()
-                                .child(
+                                .child(if is_renaming {
+                                    div()
+                                        .w_full()
+                                        .truncate()
+                                        .text_color(if is_active {
+                                            active_tab_text
+                                        } else {
+                                            inactive_tab_text
+                                        })
+                                        .text_size(px(12.0))
+                                        .child(label.clone())
+                                } else {
                                     div()
                                         .w_full()
                                         .truncate()
@@ -212,8 +223,8 @@ impl Render for TerminalView {
                                             inactive_tab_text
                                         })
                                         .text_size(px(12.0))
-                                        .child(label),
-                                )
+                                        .child(label.clone())
+                                })
                                 .children(is_renaming.then(|| {
                                     div()
                                         .absolute()
@@ -221,9 +232,25 @@ impl Render for TerminalView {
                                         .left_0()
                                         .right_0()
                                         .bottom_0()
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(Self::handle_inline_input_mouse_down),
+                                        )
+                                        .on_mouse_move(
+                                            cx.listener(Self::handle_inline_input_mouse_move),
+                                        )
+                                        .on_mouse_up(
+                                            MouseButton::Left,
+                                            cx.listener(Self::handle_inline_input_mouse_up),
+                                        )
+                                        .on_mouse_up_out(
+                                            MouseButton::Left,
+                                            cx.listener(Self::handle_inline_input_mouse_up),
+                                        )
                                         .child(InlineInputElement::new(
                                             cx.entity(),
                                             self.focus_handle.clone(),
+                                            px(12.0),
                                         ))
                                 })),
                         )
@@ -549,6 +576,11 @@ impl Render for TerminalView {
             Some(self.render_command_palette_modal(window, cx))
         } else {
             None
+        };
+        let key_context = if self.command_palette_open || self.renaming_tab.is_some() {
+            "Terminal InlineInput"
+        } else {
+            "Terminal"
         };
         let titlebar_element: Option<AnyElement> = (titlebar_height > 0.0).then(|| {
             div()
@@ -908,7 +940,7 @@ impl Render for TerminalView {
                 div()
                     .id("terminal")
                     .track_focus(&focus_handle)
-                    .key_context("Terminal")
+                    .key_context(key_context)
                     .on_action(cx.listener(Self::handle_toggle_command_palette_action))
                     .on_action(cx.listener(Self::handle_app_info_action))
                     .on_action(cx.listener(Self::handle_restart_app_action))
@@ -921,6 +953,19 @@ impl Render for TerminalView {
                     .on_action(cx.listener(Self::handle_zoom_in_action))
                     .on_action(cx.listener(Self::handle_zoom_out_action))
                     .on_action(cx.listener(Self::handle_zoom_reset_action))
+                    .on_action(cx.listener(Self::handle_inline_backspace_action))
+                    .on_action(cx.listener(Self::handle_inline_delete_action))
+                    .on_action(cx.listener(Self::handle_inline_move_left_action))
+                    .on_action(cx.listener(Self::handle_inline_move_right_action))
+                    .on_action(cx.listener(Self::handle_inline_select_left_action))
+                    .on_action(cx.listener(Self::handle_inline_select_right_action))
+                    .on_action(cx.listener(Self::handle_inline_select_all_action))
+                    .on_action(cx.listener(Self::handle_inline_move_to_start_action))
+                    .on_action(cx.listener(Self::handle_inline_move_to_end_action))
+                    .on_action(cx.listener(Self::handle_inline_delete_word_backward_action))
+                    .on_action(cx.listener(Self::handle_inline_delete_word_forward_action))
+                    .on_action(cx.listener(Self::handle_inline_delete_to_start_action))
+                    .on_action(cx.listener(Self::handle_inline_delete_to_end_action))
                     .on_key_down(cx.listener(Self::handle_key_down))
                     .on_scroll_wheel(cx.listener(Self::handle_terminal_scroll_wheel))
                     .on_mouse_down(MouseButton::Left, cx.listener(Self::handle_mouse_down))
