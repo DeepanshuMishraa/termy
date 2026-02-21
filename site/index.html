@@ -215,10 +215,9 @@
         <article
           class="rounded-2xl border border-[#30385a] bg-[#161d34]/70 p-5"
         >
-          <h2 class="text-lg font-semibold text-white">Native macOS DMG</h2>
+          <h2 class="text-lg font-semibold text-white">Cross-Platform</h2>
           <p class="mt-2 text-sm text-[#b7c1d8]">
-            Release assets are built for Apple Silicon and Intel and attached
-            automatically.
+            Native builds for macOS (Intel & Apple Silicon), Windows, and Linux.
           </p>
         </article>
       </section>
@@ -262,7 +261,7 @@
             </a>
           </div>
 
-          <div id="quick-actions" class="mt-4 hidden grid gap-3 sm:grid-cols-2">
+          <div id="quick-actions" class="mt-4 hidden grid gap-3 sm:grid-cols-3">
             <a
               id="mac-download"
               class="rounded-xl border border-[#30385a] bg-[#11182d]/80 px-4 py-3 text-sm font-medium text-[#dbe4f6] transition hover:border-[#69b4f2] hover:text-white"
@@ -278,6 +277,14 @@
               rel="noreferrer"
             >
               Download for Windows
+            </a>
+            <a
+              id="linux-download"
+              class="rounded-xl border border-[#30385a] bg-[#11182d]/80 px-4 py-3 text-sm font-medium text-[#dbe4f6] transition hover:border-[#69b4f2] hover:text-white"
+              target="_blank"
+              rel="noreferrer"
+            >
+              Download for Linux
             </a>
           </div>
 
@@ -308,6 +315,7 @@
       const quickActionsEl = document.getElementById("quick-actions");
       const macDownloadEl = document.getElementById("mac-download");
       const windowsDownloadEl = document.getElementById("windows-download");
+      const linuxDownloadEl = document.getElementById("linux-download");
       const assetGroupsEl = document.getElementById("asset-groups");
 
       function getPreferredTheme() {
@@ -395,8 +403,18 @@
             name.includes("pc-windows")
           );
         };
+        const isLinuxAsset = (asset) => {
+          const name = asset.name.toLowerCase();
+          return (
+            (name.includes("linux") && name.endsWith(".tar.gz")) ||
+            name.endsWith(".appimage") ||
+            name.endsWith(".deb") ||
+            name.endsWith(".rpm")
+          );
+        };
         const macAssets = release.assets.filter(isMacAsset);
         const windowsAssets = release.assets.filter(isWindowsAsset);
+        const linuxAssets = release.assets.filter(isLinuxAsset);
 
         if (macAssets[0]?.browser_download_url) {
           macDownloadEl.href = macAssets[0].browser_download_url;
@@ -412,11 +430,18 @@
           windowsDownloadEl.classList.add("hidden");
         }
 
-        if (macAssets.length || windowsAssets.length) {
+        if (linuxAssets[0]?.browser_download_url) {
+          linuxDownloadEl.href = linuxAssets[0].browser_download_url;
+          linuxDownloadEl.classList.remove("hidden");
+        } else {
+          linuxDownloadEl.classList.add("hidden");
+        }
+
+        if (macAssets.length || windowsAssets.length || linuxAssets.length) {
           quickActionsEl.classList.remove("hidden");
         }
 
-        const platformAssets = [...macAssets, ...windowsAssets];
+        const platformAssets = [...macAssets, ...windowsAssets, ...linuxAssets];
         const preferredByPlatform = () => {
           const agent = navigator.userAgent.toLowerCase();
           if (agent.includes("win")) return windowsAssets[0];
@@ -424,6 +449,12 @@
             return (
               macAssets.find((asset) => asset.name.toLowerCase().includes("arm64")) ||
               macAssets[0]
+            );
+          }
+          if (agent.includes("linux")) {
+            return (
+              linuxAssets.find((asset) => asset.name.toLowerCase().includes("x86_64")) ||
+              linuxAssets[0]
             );
           }
           return platformAssets[0];
@@ -440,13 +471,14 @@
         const groups = [
           { title: "macOS", assets: macAssets },
           { title: "Windows", assets: windowsAssets },
+          { title: "Linux", assets: linuxAssets },
         ].filter((group) => group.assets.length > 0);
 
         if (groups.length === 0) {
           const empty = document.createElement("p");
           empty.className = "text-sm text-[#9eabc7]";
           empty.textContent =
-            "No macOS or Windows assets found for this release.";
+            "No platform assets found for this release.";
           assetGroupsEl.appendChild(empty);
           return;
         }
