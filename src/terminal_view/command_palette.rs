@@ -520,13 +520,13 @@ impl TerminalView {
         scrollbar_thumb.a = 0.42;
 
         let mut shortcut_bg = self.colors.cursor;
-        shortcut_bg.a = 0.14;
+        shortcut_bg.a = 0.1;
         let mut shortcut_border = self.colors.cursor;
-        shortcut_border.a = 0.3;
+        shortcut_border.a = 0.22;
         let mut shortcut_text = self.colors.foreground;
-        shortcut_text.a = 0.86;
+        shortcut_text.a = 0.8;
         let mut shortcut_unbound_text = self.colors.foreground;
-        shortcut_unbound_text.a = 0.48;
+        shortcut_unbound_text.a = 0.45;
 
         let mut list = div().flex_1().flex().flex_col().gap(px(4.0));
         if items.is_empty() {
@@ -553,7 +553,7 @@ impl TerminalView {
                         .id(("command-palette-item", index))
                         .w_full()
                         .px(px(10.0))
-                        .py(px(8.0))
+                        .py(px(6.0))
                         .rounded_sm()
                         .bg(if is_selected {
                             selected_bg
@@ -580,18 +580,21 @@ impl TerminalView {
                                 .flex()
                                 .items_center()
                                 .justify_between()
-                                .gap(px(10.0))
+                                .gap(px(8.0))
                                 .child(div().flex_1().truncate().child(item.title))
                                 .children(shortcut.map(|(label, is_unbound)| {
                                     div()
                                         .flex_none()
-                                        .px(px(7.0))
-                                        .py(px(2.0))
+                                        .h(px(20.0))
+                                        .px(px(6.0))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
                                         .rounded_sm()
                                         .bg(shortcut_bg)
                                         .border_1()
                                         .border_color(shortcut_border)
-                                        .text_size(px(11.0))
+                                        .text_size(px(10.0))
                                         .text_color(if is_unbound {
                                             shortcut_unbound_text
                                         } else {
@@ -604,7 +607,7 @@ impl TerminalView {
             }
         }
         let visible_count = items.len().min(COMMAND_PALETTE_MAX_ITEMS);
-        let row_height = 34.0;
+        let row_height = 30.0;
         let row_gap = 4.0;
         let track_height = (visible_count as f32 * row_height)
             + (visible_count.saturating_sub(1) as f32 * row_gap);
