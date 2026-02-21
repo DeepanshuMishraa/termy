@@ -10,10 +10,37 @@ Most users only need this:
 
 ```txt
 theme = termy
+term = xterm-256color
 use_tabs = true
 tab_title_mode = smart
 tab_title_shell_integration = true
 ```
+
+## Terminal Runtime
+
+### Basic (recommended)
+
+`term`
+- Default: `xterm-256color`
+- Values: terminal type string (for example `xterm-256color`, `screen-256color`)
+- What it does: sets `TERM` for child shells/apps. Keep the default unless you have a specific compatibility need.
+
+### Advanced (optional)
+
+`shell`
+- Default: unset (uses your login shell from env; fallback is platform-specific)
+- Values: absolute executable path (for example `/bin/zsh`)
+- What it does: forces the shell used for new terminal sessions.
+
+`working_dir_fallback`
+- Default: `home` on macOS/Windows, `process` on Linux
+- Values: `home`, `process`
+- What it does: startup directory used only when `working_dir` is unset.
+
+`colorterm`
+- Default: `truecolor`
+- Values: string value or `none`/`unset`/`default`/`auto` to disable
+- What it does: sets `COLORTERM` for child apps (usually `truecolor` for modern color support).
 
 ## Tab Titles
 
@@ -79,6 +106,22 @@ Explicit payload examples:
 `working_dir`
 - Default: unset
 - Values: path string (`~` supported)
+
+`working_dir_fallback`
+- Default: `home` on macOS/Windows, `process` on Linux
+- Values: `home`, `process`
+
+`shell`
+- Default: unset
+- Values: executable path string
+
+`term`
+- Default: `xterm-256color`
+- Values: terminal type string
+
+`colorterm`
+- Default: `truecolor`
+- Values: string, or `none`/`unset`/`default`/`auto` to disable
 
 `use_tabs`
 - Default: `false`
