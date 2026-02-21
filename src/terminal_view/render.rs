@@ -165,11 +165,14 @@ impl Render for TerminalView {
                     0.0
                 };
                 let is_renaming = self.renaming_tab == Some(index);
-                let label = if is_renaming {
-                    self.rename_input.text_with_cursor()
+                let label = tab.title.clone();
+                let rename_text_color = if is_active {
+                    active_tab_text
                 } else {
-                    tab.title.clone()
+                    inactive_tab_text
                 };
+                let mut rename_selection_color = colors.cursor;
+                rename_selection_color.a = if is_active { 0.34 } else { 0.26 };
 
                 tabs_row = tabs_row.child(
                     div()
@@ -197,63 +200,47 @@ impl Render for TerminalView {
                             }),
                         )
                         .child(div().w(px(close_slot_width)).h(px(TAB_CLOSE_HITBOX)))
-                        .child(
+                        .child(div().flex_1().h_full().relative().child(if is_renaming {
                             div()
-                                .flex_1()
-                                .relative()
-                                .child(if is_renaming {
-                                    div()
-                                        .w_full()
-                                        .truncate()
-                                        .text_color(if is_active {
-                                            active_tab_text
-                                        } else {
-                                            inactive_tab_text
-                                        })
-                                        .text_size(px(12.0))
-                                        .child(label.clone())
-                                } else {
-                                    div()
-                                        .w_full()
-                                        .truncate()
-                                        .text_center()
-                                        .text_color(if is_active {
-                                            active_tab_text
-                                        } else {
-                                            inactive_tab_text
-                                        })
-                                        .text_size(px(12.0))
-                                        .child(label.clone())
-                                })
-                                .children(is_renaming.then(|| {
-                                    div()
-                                        .absolute()
-                                        .top_0()
-                                        .left_0()
-                                        .right_0()
-                                        .bottom_0()
-                                        .on_mouse_down(
-                                            MouseButton::Left,
-                                            cx.listener(Self::handle_inline_input_mouse_down),
-                                        )
-                                        .on_mouse_move(
-                                            cx.listener(Self::handle_inline_input_mouse_move),
-                                        )
-                                        .on_mouse_up(
-                                            MouseButton::Left,
-                                            cx.listener(Self::handle_inline_input_mouse_up),
-                                        )
-                                        .on_mouse_up_out(
-                                            MouseButton::Left,
-                                            cx.listener(Self::handle_inline_input_mouse_up),
-                                        )
-                                        .child(InlineInputElement::new(
-                                            cx.entity(),
-                                            self.focus_handle.clone(),
-                                            px(12.0),
-                                        ))
-                                })),
-                        )
+                                .absolute()
+                                .top_0()
+                                .left_0()
+                                .right_0()
+                                .bottom_0()
+                                .cursor(gpui::CursorStyle::IBeam)
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(Self::handle_inline_input_mouse_down),
+                                )
+                                .on_mouse_move(cx.listener(Self::handle_inline_input_mouse_move))
+                                .on_mouse_up(
+                                    MouseButton::Left,
+                                    cx.listener(Self::handle_inline_input_mouse_up),
+                                )
+                                .on_mouse_up_out(
+                                    MouseButton::Left,
+                                    cx.listener(Self::handle_inline_input_mouse_up),
+                                )
+                                .child(InlineInputElement::new(
+                                    cx.entity(),
+                                    self.focus_handle.clone(),
+                                    Font::default(),
+                                    px(12.0),
+                                    rename_text_color.into(),
+                                    rename_selection_color.into(),
+                                    InlineInputAlignment::Center,
+                                ))
+                        } else {
+                            div()
+                                .size_full()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .truncate()
+                                .text_color(rename_text_color)
+                                .text_size(px(12.0))
+                                .child(label.clone())
+                        }))
                         .children(show_tab_close.then(|| {
                             div()
                                 .w(px(close_slot_width))

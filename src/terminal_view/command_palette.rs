@@ -365,7 +365,7 @@ impl TerminalView {
 
     pub(super) fn render_command_palette_modal(
         &mut self,
-        _window: &Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let items = self.filtered_command_palette_items();
@@ -384,6 +384,12 @@ impl TerminalView {
         muted_text.a = 0.62;
         let mut transparent = self.colors.background;
         transparent.a = 0.0;
+        let input_font = Font {
+            family: self.font_family.clone(),
+            ..Font::default()
+        };
+        let mut input_selection = self.colors.cursor;
+        input_selection.a = 0.28;
 
         let list = if items.is_empty() {
             div()
@@ -455,6 +461,7 @@ impl TerminalView {
                                     .bg(transparent)
                                     .border_1()
                                     .border_color(panel_border)
+                                    .font_family(self.font_family.clone())
                                     .text_size(px(13.0))
                                     .text_color(primary_text)
                                     .child(
@@ -462,7 +469,7 @@ impl TerminalView {
                                             .w_full()
                                             .h_full()
                                             .relative()
-                                            .child(self.command_palette_input.text_with_cursor())
+                                            .cursor(gpui::CursorStyle::IBeam)
                                             .child(
                                                 div()
                                                     .absolute()
@@ -494,7 +501,11 @@ impl TerminalView {
                                                     .child(InlineInputElement::new(
                                                         cx.entity(),
                                                         self.focus_handle.clone(),
+                                                        input_font.clone(),
                                                         px(13.0),
+                                                        primary_text.into(),
+                                                        input_selection.into(),
+                                                        InlineInputAlignment::Left,
                                                     )),
                                             ),
                                     ),

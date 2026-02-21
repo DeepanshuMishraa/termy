@@ -1,9 +1,12 @@
 use super::*;
 use gpui::{
-    Bounds, ElementInputHandler, Entity, EntityInputHandler, IntoElement, Pixels, ScrollStrategy,
-    TextRun, UTF16Selection, Window, canvas, point,
+    Bounds, ElementInputHandler, Entity, EntityInputHandler, Font, Hsla, IntoElement, PaintQuad,
+    Pixels, ScrollStrategy, ShapedLine, TextAlign, TextRun, UTF16Selection, UnderlineStyle, Window,
+    canvas, fill, point, px, size,
 };
 use std::ops::Range;
+
+const INLINE_INPUT_LINE_HEIGHT_MULTIPLIER: f32 = 1.35;
 
 #[derive(Clone, Debug)]
 pub(super) struct InlineInputState {
@@ -11,8 +14,9 @@ pub(super) struct InlineInputState {
     selected_range: Range<usize>,
     selection_reversed: bool,
     marked_range: Option<Range<usize>>,
-    last_layout: Option<gpui::ShapedLine>,
+    last_layout: Option<ShapedLine>,
     last_bounds: Option<Bounds<Pixels>>,
+    last_line_offset_x: Pixels,
 }
 
 impl InlineInputState {
@@ -24,6 +28,7 @@ impl InlineInputState {
             marked_range: None,
             last_layout: None,
             last_bounds: None,
+            last_line_offset_x: px(0.0),
         };
         state.move_to_end();
         state
@@ -64,6 +69,10 @@ impl InlineInputState {
     pub(super) fn select_all(&mut self) {
         self.selection_reversed = false;
         self.selected_range = 0..self.text.len();
+    }
+
+    pub(super) fn has_selection(&self) -> bool {
+        !self.selected_range.is_empty()
     }
 
     fn set_cursor_utf8(&mut self, offset: usize) {
@@ -158,9 +167,8 @@ impl InlineInputState {
             return self.text.len();
         }
 
-        let mut iter = self.text[offset..].char_indices().peekable();
         let mut seen_word = false;
-        while let Some((rel_idx, ch)) = iter.next() {
+        for (rel_idx, ch) in self.text[offset..].char_indices() {
             let is_word = Self::is_word_char(ch);
             if is_word {
                 seen_word = true;
@@ -259,46 +267,15 @@ impl InlineInputState {
         self.last_layout = None;
     }
 
-    pub(super) fn update_layout(
+    fn update_layout_cache(
         &mut self,
         bounds: Bounds<Pixels>,
-        font_size: Pixels,
-        window: &mut Window,
+        layout: Option<ShapedLine>,
+        line_offset_x: Pixels,
     ) {
         self.last_bounds = Some(bounds);
-        if self.text.is_empty() {
-            self.last_layout = None;
-            return;
-        }
-
-        let style = window.text_style();
-        let run = TextRun {
-            len: self.text.len(),
-            font: style.font(),
-            color: style.color,
-            background_color: None,
-            underline: None,
-            strikethrough: None,
-        };
-        self.last_layout = Some(window.text_system().shape_line(
-            self.text.clone().into(),
-            font_size,
-            &[run],
-            None,
-        ));
-    }
-
-    pub(super) fn text_with_cursor(&self) -> String {
-        if !self.selected_range.is_empty() {
-            return self.text.clone();
-        }
-
-        let cursor = self.cursor_offset().min(self.text.len());
-        let mut rendered = String::with_capacity(self.text.len() + 1);
-        rendered.push_str(&self.text[..cursor]);
-        rendered.push('▌');
-        rendered.push_str(&self.text[cursor..]);
-        rendered
+        self.last_layout = layout;
+        self.last_line_offset_x = line_offset_x;
     }
 
     fn clamp_utf8_index(text: &str, index: usize) -> usize {
@@ -399,8 +376,14 @@ impl InlineInputState {
         };
 
         Bounds::from_corners(
-            point(bounds.left() + start_x, bounds.top()),
-            point(bounds.left() + end_x, bounds.bottom()),
+            point(
+                bounds.left() + self.last_line_offset_x + start_x,
+                bounds.top(),
+            ),
+            point(
+                bounds.left() + self.last_line_offset_x + end_x,
+                bounds.bottom(),
+            ),
         )
     }
 
@@ -433,10 +416,11 @@ impl InlineInputState {
             return self.utf8_to_utf16(self.text.len());
         }
 
-        let local_x = if point.x <= bounds.left() {
+        let text_left = bounds.left() + self.last_line_offset_x;
+        let local_x = if point.x <= text_left {
             px(0.0)
         } else {
-            point.x - bounds.left()
+            point.x - text_left
         };
 
         let utf8_index = self
@@ -493,42 +477,262 @@ impl InlineInputState {
 pub(super) struct InlineInputElement {
     view: Entity<TerminalView>,
     focus_handle: FocusHandle,
+    font: Font,
     font_size: Pixels,
+    text_color: Hsla,
+    selection_color: Hsla,
+    alignment: InlineInputAlignment,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum InlineInputAlignment {
+    Left,
+    Center,
 }
 
 impl InlineInputElement {
     pub(super) fn new(
         view: Entity<TerminalView>,
         focus_handle: FocusHandle,
+        font: Font,
         font_size: Pixels,
+        text_color: Hsla,
+        selection_color: Hsla,
+        alignment: InlineInputAlignment,
     ) -> Self {
         Self {
             view,
             focus_handle,
+            font,
             font_size,
+            text_color,
+            selection_color,
+            alignment,
         }
     }
 }
 
+pub(super) struct InlineInputPrepaintState {
+    line: Option<ShapedLine>,
+    line_bounds: Bounds<Pixels>,
+    line_offset_x: Pixels,
+    selection: Option<PaintQuad>,
+    cursor: Option<PaintQuad>,
+}
+
 impl IntoElement for InlineInputElement {
-    type Element = gpui::Canvas<()>;
+    type Element = gpui::Canvas<InlineInputPrepaintState>;
 
     fn into_element(self) -> Self::Element {
         let focus_handle = self.focus_handle;
+        let prepaint_focus_handle = focus_handle.clone();
         let view = self.view;
+        let prepaint_view = view.clone();
+        let font = self.font;
         let font_size = self.font_size;
+        let text_color = self.text_color;
+        let selection_color = self.selection_color;
+        let alignment = self.alignment;
 
         canvas(
-            |_bounds, _window, _cx| (),
-            move |bounds, _, window, cx| {
-                view.update(cx, |this, _cx| {
-                    this.update_active_inline_layout(bounds, font_size, window);
-                });
+            move |bounds, window, cx| {
+                let font_size_value: f32 = font_size.into();
+                let bounds_height: f32 = bounds.size.height.into();
+                let target_line_height = (font_size_value * INLINE_INPUT_LINE_HEIGHT_MULTIPLIER)
+                    .round()
+                    .clamp(1.0, bounds_height.max(1.0));
+                let line_height = px(target_line_height);
+                let extra_height: f32 = (bounds.size.height - line_height).into();
+                let vertical_offset = px(extra_height.max(0.0) * 0.5);
+                let line_bounds = Bounds::new(
+                    point(bounds.left(), bounds.top() + vertical_offset),
+                    size(bounds.size.width, line_height),
+                );
+
+                let (text, selected_range, cursor_offset, marked_range, has_selection, focused) =
+                    prepaint_view
+                        .read(cx)
+                        .active_inline_input_state()
+                        .map(|state| {
+                            (
+                                state.text().to_string(),
+                                state.selected_range(),
+                                state.cursor_offset(),
+                                state.marked_range.clone(),
+                                state.has_selection(),
+                                prepaint_focus_handle.is_focused(window),
+                            )
+                        })
+                        .unwrap_or_else(|| (String::new(), 0..0, 0, None, false, false));
+
+                let line = if text.is_empty() {
+                    None
+                } else {
+                    let base_run = TextRun {
+                        len: text.len(),
+                        font: font.clone(),
+                        color: text_color,
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    };
+
+                    let runs = if let Some(marked_range) = marked_range {
+                        let marked_start = marked_range.start.min(text.len());
+                        let marked_end = marked_range.end.min(text.len()).max(marked_start);
+                        let mut runs = Vec::with_capacity(3);
+                        if marked_start > 0 {
+                            runs.push(TextRun {
+                                len: marked_start,
+                                ..base_run.clone()
+                            });
+                        }
+                        if marked_end > marked_start {
+                            runs.push(TextRun {
+                                len: marked_end - marked_start,
+                                underline: Some(UnderlineStyle {
+                                    color: Some(text_color),
+                                    thickness: px(1.0),
+                                    wavy: false,
+                                }),
+                                ..base_run.clone()
+                            });
+                        }
+                        if marked_end < text.len() {
+                            runs.push(TextRun {
+                                len: text.len() - marked_end,
+                                ..base_run.clone()
+                            });
+                        }
+                        runs
+                    } else {
+                        vec![base_run]
+                    };
+
+                    Some(window.text_system().shape_line(
+                        text.clone().into(),
+                        font_size,
+                        &runs,
+                        None,
+                    ))
+                };
+                let line_width = line
+                    .as_ref()
+                    .map(|line| line.x_for_index(text.len()))
+                    .unwrap_or(px(0.0));
+                let line_offset_x = match alignment {
+                    InlineInputAlignment::Left => px(0.0),
+                    InlineInputAlignment::Center => {
+                        let available_width: f32 = line_bounds.size.width.into();
+                        let text_width: f32 = line_width.into();
+                        px(((available_width - text_width).max(0.0) * 0.5).round())
+                    }
+                };
+
+                let cursor_utf8 = cursor_offset.min(text.len());
+                let selection_start = selected_range.start.min(text.len());
+                let selection_end = selected_range.end.min(text.len());
+
+                let selection = if selection_start < selection_end {
+                    let start_x = line
+                        .as_ref()
+                        .map(|line| line.x_for_index(selection_start))
+                        .unwrap_or(px(0.0));
+                    let end_x = line
+                        .as_ref()
+                        .map(|line| line.x_for_index(selection_end))
+                        .unwrap_or(px(0.0));
+                    Some(fill(
+                        Bounds::from_corners(
+                            point(
+                                line_bounds.left() + line_offset_x + start_x,
+                                line_bounds.top(),
+                            ),
+                            point(
+                                line_bounds.left() + line_offset_x + end_x,
+                                line_bounds.bottom(),
+                            ),
+                        ),
+                        selection_color,
+                    ))
+                } else {
+                    None
+                };
+
+                let cursor = if focused && !has_selection {
+                    let cursor_x = line
+                        .as_ref()
+                        .map(|line| line.x_for_index(cursor_utf8))
+                        .unwrap_or(px(0.0));
+                    let cursor_x = px({
+                        let x: f32 = cursor_x.into();
+                        x.round()
+                    });
+
+                    Some(fill(
+                        Bounds::new(
+                            point(
+                                line_bounds.left() + line_offset_x + cursor_x,
+                                line_bounds.top(),
+                            ),
+                            size(px(1.0), line_bounds.size.height),
+                        ),
+                        text_color,
+                    ))
+                } else {
+                    None
+                };
+
+                InlineInputPrepaintState {
+                    line,
+                    line_bounds,
+                    selection,
+                    cursor,
+                    line_offset_x,
+                }
+            },
+            move |bounds, mut prepaint, window, cx| {
                 window.handle_input(
                     &focus_handle,
                     ElementInputHandler::new(bounds, view.clone()),
                     cx,
                 );
+
+                if let Some(selection) = prepaint.selection.take() {
+                    window.paint_quad(selection);
+                }
+
+                let line = if let Some(line) = prepaint.line.take() {
+                    line.paint(
+                        point(
+                            prepaint.line_bounds.left() + prepaint.line_offset_x,
+                            prepaint.line_bounds.top(),
+                        ),
+                        prepaint.line_bounds.size.height,
+                        TextAlign::Left,
+                        None,
+                        window,
+                        cx,
+                    )
+                    .expect("failed to paint inline input text");
+                    Some(line)
+                } else {
+                    None
+                };
+
+                if let Some(cursor) = prepaint.cursor.take() {
+                    window.paint_quad(cursor);
+                }
+
+                view.update(cx, |this, _cx| {
+                    if let Some(state) = this.active_inline_input_state_mut() {
+                        state.update_layout_cache(
+                            prepaint.line_bounds,
+                            line,
+                            prepaint.line_offset_x,
+                        );
+                    }
+                });
             },
         )
         .size_full()
@@ -553,17 +757,6 @@ impl TerminalView {
             Some(&mut self.rename_input)
         } else {
             None
-        }
-    }
-
-    fn update_active_inline_layout(
-        &mut self,
-        bounds: Bounds<Pixels>,
-        font_size: Pixels,
-        window: &mut Window,
-    ) {
-        if let Some(state) = self.active_inline_input_state_mut() {
-            state.update_layout(bounds, font_size, window);
         }
     }
 
@@ -947,10 +1140,12 @@ mod tests {
     }
 
     #[test]
-    fn text_with_cursor_inserts_cursor_for_collapsed_selection() {
+    fn has_selection_reflects_selected_range() {
         let mut state = InlineInputState::new("termy".to_string());
         state.selected_range = 2..2;
-        assert_eq!(state.text_with_cursor(), "te▌rmy");
+        assert!(!state.has_selection());
+        state.selected_range = 1..3;
+        assert!(state.has_selection());
     }
 
     #[test]
