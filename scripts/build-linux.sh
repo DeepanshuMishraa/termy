@@ -105,9 +105,6 @@ if [[ -z "$VERSION" ]]; then
   [[ -n "$VERSION" ]] || die "Could not read version from Cargo.toml"
 fi
 
-# Strip leading 'v' if present
-VERSION="${VERSION#v}"
-
 if [[ -z "$ARCH" && -z "$TARGET" ]]; then
   ARCH="$(uname -m)"
 fi
