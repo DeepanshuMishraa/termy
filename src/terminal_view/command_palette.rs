@@ -1,5 +1,5 @@
 use super::*;
-use gpui::{ScrollStrategy, uniform_list};
+use gpui::{point, uniform_list};
 use std::ops::Range;
 
 impl TerminalView {
@@ -7,6 +7,9 @@ impl TerminalView {
         self.command_palette_input.clear();
         self.command_palette_selected = 0;
         self.command_palette_scroll_handle = UniformListScrollHandle::new();
+        self.command_palette_scroll_target_y = None;
+        self.command_palette_scroll_max_y = 0.0;
+        self.command_palette_scroll_animating = false;
         self.inline_input_selecting = false;
     }
 
@@ -173,14 +176,31 @@ impl TerminalView {
 
     pub(super) fn filtered_command_palette_items(&self) -> Vec<CommandPaletteItem> {
         let query = self.command_palette_query().trim().to_ascii_lowercase();
+        let query_terms: Vec<&str> = query
+            .split_whitespace()
+            .filter(|term| !term.is_empty())
+            .collect();
+
         self.command_palette_items()
             .into_iter()
-            .filter(|item| {
-                query.is_empty()
-                    || item.title.to_ascii_lowercase().contains(&query)
-                    || item.keywords.to_ascii_lowercase().contains(&query)
-            })
+            .filter(|item| Self::command_palette_item_matches_terms(item, &query_terms))
             .collect()
+    }
+
+    fn command_palette_item_matches_terms(item: &CommandPaletteItem, query_terms: &[&str]) -> bool {
+        if query_terms.is_empty() {
+            return true;
+        }
+
+        let searchable = format!("{} {}", item.title, item.keywords).to_ascii_lowercase();
+        let words: Vec<&str> = searchable
+            .split(|ch: char| !ch.is_ascii_alphanumeric())
+            .filter(|word| !word.is_empty())
+            .collect();
+
+        query_terms
+            .iter()
+            .all(|term| words.iter().any(|word| word.starts_with(term)))
     }
 
     pub(super) fn clamp_command_palette_selection(&mut self, len: usize) {
@@ -189,6 +209,139 @@ impl TerminalView {
         } else if self.command_palette_selected >= len {
             self.command_palette_selected = len - 1;
         }
+    }
+
+    fn command_palette_viewport_height() -> f32 {
+        COMMAND_PALETTE_MAX_ITEMS as f32 * COMMAND_PALETTE_ROW_HEIGHT
+    }
+
+    fn command_palette_max_scroll_for_count(item_count: usize) -> f32 {
+        (item_count as f32 * COMMAND_PALETTE_ROW_HEIGHT - Self::command_palette_viewport_height())
+            .max(0.0)
+    }
+
+    pub(super) fn animate_command_palette_to_selected(
+        &mut self,
+        item_count: usize,
+        cx: &mut Context<Self>,
+    ) {
+        if item_count == 0 {
+            self.command_palette_scroll_target_y = None;
+            self.command_palette_scroll_max_y = 0.0;
+            self.command_palette_scroll_animating = false;
+            return;
+        }
+
+        let viewport_height = Self::command_palette_viewport_height();
+        let max_scroll = Self::command_palette_max_scroll_for_count(item_count);
+        self.command_palette_scroll_max_y = max_scroll;
+
+        let scroll_handle = self
+            .command_palette_scroll_handle
+            .0
+            .borrow()
+            .base_handle
+            .clone();
+        let offset = scroll_handle.offset();
+        let current_y = -Into::<f32>::into(offset.y);
+
+        let row_top = self.command_palette_selected as f32 * COMMAND_PALETTE_ROW_HEIGHT;
+        let row_bottom = row_top + COMMAND_PALETTE_ROW_HEIGHT;
+        let mut target_y = current_y;
+        if row_top < current_y {
+            target_y = row_top;
+        } else if row_bottom > current_y + viewport_height {
+            target_y = row_bottom - viewport_height;
+        }
+        target_y = target_y.clamp(0.0, max_scroll);
+
+        if (target_y - current_y).abs() <= f32::EPSILON {
+            self.command_palette_scroll_target_y = None;
+            self.command_palette_scroll_animating = false;
+            return;
+        }
+
+        self.command_palette_scroll_target_y = Some(target_y);
+        self.start_command_palette_scroll_animation(cx);
+    }
+
+    fn start_command_palette_scroll_animation(&mut self, cx: &mut Context<Self>) {
+        if self.command_palette_scroll_animating {
+            return;
+        }
+        self.command_palette_scroll_animating = true;
+
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            loop {
+                smol::Timer::after(Duration::from_millis(16)).await;
+                let keep_animating = match cx.update(|cx| {
+                    this.update(cx, |view, cx| {
+                        let changed = view.tick_command_palette_scroll_animation();
+                        if changed {
+                            cx.notify();
+                        }
+                        view.command_palette_scroll_animating
+                    })
+                }) {
+                    Ok(keep_animating) => keep_animating,
+                    _ => break,
+                };
+
+                if !keep_animating {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn tick_command_palette_scroll_animation(&mut self) -> bool {
+        if !self.command_palette_open {
+            self.command_palette_scroll_target_y = None;
+            self.command_palette_scroll_animating = false;
+            return false;
+        }
+
+        let Some(target_y) = self.command_palette_scroll_target_y else {
+            self.command_palette_scroll_animating = false;
+            return false;
+        };
+
+        let scroll_handle = self
+            .command_palette_scroll_handle
+            .0
+            .borrow()
+            .base_handle
+            .clone();
+        let offset = scroll_handle.offset();
+        let current_y = -Into::<f32>::into(offset.y);
+        let max_offset_from_handle: f32 = scroll_handle.max_offset().height.into();
+        let max_scroll = max_offset_from_handle
+            .max(self.command_palette_scroll_max_y)
+            .max(0.0);
+        let target_y = target_y.clamp(0.0, max_scroll);
+        let delta = target_y - current_y;
+
+        if delta.abs() <= 0.5 {
+            if delta.abs() > f32::EPSILON {
+                scroll_handle.set_offset(point(offset.x, px(-target_y)));
+            }
+            self.command_palette_scroll_target_y = None;
+            self.command_palette_scroll_animating = false;
+            return true;
+        }
+
+        let eased_step = (delta * 0.32).clamp(-18.0, 18.0);
+        let min_step = if delta.is_sign_positive() { 0.6 } else { -0.6 };
+        let next_y = if eased_step.abs() < 0.6 {
+            current_y + min_step
+        } else {
+            current_y + eased_step
+        }
+        .clamp(0.0, max_scroll);
+
+        scroll_handle.set_offset(point(offset.x, px(-next_y)));
+        true
     }
 
     pub(super) fn handle_command_palette_key_down(&mut self, key: &str, cx: &mut Context<Self>) {
@@ -202,10 +355,10 @@ impl TerminalView {
                 return;
             }
             "up" => {
-                if self.command_palette_selected > 0 {
+                let len = self.filtered_command_palette_items().len();
+                if len > 0 && self.command_palette_selected > 0 {
                     self.command_palette_selected -= 1;
-                    self.command_palette_scroll_handle
-                        .scroll_to_item(self.command_palette_selected, ScrollStrategy::Nearest);
+                    self.animate_command_palette_to_selected(len, cx);
                     cx.notify();
                 }
                 return;
@@ -214,8 +367,7 @@ impl TerminalView {
                 let len = self.filtered_command_palette_items().len();
                 if len > 0 && self.command_palette_selected + 1 < len {
                     self.command_palette_selected += 1;
-                    self.command_palette_scroll_handle
-                        .scroll_to_item(self.command_palette_selected, ScrollStrategy::Nearest);
+                    self.animate_command_palette_to_selected(len, cx);
                     cx.notify();
                 }
                 return;
@@ -555,5 +707,51 @@ impl TerminalView {
                     ),
             )
             .into_any()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn query_re_uses_word_prefix_matching() {
+        let new_tab = CommandPaletteItem {
+            title: "New Tab",
+            keywords: "create tab",
+            action: CommandAction::NewTab,
+        };
+        let rename_tab = CommandPaletteItem {
+            title: "Rename Tab",
+            keywords: "title name",
+            action: CommandAction::RenameTab,
+        };
+        let restart_app = CommandPaletteItem {
+            title: "Restart App",
+            keywords: "relaunch reopen restart",
+            action: CommandAction::RestartApp,
+        };
+        let reset_zoom = CommandPaletteItem {
+            title: "Reset Zoom",
+            keywords: "font default",
+            action: CommandAction::ZoomReset,
+        };
+
+        assert!(!TerminalView::command_palette_item_matches_terms(
+            &new_tab,
+            &["re"]
+        ));
+        assert!(TerminalView::command_palette_item_matches_terms(
+            &rename_tab,
+            &["re"]
+        ));
+        assert!(TerminalView::command_palette_item_matches_terms(
+            &restart_app,
+            &["re"]
+        ));
+        assert!(TerminalView::command_palette_item_matches_terms(
+            &reset_zoom,
+            &["re"]
+        ));
     }
 }

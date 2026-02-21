@@ -1,8 +1,8 @@
 use super::*;
 use gpui::{
     Bounds, ElementInputHandler, Entity, EntityInputHandler, Font, Hsla, IntoElement, PaintQuad,
-    Pixels, ScrollStrategy, ShapedLine, TextAlign, TextRun, UTF16Selection, UnderlineStyle, Window,
-    canvas, fill, point, px, size,
+    Pixels, ShapedLine, TextAlign, TextRun, UTF16Selection, UnderlineStyle, Window, canvas, fill,
+    point, px, size,
 };
 use std::ops::Range;
 
@@ -920,8 +920,11 @@ impl TerminalView {
         let len = self.filtered_command_palette_items().len();
         self.clamp_command_palette_selection(len);
         if len > 0 {
-            self.command_palette_scroll_handle
-                .scroll_to_item(self.command_palette_selected, ScrollStrategy::Nearest);
+            self.animate_command_palette_to_selected(len, cx);
+        } else {
+            self.command_palette_scroll_target_y = None;
+            self.command_palette_scroll_max_y = 0.0;
+            self.command_palette_scroll_animating = false;
         }
         cx.notify();
     }
