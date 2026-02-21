@@ -14,6 +14,7 @@ pub enum UpdateState {
     Available {
         version: String,
         url: String,
+        extension: String,
     },
     Downloading {
         version: String,
@@ -22,7 +23,7 @@ pub enum UpdateState {
     },
     Downloaded {
         version: String,
-        dmg_path: PathBuf,
+        installer_path: PathBuf,
     },
     Installing {
         version: String,
@@ -73,6 +74,7 @@ impl AutoUpdater {
                                     this.state = UpdateState::Available {
                                         version: info.version,
                                         url: info.download_url,
+                                        extension: info.extension,
                                     };
                                 }
                                 _ => {
@@ -95,10 +97,14 @@ impl AutoUpdater {
     pub fn install(entity: WeakEntity<Self>, cx: &mut App) {
         let Some(this) = entity.upgrade() else { return };
 
-        let (version, url) = {
+        let (version, url, extension) = {
             let read = this.read(cx);
             match &read.state {
-                UpdateState::Available { version, url } => (version.clone(), url.clone()),
+                UpdateState::Available {
+                    version,
+                    url,
+                    extension,
+                } => (version.clone(), url.clone(), extension.clone()),
                 _ => return,
             }
         };
@@ -113,11 +119,11 @@ impl AutoUpdater {
         });
 
         let (progress_tx, progress_rx) = flume::bounded::<(u64, u64)>(4);
-        let dest = cache_dmg_path(&version);
+        let dest = cache_installer_path(&version, &extension);
         let dl_version = version.clone();
         let bg = cx
             .background_executor()
-            .spawn(async move { download_dmg(&url, &dest, progress_tx) });
+            .spawn(async move { download_installer(&url, &dest, progress_tx) });
 
         // Progress reader
         let weak_progress = entity.clone();
@@ -155,7 +161,7 @@ impl AutoUpdater {
                         Ok(path) => {
                             this.state = UpdateState::Downloaded {
                                 version: dl_version,
-                                dmg_path: path,
+                                installer_path: path,
                             };
                         }
                         Err(e) => {
@@ -172,12 +178,13 @@ impl AutoUpdater {
     pub fn complete_install(entity: WeakEntity<Self>, cx: &mut App) {
         let Some(this) = entity.upgrade() else { return };
 
-        let (version, dmg_path) = {
+        let (version, installer_path) = {
             let read = this.read(cx);
             match &read.state {
-                UpdateState::Downloaded { version, dmg_path } => {
-                    (version.clone(), dmg_path.clone())
-                }
+                UpdateState::Downloaded {
+                    version,
+                    installer_path,
+                } => (version.clone(), installer_path.clone()),
                 _ => return,
             }
         };
@@ -191,7 +198,7 @@ impl AutoUpdater {
 
         let bg = cx
             .background_executor()
-            .spawn(async move { do_install(&dmg_path) });
+            .spawn(async move { do_install(&installer_path) });
 
         let weak = entity.clone();
         cx.spawn(async move |cx: &mut AsyncApp| {
@@ -220,14 +227,33 @@ impl AutoUpdater {
     }
 }
 
-fn cache_dmg_path(version: &str) -> PathBuf {
+#[cfg(target_os = "macos")]
+fn cache_installer_path(version: &str, extension: &str) -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
     let cache_dir = PathBuf::from(home).join("Library/Caches/Termy");
     let _ = std::fs::create_dir_all(&cache_dir);
-    cache_dir.join(format!("update-{}.dmg", version))
+    cache_dir.join(format!("update-{}.{}", version, extension))
 }
 
-fn download_dmg(
+#[cfg(target_os = "windows")]
+fn cache_installer_path(version: &str, extension: &str) -> PathBuf {
+    let cache_dir = std::env::var("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| std::env::temp_dir())
+        .join("Termy")
+        .join("Cache");
+    let _ = std::fs::create_dir_all(&cache_dir);
+    cache_dir.join(format!("update-{}.{}", version, extension))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn cache_installer_path(version: &str, extension: &str) -> PathBuf {
+    let cache_dir = std::env::temp_dir().join("termy-updates");
+    let _ = std::fs::create_dir_all(&cache_dir);
+    cache_dir.join(format!("update-{}.{}", version, extension))
+}
+
+fn download_installer(
     url: &str,
     dest: &PathBuf,
     progress_tx: flume::Sender<(u64, u64)>,
@@ -235,7 +261,7 @@ fn download_dmg(
     let response = ureq::get(url)
         .set("User-Agent", "Termy-Updater/1.0")
         .call()
-        .context("Failed to download DMG")?;
+        .context("Failed to download installer")?;
 
     let total: u64 = response
         .header("Content-Length")
@@ -243,7 +269,7 @@ fn download_dmg(
         .unwrap_or(0);
 
     let mut reader = response.into_reader();
-    let mut file = std::fs::File::create(dest).context("Failed to create DMG file")?;
+    let mut file = std::fs::File::create(dest).context("Failed to create installer file")?;
     let mut downloaded: u64 = 0;
     let mut buf = [0u8; 65536]; // 64KiB chunks
 
@@ -362,7 +388,57 @@ fn do_install(dmg_path: &PathBuf) -> Result<()> {
     install_result
 }
 
-#[cfg(not(target_os = "macos"))]
-fn do_install(_dmg_path: &PathBuf) -> Result<()> {
-    anyhow::bail!("Auto-install is only supported on macOS")
+#[cfg(target_os = "windows")]
+fn do_install(installer_path: &PathBuf) -> Result<()> {
+    use std::process::Command;
+
+    let extension = installer_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+
+    match extension {
+        "msi" => {
+            // Run MSI installer silently
+            let result = Command::new("msiexec")
+                .args(["/i", &installer_path.to_string_lossy(), "/passive", "/norestart"])
+                .output()
+                .context("Failed to run MSI installer")?;
+
+            if !result.status.success() {
+                anyhow::bail!(
+                    "MSI installation failed: {}",
+                    String::from_utf8_lossy(&result.stderr)
+                );
+            }
+        }
+        "exe" => {
+            // Run Inno Setup installer with silent flags
+            // /VERYSILENT: No UI at all
+            // /SUPPRESSMSGBOXES: Suppress message boxes
+            // /NORESTART: Don't restart after install
+            // /CLOSEAPPLICATIONS: Close running instances of the app
+            let result = Command::new(installer_path)
+                .args(["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CLOSEAPPLICATIONS"])
+                .output()
+                .context("Failed to run EXE installer")?;
+
+            if !result.status.success() {
+                anyhow::bail!(
+                    "Installer failed with exit code: {:?}",
+                    result.status.code()
+                );
+            }
+        }
+        _ => {
+            anyhow::bail!("Unsupported installer format: {}", extension);
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn do_install(_installer_path: &PathBuf) -> Result<()> {
+    anyhow::bail!("Auto-install is only supported on macOS and Windows")
 }

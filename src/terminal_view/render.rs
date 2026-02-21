@@ -36,7 +36,11 @@ impl Render for TerminalView {
         let font_size = self.font_size;
         let background_opacity = self.transparent_background_opacity;
         #[cfg(target_os = "windows")]
-        let effective_background_opacity = if background_opacity < 1.0 { 1.0 } else { background_opacity };
+        let effective_background_opacity = if background_opacity < 1.0 {
+            1.0
+        } else {
+            background_opacity
+        };
         #[cfg(not(target_os = "windows"))]
         let effective_background_opacity = background_opacity;
 
@@ -517,7 +521,10 @@ impl Render for TerminalView {
                 .flex()
                 .items_center()
                 .window_control_area(WindowControlArea::Drag)
-                .on_mouse_down(MouseButton::Left, cx.listener(Self::handle_titlebar_mouse_down))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(Self::handle_titlebar_mouse_down),
+                )
                 .bg(titlebar_bg)
                 .border_b(px(1.0))
                 .border_color(titlebar_border)
