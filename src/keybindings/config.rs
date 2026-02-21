@@ -1,14 +1,14 @@
 use crate::config::KeybindConfigLine;
 use gpui::Keystroke;
 
-use super::actions::KeybindAction;
+use crate::commands::CommandAction;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeybindDirective {
     Clear,
     Bind {
         trigger: String,
-        action: KeybindAction,
+        action: CommandAction,
     },
     Unbind {
         trigger: String,
@@ -78,13 +78,13 @@ pub fn parse_keybind_directives(
             continue;
         }
 
-        let Some(action) = KeybindAction::from_config_name(action_raw) else {
+        let Some(action) = CommandAction::from_config_name(action_raw) else {
             warnings.push(KeybindWarning {
                 line_number: line.line_number,
                 message: format!(
                     "unknown keybind action `{}`; expected one of: {}",
                     action_raw,
-                    KeybindAction::all_config_names()
+                    CommandAction::all_config_names()
                         .collect::<Vec<_>>()
                         .join(", ")
                 ),
@@ -141,8 +141,8 @@ pub(crate) fn canonicalize_trigger(trigger: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::{KeybindDirective, KeybindWarning, canonicalize_trigger, parse_keybind_directives};
+    use crate::commands::CommandAction;
     use crate::config::KeybindConfigLine;
-    use crate::keybindings::actions::KeybindAction;
 
     #[test]
     fn parses_clear_bind_and_unbind_in_order() {
@@ -170,7 +170,7 @@ mod tests {
                 KeybindDirective::Clear,
                 KeybindDirective::Bind {
                     trigger: "cmd-p".to_string(),
-                    action: KeybindAction::ToggleCommandPalette
+                    action: CommandAction::ToggleCommandPalette
                 },
                 KeybindDirective::Unbind {
                     trigger: "cmd-p".to_string()
@@ -192,7 +192,7 @@ mod tests {
         assert_eq!(directives.len(), 1);
         match &directives[0] {
             KeybindDirective::Bind { action, .. } => {
-                assert_eq!(*action, KeybindAction::ToggleCommandPalette);
+                assert_eq!(*action, CommandAction::ToggleCommandPalette);
             }
             _ => panic!("expected bind directive"),
         }
@@ -254,11 +254,11 @@ mod tests {
             vec![
                 KeybindDirective::Bind {
                     trigger: "cmd-=".to_string(),
-                    action: KeybindAction::ZoomIn
+                    action: CommandAction::ZoomIn
                 },
                 KeybindDirective::Bind {
                     trigger: "cmd-=".to_string(),
-                    action: KeybindAction::ZoomOut
+                    action: CommandAction::ZoomOut
                 },
                 KeybindDirective::Unbind {
                     trigger: "cmd-=".to_string()
@@ -282,7 +282,7 @@ mod tests {
             directives,
             vec![KeybindDirective::Bind {
                 trigger: expected,
-                action: KeybindAction::ZoomOut
+                action: CommandAction::ZoomOut
             }]
         );
     }
@@ -306,26 +306,24 @@ mod tests {
 
         let (directives, warnings) = parse_keybind_directives(&lines);
         assert!(warnings.is_empty());
-        let app_info_trigger =
-            canonicalize_trigger("secondary-i").expect("valid app_info trigger");
+        let app_info_trigger = canonicalize_trigger("secondary-i").expect("valid app_info trigger");
         let restart_trigger =
             canonicalize_trigger("secondary-r").expect("valid restart_app trigger");
-        let rename_trigger =
-            canonicalize_trigger("secondary-e").expect("valid rename_tab trigger");
+        let rename_trigger = canonicalize_trigger("secondary-e").expect("valid rename_tab trigger");
         assert_eq!(
             directives,
             vec![
                 KeybindDirective::Bind {
                     trigger: app_info_trigger,
-                    action: KeybindAction::AppInfo
+                    action: CommandAction::AppInfo
                 },
                 KeybindDirective::Bind {
                     trigger: restart_trigger,
-                    action: KeybindAction::RestartApp
+                    action: CommandAction::RestartApp
                 },
                 KeybindDirective::Bind {
                     trigger: rename_trigger,
-                    action: KeybindAction::RenameTab
+                    action: CommandAction::RenameTab
                 },
             ]
         );

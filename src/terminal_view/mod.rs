@@ -1,6 +1,7 @@
 use crate::colors::TerminalColors;
+use crate::commands::{self, CommandAction};
 use crate::config::{self, AppConfig, TabTitleConfig, TabTitleSource};
-use crate::keybindings::{self, actions};
+use crate::keybindings;
 use alacritty_terminal::term::cell::Flags;
 use flume::{Sender, bounded};
 use gpui::{
@@ -119,7 +120,7 @@ struct HoveredLink {
 struct CommandPaletteItem {
     title: &'static str,
     keywords: &'static str,
-    action: actions::KeybindAction,
+    action: CommandAction,
 }
 
 /// The main terminal view component

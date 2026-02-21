@@ -1,48 +1,48 @@
-use super::actions::KeybindAction;
+use crate::commands::CommandAction;
 
 #[derive(Debug, Clone, Copy)]
 pub struct DefaultKeybind {
     pub trigger: &'static str,
-    pub action: KeybindAction,
+    pub action: CommandAction,
 }
 
 pub fn default_keybinds() -> Vec<DefaultKeybind> {
     let mut bindings = vec![
         DefaultKeybind {
             trigger: "secondary-q",
-            action: KeybindAction::Quit,
+            action: CommandAction::Quit,
         },
         DefaultKeybind {
             trigger: "secondary-,",
-            action: KeybindAction::OpenConfig,
+            action: CommandAction::OpenConfig,
         },
         DefaultKeybind {
             trigger: "secondary-p",
-            action: KeybindAction::ToggleCommandPalette,
+            action: CommandAction::ToggleCommandPalette,
         },
         DefaultKeybind {
             trigger: "secondary-t",
-            action: KeybindAction::NewTab,
+            action: CommandAction::NewTab,
         },
         DefaultKeybind {
             trigger: "secondary-w",
-            action: KeybindAction::CloseTab,
+            action: CommandAction::CloseTab,
         },
         DefaultKeybind {
             trigger: "secondary-=",
-            action: KeybindAction::ZoomIn,
+            action: CommandAction::ZoomIn,
         },
         DefaultKeybind {
             trigger: "secondary-+",
-            action: KeybindAction::ZoomIn,
+            action: CommandAction::ZoomIn,
         },
         DefaultKeybind {
             trigger: "secondary--",
-            action: KeybindAction::ZoomOut,
+            action: CommandAction::ZoomOut,
         },
         DefaultKeybind {
             trigger: "secondary-0",
-            action: KeybindAction::ZoomReset,
+            action: CommandAction::ZoomReset,
         },
     ];
 
@@ -50,11 +50,11 @@ pub fn default_keybinds() -> Vec<DefaultKeybind> {
     {
         bindings.push(DefaultKeybind {
             trigger: "secondary-c",
-            action: KeybindAction::Copy,
+            action: CommandAction::Copy,
         });
         bindings.push(DefaultKeybind {
             trigger: "secondary-v",
-            action: KeybindAction::Paste,
+            action: CommandAction::Paste,
         });
     }
 
@@ -62,11 +62,11 @@ pub fn default_keybinds() -> Vec<DefaultKeybind> {
     {
         bindings.push(DefaultKeybind {
             trigger: "ctrl-shift-c",
-            action: KeybindAction::Copy,
+            action: CommandAction::Copy,
         });
         bindings.push(DefaultKeybind {
             trigger: "ctrl-shift-v",
-            action: KeybindAction::Paste,
+            action: CommandAction::Paste,
         });
     }
 
@@ -81,7 +81,7 @@ mod tests {
     fn zoom_in_has_equal_and_plus_defaults() {
         let zoom_in_triggers = default_keybinds()
             .into_iter()
-            .filter(|binding| binding.action == KeybindAction::ZoomIn)
+            .filter(|binding| binding.action == CommandAction::ZoomIn)
             .map(|binding| binding.trigger)
             .collect::<Vec<_>>();
 
@@ -95,22 +95,22 @@ mod tests {
         assert!(
             defaults
                 .iter()
-                .all(|binding| binding.action != KeybindAction::AppInfo)
+                .all(|binding| binding.action != CommandAction::AppInfo)
         );
         assert!(
             defaults
                 .iter()
-                .all(|binding| binding.action != KeybindAction::RestartApp)
+                .all(|binding| binding.action != CommandAction::RestartApp)
         );
         assert!(
             defaults
                 .iter()
-                .all(|binding| binding.action != KeybindAction::RenameTab)
+                .all(|binding| binding.action != CommandAction::RenameTab)
         );
         assert!(
             defaults
                 .iter()
-                .all(|binding| binding.action != KeybindAction::CheckForUpdates)
+                .all(|binding| binding.action != CommandAction::CheckForUpdates)
         );
     }
 }

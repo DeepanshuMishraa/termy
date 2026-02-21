@@ -1,16 +1,17 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod colors;
+mod commands;
 mod config;
 mod keybindings;
 mod terminal_view;
 
+use commands::{OpenConfig, Quit};
 #[cfg(target_os = "macos")]
 use gpui::SystemMenuType;
 use gpui::{
     App, Application, Bounds, Menu, MenuItem, WindowBounds, WindowOptions, prelude::*, px, size,
 };
-use keybindings::actions::{OpenConfig, Quit};
 use terminal_view::TerminalView;
 
 pub(crate) const APP_VERSION: &str = env!("CARGO_PKG_VERSION");

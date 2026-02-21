@@ -21,7 +21,7 @@ actions!(
 );
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum KeybindAction {
+pub enum CommandAction {
     Quit,
     OpenConfig,
     AppInfo,
@@ -38,26 +38,26 @@ pub enum KeybindAction {
     ZoomReset,
 }
 
-const ALL_KEYBIND_ACTIONS: [KeybindAction; 14] = [
-    KeybindAction::Quit,
-    KeybindAction::OpenConfig,
-    KeybindAction::AppInfo,
-    KeybindAction::RestartApp,
-    KeybindAction::RenameTab,
-    KeybindAction::CheckForUpdates,
-    KeybindAction::ToggleCommandPalette,
-    KeybindAction::NewTab,
-    KeybindAction::CloseTab,
-    KeybindAction::Copy,
-    KeybindAction::Paste,
-    KeybindAction::ZoomIn,
-    KeybindAction::ZoomOut,
-    KeybindAction::ZoomReset,
+const ALL_COMMAND_ACTIONS: [CommandAction; 14] = [
+    CommandAction::Quit,
+    CommandAction::OpenConfig,
+    CommandAction::AppInfo,
+    CommandAction::RestartApp,
+    CommandAction::RenameTab,
+    CommandAction::CheckForUpdates,
+    CommandAction::ToggleCommandPalette,
+    CommandAction::NewTab,
+    CommandAction::CloseTab,
+    CommandAction::Copy,
+    CommandAction::Paste,
+    CommandAction::ZoomIn,
+    CommandAction::ZoomOut,
+    CommandAction::ZoomReset,
 ];
 
-impl KeybindAction {
+impl CommandAction {
     pub fn all() -> &'static [Self] {
-        &ALL_KEYBIND_ACTIONS
+        &ALL_COMMAND_ACTIONS
     }
 
     pub fn config_name(self) -> &'static str {

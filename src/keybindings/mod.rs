@@ -1,18 +1,17 @@
-pub mod actions;
 mod config;
 mod defaults;
 
+use crate::commands::CommandAction;
 use crate::config::AppConfig;
 use gpui::App;
 use log::warn;
 
-use self::actions::KeybindAction;
 use self::config::{KeybindDirective, canonicalize_trigger, parse_keybind_directives};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ResolvedKeybind {
     trigger: String,
-    action: KeybindAction,
+    action: CommandAction,
 }
 
 pub fn install_keybindings(cx: &mut App, config: &AppConfig) {
@@ -86,10 +85,10 @@ fn resolve_keybinds(
 #[cfg(test)]
 mod tests {
     use super::{ResolvedKeybind, resolve_keybinds};
-    use crate::keybindings::actions::KeybindAction;
+    use crate::commands::CommandAction;
     use crate::keybindings::config::KeybindDirective;
 
-    fn resolved(trigger: &str, action: KeybindAction) -> ResolvedKeybind {
+    fn resolved(trigger: &str, action: CommandAction) -> ResolvedKeybind {
         ResolvedKeybind {
             trigger: trigger.to_string(),
             action,
@@ -99,8 +98,8 @@ mod tests {
     #[test]
     fn defaults_only_stay_unchanged() {
         let defaults = vec![
-            resolved("cmd-p", KeybindAction::ToggleCommandPalette),
-            resolved("cmd-c", KeybindAction::Copy),
+            resolved("cmd-p", CommandAction::ToggleCommandPalette),
+            resolved("cmd-c", CommandAction::Copy),
         ];
 
         let result = resolve_keybinds(defaults.clone(), &[]);
@@ -110,20 +109,20 @@ mod tests {
     #[test]
     fn bind_overrides_same_trigger() {
         let defaults = vec![
-            resolved("cmd-p", KeybindAction::ToggleCommandPalette),
-            resolved("cmd-c", KeybindAction::Copy),
+            resolved("cmd-p", CommandAction::ToggleCommandPalette),
+            resolved("cmd-c", CommandAction::Copy),
         ];
         let directives = vec![KeybindDirective::Bind {
             trigger: "cmd-p".to_string(),
-            action: KeybindAction::NewTab,
+            action: CommandAction::NewTab,
         }];
 
         let result = resolve_keybinds(defaults, &directives);
         assert_eq!(
             result,
             vec![
-                resolved("cmd-c", KeybindAction::Copy),
-                resolved("cmd-p", KeybindAction::NewTab)
+                resolved("cmd-c", CommandAction::Copy),
+                resolved("cmd-p", CommandAction::NewTab)
             ]
         );
     }
@@ -131,8 +130,8 @@ mod tests {
     #[test]
     fn unbind_removes_matching_trigger() {
         let defaults = vec![
-            resolved("cmd-p", KeybindAction::ToggleCommandPalette),
-            resolved("cmd-c", KeybindAction::Copy),
+            resolved("cmd-p", CommandAction::ToggleCommandPalette),
+            resolved("cmd-c", CommandAction::Copy),
         ];
         let directives = vec![KeybindDirective::Unbind {
             trigger: "cmd-c".to_string(),
@@ -141,49 +140,49 @@ mod tests {
         let result = resolve_keybinds(defaults, &directives);
         assert_eq!(
             result,
-            vec![resolved("cmd-p", KeybindAction::ToggleCommandPalette)]
+            vec![resolved("cmd-p", CommandAction::ToggleCommandPalette)]
         );
     }
 
     #[test]
     fn clear_resets_defaults_before_subsequent_binds() {
         let defaults = vec![
-            resolved("cmd-p", KeybindAction::ToggleCommandPalette),
-            resolved("cmd-c", KeybindAction::Copy),
+            resolved("cmd-p", CommandAction::ToggleCommandPalette),
+            resolved("cmd-c", CommandAction::Copy),
         ];
         let directives = vec![
             KeybindDirective::Clear,
             KeybindDirective::Bind {
                 trigger: "ctrl-k".to_string(),
-                action: KeybindAction::OpenConfig,
+                action: CommandAction::OpenConfig,
             },
         ];
 
         let result = resolve_keybinds(defaults, &directives);
-        assert_eq!(result, vec![resolved("ctrl-k", KeybindAction::OpenConfig)]);
+        assert_eq!(result, vec![resolved("ctrl-k", CommandAction::OpenConfig)]);
     }
 
     #[test]
     fn directive_order_is_deterministic() {
         let defaults = vec![
-            resolved("cmd-c", KeybindAction::Copy),
-            resolved("cmd-v", KeybindAction::Paste),
+            resolved("cmd-c", CommandAction::Copy),
+            resolved("cmd-v", CommandAction::Paste),
         ];
         let directives = vec![
             KeybindDirective::Bind {
                 trigger: "cmd-x".to_string(),
-                action: KeybindAction::CloseTab,
+                action: CommandAction::CloseTab,
             },
             KeybindDirective::Bind {
                 trigger: "cmd-c".to_string(),
-                action: KeybindAction::Quit,
+                action: CommandAction::Quit,
             },
             KeybindDirective::Unbind {
                 trigger: "cmd-v".to_string(),
             },
             KeybindDirective::Bind {
                 trigger: "cmd-x".to_string(),
-                action: KeybindAction::ZoomIn,
+                action: CommandAction::ZoomIn,
             },
         ];
 
@@ -191,8 +190,8 @@ mod tests {
         assert_eq!(
             result,
             vec![
-                resolved("cmd-c", KeybindAction::Quit),
-                resolved("cmd-x", KeybindAction::ZoomIn)
+                resolved("cmd-c", CommandAction::Quit),
+                resolved("cmd-x", CommandAction::ZoomIn)
             ]
         );
     }
