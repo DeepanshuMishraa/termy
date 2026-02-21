@@ -38,7 +38,7 @@ mod titles;
 #[cfg(target_os = "macos")]
 mod update_toasts;
 
-use inline_input::{InlineInputAlignment, InlineInputElement, InlineInputState};
+use inline_input::{InlineInputAlignment, InlineInputState};
 
 const MIN_FONT_SIZE: f32 = 8.0;
 const MAX_FONT_SIZE: f32 = 40.0;

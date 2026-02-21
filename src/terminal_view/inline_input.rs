@@ -740,6 +740,47 @@ impl IntoElement for InlineInputElement {
 }
 
 impl TerminalView {
+    pub(super) fn render_inline_input_layer(
+        &self,
+        font: Font,
+        font_size: Pixels,
+        text_color: Hsla,
+        selection_color: Hsla,
+        alignment: InlineInputAlignment,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .right_0()
+            .bottom_0()
+            .cursor(gpui::CursorStyle::IBeam)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(Self::handle_inline_input_mouse_down),
+            )
+            .on_mouse_move(cx.listener(Self::handle_inline_input_mouse_move))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(Self::handle_inline_input_mouse_up),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(Self::handle_inline_input_mouse_up),
+            )
+            .child(InlineInputElement::new(
+                cx.entity(),
+                self.focus_handle.clone(),
+                font,
+                font_size,
+                text_color,
+                selection_color,
+                alignment,
+            ))
+            .into_any_element()
+    }
+
     fn active_inline_input_state(&self) -> Option<&InlineInputState> {
         if self.command_palette_open {
             Some(&self.command_palette_input)

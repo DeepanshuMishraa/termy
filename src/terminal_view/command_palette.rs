@@ -363,11 +363,7 @@ impl TerminalView {
         rows
     }
 
-    pub(super) fn render_command_palette_modal(
-        &mut self,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    pub(super) fn render_command_palette_modal(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let items = self.filtered_command_palette_items();
         let list_height = (COMMAND_PALETTE_MAX_ITEMS as f32 * 30.0)
             + (COMMAND_PALETTE_MAX_ITEMS.saturating_sub(1) as f32 * 4.0);
@@ -461,54 +457,16 @@ impl TerminalView {
                                     .bg(transparent)
                                     .border_1()
                                     .border_color(panel_border)
-                                    .font_family(self.font_family.clone())
-                                    .text_size(px(13.0))
-                                    .text_color(primary_text)
-                                    .child(
-                                        div()
-                                            .w_full()
-                                            .h_full()
-                                            .relative()
-                                            .cursor(gpui::CursorStyle::IBeam)
-                                            .child(
-                                                div()
-                                                    .absolute()
-                                                    .top_0()
-                                                    .left_0()
-                                                    .right_0()
-                                                    .bottom_0()
-                                                    .on_mouse_down(
-                                                        MouseButton::Left,
-                                                        cx.listener(
-                                                            Self::handle_inline_input_mouse_down,
-                                                        ),
-                                                    )
-                                                    .on_mouse_move(cx.listener(
-                                                        Self::handle_inline_input_mouse_move,
-                                                    ))
-                                                    .on_mouse_up(
-                                                        MouseButton::Left,
-                                                        cx.listener(
-                                                            Self::handle_inline_input_mouse_up,
-                                                        ),
-                                                    )
-                                                    .on_mouse_up_out(
-                                                        MouseButton::Left,
-                                                        cx.listener(
-                                                            Self::handle_inline_input_mouse_up,
-                                                        ),
-                                                    )
-                                                    .child(InlineInputElement::new(
-                                                        cx.entity(),
-                                                        self.focus_handle.clone(),
-                                                        input_font.clone(),
-                                                        px(13.0),
-                                                        primary_text.into(),
-                                                        input_selection.into(),
-                                                        InlineInputAlignment::Left,
-                                                    )),
-                                            ),
-                                    ),
+                                    .child(div().w_full().h_full().relative().child(
+                                        self.render_inline_input_layer(
+                                            input_font.clone(),
+                                            px(13.0),
+                                            primary_text.into(),
+                                            input_selection.into(),
+                                            InlineInputAlignment::Left,
+                                            cx,
+                                        ),
+                                    )),
                             )
                             .child(div().h(px(8.0)))
                             .child(list)

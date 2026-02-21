@@ -201,35 +201,14 @@ impl Render for TerminalView {
                         )
                         .child(div().w(px(close_slot_width)).h(px(TAB_CLOSE_HITBOX)))
                         .child(div().flex_1().h_full().relative().child(if is_renaming {
-                            div()
-                                .absolute()
-                                .top_0()
-                                .left_0()
-                                .right_0()
-                                .bottom_0()
-                                .cursor(gpui::CursorStyle::IBeam)
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(Self::handle_inline_input_mouse_down),
-                                )
-                                .on_mouse_move(cx.listener(Self::handle_inline_input_mouse_move))
-                                .on_mouse_up(
-                                    MouseButton::Left,
-                                    cx.listener(Self::handle_inline_input_mouse_up),
-                                )
-                                .on_mouse_up_out(
-                                    MouseButton::Left,
-                                    cx.listener(Self::handle_inline_input_mouse_up),
-                                )
-                                .child(InlineInputElement::new(
-                                    cx.entity(),
-                                    self.focus_handle.clone(),
-                                    Font::default(),
-                                    px(12.0),
-                                    rename_text_color.into(),
-                                    rename_selection_color.into(),
-                                    InlineInputAlignment::Center,
-                                ))
+                            self.render_inline_input_layer(
+                                Font::default(),
+                                px(12.0),
+                                rename_text_color.into(),
+                                rename_selection_color.into(),
+                                InlineInputAlignment::Center,
+                                cx,
+                            )
                         } else {
                             div()
                                 .size_full()
@@ -239,7 +218,8 @@ impl Render for TerminalView {
                                 .truncate()
                                 .text_color(rename_text_color)
                                 .text_size(px(12.0))
-                                .child(label.clone())
+                                .child(label)
+                                .into_any_element()
                         }))
                         .children(show_tab_close.then(|| {
                             div()
@@ -560,7 +540,7 @@ impl Render for TerminalView {
             font_size,
         };
         let command_palette_overlay = if self.command_palette_open {
-            Some(self.render_command_palette_modal(window, cx))
+            Some(self.render_command_palette_modal(cx))
         } else {
             None
         };
