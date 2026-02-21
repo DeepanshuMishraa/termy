@@ -164,8 +164,9 @@ impl Render for TerminalView {
                 } else {
                     0.0
                 };
-                let label = if self.renaming_tab == Some(index) {
-                    format!("{}|", self.rename_buffer)
+                let is_renaming = self.renaming_tab == Some(index);
+                let label = if is_renaming {
+                    self.rename_input.text_with_cursor()
                 } else {
                     tab.title.clone()
                 };
@@ -199,15 +200,32 @@ impl Render for TerminalView {
                         .child(
                             div()
                                 .flex_1()
-                                .truncate()
-                                .text_center()
-                                .text_color(if is_active {
-                                    active_tab_text
-                                } else {
-                                    inactive_tab_text
-                                })
-                                .text_size(px(12.0))
-                                .child(label),
+                                .relative()
+                                .child(
+                                    div()
+                                        .w_full()
+                                        .truncate()
+                                        .text_center()
+                                        .text_color(if is_active {
+                                            active_tab_text
+                                        } else {
+                                            inactive_tab_text
+                                        })
+                                        .text_size(px(12.0))
+                                        .child(label),
+                                )
+                                .children(is_renaming.then(|| {
+                                    div()
+                                        .absolute()
+                                        .top_0()
+                                        .left_0()
+                                        .right_0()
+                                        .bottom_0()
+                                        .child(InlineInputElement::new(
+                                            cx.entity(),
+                                            self.focus_handle.clone(),
+                                        ))
+                                })),
                         )
                         .children(show_tab_close.then(|| {
                             div()
@@ -527,9 +545,11 @@ impl Render for TerminalView {
             font_family: font_family.clone(),
             font_size,
         };
-        let command_palette_overlay = self
-            .command_palette_open
-            .then(|| self.render_command_palette_modal(window, cx));
+        let command_palette_overlay = if self.command_palette_open {
+            Some(self.render_command_palette_modal(window, cx))
+        } else {
+            None
+        };
         let titlebar_element: Option<AnyElement> = (titlebar_height > 0.0).then(|| {
             div()
                 .id("titlebar")

@@ -59,7 +59,8 @@ impl TerminalView {
         self.active_tab = self.tabs.len() - 1;
         self.refresh_tab_title(self.active_tab);
         self.renaming_tab = None;
-        self.rename_buffer.clear();
+        self.rename_input.clear();
+        self.sync_inline_input_target();
         self.clear_selection();
         cx.notify();
     }
@@ -80,7 +81,8 @@ impl TerminalView {
         match self.renaming_tab {
             Some(editing) if editing == index => {
                 self.renaming_tab = None;
-                self.rename_buffer.clear();
+                self.rename_input.clear();
+                self.sync_inline_input_target();
             }
             Some(editing) if editing > index => {
                 self.renaming_tab = Some(editing - 1);
@@ -103,7 +105,8 @@ impl TerminalView {
 
         self.active_tab = index;
         self.renaming_tab = None;
-        self.rename_buffer.clear();
+        self.rename_input.clear();
+        self.sync_inline_input_target();
         self.clear_selection();
         cx.notify();
     }
@@ -113,14 +116,15 @@ impl TerminalView {
             return;
         };
 
-        let trimmed = self.rename_buffer.trim();
+        let trimmed = self.rename_input.text().trim();
         self.tabs[index].manual_title = (!trimmed.is_empty())
             .then(|| Self::truncate_tab_title(trimmed))
             .filter(|title| !title.is_empty());
         self.refresh_tab_title(index);
 
         self.renaming_tab = None;
-        self.rename_buffer.clear();
+        self.rename_input.clear();
+        self.sync_inline_input_target();
         cx.notify();
     }
 
@@ -130,7 +134,8 @@ impl TerminalView {
         }
 
         self.renaming_tab = None;
-        self.rename_buffer.clear();
+        self.rename_input.clear();
+        self.sync_inline_input_target();
         cx.notify();
     }
 }

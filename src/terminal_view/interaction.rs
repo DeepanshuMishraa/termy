@@ -443,7 +443,9 @@ impl TerminalView {
                 }
 
                 self.renaming_tab = Some(self.active_tab);
-                self.rename_buffer = self.tabs[self.active_tab].title.clone();
+                self.sync_inline_input_target();
+                self.rename_input
+                    .set_text(self.tabs[self.active_tab].title.clone());
                 termy_toast::info("Rename mode enabled");
                 cx.notify();
             }
@@ -609,10 +611,9 @@ impl TerminalView {
     ) {
         let key = event.keystroke.key.as_str();
         let modifiers = event.keystroke.modifiers;
-        let key_char = event.keystroke.key_char.as_deref();
 
         if self.command_palette_open {
-            self.handle_command_palette_key_down(key, key_char, modifiers, cx);
+            self.handle_command_palette_key_down(key, modifiers, cx);
             return;
         }
 
@@ -624,41 +625,6 @@ impl TerminalView {
                 }
                 "escape" => {
                     self.cancel_rename_tab(cx);
-                    return;
-                }
-                "backspace" => {
-                    self.rename_buffer.pop();
-                    cx.notify();
-                    return;
-                }
-                "space"
-                    if !modifiers.control
-                        && !modifiers.alt
-                        && !modifiers.function
-                        && !modifiers.platform =>
-                {
-                    if self.rename_buffer.chars().count() < MAX_TAB_TITLE_CHARS {
-                        self.rename_buffer.push(' ');
-                        cx.notify();
-                    }
-                    return;
-                }
-                _ if key.len() == 1
-                    && key_char.is_some()
-                    && !modifiers.control
-                    && !modifiers.alt
-                    && !modifiers.function
-                    && !modifiers.platform =>
-                {
-                    if let Some(input) = key_char {
-                        let input_len = input.chars().count();
-                        if input_len > 0
-                            && self.rename_buffer.chars().count() + input_len <= MAX_TAB_TITLE_CHARS
-                        {
-                            self.rename_buffer.push_str(input);
-                            cx.notify();
-                        }
-                    }
                     return;
                 }
                 _ => return,

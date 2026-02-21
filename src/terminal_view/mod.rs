@@ -7,15 +7,15 @@ use flume::{Sender, bounded};
 use gpui::{
     AnyElement, App, AsyncApp, ClipboardItem, Context, Element, FocusHandle, Focusable, Font,
     FontWeight, InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Render, ScrollDelta, ScrollWheelEvent,
-    SharedString, Size, StatefulInteractiveElement, Styled, TouchPhase, WeakEntity, Window,
-    WindowControlArea, div, px,
+    MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Render, ScrollWheelEvent, SharedString,
+    Size, StatefulInteractiveElement, Styled, TouchPhase, UniformListScrollHandle, WeakEntity,
+    Window, WindowControlArea, div, px,
 };
 use std::{
     fs,
     path::PathBuf,
     process::Command,
-    time::{Duration, Instant, SystemTime},
+    time::{Duration, SystemTime},
 };
 use termy_terminal_ui::{
     CellRenderInfo, TabTitleShellIntegration, Terminal, TerminalEvent, TerminalGrid,
@@ -30,12 +30,15 @@ use gpui::{AppContext, Entity};
 use termy_auto_update::{AutoUpdater, UpdateState};
 
 mod command_palette;
+mod inline_input;
 mod interaction;
 mod render;
 mod tabs;
 mod titles;
 #[cfg(target_os = "macos")]
 mod update_toasts;
+
+use inline_input::{InlineInputElement, InlineInputState, InlineInputTarget};
 
 const MIN_FONT_SIZE: f32 = 8.0;
 const MAX_FONT_SIZE: f32 = 40.0;
@@ -127,7 +130,7 @@ pub struct TerminalView {
     tabs: Vec<TerminalTab>,
     active_tab: usize,
     renaming_tab: Option<usize>,
-    rename_buffer: String,
+    rename_input: InlineInputState,
     event_wakeup_tx: Sender<()>,
     focus_handle: FocusHandle,
     colors: TerminalColors,
@@ -154,12 +157,11 @@ pub struct TerminalView {
     hovered_toast: Option<u64>,
     toast_manager: ToastManager,
     command_palette_open: bool,
-    command_palette_query: String,
+    inline_input_target: Option<InlineInputTarget>,
+    command_palette_input: InlineInputState,
     command_palette_selected: usize,
-    command_palette_scroll_offset: usize,
-    command_palette_query_select_all: bool,
+    command_palette_scroll_handle: UniformListScrollHandle,
     command_palette_show_keybinds: bool,
-    command_palette_opened_at: Option<Instant>,
     terminal_scroll_accumulator_y: f32,
     /// Cached cell dimensions
     cell_size: Option<Size<Pixels>>,
@@ -260,7 +262,7 @@ impl TerminalView {
             tabs: vec![TerminalTab::new(terminal)],
             active_tab: 0,
             renaming_tab: None,
-            rename_buffer: String::new(),
+            rename_input: InlineInputState::new(String::new()),
             event_wakeup_tx,
             focus_handle,
             colors,
@@ -287,12 +289,11 @@ impl TerminalView {
             hovered_toast: None,
             toast_manager: ToastManager::new(),
             command_palette_open: false,
-            command_palette_query: String::new(),
+            inline_input_target: None,
+            command_palette_input: InlineInputState::new(String::new()),
             command_palette_selected: 0,
-            command_palette_scroll_offset: 0,
-            command_palette_query_select_all: false,
+            command_palette_scroll_handle: UniformListScrollHandle::new(),
             command_palette_show_keybinds: config.command_palette_show_keybinds,
-            command_palette_opened_at: None,
             terminal_scroll_accumulator_y: 0.0,
             cell_size: None,
             #[cfg(target_os = "macos")]
