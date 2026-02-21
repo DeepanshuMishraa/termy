@@ -1,5 +1,6 @@
 use crate::colors::TerminalColors;
 use crate::config::{self, AppConfig, TabTitleConfig, TabTitleSource};
+use crate::keybindings::{self, actions};
 use alacritty_terminal::term::cell::Flags;
 use flume::{Sender, bounded};
 use gpui::{
@@ -232,7 +233,7 @@ impl TerminalView {
                 smol::Timer::after(Duration::from_millis(CONFIG_WATCH_INTERVAL_MS)).await;
                 let result = cx.update(|cx| {
                     this.update(cx, |view, cx| {
-                        if view.reload_config_if_changed() {
+                        if view.reload_config_if_changed(cx) {
                             cx.notify();
                         }
                     })
@@ -328,7 +329,8 @@ impl TerminalView {
         view
     }
 
-    fn apply_runtime_config(&mut self, config: AppConfig) -> bool {
+    fn apply_runtime_config(&mut self, config: AppConfig, cx: &mut Context<Self>) -> bool {
+        keybindings::install_keybindings(cx, &config);
         self.colors = TerminalColors::from_theme(&config.theme);
         self.use_tabs = config.use_tabs;
         self.tab_title = config.tab_title.clone();
@@ -352,7 +354,7 @@ impl TerminalView {
         true
     }
 
-    fn reload_config_if_changed(&mut self) -> bool {
+    fn reload_config_if_changed(&mut self, cx: &mut Context<Self>) -> bool {
         let path = match self.config_path.clone() {
             Some(path) => path,
             None => {
@@ -376,7 +378,7 @@ impl TerminalView {
 
         self.config_last_modified = Some(modified);
         let config = AppConfig::load_or_create();
-        let changed = self.apply_runtime_config(config);
+        let changed = self.apply_runtime_config(config, cx);
         if changed {
             termy_toast::info("Configuration reloaded");
         }

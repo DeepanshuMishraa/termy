@@ -1,13 +1,6 @@
 use super::*;
 
 impl TerminalView {
-    pub(super) fn is_command_palette_shortcut(key: &str, modifiers: gpui::Modifiers) -> bool {
-        modifiers.secondary()
-            && !modifiers.alt
-            && !modifiers.function
-            && key.eq_ignore_ascii_case("p")
-    }
-
     pub(super) fn open_command_palette(&mut self, cx: &mut Context<Self>) {
         self.command_palette_open = true;
         self.command_palette_query.clear();
@@ -516,8 +509,8 @@ impl TerminalView {
         let visible_count = items.len().min(COMMAND_PALETTE_MAX_ITEMS);
         let row_height = 34.0;
         let row_gap = 4.0;
-        let track_height =
-            (visible_count as f32 * row_height) + (visible_count.saturating_sub(1) as f32 * row_gap);
+        let track_height = (visible_count as f32 * row_height)
+            + (visible_count.saturating_sub(1) as f32 * row_gap);
         let max_scroll_start = items.len().saturating_sub(COMMAND_PALETTE_MAX_ITEMS);
         let thumb_height = if items.len() > COMMAND_PALETTE_MAX_ITEMS {
             ((visible_count as f32 / items.len() as f32) * track_height).max(18.0)
@@ -587,9 +580,7 @@ impl TerminalView {
                             .on_click(cx.listener(|_this, _event, _window, cx| {
                                 cx.stop_propagation();
                             }))
-                            .on_scroll_wheel(cx.listener(
-                                Self::handle_command_palette_scroll_wheel,
-                            ))
+                            .on_scroll_wheel(cx.listener(Self::handle_command_palette_scroll_wheel))
                             .child(
                                 div()
                                     .w_full()

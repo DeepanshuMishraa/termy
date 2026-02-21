@@ -50,7 +50,12 @@ padding_y = 8\n\
 # Fallback startup directory when working_dir is unset: home or process\n\
 # working_dir_fallback = home\n\
 # Advertise 24-bit color support to child apps\n\
-# colorterm = truecolor\n";
+# colorterm = truecolor\n\
+# Keybindings (Ghostty-style trigger overrides)\n\
+# keybind = cmd-p=toggle_command_palette\n\
+# keybind = cmd-c=copy\n\
+# keybind = cmd-c=unbind\n\
+# keybind = clear\n";
 
 pub type ThemeId = String;
 
@@ -178,6 +183,13 @@ pub struct AppConfig {
     pub transparent_background_opacity: f32,
     pub padding_x: f32,
     pub padding_y: f32,
+    pub keybind_lines: Vec<KeybindConfigLine>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeybindConfigLine {
+    pub line_number: usize,
+    pub value: String,
 }
 
 impl Default for AppConfig {
@@ -198,6 +210,7 @@ impl Default for AppConfig {
             transparent_background_opacity: 1.0,
             padding_x: 12.0,
             padding_y: 8.0,
+            keybind_lines: Vec::new(),
         }
     }
 }
@@ -219,7 +232,7 @@ impl AppConfig {
     fn from_contents(contents: &str) -> Self {
         let mut config = Self::default();
         let mut tab_title_priority_overridden = false;
-        for line in contents.lines() {
+        for (line_number, line) in contents.lines().enumerate() {
             let line = line.trim();
             if line.is_empty() || line.starts_with('#') {
                 continue;
@@ -362,6 +375,15 @@ impl AppConfig {
                         config.padding_y = padding_y;
                     }
                 }
+            }
+
+            if key.eq_ignore_ascii_case("keybind")
+                && let Some(raw) = parse_string_value(value)
+            {
+                config.keybind_lines.push(KeybindConfigLine {
+                    line_number: line_number + 1,
+                    value: raw,
+                });
             }
         }
 
@@ -588,5 +610,29 @@ mod tests {
         assert_eq!(config.shell.as_deref(), Some("/bin/zsh"));
         assert_eq!(config.working_dir_fallback, WorkingDirFallback::Process);
         assert!(config.colorterm.is_none());
+    }
+
+    #[test]
+    fn keybind_lines_are_collected_in_order_with_line_numbers() {
+        let config = AppConfig::from_contents(
+            "# ignore comments\n\
+             keybind = cmd-p=toggle_command_palette\n\
+             keybind = cmd-c=copy\n\
+             keybind = cmd-c=unbind\n\
+             keybind = clear\n",
+        );
+
+        assert_eq!(config.keybind_lines.len(), 4);
+        assert_eq!(config.keybind_lines[0].line_number, 2);
+        assert_eq!(
+            config.keybind_lines[0].value,
+            "cmd-p=toggle_command_palette"
+        );
+        assert_eq!(config.keybind_lines[1].line_number, 3);
+        assert_eq!(config.keybind_lines[1].value, "cmd-c=copy");
+        assert_eq!(config.keybind_lines[2].line_number, 4);
+        assert_eq!(config.keybind_lines[2].value, "cmd-c=unbind");
+        assert_eq!(config.keybind_lines[3].line_number, 5);
+        assert_eq!(config.keybind_lines[3].value, "clear");
     }
 }

@@ -42,6 +42,12 @@ tab_title_shell_integration = true
 - Values: string value or `none`/`unset`/`default`/`auto` to disable
 - What it does: sets `COLORTERM` for child apps (usually `truecolor` for modern color support).
 
+## Keybindings
+
+Keybinding syntax, defaults, and override examples now live in:
+
+- `docs/keybindings.md`
+
 ## Tab Titles
 
 ### Basic (recommended)
@@ -184,6 +190,10 @@ Explicit payload examples:
 `padding_y`
 - Default: `8`
 - Values: non-negative number
+
+`keybind`
+- Default: built-in platform shortcuts
+- Values: repeated `keybind` directives (see `docs/keybindings.md`)
 
 ## Shell Integration Snippets
 
