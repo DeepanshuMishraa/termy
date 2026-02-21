@@ -511,7 +511,7 @@ impl Render for TerminalView {
         };
         let command_palette_overlay = self
             .command_palette_open
-            .then(|| self.render_command_palette_modal(cx));
+            .then(|| self.render_command_palette_modal(window, cx));
         let titlebar_element: Option<AnyElement> = (titlebar_height > 0.0).then(|| {
             div()
                 .id("titlebar")

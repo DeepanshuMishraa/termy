@@ -1,6 +1,60 @@
 use super::*;
 
 impl TerminalView {
+    fn format_keybinding_label(binding: &gpui::KeyBinding) -> String {
+        binding
+            .keystrokes()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    fn command_palette_binding_badge<A: gpui::Action>(
+        &self,
+        action: &A,
+        window: &Window,
+    ) -> (String, bool) {
+        if let Some(binding) =
+            window.highest_precedence_binding_for_action_in(action, &self.focus_handle)
+        {
+            (Self::format_keybinding_label(&binding), false)
+        } else {
+            ("Unbound".to_string(), true)
+        }
+    }
+
+    fn command_palette_shortcut(
+        &self,
+        action: CommandPaletteAction,
+        window: &Window,
+    ) -> Option<(String, bool)> {
+        match action {
+            CommandPaletteAction::NewTab => {
+                Some(self.command_palette_binding_badge(&actions::NewTab, window))
+            }
+            CommandPaletteAction::CloseTab => {
+                Some(self.command_palette_binding_badge(&actions::CloseTab, window))
+            }
+            CommandPaletteAction::OpenConfig => {
+                Some(self.command_palette_binding_badge(&actions::OpenConfig, window))
+            }
+            CommandPaletteAction::ZoomIn => {
+                Some(self.command_palette_binding_badge(&actions::ZoomIn, window))
+            }
+            CommandPaletteAction::ZoomOut => {
+                Some(self.command_palette_binding_badge(&actions::ZoomOut, window))
+            }
+            CommandPaletteAction::ResetZoom => {
+                Some(self.command_palette_binding_badge(&actions::ZoomReset, window))
+            }
+            CommandPaletteAction::AppInfo | CommandPaletteAction::RestartApp => None,
+            CommandPaletteAction::RenameTab => None,
+            #[cfg(target_os = "macos")]
+            CommandPaletteAction::CheckForUpdates => None,
+        }
+    }
+
     pub(super) fn open_command_palette(&mut self, cx: &mut Context<Self>) {
         self.command_palette_open = true;
         self.command_palette_query.clear();
@@ -409,7 +463,11 @@ impl TerminalView {
         }
     }
 
-    pub(super) fn render_command_palette_modal(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_command_palette_modal(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let items = self.filtered_command_palette_items();
         let selected = if items.is_empty() {
             0
@@ -457,6 +515,15 @@ impl TerminalView {
         let mut scrollbar_thumb = self.colors.cursor;
         scrollbar_thumb.a = 0.42;
 
+        let mut shortcut_bg = self.colors.cursor;
+        shortcut_bg.a = 0.14;
+        let mut shortcut_border = self.colors.cursor;
+        shortcut_border.a = 0.3;
+        let mut shortcut_text = self.colors.foreground;
+        shortcut_text.a = 0.86;
+        let mut shortcut_unbound_text = self.colors.foreground;
+        shortcut_unbound_text.a = 0.48;
+
         let mut list = div().flex_1().flex().flex_col().gap(px(4.0));
         if items.is_empty() {
             list = list.child(
@@ -476,6 +543,7 @@ impl TerminalView {
             {
                 let is_selected = index == selected;
                 let action = item.action;
+                let shortcut = self.command_palette_shortcut(action, window);
                 list = list.child(
                     div()
                         .id(("command-palette-item", index))
@@ -502,7 +570,32 @@ impl TerminalView {
                         }))
                         .text_size(px(12.0))
                         .text_color(primary_text)
-                        .child(item.title),
+                        .child(
+                            div()
+                                .w_full()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .gap(px(10.0))
+                                .child(div().flex_1().truncate().child(item.title))
+                                .children(shortcut.map(|(label, is_unbound)| {
+                                    div()
+                                        .flex_none()
+                                        .px(px(7.0))
+                                        .py(px(2.0))
+                                        .rounded_sm()
+                                        .bg(shortcut_bg)
+                                        .border_1()
+                                        .border_color(shortcut_border)
+                                        .text_size(px(11.0))
+                                        .text_color(if is_unbound {
+                                            shortcut_unbound_text
+                                        } else {
+                                            shortcut_text
+                                        })
+                                        .child(label)
+                                })),
+                        ),
                 );
             }
         }
