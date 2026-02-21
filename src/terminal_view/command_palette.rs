@@ -279,10 +279,6 @@ impl TerminalView {
         selected_bg.a = 0.2;
         let mut selected_border = self.colors.cursor;
         selected_border.a = 0.35;
-        let mut hover_bg = self.colors.cursor;
-        hover_bg.a = 0.12;
-        let mut hover_border = self.colors.cursor;
-        hover_border.a = 0.24;
         let mut transparent = self.colors.background;
         transparent.a = 0.0;
 
@@ -323,13 +319,21 @@ impl TerminalView {
                     } else {
                         transparent
                     })
-                    .hover(|style| style.bg(hover_bg).border_color(hover_border))
                     .cursor_pointer()
-                    .on_click(cx.listener(move |this, _event, _window, cx| {
-                        this.command_palette_selected = index;
-                        this.execute_command_palette_action(action, cx);
-                        cx.stop_propagation();
+                    .on_mouse_move(cx.listener(move |this, _event, _window, cx| {
+                        if this.command_palette_selected != index {
+                            this.command_palette_selected = index;
+                            cx.notify();
+                        }
                     }))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _event, _window, cx| {
+                            this.command_palette_selected = index;
+                            this.execute_command_palette_action(action, cx);
+                            cx.stop_propagation();
+                        }),
+                    )
                     .text_size(px(12.0))
                     .text_color(primary_text)
                     .child(
