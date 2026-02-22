@@ -707,10 +707,23 @@ impl TerminalView {
         }
 
         if let Some(input) = keystroke_to_input(&event.keystroke) {
+            // Check if this is Ctrl+C (0x03) - scroll to bottom to show where we are
+            if input == [0x03] {
+                self.scroll_to_bottom();
+            }
+
             self.active_terminal().write(&input);
             self.clear_selection();
             // Request a redraw to show the typed character
             cx.notify();
+        }
+    }
+
+    fn scroll_to_bottom(&mut self) {
+        let (display_offset, _) = self.active_terminal().scroll_state();
+        if display_offset > 0 {
+            // Scroll down to offset 0 (live output)
+            self.active_terminal().scroll_display(-(display_offset as i32));
         }
     }
 
