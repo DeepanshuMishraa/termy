@@ -180,9 +180,7 @@ impl Element for TerminalGrid {
                     Hsla::transparent_black(),
                     gpui::BorderStyle::default(),
                 ));
-            } else if cell.bg.a > 0.01
-                && !colors_approximately_equal(&cell.bg, &self.default_bg)
-            {
+            } else if cell.bg.a > 0.01 && !colors_approximately_equal(&cell.bg, &self.default_bg) {
                 window.paint_quad(quad(
                     cell_bounds,
                     px(0.0),
@@ -239,6 +237,12 @@ impl Element for TerminalGrid {
             l: 0.0,
             a: 1.0,
         };
+        let highlight_fg = Hsla {
+            h: 0.0,
+            s: 0.0,
+            l: 0.08,
+            a: 1.0,
+        };
 
         for cell in &self.cells {
             if !cell.render_text || cell.char == ' ' || cell.char == '\0' || cell.char.is_control()
@@ -253,6 +257,8 @@ impl Element for TerminalGrid {
                 cursor_fg
             } else if cell.selected {
                 self.selection_fg
+            } else if cell.search_current || cell.search_match {
+                highlight_fg
             } else {
                 cell.fg
             };

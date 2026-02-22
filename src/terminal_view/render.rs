@@ -572,18 +572,18 @@ impl Render for TerminalView {
         let mut terminal_surface_bg = colors.background;
         terminal_surface_bg.a *= effective_background_opacity;
 
-        // Search highlight colors
+        // Search highlight colors tuned for strong contrast on dark terminal themes.
         let search_match_bg = gpui::Hsla {
-            h: 0.15, // Yellow-ish
-            s: 0.8,
-            l: 0.5,
-            a: 0.35,
+            h: 0.14,
+            s: 0.92,
+            l: 0.62,
+            a: 0.62,
         };
         let search_current_bg = gpui::Hsla {
-            h: 0.08, // Orange
-            s: 0.9,
-            l: 0.55,
-            a: 0.6,
+            h: 0.09,
+            s: 0.98,
+            l: 0.56,
+            a: 0.86,
         };
 
         let terminal_grid = TerminalGrid {

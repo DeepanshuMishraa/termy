@@ -723,7 +723,8 @@ impl TerminalView {
         let (display_offset, _) = self.active_terminal().scroll_state();
         if display_offset > 0 {
             // Scroll down to offset 0 (live output)
-            self.active_terminal().scroll_display(-(display_offset as i32));
+            self.active_terminal()
+                .scroll_display(-(display_offset as i32));
         }
     }
 

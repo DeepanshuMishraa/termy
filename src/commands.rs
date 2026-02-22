@@ -75,7 +75,11 @@ define_command_actions!(
     (CloseSearch, "close_search", TERMINAL_CONTEXT),
     (SearchNext, "search_next", TERMINAL_CONTEXT),
     (SearchPrevious, "search_previous", TERMINAL_CONTEXT),
-    (ToggleSearchCaseSensitive, "toggle_search_case_sensitive", TERMINAL_CONTEXT),
+    (
+        ToggleSearchCaseSensitive,
+        "toggle_search_case_sensitive",
+        TERMINAL_CONTEXT
+    ),
     (ToggleSearchRegex, "toggle_search_regex", TERMINAL_CONTEXT),
 );
 

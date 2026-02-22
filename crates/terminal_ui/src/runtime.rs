@@ -10,7 +10,15 @@ use flume::{Receiver, Sender, unbounded};
 use gpui::{Keystroke, Pixels, px};
 #[cfg(not(target_os = "windows"))]
 use std::path::Path;
-use std::{collections::HashMap, env, path::PathBuf, sync::Arc};
+use std::{
+    collections::HashMap,
+    env,
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 #[derive(Debug, Clone)]
 pub struct TabTitleShellIntegration {
@@ -263,17 +271,36 @@ pub enum TerminalEvent {
 pub struct JsonEventListener {
     events_tx: Sender<AlacEvent>,
     wake_tx: Option<Sender<()>>,
+    wakeup_queued: Arc<AtomicBool>,
 }
 
 impl JsonEventListener {
-    fn new(events_tx: Sender<AlacEvent>, wake_tx: Option<Sender<()>>) -> Self {
-        Self { events_tx, wake_tx }
+    fn new(
+        events_tx: Sender<AlacEvent>,
+        wake_tx: Option<Sender<()>>,
+        wakeup_queued: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            events_tx,
+            wake_tx,
+            wakeup_queued,
+        }
     }
 }
 
 impl EventListener for JsonEventListener {
     fn send_event(&self, event: AlacEvent) {
-        let _ = self.events_tx.send(event);
+        match event {
+            // Coalesce wakeups to keep event queue bounded under heavy output.
+            AlacEvent::Wakeup => {
+                if !self.wakeup_queued.swap(true, Ordering::AcqRel) {
+                    let _ = self.events_tx.send(AlacEvent::Wakeup);
+                }
+            }
+            _ => {
+                let _ = self.events_tx.send(event);
+            }
+        }
         if let Some(wake_tx) = &self.wake_tx {
             // Wakeups are coalesced by using a bounded channel in the view.
             let _ = wake_tx.try_send(());
@@ -351,6 +378,8 @@ pub struct Terminal {
     events_rx: Receiver<AlacEvent>,
     /// Current terminal size
     size: TerminalSize,
+    /// Tracks whether a wakeup event is already queued.
+    wakeup_queued: Arc<AtomicBool>,
 }
 
 impl Terminal {
@@ -364,6 +393,7 @@ impl Terminal {
     ) -> anyhow::Result<Self> {
         // Create event channels
         let (events_tx, events_rx) = unbounded();
+        let wakeup_queued = Arc::new(AtomicBool::new(false));
         let runtime_config = runtime_config.cloned().unwrap_or_default();
 
         // Get shell from config/env or default to an OS-appropriate shell.
@@ -390,7 +420,8 @@ impl Terminal {
         term_config.scrolling_history = runtime_config.scrollback_history;
 
         // Create the terminal emulator
-        let listener = JsonEventListener::new(events_tx.clone(), event_wakeup_tx);
+        let listener =
+            JsonEventListener::new(events_tx.clone(), event_wakeup_tx, wakeup_queued.clone());
         let term = Term::new(term_config, &size, listener.clone());
         let term = Arc::new(FairMutex::new(term));
 
@@ -408,6 +439,7 @@ impl Terminal {
             pty_tx,
             events_rx,
             size,
+            wakeup_queued,
         })
     }
 
@@ -439,7 +471,10 @@ impl Terminal {
         let mut events = Vec::new();
         while let Ok(event) = self.events_rx.try_recv() {
             match event {
-                AlacEvent::Wakeup => events.push(TerminalEvent::Wakeup),
+                AlacEvent::Wakeup => {
+                    self.wakeup_queued.store(false, Ordering::Release);
+                    events.push(TerminalEvent::Wakeup);
+                }
                 AlacEvent::Title(title) => events.push(TerminalEvent::Title(title)),
                 AlacEvent::ResetTitle => events.push(TerminalEvent::ResetTitle),
                 AlacEvent::Bell => events.push(TerminalEvent::Bell),

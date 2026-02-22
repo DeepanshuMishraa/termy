@@ -58,7 +58,8 @@ impl TerminalView {
             return;
         };
 
-        let terminal = self.active_terminal();
+        let active_tab = self.active_tab;
+        let terminal = &self.tabs[active_tab].terminal;
         let size = terminal.size();
         let rows = size.rows as i32;
 
@@ -101,31 +102,23 @@ impl TerminalView {
             return;
         }
 
-        let terminal = self.active_terminal();
+        let active_tab = self.active_tab;
+        let terminal = &self.tabs[active_tab].terminal;
         let (display_offset, history_size) = terminal.scroll_state();
         let rows = terminal.size().rows as i32;
 
         // Search range: from deepest history to current viewport
         let start_line = -(history_size as i32);
         let end_line = rows - 1;
+        let search_state = &mut self.search_state;
 
-        // Extract all lines from terminal first (to avoid borrow issues)
-        // Pre-allocate with capacity to avoid reallocations during search
-        let line_count = (end_line - start_line + 1) as usize;
-        let mut lines: std::collections::HashMap<i32, String> =
-            std::collections::HashMap::with_capacity(line_count);
+        // Search directly against terminal grid lines to avoid duplicating
+        // the entire visible + scrollback range in a temporary map.
         terminal.with_term(|term| {
             let grid = term.grid();
-            for line_idx in start_line..=end_line {
-                if let Some(text) = extract_line_text(grid, line_idx, display_offset) {
-                    lines.insert(line_idx, text);
-                }
-            }
-        });
-
-        // Now perform search with the extracted lines
-        self.search_state.search(start_line, end_line, |line_idx| {
-            lines.get(&line_idx).cloned()
+            search_state.search(start_line, end_line, |line_idx| {
+                extract_line_text(grid, line_idx, display_offset)
+            });
         });
 
         // Jump to nearest match to current viewport
@@ -185,11 +178,7 @@ impl TerminalView {
         let mut button_hover_bg = colors.cursor;
         button_hover_bg.a = 0.2;
 
-        let (current, total) = self
-            .search_state
-            .results()
-            .position()
-            .unwrap_or((0, 0));
+        let (current, total) = self.search_state.results().position().unwrap_or((0, 0));
 
         let counter_label = if total > 0 {
             format!("{} of {}", current, total)
@@ -332,7 +321,6 @@ impl TerminalView {
             )
             .into_any()
     }
-
 }
 
 /// Extract text from a terminal grid line
@@ -348,7 +336,9 @@ fn extract_line_text(
 
     // Check if line is within grid bounds
     let total_lines = grid.total_lines();
-    if line_idx < -(total_lines as i32 - grid.screen_lines() as i32) || line_idx >= grid.screen_lines() as i32 {
+    if line_idx < -(total_lines as i32 - grid.screen_lines() as i32)
+        || line_idx >= grid.screen_lines() as i32
+    {
         return None;
     }
 
