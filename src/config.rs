@@ -11,6 +11,8 @@ const DEFAULT_TAB_TITLE_COMMAND_FORMAT: &str = "{command}";
 const DEFAULT_TERM: &str = "xterm-256color";
 const DEFAULT_COLORTERM: &str = "truecolor";
 const DEFAULT_MOUSE_SCROLL_MULTIPLIER: f32 = 3.0;
+const DEFAULT_SCROLLBACK_HISTORY: usize = 2000;
+const MAX_SCROLLBACK_HISTORY: usize = 100_000;
 const MIN_MOUSE_SCROLL_MULTIPLIER: f32 = 0.1;
 const MAX_MOUSE_SCROLL_MULTIPLIER: f32 = 1_000.0;
 const DEFAULT_CURSOR_BLINK: bool = true;
@@ -61,6 +63,8 @@ padding_y = 8\n\
 # working_dir_fallback = home\n\
 # Advertise 24-bit color support to child apps\n\
 # colorterm = truecolor\n\
+# Scrollback history lines (lower = less memory, max 100000)\n\
+# scrollback_history = 2000\n\
 # Keybindings (Ghostty-style trigger overrides)\n\
 # keybind = cmd-p=toggle_command_palette\n\
 # keybind = cmd-c=copy\n\
@@ -220,6 +224,7 @@ pub struct AppConfig {
     pub padding_x: f32,
     pub padding_y: f32,
     pub mouse_scroll_multiplier: f32,
+    pub scrollback_history: usize,
     pub command_palette_show_keybinds: bool,
     pub keybind_lines: Vec<KeybindConfigLine>,
 }
@@ -251,6 +256,7 @@ impl Default for AppConfig {
             padding_x: 12.0,
             padding_y: 8.0,
             mouse_scroll_multiplier: DEFAULT_MOUSE_SCROLL_MULTIPLIER,
+            scrollback_history: DEFAULT_SCROLLBACK_HISTORY,
             command_palette_show_keybinds: true,
             keybind_lines: Vec::new(),
         }
@@ -437,6 +443,14 @@ impl AppConfig {
                 {
                     config.mouse_scroll_multiplier =
                         multiplier.clamp(MIN_MOUSE_SCROLL_MULTIPLIER, MAX_MOUSE_SCROLL_MULTIPLIER);
+                }
+            }
+
+            if key.eq_ignore_ascii_case("scrollback_history")
+                || key.eq_ignore_ascii_case("scrollback")
+            {
+                if let Ok(history) = value.parse::<usize>() {
+                    config.scrollback_history = history.min(MAX_SCROLLBACK_HISTORY);
                 }
             }
 
@@ -746,5 +760,20 @@ mod tests {
 
         let blink_disabled = AppConfig::from_contents("cursor_blink = false\n");
         assert!(!blink_disabled.cursor_blink);
+    }
+
+    #[test]
+    fn scrollback_history_parses_and_clamps() {
+        let defaults = AppConfig::from_contents("");
+        assert_eq!(defaults.scrollback_history, 2000);
+
+        let custom = AppConfig::from_contents("scrollback_history = 5000\n");
+        assert_eq!(custom.scrollback_history, 5000);
+
+        let alias = AppConfig::from_contents("scrollback = 3000\n");
+        assert_eq!(alias.scrollback_history, 3000);
+
+        let clamped_high = AppConfig::from_contents("scrollback_history = 200000\n");
+        assert_eq!(clamped_high.scrollback_history, 100_000);
     }
 }

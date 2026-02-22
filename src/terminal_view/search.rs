@@ -110,7 +110,10 @@ impl TerminalView {
         let end_line = rows - 1;
 
         // Extract all lines from terminal first (to avoid borrow issues)
-        let mut lines: std::collections::HashMap<i32, String> = std::collections::HashMap::new();
+        // Pre-allocate with capacity to avoid reallocations during search
+        let line_count = (end_line - start_line + 1) as usize;
+        let mut lines: std::collections::HashMap<i32, String> =
+            std::collections::HashMap::with_capacity(line_count);
         terminal.with_term(|term| {
             let grid = term.grid();
             for line_idx in start_line..=end_line {
