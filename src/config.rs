@@ -236,7 +236,7 @@ impl Default for AppConfig {
             theme: DEFAULT_THEME_ID.to_string(),
             working_dir: None,
             working_dir_fallback: WorkingDirFallback::default(),
-            use_tabs: false,
+            use_tabs: true,
             tab_title: TabTitleConfig::default(),
             shell: None,
             term: DEFAULT_TERM.to_string(),
