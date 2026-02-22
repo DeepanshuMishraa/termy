@@ -19,6 +19,7 @@ enum InlineInputCharClass {
 enum InlineInputTarget {
     CommandPalette,
     RenameTab,
+    Search,
 }
 
 #[derive(Clone, Debug)]
@@ -860,6 +861,8 @@ impl TerminalView {
     fn active_inline_input_target(&self) -> Option<InlineInputTarget> {
         if self.command_palette_open {
             Some(InlineInputTarget::CommandPalette)
+        } else if self.search_open {
+            Some(InlineInputTarget::Search)
         } else if self.renaming_tab.is_some() {
             Some(InlineInputTarget::RenameTab)
         } else {
@@ -915,6 +918,7 @@ impl TerminalView {
     fn active_inline_input_state(&self) -> Option<&InlineInputState> {
         match self.active_inline_input_target()? {
             InlineInputTarget::CommandPalette => Some(&self.command_palette_input),
+            InlineInputTarget::Search => Some(&self.search_input),
             InlineInputTarget::RenameTab => Some(&self.rename_input),
         }
     }
@@ -922,6 +926,7 @@ impl TerminalView {
     fn active_inline_input_state_mut(&mut self) -> Option<&mut InlineInputState> {
         match self.active_inline_input_target()? {
             InlineInputTarget::CommandPalette => Some(&mut self.command_palette_input),
+            InlineInputTarget::Search => Some(&mut self.search_input),
             InlineInputTarget::RenameTab => Some(&mut self.rename_input),
         }
     }
@@ -961,6 +966,10 @@ impl TerminalView {
             Some(InlineInputTarget::CommandPalette) => {
                 mutate(&mut self.command_palette_input);
                 self.command_palette_query_changed(cx);
+            }
+            Some(InlineInputTarget::Search) => {
+                mutate(&mut self.search_input);
+                self.handle_search_input_changed(cx);
             }
             Some(InlineInputTarget::RenameTab) => {
                 mutate(&mut self.rename_input);

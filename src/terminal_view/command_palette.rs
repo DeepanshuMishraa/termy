@@ -88,6 +88,24 @@ impl TerminalView {
             CommandAction::ZoomReset => {
                 self.command_palette_binding_badge(&commands::ZoomReset, window)
             }
+            CommandAction::OpenSearch => {
+                self.command_palette_binding_badge(&commands::OpenSearch, window)
+            }
+            CommandAction::CloseSearch => {
+                self.command_palette_binding_badge(&commands::CloseSearch, window)
+            }
+            CommandAction::SearchNext => {
+                self.command_palette_binding_badge(&commands::SearchNext, window)
+            }
+            CommandAction::SearchPrevious => {
+                self.command_palette_binding_badge(&commands::SearchPrevious, window)
+            }
+            CommandAction::ToggleSearchCaseSensitive => {
+                self.command_palette_binding_badge(&commands::ToggleSearchCaseSensitive, window)
+            }
+            CommandAction::ToggleSearchRegex => {
+                self.command_palette_binding_badge(&commands::ToggleSearchRegex, window)
+            }
         }
     }
 
@@ -141,6 +159,11 @@ impl TerminalView {
                 title: "Reset Zoom",
                 keywords: "font default",
                 action: CommandAction::ZoomReset,
+            },
+            CommandPaletteItem {
+                title: "Find",
+                keywords: "search lookup text",
+                action: CommandAction::OpenSearch,
             },
         ];
 
@@ -494,7 +517,13 @@ impl TerminalView {
             | CommandAction::CheckForUpdates
             | CommandAction::ToggleCommandPalette
             | CommandAction::Copy
-            | CommandAction::Paste => {}
+            | CommandAction::Paste
+            | CommandAction::OpenSearch
+            | CommandAction::CloseSearch
+            | CommandAction::SearchNext
+            | CommandAction::SearchPrevious
+            | CommandAction::ToggleSearchCaseSensitive
+            | CommandAction::ToggleSearchRegex => {}
         }
     }
 
