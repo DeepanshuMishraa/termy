@@ -53,6 +53,17 @@ impl IntoElement for TerminalGrid {
     }
 }
 
+/// Check if two HSLA colors are approximately equal.
+/// This is used to avoid painting cell backgrounds that match the terminal's default background,
+/// which can cause visual artifacts due to slight color differences between ANSI colors.
+fn colors_approximately_equal(a: &Hsla, b: &Hsla) -> bool {
+    const EPSILON: f32 = 0.02;
+    (a.h - b.h).abs() < EPSILON
+        && (a.s - b.s).abs() < EPSILON
+        && (a.l - b.l).abs() < EPSILON
+        && (a.a - b.a).abs() < EPSILON
+}
+
 impl Element for TerminalGrid {
     type RequestLayoutState = ();
     type PrepaintState = ();
@@ -169,7 +180,9 @@ impl Element for TerminalGrid {
                     Hsla::transparent_black(),
                     gpui::BorderStyle::default(),
                 ));
-            } else if cell.bg.a > 0.01 {
+            } else if cell.bg.a > 0.01
+                && !colors_approximately_equal(&cell.bg, &self.default_bg)
+            {
                 window.paint_quad(quad(
                     cell_bounds,
                     px(0.0),
