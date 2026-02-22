@@ -894,13 +894,9 @@ impl TerminalView {
                 text.push(' ');
             }
             let path_str = path.to_string_lossy();
-            if path_str.contains(' ') || path_str.contains('\'') || path_str.contains('"') {
-                text.push('\'');
-                text.push_str(&path_str.replace('\'', "'\\''"));
-                text.push('\'');
-            } else {
-                text.push_str(&path_str);
-            }
+            text.push('\'');
+            text.push_str(&path_str.replace('\'', "'\\''"));
+            text.push('\'');
         }
 
         let terminal = self.active_terminal();
