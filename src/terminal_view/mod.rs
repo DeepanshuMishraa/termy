@@ -211,6 +211,7 @@ impl TerminalView {
             term: config.term.clone(),
             colorterm: config.colorterm.clone(),
             working_dir_fallback,
+            scrollback_history: config.scrollback_history,
         }
     }
 

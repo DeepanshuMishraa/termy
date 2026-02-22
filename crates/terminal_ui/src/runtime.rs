@@ -41,12 +41,15 @@ impl Default for WorkingDirFallback {
     }
 }
 
+const DEFAULT_SCROLLBACK_HISTORY: usize = 2000;
+
 #[derive(Debug, Clone)]
 pub struct TerminalRuntimeConfig {
     pub shell: Option<String>,
     pub term: String,
     pub colorterm: Option<String>,
     pub working_dir_fallback: WorkingDirFallback,
+    pub scrollback_history: usize,
 }
 
 impl Default for TerminalRuntimeConfig {
@@ -56,6 +59,7 @@ impl Default for TerminalRuntimeConfig {
             term: DEFAULT_TERM.to_string(),
             colorterm: Some(DEFAULT_COLORTERM.to_string()),
             working_dir_fallback: WorkingDirFallback::default(),
+            scrollback_history: DEFAULT_SCROLLBACK_HISTORY,
         }
     }
 }
@@ -381,8 +385,9 @@ impl Terminal {
             escape_args: false,
         };
 
-        // Create terminal config
-        let term_config = TermConfig::default();
+        // Create terminal config with configurable scrollback history
+        let mut term_config = TermConfig::default();
+        term_config.scrolling_history = runtime_config.scrollback_history;
 
         // Create the terminal emulator
         let listener = JsonEventListener::new(events_tx.clone(), event_wakeup_tx);

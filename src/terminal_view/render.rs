@@ -64,8 +64,10 @@ impl Render for TerminalView {
 
         self.sync_terminal_size(window, cell_size);
 
-        // Collect cells to render
-        let mut cells_to_render: Vec<CellRenderInfo> = Vec::new();
+        // Collect cells to render - pre-allocate based on terminal size to avoid reallocations
+        let terminal_size = self.active_terminal().size();
+        let estimated_cells = (terminal_size.cols as usize) * (terminal_size.rows as usize);
+        let mut cells_to_render: Vec<CellRenderInfo> = Vec::with_capacity(estimated_cells);
         let (cursor_col, cursor_row) = self.active_terminal().cursor_position();
         let terminal_cursor_active =
             !self.command_palette_open && self.renaming_tab.is_none() && !self.search_open;
@@ -137,7 +139,6 @@ impl Render for TerminalView {
             }
         });
 
-        let terminal_size = self.active_terminal().size();
         let focus_handle = self.focus_handle.clone();
         let show_tab_bar = self.show_tab_bar();
         let show_windows_controls = cfg!(target_os = "windows");
