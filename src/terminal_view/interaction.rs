@@ -477,7 +477,14 @@ impl TerminalView {
             }
             CommandAction::Paste => {
                 if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-                    self.active_terminal().write(text.as_bytes());
+                    let terminal = self.active_terminal();
+                    if terminal.bracketed_paste_mode() {
+                        terminal.write(b"\x1b[200~");
+                        terminal.write(text.as_bytes());
+                        terminal.write(b"\x1b[201~");
+                    } else {
+                        terminal.write(text.as_bytes());
+                    }
                     self.clear_selection();
                     cx.notify();
                 } else {
@@ -868,6 +875,39 @@ impl TerminalView {
         } else {
             self.terminal_scroll_accumulator_y = 0.0;
         }
+    }
+
+    pub(super) fn handle_file_drop(
+        &mut self,
+        paths: &ExternalPaths,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let paths_list = paths.paths();
+        if paths_list.is_empty() {
+            return;
+        }
+
+        let mut text = String::new();
+        for (i, path) in paths_list.iter().enumerate() {
+            if i > 0 {
+                text.push(' ');
+            }
+            let path_str = path.to_string_lossy();
+            text.push('\'');
+            text.push_str(&path_str.replace('\'', "'\\''"));
+            text.push('\'');
+        }
+
+        let terminal = self.active_terminal();
+        if terminal.bracketed_paste_mode() {
+            terminal.write(b"\x1b[200~");
+            terminal.write(text.as_bytes());
+            terminal.write(b"\x1b[201~");
+        } else {
+            terminal.write(text.as_bytes());
+        }
+        cx.notify();
     }
 
     pub(super) fn tab_bar_height(&self) -> f32 {

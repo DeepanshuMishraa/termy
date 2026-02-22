@@ -1000,6 +1000,7 @@ impl Render for TerminalView {
                     .on_mouse_down(MouseButton::Left, cx.listener(Self::handle_mouse_down))
                     .on_mouse_move(cx.listener(Self::handle_mouse_move))
                     .on_mouse_up(MouseButton::Left, cx.listener(Self::handle_mouse_up))
+                    .on_drop(cx.listener(Self::handle_file_drop))
                     .flex_1()
                     .w_full()
                     .px(px(self.padding_x))
