@@ -46,6 +46,12 @@ impl TerminalView {
             return;
         }
 
+        // Enforce max_tabs limit to control memory usage
+        if self.tabs.len() >= self.max_tabs {
+            termy_toast::warning(format!("Maximum {} tabs reached", self.max_tabs));
+            return;
+        }
+
         let terminal = Terminal::new(
             TerminalSize::default(),
             self.configured_working_dir.as_deref(),
@@ -103,7 +109,22 @@ impl TerminalView {
             return;
         }
 
+        let old_active = self.active_tab;
         self.active_tab = index;
+
+        // Apply inactive_tab_scrollback optimization if configured
+        if let Some(inactive_scrollback) = self.inactive_tab_scrollback {
+            // Shrink the previously active tab's scrollback to save memory
+            self.tabs[old_active]
+                .terminal
+                .set_scrollback_history(inactive_scrollback);
+
+            // Restore full scrollback for the newly active tab
+            self.tabs[index]
+                .terminal
+                .set_scrollback_history(self.terminal_runtime.scrollback_history);
+        }
+
         self.renaming_tab = None;
         self.rename_input.clear();
         self.inline_input_selecting = false;

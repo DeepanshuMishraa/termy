@@ -2,17 +2,13 @@ use regex::{Regex, RegexBuilder};
 
 use crate::matcher::{SearchMatch, SearchResults};
 
-/// Search mode configuration
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SearchMode {
-    /// Plain text search (regex metacharacters are escaped)
     #[default]
     Literal,
-    /// Regular expression search
     Regex,
 }
 
-/// Search configuration
 #[derive(Debug, Clone)]
 pub struct SearchConfig {
     pub case_sensitive: bool,
@@ -28,7 +24,6 @@ impl Default for SearchConfig {
     }
 }
 
-/// Search engine that finds matches in terminal content
 pub struct SearchEngine {
     config: SearchConfig,
     compiled_regex: Option<Regex>,
@@ -44,7 +39,6 @@ impl SearchEngine {
         }
     }
 
-    /// Update the search pattern and recompile regex
     pub fn set_pattern(&mut self, pattern: &str) -> Result<(), String> {
         if pattern == self.pattern {
             return Ok(());
@@ -77,29 +71,22 @@ impl SearchEngine {
         }
     }
 
-    /// Update configuration (will recompile pattern if needed)
     pub fn set_config(&mut self, config: SearchConfig) {
-        if self.config.case_sensitive != config.case_sensitive
-            || self.config.mode != config.mode
-        {
+        if self.config.case_sensitive != config.case_sensitive || self.config.mode != config.mode {
             self.config = config;
-            // Recompile with new settings
             let pattern = self.pattern.clone();
             let _ = self.set_pattern(&pattern);
         }
     }
 
-    /// Get current pattern
     pub fn pattern(&self) -> &str {
         &self.pattern
     }
 
-    /// Check if the engine has a valid pattern
     pub fn has_pattern(&self) -> bool {
         self.compiled_regex.is_some()
     }
 
-    /// Search a single line and return matches
     pub fn search_line(&self, line_idx: i32, text: &str) -> Vec<SearchMatch> {
         let Some(regex) = &self.compiled_regex else {
             return Vec::new();
@@ -111,14 +98,6 @@ impl SearchEngine {
             .collect()
     }
 
-    /// Search terminal content using a line provider closure.
-    ///
-    /// The `line_provider` is called with line indices from `start_line` to `end_line`.
-    /// It should return `Some(text)` for valid lines or `None` for invalid/empty lines.
-    ///
-    /// Line indices follow Alacritty convention:
-    /// - Negative values = scrollback history (e.g., -100 is 100 lines back)
-    /// - 0 to (rows-1) = visible viewport
     pub fn search<F>(&self, start_line: i32, end_line: i32, line_provider: F) -> SearchResults
     where
         F: Fn(i32) -> Option<String>,
@@ -239,11 +218,9 @@ mod tests {
             "line 3 testing",
         ];
 
-        let results = engine.search(0, 3, |idx| {
-            lines.get(idx as usize).map(|s| s.to_string())
-        });
+        let results = engine.search(0, 3, |idx| lines.get(idx as usize).map(|s| s.to_string()));
 
-        assert_eq!(results.count(), 4); // test appears 4 times
+        assert_eq!(results.count(), 4);
     }
 
     #[test]
@@ -259,7 +236,7 @@ mod tests {
     #[test]
     fn test_unicode_search() {
         let mut engine = SearchEngine::new(SearchConfig::default());
-        engine.set_pattern("\u{1F600}").unwrap(); // grinning face emoji
+        engine.set_pattern("\u{1F600}").unwrap();
 
         let matches = engine.search_line(0, "Hello \u{1F600} World \u{1F600}");
         assert_eq!(matches.len(), 2);

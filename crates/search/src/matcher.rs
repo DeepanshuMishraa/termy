@@ -1,11 +1,9 @@
-/// A single match in the terminal buffer
+use std::collections::HashMap;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchMatch {
-    /// Line index (negative values = scrollback history)
     pub line: i32,
-    /// Start column (inclusive)
     pub start_col: usize,
-    /// End column (exclusive)
     pub end_col: usize,
 }
 
@@ -18,17 +16,16 @@ impl SearchMatch {
         }
     }
 
-    /// Check if a cell position is within this match
     pub fn contains(&self, line: i32, col: usize) -> bool {
         self.line == line && col >= self.start_col && col < self.end_col
     }
 }
 
-/// Container for search results with navigation
 #[derive(Debug, Clone)]
 pub struct SearchResults {
     matches: Vec<SearchMatch>,
     current_index: Option<usize>,
+    match_ranges_by_line: HashMap<i32, Vec<(usize, usize)>>,
 }
 
 impl Default for SearchResults {
@@ -42,43 +39,51 @@ impl SearchResults {
         Self {
             matches: Vec::new(),
             current_index: None,
+            match_ranges_by_line: HashMap::new(),
         }
     }
 
     pub fn from_matches(matches: Vec<SearchMatch>) -> Self {
         let current_index = if matches.is_empty() { None } else { Some(0) };
+        let match_ranges_by_line = Self::build_match_ranges_by_line(&matches);
         Self {
             matches,
             current_index,
+            match_ranges_by_line,
         }
     }
 
-    /// Total number of matches
+    fn build_match_ranges_by_line(matches: &[SearchMatch]) -> HashMap<i32, Vec<(usize, usize)>> {
+        let mut ranges_by_line = HashMap::new();
+        for m in matches {
+            ranges_by_line
+                .entry(m.line)
+                .or_insert_with(Vec::new)
+                .push((m.start_col, m.end_col));
+        }
+        ranges_by_line
+    }
+
     pub fn count(&self) -> usize {
         self.matches.len()
     }
 
-    /// Check if there are any matches
     pub fn is_empty(&self) -> bool {
         self.matches.is_empty()
     }
 
-    /// Get all matches
     pub fn matches(&self) -> &[SearchMatch] {
         &self.matches
     }
 
-    /// Get the currently focused match
     pub fn current(&self) -> Option<&SearchMatch> {
         self.current_index.and_then(|i| self.matches.get(i))
     }
 
-    /// Get current position as (current_1_indexed, total)
     pub fn position(&self) -> Option<(usize, usize)> {
         self.current_index.map(|i| (i + 1, self.matches.len()))
     }
 
-    /// Move to the next match (wraps around)
     pub fn next(&mut self) -> Option<&SearchMatch> {
         if self.matches.is_empty() {
             return None;
@@ -91,7 +96,6 @@ impl SearchResults {
         self.matches.get(next_index)
     }
 
-    /// Move to the previous match (wraps around)
     pub fn previous(&mut self) -> Option<&SearchMatch> {
         if self.matches.is_empty() {
             return None;
@@ -110,7 +114,6 @@ impl SearchResults {
         self.matches.get(prev_index)
     }
 
-    /// Jump to a specific match index
     pub fn jump_to(&mut self, index: usize) -> Option<&SearchMatch> {
         if index < self.matches.len() {
             self.current_index = Some(index);
@@ -120,13 +123,11 @@ impl SearchResults {
         }
     }
 
-    /// Find the match nearest to a given line (for initial positioning)
     pub fn jump_to_nearest(&mut self, target_line: i32) -> Option<&SearchMatch> {
         if self.matches.is_empty() {
             return None;
         }
 
-        // Find first match at or after target_line
         let index = self
             .matches
             .iter()
@@ -137,19 +138,23 @@ impl SearchResults {
         self.matches.get(index)
     }
 
-    /// Check if a cell is part of the current match
     pub fn is_current_match(&self, line: i32, col: usize) -> bool {
         self.current()
             .map(|m| m.contains(line, col))
             .unwrap_or(false)
     }
 
-    /// Check if a cell is part of any match
     pub fn is_any_match(&self, line: i32, col: usize) -> bool {
-        self.matches.iter().any(|m| m.contains(line, col))
+        self.match_ranges_by_line
+            .get(&line)
+            .map(|ranges| {
+                ranges
+                    .iter()
+                    .any(|(start_col, end_col)| col >= *start_col && col < *end_col)
+            })
+            .unwrap_or(false)
     }
 
-    /// Get matches visible in a viewport range
     pub fn matches_in_range(&self, min_line: i32, max_line: i32) -> Vec<&SearchMatch> {
         self.matches
             .iter()
@@ -167,7 +172,7 @@ mod tests {
         let m = SearchMatch::new(5, 10, 15);
         assert!(m.contains(5, 10));
         assert!(m.contains(5, 14));
-        assert!(!m.contains(5, 15)); // exclusive end
+        assert!(!m.contains(5, 15));
         assert!(!m.contains(5, 9));
         assert!(!m.contains(4, 12));
     }
@@ -200,11 +205,9 @@ mod tests {
         results.next();
         assert_eq!(results.position(), Some((3, 3)));
 
-        // Wrap around
         results.next();
         assert_eq!(results.position(), Some((1, 3)));
 
-        // Previous
         results.previous();
         assert_eq!(results.position(), Some((3, 3)));
     }
@@ -226,6 +229,6 @@ mod tests {
         assert_eq!(results.current().unwrap().line, 0);
 
         results.jump_to_nearest(100);
-        assert_eq!(results.current().unwrap().line, -10); // wraps to first
+        assert_eq!(results.current().unwrap().line, -10);
     }
 }
