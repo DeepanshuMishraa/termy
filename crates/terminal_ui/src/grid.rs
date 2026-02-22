@@ -15,6 +15,10 @@ pub struct CellRenderInfo {
     pub render_text: bool,
     pub is_cursor: bool,
     pub selected: bool,
+    /// Part of the current (focused) search match
+    pub search_current: bool,
+    /// Part of any search match (but not current)
+    pub search_match: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,6 +37,8 @@ pub struct TerminalGrid {
     pub cursor_color: Hsla,
     pub selection_bg: Hsla,
     pub selection_fg: Hsla,
+    pub search_match_bg: Hsla,
+    pub search_current_bg: Hsla,
     pub hovered_link_range: Option<(usize, usize, usize)>,
     pub font_family: SharedString,
     pub font_size: Pixels,
@@ -141,6 +147,24 @@ impl Element for TerminalGrid {
                     cell_bounds,
                     px(0.0),
                     self.selection_bg,
+                    gpui::Edges::default(),
+                    Hsla::transparent_black(),
+                    gpui::BorderStyle::default(),
+                ));
+            } else if cell.search_current {
+                window.paint_quad(quad(
+                    cell_bounds,
+                    px(0.0),
+                    self.search_current_bg,
+                    gpui::Edges::default(),
+                    Hsla::transparent_black(),
+                    gpui::BorderStyle::default(),
+                ));
+            } else if cell.search_match {
+                window.paint_quad(quad(
+                    cell_bounds,
+                    px(0.0),
+                    self.search_match_bg,
                     gpui::Edges::default(),
                     Hsla::transparent_black(),
                     gpui::BorderStyle::default(),

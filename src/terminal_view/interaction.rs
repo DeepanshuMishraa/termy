@@ -493,6 +493,21 @@ impl TerminalView {
                 self.update_zoom(current - ZOOM_STEP, cx);
             }
             CommandAction::ZoomReset => self.update_zoom(self.base_font_size, cx),
+            // Search
+            CommandAction::OpenSearch => self.open_search(cx),
+            CommandAction::CloseSearch => self.close_search(cx),
+            CommandAction::SearchNext => self.search_next(cx),
+            CommandAction::SearchPrevious => self.search_previous(cx),
+            CommandAction::ToggleSearchCaseSensitive => {
+                self.search_state.toggle_case_sensitive();
+                self.perform_search();
+                cx.notify();
+            }
+            CommandAction::ToggleSearchRegex => {
+                self.search_state.toggle_regex_mode();
+                self.perform_search();
+                cx.notify();
+            }
         }
     }
 
@@ -604,6 +619,60 @@ impl TerminalView {
         self.execute_command_action(CommandAction::ZoomReset, true, cx);
     }
 
+    pub(super) fn handle_open_search_action(
+        &mut self,
+        _: &commands::OpenSearch,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.execute_command_action(CommandAction::OpenSearch, true, cx);
+    }
+
+    pub(super) fn handle_close_search_action(
+        &mut self,
+        _: &commands::CloseSearch,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.execute_command_action(CommandAction::CloseSearch, true, cx);
+    }
+
+    pub(super) fn handle_search_next_action(
+        &mut self,
+        _: &commands::SearchNext,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.execute_command_action(CommandAction::SearchNext, true, cx);
+    }
+
+    pub(super) fn handle_search_previous_action(
+        &mut self,
+        _: &commands::SearchPrevious,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.execute_command_action(CommandAction::SearchPrevious, true, cx);
+    }
+
+    pub(super) fn handle_toggle_search_case_sensitive_action(
+        &mut self,
+        _: &commands::ToggleSearchCaseSensitive,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.execute_command_action(CommandAction::ToggleSearchCaseSensitive, true, cx);
+    }
+
+    pub(super) fn handle_toggle_search_regex_action(
+        &mut self,
+        _: &commands::ToggleSearchRegex,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.execute_command_action(CommandAction::ToggleSearchRegex, true, cx);
+    }
+
     pub(super) fn handle_key_down(
         &mut self,
         event: &KeyDownEvent,
@@ -615,6 +684,11 @@ impl TerminalView {
 
         if self.command_palette_open {
             self.handle_command_palette_key_down(key, cx);
+            return;
+        }
+
+        if self.search_open {
+            self.handle_search_key_down(key, cx);
             return;
         }
 

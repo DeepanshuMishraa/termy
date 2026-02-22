@@ -44,6 +44,19 @@ pub fn default_keybinds() -> Vec<DefaultKeybind> {
             trigger: "secondary-0",
             action: CommandAction::ZoomReset,
         },
+        // Search
+        DefaultKeybind {
+            trigger: "secondary-f",
+            action: CommandAction::OpenSearch,
+        },
+        DefaultKeybind {
+            trigger: "secondary-g",
+            action: CommandAction::SearchNext,
+        },
+        DefaultKeybind {
+            trigger: "secondary-shift-g",
+            action: CommandAction::SearchPrevious,
+        },
     ];
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]

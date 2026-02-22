@@ -5177,7 +5177,7 @@ dependencies = [
 
 [[package]]
 name = "termy"
-version = "0.1.19"
+version = "0.1.20"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -5190,6 +5190,7 @@ dependencies = [
  "parking_lot",
  "smol",
  "termy_auto_update",
+ "termy_search",
  "termy_terminal_ui",
  "termy_themes",
  "termy_toast",
@@ -5208,6 +5209,13 @@ dependencies = [
  "serde",
  "serde_json",
  "ureq",
+]
+
+[[package]]
+name = "termy_search"
+version = "0.1.0"
+dependencies = [
+ "regex",
 ]
 
 [[package]]

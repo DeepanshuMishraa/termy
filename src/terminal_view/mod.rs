@@ -24,6 +24,7 @@ use termy_terminal_ui::{
     TerminalGrid, TerminalRuntimeConfig, TerminalSize,
     WorkingDirFallback as RuntimeWorkingDirFallback, find_link_in_line, keystroke_to_input,
 };
+use termy_search::SearchState;
 use termy_toast::ToastManager;
 
 #[cfg(target_os = "macos")]
@@ -35,6 +36,7 @@ mod command_palette;
 mod inline_input;
 mod interaction;
 mod render;
+mod search;
 mod tabs;
 mod titles;
 #[cfg(target_os = "macos")]
@@ -73,6 +75,9 @@ const COMMAND_PALETTE_MAX_ITEMS: usize = 8;
 const COMMAND_PALETTE_ROW_HEIGHT: f32 = 30.0;
 const COMMAND_PALETTE_SCROLLBAR_WIDTH: f32 = 8.0;
 const COMMAND_PALETTE_SCROLLBAR_MIN_THUMB_HEIGHT: f32 = 18.0;
+const SEARCH_BAR_WIDTH: f32 = 320.0;
+const SEARCH_BAR_HEIGHT: f32 = 36.0;
+const SEARCH_DEBOUNCE_MS: u64 = 50;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct CellPos {
@@ -179,6 +184,11 @@ pub struct TerminalView {
     terminal_scroll_accumulator_y: f32,
     /// Cached cell dimensions
     cell_size: Option<Size<Pixels>>,
+    // Search state
+    search_open: bool,
+    search_input: InlineInputState,
+    search_state: SearchState,
+    search_debounce_token: u64,
     #[cfg(target_os = "macos")]
     auto_updater: Option<Entity<AutoUpdater>>,
     #[cfg(target_os = "macos")]
@@ -336,6 +346,10 @@ impl TerminalView {
             inline_input_selecting: false,
             terminal_scroll_accumulator_y: 0.0,
             cell_size: None,
+            search_open: false,
+            search_input: InlineInputState::new(String::new()),
+            search_state: SearchState::new(),
+            search_debounce_token: 0,
             #[cfg(target_os = "macos")]
             auto_updater: None,
             #[cfg(target_os = "macos")]

@@ -49,9 +49,17 @@ impl Render for TerminalView {
         // Collect cells to render
         let mut cells_to_render: Vec<CellRenderInfo> = Vec::new();
         let (cursor_col, cursor_row) = self.active_terminal().cursor_position();
-        let terminal_cursor_active = !self.command_palette_open && self.renaming_tab.is_none();
+        let terminal_cursor_active = !self.command_palette_open && self.renaming_tab.is_none() && !self.search_open;
         let cursor_visible = terminal_cursor_active
             && self.cursor_visible_for_focus(self.focus_handle.is_focused(window));
+
+        // Pre-compute search match info
+        let search_active = self.search_open;
+        let search_results = if search_active {
+            Some(self.search_state.results())
+        } else {
+            None
+        };
 
         self.active_terminal().with_term(|term| {
             let content = term.renderable_content();
@@ -59,8 +67,9 @@ impl Render for TerminalView {
             for cell in content.display_iter {
                 let point = cell.point;
                 let cell_content = &cell.cell;
+                let term_line = point.line.0;
                 let Some(row) =
-                    Self::viewport_row_from_term_line(point.line.0, content.display_offset)
+                    Self::viewport_row_from_term_line(term_line, content.display_offset)
                 else {
                     continue;
                 };
@@ -82,6 +91,15 @@ impl Render for TerminalView {
                 let is_cursor = show_cursor && col == cursor_col && row == cursor_row;
                 let selected = self.cell_is_selected(col, row);
 
+                // Check search matches
+                let (search_current, search_match) = if let Some(results) = &search_results {
+                    let is_current = results.is_current_match(term_line, col);
+                    let is_any = results.is_any_match(term_line, col);
+                    (is_current, is_any && !is_current)
+                } else {
+                    (false, false)
+                };
+
                 cells_to_render.push(CellRenderInfo {
                     col,
                     row,
@@ -94,6 +112,8 @@ impl Render for TerminalView {
                     ),
                     is_cursor,
                     selected,
+                    search_current,
+                    search_match,
                 });
             }
         });
@@ -529,6 +549,20 @@ impl Render for TerminalView {
         let mut terminal_surface_bg = colors.background;
         terminal_surface_bg.a *= effective_background_opacity;
 
+        // Search highlight colors
+        let search_match_bg = gpui::Hsla {
+            h: 0.15,  // Yellow-ish
+            s: 0.8,
+            l: 0.5,
+            a: 0.35,
+        };
+        let search_current_bg = gpui::Hsla {
+            h: 0.08,  // Orange
+            s: 0.9,
+            l: 0.55,
+            a: 0.6,
+        };
+
         let terminal_grid = TerminalGrid {
             cells: cells_to_render,
             cell_size,
@@ -538,6 +572,8 @@ impl Render for TerminalView {
             cursor_color: colors.cursor.into(),
             selection_bg: selection_bg.into(),
             selection_fg: selection_fg.into(),
+            search_match_bg,
+            search_current_bg,
             hovered_link_range,
             font_family: font_family.clone(),
             font_size,
@@ -545,6 +581,11 @@ impl Render for TerminalView {
         };
         let command_palette_overlay = if self.command_palette_open {
             Some(self.render_command_palette_modal(cx))
+        } else {
+            None
+        };
+        let search_overlay = if self.search_open {
+            Some(self.render_search_bar(cx))
         } else {
             None
         };
@@ -924,6 +965,12 @@ impl Render for TerminalView {
                     .on_action(cx.listener(Self::handle_zoom_in_action))
                     .on_action(cx.listener(Self::handle_zoom_out_action))
                     .on_action(cx.listener(Self::handle_zoom_reset_action))
+                    .on_action(cx.listener(Self::handle_open_search_action))
+                    .on_action(cx.listener(Self::handle_close_search_action))
+                    .on_action(cx.listener(Self::handle_search_next_action))
+                    .on_action(cx.listener(Self::handle_search_previous_action))
+                    .on_action(cx.listener(Self::handle_toggle_search_case_sensitive_action))
+                    .on_action(cx.listener(Self::handle_toggle_search_regex_action))
                     .on_action(cx.listener(Self::handle_inline_backspace_action))
                     .on_action(cx.listener(Self::handle_inline_delete_action))
                     .on_action(cx.listener(Self::handle_inline_move_left_action))
@@ -951,7 +998,8 @@ impl Render for TerminalView {
                     .font_family(font_family.clone())
                     .text_size(font_size)
                     .child(terminal_grid)
-                    .children(command_palette_overlay),
+                    .children(command_palette_overlay)
+                    .children(search_overlay),
             )
             .children(toast_overlay)
     }
