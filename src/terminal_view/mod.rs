@@ -19,12 +19,12 @@ use std::{
     process::Command,
     time::{Duration, Instant, SystemTime},
 };
+use termy_search::SearchState;
 use termy_terminal_ui::{
     CellRenderInfo, TabTitleShellIntegration, Terminal, TerminalCursorStyle, TerminalEvent,
     TerminalGrid, TerminalRuntimeConfig, TerminalSize,
     WorkingDirFallback as RuntimeWorkingDirFallback, find_link_in_line, keystroke_to_input,
 };
-use termy_search::SearchState;
 use termy_toast::ToastManager;
 
 #[cfg(target_os = "macos")]
@@ -78,6 +78,7 @@ const COMMAND_PALETTE_SCROLLBAR_MIN_THUMB_HEIGHT: f32 = 18.0;
 const SEARCH_BAR_WIDTH: f32 = 320.0;
 const SEARCH_BAR_HEIGHT: f32 = 36.0;
 const SEARCH_DEBOUNCE_MS: u64 = 50;
+const TOAST_COPY_FEEDBACK_MS: u64 = 1200;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct CellPos {
@@ -169,6 +170,7 @@ pub struct TerminalView {
     selection_moved: bool,
     hovered_link: Option<HoveredLink>,
     hovered_toast: Option<u64>,
+    copied_toast_feedback: Option<(u64, Instant)>,
     toast_manager: ToastManager,
     command_palette_open: bool,
     command_palette_input: InlineInputState,
@@ -332,6 +334,7 @@ impl TerminalView {
             selection_moved: false,
             hovered_link: None,
             hovered_toast: None,
+            copied_toast_feedback: None,
             toast_manager: ToastManager::new(),
             command_palette_open: false,
             command_palette_input: InlineInputState::new(String::new()),
