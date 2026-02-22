@@ -7,11 +7,11 @@ use crate::keybindings;
 use alacritty_terminal::term::cell::Flags;
 use flume::{Sender, bounded};
 use gpui::{
-    AnyElement, App, AsyncApp, ClipboardItem, Context, Element, FocusHandle, Focusable, Font,
-    FontWeight, InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Render, ScrollWheelEvent, SharedString,
-    Size, StatefulInteractiveElement, Styled, TouchPhase, UniformListScrollHandle, WeakEntity,
-    Window, WindowControlArea, div, px,
+    AnyElement, App, AsyncApp, ClipboardItem, Context, Element, ExternalPaths, FocusHandle,
+    Focusable, Font, FontWeight, InteractiveElement, IntoElement, KeyDownEvent, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Render, ScrollWheelEvent,
+    SharedString, Size, StatefulInteractiveElement, Styled, TouchPhase, UniformListScrollHandle,
+    WeakEntity, Window, WindowControlArea, div, px,
 };
 use std::{
     fs,

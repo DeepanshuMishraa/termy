@@ -3,7 +3,7 @@ use alacritty_terminal::{
     event_loop::{EventLoop, Msg, Notifier},
     grid::{Dimensions, Scroll},
     sync::FairMutex,
-    term::{Config as TermConfig, Term},
+    term::{Config as TermConfig, Term, TermMode},
     tty::{self, Options as PtyOptions, Shell},
 };
 use flume::{Receiver, Sender, unbounded};
@@ -534,6 +534,12 @@ impl Terminal {
         let mut config = TermConfig::default();
         config.scrolling_history = history_size;
         term.set_options(config);
+    }
+
+    /// Check if bracketed paste mode is enabled
+    pub fn bracketed_paste_mode(&self) -> bool {
+        let term = self.term.lock();
+        term.mode().contains(TermMode::BRACKETED_PASTE)
     }
 }
 
