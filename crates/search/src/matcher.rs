@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 /// A single match in the terminal buffer
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchMatch {
@@ -29,6 +31,8 @@ impl SearchMatch {
 pub struct SearchResults {
     matches: Vec<SearchMatch>,
     current_index: Option<usize>,
+    /// Pre-computed set of (line, col) pairs for O(1) match lookups during rendering
+    match_cells: HashSet<(i32, usize)>,
 }
 
 impl Default for SearchResults {
@@ -42,15 +46,30 @@ impl SearchResults {
         Self {
             matches: Vec::new(),
             current_index: None,
+            match_cells: HashSet::new(),
         }
     }
 
     pub fn from_matches(matches: Vec<SearchMatch>) -> Self {
         let current_index = if matches.is_empty() { None } else { Some(0) };
+        // Pre-compute all match cells for O(1) lookup during rendering
+        let match_cells = Self::build_match_cells(&matches);
         Self {
             matches,
             current_index,
+            match_cells,
         }
+    }
+
+    /// Build a HashSet of all (line, col) pairs that are part of any match
+    fn build_match_cells(matches: &[SearchMatch]) -> HashSet<(i32, usize)> {
+        let mut cells = HashSet::new();
+        for m in matches {
+            for col in m.start_col..m.end_col {
+                cells.insert((m.line, col));
+            }
+        }
+        cells
     }
 
     /// Total number of matches
@@ -144,9 +163,9 @@ impl SearchResults {
             .unwrap_or(false)
     }
 
-    /// Check if a cell is part of any match
+    /// Check if a cell is part of any match (O(1) lookup)
     pub fn is_any_match(&self, line: i32, col: usize) -> bool {
-        self.matches.iter().any(|m| m.contains(line, col))
+        self.match_cells.contains(&(line, col))
     }
 
     /// Get matches visible in a viewport range

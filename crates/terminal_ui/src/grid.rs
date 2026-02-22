@@ -220,6 +220,26 @@ impl Element for TerminalGrid {
             }
         }
 
+        // Pre-create font structs to avoid cloning font_family for every cell
+        let font_normal = Font {
+            family: self.font_family.clone(),
+            weight: FontWeight::NORMAL,
+            ..Default::default()
+        };
+        let font_bold = Font {
+            family: self.font_family.clone(),
+            weight: FontWeight::BOLD,
+            ..Default::default()
+        };
+
+        // Pre-compute cursor foreground color (black on cursor block)
+        let cursor_fg = Hsla {
+            h: 0.0,
+            s: 0.0,
+            l: 0.0,
+            a: 1.0,
+        };
+
         for cell in &self.cells {
             if !cell.render_text || cell.char == ' ' || cell.char == '\0' || cell.char.is_control()
             {
@@ -230,12 +250,7 @@ impl Element for TerminalGrid {
             let y = origin.y + self.cell_size.height * cell.row as f32;
 
             let fg_color = if cell.is_cursor && self.cursor_style == TerminalCursorStyle::Block {
-                Hsla {
-                    h: 0.0,
-                    s: 0.0,
-                    l: 0.0,
-                    a: 1.0,
-                }
+                cursor_fg
             } else if cell.selected {
                 self.selection_fg
             } else {
@@ -243,21 +258,11 @@ impl Element for TerminalGrid {
             };
 
             let text: SharedString = cell.char.to_string().into();
-            let font_weight = if cell.bold {
-                FontWeight::BOLD
-            } else {
-                FontWeight::NORMAL
-            };
-
-            let font = Font {
-                family: self.font_family.clone(),
-                weight: font_weight,
-                ..Default::default()
-            };
+            let font = if cell.bold { &font_bold } else { &font_normal };
 
             let run = TextRun {
                 len: text.len(),
-                font,
+                font: font.clone(),
                 color: fg_color,
                 background_color: None,
                 underline: self

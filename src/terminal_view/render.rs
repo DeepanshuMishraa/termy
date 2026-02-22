@@ -17,11 +17,14 @@ impl Render for TerminalView {
         }
 
         // Request re-render during toast animations for smooth fade in/out
-        if self.toast_manager.is_animating() {
+        // Only schedule one timer at a time to avoid spawning 60 tasks/sec
+        if self.toast_manager.is_animating() && !self.toast_animation_scheduled {
+            self.toast_animation_scheduled = true;
             cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
                 smol::Timer::after(Duration::from_millis(16)).await;
                 let _ = cx.update(|cx| {
-                    this.update(cx, |_view, cx| {
+                    this.update(cx, |view, cx| {
+                        view.toast_animation_scheduled = false;
                         cx.notify();
                     })
                 });
