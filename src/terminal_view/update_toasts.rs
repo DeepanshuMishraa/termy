@@ -36,7 +36,10 @@ impl TerminalView {
                     version
                 ));
                 #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-                termy_toast::success(format!("v{} installed. Restart Termy to use the new version", version));
+                termy_toast::success(format!(
+                    "v{} installed. Restart Termy to use the new version",
+                    version
+                ));
             }
             Some(UpdateState::Error(message)) => {
                 termy_toast::error(format!("Update failed: {}", message));

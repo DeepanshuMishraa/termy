@@ -2,6 +2,7 @@ use gpui::{KeyBinding, actions};
 
 const GLOBAL_CONTEXT: Option<&str> = None;
 const TERMINAL_CONTEXT: Option<&str> = Some("Terminal");
+const INLINE_INPUT_CONTEXT: Option<&str> = Some("InlineInput");
 
 macro_rules! define_command_actions {
     ($(($variant:ident, $config_name:literal, $context:expr)),+ $(,)?) => {
@@ -57,7 +58,11 @@ define_command_actions!(
     (RestartApp, "restart_app", TERMINAL_CONTEXT),
     (RenameTab, "rename_tab", TERMINAL_CONTEXT),
     (CheckForUpdates, "check_for_updates", TERMINAL_CONTEXT),
-    (ToggleCommandPalette, "toggle_command_palette", TERMINAL_CONTEXT),
+    (
+        ToggleCommandPalette,
+        "toggle_command_palette",
+        TERMINAL_CONTEXT
+    ),
     (NewTab, "new_tab", TERMINAL_CONTEXT),
     (CloseTab, "close_tab", TERMINAL_CONTEXT),
     (Copy, "copy", TERMINAL_CONTEXT),
@@ -66,3 +71,51 @@ define_command_actions!(
     (ZoomOut, "zoom_out", TERMINAL_CONTEXT),
     (ZoomReset, "zoom_reset", TERMINAL_CONTEXT),
 );
+
+actions!(
+    termy_inline_input,
+    [
+        InlineBackspace,
+        InlineDelete,
+        InlineMoveLeft,
+        InlineMoveRight,
+        InlineSelectLeft,
+        InlineSelectRight,
+        InlineSelectAll,
+        InlineMoveToStart,
+        InlineMoveToEnd,
+        InlineDeleteWordBackward,
+        InlineDeleteWordForward,
+        InlineDeleteToStart,
+        InlineDeleteToEnd,
+    ]
+);
+
+pub fn inline_input_keybindings() -> Vec<KeyBinding> {
+    vec![
+        KeyBinding::new("backspace", InlineBackspace, INLINE_INPUT_CONTEXT),
+        KeyBinding::new("delete", InlineDelete, INLINE_INPUT_CONTEXT),
+        KeyBinding::new("left", InlineMoveLeft, INLINE_INPUT_CONTEXT),
+        KeyBinding::new("right", InlineMoveRight, INLINE_INPUT_CONTEXT),
+        KeyBinding::new("shift-left", InlineSelectLeft, INLINE_INPUT_CONTEXT),
+        KeyBinding::new("shift-right", InlineSelectRight, INLINE_INPUT_CONTEXT),
+        KeyBinding::new("secondary-a", InlineSelectAll, INLINE_INPUT_CONTEXT),
+        KeyBinding::new("home", InlineMoveToStart, INLINE_INPUT_CONTEXT),
+        KeyBinding::new("end", InlineMoveToEnd, INLINE_INPUT_CONTEXT),
+        KeyBinding::new("secondary-left", InlineMoveToStart, INLINE_INPUT_CONTEXT),
+        KeyBinding::new("secondary-right", InlineMoveToEnd, INLINE_INPUT_CONTEXT),
+        KeyBinding::new(
+            "alt-backspace",
+            InlineDeleteWordBackward,
+            INLINE_INPUT_CONTEXT,
+        ),
+        KeyBinding::new("alt-delete", InlineDeleteWordForward, INLINE_INPUT_CONTEXT),
+        KeyBinding::new(
+            "secondary-backspace",
+            InlineDeleteToStart,
+            INLINE_INPUT_CONTEXT,
+        ),
+        KeyBinding::new("secondary-delete", InlineDeleteToEnd, INLINE_INPUT_CONTEXT),
+        KeyBinding::new("ctrl-backspace", InlineDeleteToStart, INLINE_INPUT_CONTEXT),
+    ]
+}

@@ -27,6 +27,13 @@ impl TerminalView {
         here >= (start.row, start.col) && here <= (end.row, end.col)
     }
 
+    pub(super) fn viewport_row_from_term_line(
+        term_line: i32,
+        display_offset: usize,
+    ) -> Option<usize> {
+        usize::try_from(term_line + display_offset as i32).ok()
+    }
+
     fn write_copy_fallback_input(&mut self, _cx: &mut Context<Self>) {
         #[cfg(not(target_os = "macos"))]
         {
@@ -101,12 +108,11 @@ impl TerminalView {
         self.active_terminal().with_term(|term| {
             let content = term.renderable_content();
             for cell in content.display_iter {
-                let row = cell.point.line.0;
-                if row < 0 {
+                let Some(row) =
+                    Self::viewport_row_from_term_line(cell.point.line.0, content.display_offset)
+                else {
                     continue;
-                }
-
-                let row = row as usize;
+                };
                 let col = cell.point.column.0;
                 if row >= rows || col >= cols {
                     continue;
@@ -153,8 +159,12 @@ impl TerminalView {
         self.active_terminal().with_term(|term| {
             let content = term.renderable_content();
             for cell in content.display_iter {
-                let cell_row = cell.point.line.0;
-                if cell_row < 0 || cell_row as usize != row {
+                let Some(cell_row) =
+                    Self::viewport_row_from_term_line(cell.point.line.0, content.display_offset)
+                else {
+                    continue;
+                };
+                if cell_row != row {
                     continue;
                 }
 
@@ -269,7 +279,7 @@ impl TerminalView {
         cx.notify();
     }
 
-    pub(super) fn calculate_cell_size(&self, window: &mut Window, _cx: &App) -> Size<Pixels> {
+    pub(super) fn calculate_cell_size(&mut self, window: &mut Window, _cx: &App) -> Size<Pixels> {
         if let Some(cell_size) = self.cell_size {
             return cell_size;
         }
@@ -290,10 +300,12 @@ impl TerminalView {
 
         let cell_height = self.font_size * self.line_height;
 
-        Size {
+        let cell_size = Size {
             width: cell_width,
             height: cell_height,
-        }
+        };
+        self.cell_size = Some(cell_size);
+        cell_size
     }
 
     pub(super) fn sync_terminal_size(&mut self, window: &Window, cell_size: Size<Pixels>) {
@@ -330,8 +342,57 @@ impl TerminalView {
         }
     }
 
+    pub(super) fn terminal_scroll_lines_from_pixels(
+        accumulated_pixels: &mut f32,
+        delta_pixels: f32,
+        line_height: f32,
+        viewport_height: f32,
+    ) -> i32 {
+        if line_height <= f32::EPSILON {
+            return 0;
+        }
+
+        let old_offset = (*accumulated_pixels / line_height) as i32;
+        *accumulated_pixels += delta_pixels;
+        let new_offset = (*accumulated_pixels / line_height) as i32;
+
+        if viewport_height > 0.0 {
+            *accumulated_pixels %= viewport_height;
+        }
+
+        new_offset - old_offset
+    }
+
+    pub(super) fn terminal_scroll_delta_to_lines(&mut self, event: &ScrollWheelEvent) -> i32 {
+        match event.touch_phase {
+            TouchPhase::Started => {
+                self.terminal_scroll_accumulator_y = 0.0;
+                0
+            }
+            TouchPhase::Ended => 0,
+            TouchPhase::Moved => {
+                let size = self.active_terminal().size();
+                if size.rows == 0 {
+                    return 0;
+                }
+
+                let line_height: f32 = size.cell_height.into();
+                let viewport_height = line_height * f32::from(size.rows);
+                let raw_delta_pixels: f32 = event.delta.pixel_delta(size.cell_height).y.into();
+                let delta_pixels = raw_delta_pixels * self.mouse_scroll_multiplier;
+
+                Self::terminal_scroll_lines_from_pixels(
+                    &mut self.terminal_scroll_accumulator_y,
+                    delta_pixels,
+                    line_height,
+                    viewport_height,
+                )
+            }
+        }
+    }
+
     fn command_shortcuts_suspended(&self) -> bool {
-        self.command_palette_open || self.renaming_tab.is_some()
+        self.has_active_inline_input()
     }
 
     pub(super) fn execute_command_action(
@@ -382,7 +443,10 @@ impl TerminalView {
                 }
 
                 self.renaming_tab = Some(self.active_tab);
-                self.rename_buffer = self.tabs[self.active_tab].title.clone();
+                self.rename_input
+                    .set_text(self.tabs[self.active_tab].title.clone());
+                self.reset_cursor_blink_phase();
+                self.inline_input_selecting = false;
                 termy_toast::info("Rename mode enabled");
                 cx.notify();
             }
@@ -546,12 +610,11 @@ impl TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.reset_cursor_blink_phase();
         let key = event.keystroke.key.as_str();
-        let modifiers = event.keystroke.modifiers;
-        let key_char = event.keystroke.key_char.as_deref();
 
         if self.command_palette_open {
-            self.handle_command_palette_key_down(key, key_char, modifiers, cx);
+            self.handle_command_palette_key_down(key, cx);
             return;
         }
 
@@ -563,41 +626,6 @@ impl TerminalView {
                 }
                 "escape" => {
                     self.cancel_rename_tab(cx);
-                    return;
-                }
-                "backspace" => {
-                    self.rename_buffer.pop();
-                    cx.notify();
-                    return;
-                }
-                "space"
-                    if !modifiers.control
-                        && !modifiers.alt
-                        && !modifiers.function
-                        && !modifiers.platform =>
-                {
-                    if self.rename_buffer.chars().count() < MAX_TAB_TITLE_CHARS {
-                        self.rename_buffer.push(' ');
-                        cx.notify();
-                    }
-                    return;
-                }
-                _ if key.len() == 1
-                    && key_char.is_some()
-                    && !modifiers.control
-                    && !modifiers.alt
-                    && !modifiers.function
-                    && !modifiers.platform =>
-                {
-                    if let Some(input) = key_char {
-                        let input_len = input.chars().count();
-                        if input_len > 0
-                            && self.rename_buffer.chars().count() + input_len <= MAX_TAB_TITLE_CHARS
-                        {
-                            self.rename_buffer.push_str(input);
-                            cx.notify();
-                        }
-                    }
                     return;
                 }
                 _ => return,
@@ -620,6 +648,7 @@ impl TerminalView {
     ) {
         // Focus the terminal on click
         self.focus_handle.focus(window, cx);
+        self.reset_cursor_blink_phase();
 
         if event.button != MouseButton::Left {
             return;
@@ -714,74 +743,14 @@ impl TerminalView {
         cx.notify();
     }
 
-    pub(super) fn handle_tabbar_mouse_down(
-        &mut self,
-        event: &MouseDownEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if event.button != MouseButton::Left || !self.show_tab_bar() {
-            return;
-        }
-
-        let mut x: f32 = event.position.x.into();
-        x -= TAB_HORIZONTAL_PADDING;
-        if x < 0.0 {
-            return;
-        }
-
-        let viewport = window.viewport_size();
-        let layout = self.tab_bar_layout(viewport.width.into());
-        let index = (x / layout.slot_width).floor() as usize;
-        if index >= self.tabs.len() {
-            return;
-        }
-
-        let x_in_slot = x - (index as f32 * layout.slot_width);
-        if x_in_slot > layout.tab_pill_width {
-            return;
-        }
-
-        let is_active = index == self.active_tab;
-        let show_close =
-            Self::tab_shows_close(layout.tab_pill_width, is_active, layout.tab_padding_x);
-        if show_close {
-            let close_left =
-                (layout.tab_pill_width - layout.tab_padding_x - TAB_CLOSE_HITBOX).max(0.0);
-            let close_right = (layout.tab_pill_width - layout.tab_padding_x).max(0.0);
-            if x_in_slot >= close_left && x_in_slot <= close_right {
-                self.close_tab(index, cx);
-                return;
-            }
-        }
-
-        self.switch_tab(index, cx);
-    }
-
     pub(super) fn handle_titlebar_mouse_down(
         &mut self,
         event: &MouseDownEvent,
         window: &mut Window,
-        cx: &mut Context<Self>,
+        _cx: &mut Context<Self>,
     ) {
         if event.button != MouseButton::Left {
             return;
-        }
-
-        if self.use_tabs && !cfg!(target_os = "windows") {
-            let viewport = window.viewport_size();
-            let viewport_width: f32 = viewport.width.into();
-            let x: f32 = event.position.x.into();
-            let y: f32 = event.position.y.into();
-            let plus_left = viewport_width - TITLEBAR_SIDE_PADDING - TITLEBAR_PLUS_SIZE;
-            let plus_top = (self.titlebar_height() - TITLEBAR_PLUS_SIZE) * 0.5;
-            let plus_right = plus_left + TITLEBAR_PLUS_SIZE;
-            let plus_bottom = plus_top + TITLEBAR_PLUS_SIZE;
-
-            if x >= plus_left && x <= plus_right && y >= plus_top && y <= plus_bottom {
-                self.add_tab(cx);
-                return;
-            }
         }
 
         if event.click_count == 2 {
@@ -793,6 +762,24 @@ impl TerminalView {
         }
 
         window.start_window_move();
+    }
+
+    pub(super) fn handle_terminal_scroll_wheel(
+        &mut self,
+        event: &ScrollWheelEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let delta_lines = self.terminal_scroll_delta_to_lines(event);
+        if delta_lines == 0 {
+            return;
+        }
+
+        if self.active_terminal().scroll_display(delta_lines) {
+            cx.notify();
+        } else {
+            self.terminal_scroll_accumulator_y = 0.0;
+        }
     }
 
     pub(super) fn tab_bar_height(&self) -> f32 {
@@ -824,5 +811,71 @@ impl TerminalView {
 
     pub(super) fn chrome_height(&self) -> f32 {
         self.titlebar_height() + self.tab_bar_height() + self.update_banner_height()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn viewport_row_maps_scrollback_lines_into_viewport() {
+        assert_eq!(TerminalView::viewport_row_from_term_line(-3, 3), Some(0));
+        assert_eq!(TerminalView::viewport_row_from_term_line(4, 3), Some(7));
+    }
+
+    #[test]
+    fn terminal_scroll_lines_track_single_line_steps() {
+        let mut accumulated = 0.0;
+        assert_eq!(
+            TerminalView::terminal_scroll_lines_from_pixels(&mut accumulated, 24.0, 24.0, 480.0),
+            1
+        );
+    }
+
+    #[test]
+    fn terminal_scroll_lines_accumulate_fractional_pixels() {
+        let mut accumulated = 0.0;
+        assert_eq!(
+            TerminalView::terminal_scroll_lines_from_pixels(&mut accumulated, 8.0, 24.0, 480.0),
+            0
+        );
+        assert_eq!(
+            TerminalView::terminal_scroll_lines_from_pixels(&mut accumulated, 8.0, 24.0, 480.0),
+            0
+        );
+        assert_eq!(
+            TerminalView::terminal_scroll_lines_from_pixels(&mut accumulated, 8.0, 24.0, 480.0),
+            1
+        );
+    }
+
+    #[test]
+    fn terminal_scroll_lines_preserve_sign() {
+        let mut accumulated = 0.0;
+        assert_eq!(
+            TerminalView::terminal_scroll_lines_from_pixels(&mut accumulated, -30.0, 24.0, 480.0),
+            -1
+        );
+    }
+
+    #[test]
+    fn terminal_scroll_lines_wrap_accumulator_by_viewport_height() {
+        let mut accumulated = 24.0 * 19.0;
+        assert_eq!(
+            TerminalView::terminal_scroll_lines_from_pixels(&mut accumulated, 24.0, 24.0, 480.0),
+            1
+        );
+        assert!(accumulated.abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn terminal_scroll_lines_ignore_zero_line_height() {
+        let mut accumulated = 12.0;
+        assert_eq!(
+            TerminalView::terminal_scroll_lines_from_pixels(&mut accumulated, 24.0, 0.0, 480.0),
+            0
+        );
+        assert_eq!(accumulated, 12.0);
     }
 }

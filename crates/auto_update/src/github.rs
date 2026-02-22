@@ -61,9 +61,9 @@ fn find_platform_asset<'a>(assets: &'a [GithubAsset], arch: &str) -> Option<&'a 
         .find(|a| (a.name.contains(arch) || a.name.contains(win_arch)) && a.name.ends_with(".msi"))
         .or_else(|| assets.iter().find(|a| a.name.ends_with(".msi")))
         .or_else(|| {
-            assets
-                .iter()
-                .find(|a| (a.name.contains(arch) || a.name.contains(win_arch)) && a.name.ends_with(".exe"))
+            assets.iter().find(|a| {
+                (a.name.contains(arch) || a.name.contains(win_arch)) && a.name.ends_with(".exe")
+            })
         })
         .or_else(|| assets.iter().find(|a| a.name.ends_with(".exe")))
 }

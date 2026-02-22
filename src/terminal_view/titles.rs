@@ -19,7 +19,11 @@ impl TerminalView {
         }
     }
 
-    pub(super) fn resolve_template(template: &str, cwd: Option<&str>, command: Option<&str>) -> String {
+    pub(super) fn resolve_template(
+        template: &str,
+        cwd: Option<&str>,
+        command: Option<&str>,
+    ) -> String {
         template
             .replace("{cwd}", cwd.unwrap_or(""))
             .replace("{command}", command.unwrap_or(""))
@@ -176,7 +180,12 @@ impl TerminalView {
         self.refresh_tab_title(index)
     }
 
-    pub(super) fn apply_terminal_title(&mut self, index: usize, title: &str, cx: &mut Context<Self>) -> bool {
+    pub(super) fn apply_terminal_title(
+        &mut self,
+        index: usize,
+        title: &str,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let title = title.trim();
         if title.is_empty() || index >= self.tabs.len() {
             return false;

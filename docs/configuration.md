@@ -182,6 +182,16 @@ Explicit payload examples:
 - Default: `14`
 - Values: positive number
 
+`cursor_style`
+- Default: `block`
+- Values: `block`, `line` (`bar`/`beam`/`ibeam` are accepted aliases for `line`)
+- What it does: sets one shared cursor shape for the terminal grid and GPUI inline inputs (command palette + tab rename).
+
+`cursor_blink`
+- Default: `true`
+- Values: `true`/`false`
+- What it does: enables/disables cursor blinking for both terminal and inline inputs.
+
 `transparent_background_opacity`
 - Default: `1.0`
 - Values: number between `0.0` and `1.0`
@@ -195,6 +205,11 @@ Explicit payload examples:
 `padding_y`
 - Default: `8`
 - Values: non-negative number
+
+`mouse_scroll_multiplier`
+- Default: `3`
+- Values: any finite number (clamped to `0.1..=1000`)
+- What it does: multiplies mouse wheel scroll distance. For example, `3` scrolls about three lines per wheel tick.
 
 `keybind`
 - Default: built-in platform shortcuts

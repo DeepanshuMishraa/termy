@@ -11,7 +11,6 @@ impl TerminalView {
         TabBarLayout {
             tab_pill_width,
             tab_padding_x: Self::tab_pill_padding_x(tab_pill_width),
-            slot_width: tab_pill_width + TAB_PILL_GAP,
         }
     }
 
@@ -60,7 +59,8 @@ impl TerminalView {
         self.active_tab = self.tabs.len() - 1;
         self.refresh_tab_title(self.active_tab);
         self.renaming_tab = None;
-        self.rename_buffer.clear();
+        self.rename_input.clear();
+        self.inline_input_selecting = false;
         self.clear_selection();
         cx.notify();
     }
@@ -81,7 +81,8 @@ impl TerminalView {
         match self.renaming_tab {
             Some(editing) if editing == index => {
                 self.renaming_tab = None;
-                self.rename_buffer.clear();
+                self.rename_input.clear();
+                self.inline_input_selecting = false;
             }
             Some(editing) if editing > index => {
                 self.renaming_tab = Some(editing - 1);
@@ -104,7 +105,8 @@ impl TerminalView {
 
         self.active_tab = index;
         self.renaming_tab = None;
-        self.rename_buffer.clear();
+        self.rename_input.clear();
+        self.inline_input_selecting = false;
         self.clear_selection();
         cx.notify();
     }
@@ -114,14 +116,15 @@ impl TerminalView {
             return;
         };
 
-        let trimmed = self.rename_buffer.trim();
+        let trimmed = self.rename_input.text().trim();
         self.tabs[index].manual_title = (!trimmed.is_empty())
             .then(|| Self::truncate_tab_title(trimmed))
             .filter(|title| !title.is_empty());
         self.refresh_tab_title(index);
 
         self.renaming_tab = None;
-        self.rename_buffer.clear();
+        self.rename_input.clear();
+        self.inline_input_selecting = false;
         cx.notify();
     }
 
@@ -131,7 +134,8 @@ impl TerminalView {
         }
 
         self.renaming_tab = None;
-        self.rename_buffer.clear();
+        self.rename_input.clear();
+        self.inline_input_selecting = false;
         cx.notify();
     }
 }

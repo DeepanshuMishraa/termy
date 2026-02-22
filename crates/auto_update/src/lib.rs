@@ -415,7 +415,12 @@ fn do_install(installer_path: &PathBuf) -> Result<()> {
         "msi" => {
             // Run MSI installer silently
             let result = Command::new("msiexec")
-                .args(["/i", &installer_path.to_string_lossy(), "/passive", "/norestart"])
+                .args([
+                    "/i",
+                    &installer_path.to_string_lossy(),
+                    "/passive",
+                    "/norestart",
+                ])
                 .output()
                 .context("Failed to run MSI installer")?;
 
@@ -433,7 +438,12 @@ fn do_install(installer_path: &PathBuf) -> Result<()> {
             // /NORESTART: Don't restart after install
             // /CLOSEAPPLICATIONS: Close running instances of the app
             let result = Command::new(installer_path)
-                .args(["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CLOSEAPPLICATIONS"])
+                .args([
+                    "/VERYSILENT",
+                    "/SUPPRESSMSGBOXES",
+                    "/NORESTART",
+                    "/CLOSEAPPLICATIONS",
+                ])
                 .output()
                 .context("Failed to run EXE installer")?;
 
@@ -517,7 +527,8 @@ fn do_install(tarball_path: &PathBuf) -> Result<()> {
 
     // Copy binary to install directory
     let target_binary = install_dir.join("termy");
-    std::fs::copy(&source_binary, &target_binary).context("Failed to copy binary to install directory")?;
+    std::fs::copy(&source_binary, &target_binary)
+        .context("Failed to copy binary to install directory")?;
 
     // Make it executable
     #[cfg(unix)]

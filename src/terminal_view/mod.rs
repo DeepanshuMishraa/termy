@@ -1,15 +1,17 @@
 use crate::colors::TerminalColors;
 use crate::commands::{self, CommandAction};
-use crate::config::{self, AppConfig, TabTitleConfig, TabTitleSource};
+use crate::config::{
+    self, AppConfig, CursorStyle as AppCursorStyle, TabTitleConfig, TabTitleSource,
+};
 use crate::keybindings;
 use alacritty_terminal::term::cell::Flags;
 use flume::{Sender, bounded};
 use gpui::{
     AnyElement, App, AsyncApp, ClipboardItem, Context, Element, FocusHandle, Focusable, Font,
     FontWeight, InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Render, ScrollDelta, ScrollWheelEvent,
-    SharedString, Size, StatefulInteractiveElement, Styled, WeakEntity, Window, WindowControlArea,
-    div, px,
+    MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Render, ScrollWheelEvent, SharedString,
+    Size, StatefulInteractiveElement, Styled, TouchPhase, UniformListScrollHandle, WeakEntity,
+    Window, WindowControlArea, div, px,
 };
 use std::{
     fs,
@@ -18,9 +20,9 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 use termy_terminal_ui::{
-    CellRenderInfo, TabTitleShellIntegration, Terminal, TerminalEvent, TerminalGrid,
-    TerminalRuntimeConfig, TerminalSize, WorkingDirFallback as RuntimeWorkingDirFallback,
-    find_link_in_line, keystroke_to_input,
+    CellRenderInfo, TabTitleShellIntegration, Terminal, TerminalCursorStyle, TerminalEvent,
+    TerminalGrid, TerminalRuntimeConfig, TerminalSize,
+    WorkingDirFallback as RuntimeWorkingDirFallback, find_link_in_line, keystroke_to_input,
 };
 use termy_toast::ToastManager;
 
@@ -30,12 +32,15 @@ use gpui::{AppContext, Entity};
 use termy_auto_update::{AutoUpdater, UpdateState};
 
 mod command_palette;
+mod inline_input;
 mod interaction;
 mod render;
 mod tabs;
 mod titles;
 #[cfg(target_os = "macos")]
 mod update_toasts;
+
+use inline_input::{InlineInputAlignment, InlineInputState};
 
 const MIN_FONT_SIZE: f32 = 8.0;
 const MAX_FONT_SIZE: f32 = 40.0;
@@ -58,12 +63,16 @@ const MAX_TAB_TITLE_CHARS: usize = 96;
 const DEFAULT_TAB_TITLE: &str = "Terminal";
 const COMMAND_TITLE_DELAY_MS: u64 = 250;
 const CONFIG_WATCH_INTERVAL_MS: u64 = 750;
+const CURSOR_BLINK_INTERVAL_MS: u64 = 530;
 const SELECTION_BG_ALPHA: f32 = 0.35;
 const DIM_TEXT_FACTOR: f32 = 0.66;
 #[cfg(target_os = "macos")]
 const UPDATE_BANNER_HEIGHT: f32 = 32.0;
 const COMMAND_PALETTE_WIDTH: f32 = 640.0;
 const COMMAND_PALETTE_MAX_ITEMS: usize = 8;
+const COMMAND_PALETTE_ROW_HEIGHT: f32 = 30.0;
+const COMMAND_PALETTE_SCROLLBAR_WIDTH: f32 = 8.0;
+const COMMAND_PALETTE_SCROLLBAR_MIN_THUMB_HEIGHT: f32 = 18.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct CellPos {
@@ -75,7 +84,6 @@ struct CellPos {
 struct TabBarLayout {
     tab_pill_width: f32,
     tab_padding_x: f32,
-    slot_width: f32,
 }
 
 struct TerminalTab {
@@ -128,7 +136,7 @@ pub struct TerminalView {
     tabs: Vec<TerminalTab>,
     active_tab: usize,
     renaming_tab: Option<usize>,
-    rename_buffer: String,
+    rename_input: InlineInputState,
     event_wakeup_tx: Sender<()>,
     focus_handle: FocusHandle,
     colors: TerminalColors,
@@ -142,9 +150,13 @@ pub struct TerminalView {
     font_family: SharedString,
     base_font_size: f32,
     font_size: Pixels,
+    cursor_style: AppCursorStyle,
+    cursor_blink: bool,
+    cursor_blink_visible: bool,
     transparent_background_opacity: f32,
     padding_x: f32,
     padding_y: f32,
+    mouse_scroll_multiplier: f32,
     line_height: f32,
     selection_anchor: Option<CellPos>,
     selection_head: Option<CellPos>,
@@ -154,12 +166,17 @@ pub struct TerminalView {
     hovered_toast: Option<u64>,
     toast_manager: ToastManager,
     command_palette_open: bool,
-    command_palette_query: String,
+    command_palette_input: InlineInputState,
+    command_palette_filtered_items: Vec<CommandPaletteItem>,
     command_palette_selected: usize,
-    command_palette_scroll_offset: usize,
-    command_palette_query_select_all: bool,
+    command_palette_scroll_handle: UniformListScrollHandle,
+    command_palette_scroll_target_y: Option<f32>,
+    command_palette_scroll_max_y: f32,
+    command_palette_scroll_animating: bool,
+    command_palette_scroll_last_tick: Option<Instant>,
     command_palette_show_keybinds: bool,
-    command_palette_opened_at: Option<Instant>,
+    inline_input_selecting: bool,
+    terminal_scroll_accumulator_y: f32,
     /// Cached cell dimensions
     cell_size: Option<Size<Pixels>>,
     #[cfg(target_os = "macos")]
@@ -232,6 +249,24 @@ impl TerminalView {
         })
         .detach();
 
+        // Toggle cursor visibility for blink in both terminal and inline inputs.
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            loop {
+                smol::Timer::after(Duration::from_millis(CURSOR_BLINK_INTERVAL_MS)).await;
+                let result = cx.update(|cx| {
+                    this.update(cx, |view, cx| {
+                        if view.tick_cursor_blink() {
+                            cx.notify();
+                        }
+                    })
+                });
+                if result.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+
         let config = AppConfig::load_or_create();
         let config_path = config::ensure_config_file();
         let config_last_modified = config_path.as_ref().and_then(Self::config_last_modified);
@@ -259,7 +294,7 @@ impl TerminalView {
             tabs: vec![TerminalTab::new(terminal)],
             active_tab: 0,
             renaming_tab: None,
-            rename_buffer: String::new(),
+            rename_input: InlineInputState::new(String::new()),
             event_wakeup_tx,
             focus_handle,
             colors,
@@ -273,9 +308,13 @@ impl TerminalView {
             font_family: config.font_family.into(),
             base_font_size,
             font_size: px(base_font_size),
+            cursor_style: config.cursor_style,
+            cursor_blink: config.cursor_blink,
+            cursor_blink_visible: true,
             transparent_background_opacity: config.transparent_background_opacity,
             padding_x,
             padding_y,
+            mouse_scroll_multiplier: config.mouse_scroll_multiplier,
             line_height: 1.4,
             selection_anchor: None,
             selection_head: None,
@@ -285,12 +324,17 @@ impl TerminalView {
             hovered_toast: None,
             toast_manager: ToastManager::new(),
             command_palette_open: false,
-            command_palette_query: String::new(),
+            command_palette_input: InlineInputState::new(String::new()),
+            command_palette_filtered_items: Vec::new(),
             command_palette_selected: 0,
-            command_palette_scroll_offset: 0,
-            command_palette_query_select_all: false,
+            command_palette_scroll_handle: UniformListScrollHandle::new(),
+            command_palette_scroll_target_y: None,
+            command_palette_scroll_max_y: 0.0,
+            command_palette_scroll_animating: false,
+            command_palette_scroll_last_tick: None,
             command_palette_show_keybinds: config.command_palette_show_keybinds,
-            command_palette_opened_at: None,
+            inline_input_selecting: false,
+            terminal_scroll_accumulator_y: 0.0,
             cell_size: None,
             #[cfg(target_os = "macos")]
             auto_updater: None,
@@ -331,13 +375,22 @@ impl TerminalView {
         self.font_family = config.font_family.into();
         self.base_font_size = config.font_size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
         self.font_size = px(self.base_font_size);
+        self.cursor_style = config.cursor_style;
+        self.cursor_blink = config.cursor_blink;
+        self.cursor_blink_visible = true;
+        self.cell_size = None;
         self.transparent_background_opacity = config.transparent_background_opacity;
         self.padding_x = config.padding_x.max(0.0);
         self.padding_y = config.padding_y.max(0.0);
+        self.mouse_scroll_multiplier = config.mouse_scroll_multiplier;
         self.command_palette_show_keybinds = config.command_palette_show_keybinds;
 
         for index in 0..self.tabs.len() {
             self.refresh_tab_title(index);
+        }
+
+        if self.command_palette_open {
+            self.refresh_command_palette_matches(true, cx);
         }
 
         true
@@ -372,6 +425,34 @@ impl TerminalView {
             termy_toast::info("Configuration reloaded");
         }
         changed
+    }
+
+    fn tick_cursor_blink(&mut self) -> bool {
+        if !self.cursor_blink {
+            if self.cursor_blink_visible {
+                return false;
+            }
+            self.cursor_blink_visible = true;
+            return true;
+        }
+
+        self.cursor_blink_visible = !self.cursor_blink_visible;
+        true
+    }
+
+    pub(super) fn reset_cursor_blink_phase(&mut self) {
+        self.cursor_blink_visible = true;
+    }
+
+    pub(super) fn cursor_visible_for_focus(&self, focused: bool) -> bool {
+        !self.cursor_blink || !focused || self.cursor_blink_visible
+    }
+
+    pub(super) fn terminal_cursor_style(&self) -> TerminalCursorStyle {
+        match self.cursor_style {
+            AppCursorStyle::Line => TerminalCursorStyle::Line,
+            AppCursorStyle::Block => TerminalCursorStyle::Block,
+        }
     }
 
     fn process_terminal_events(&mut self, cx: &mut Context<Self>) -> bool {

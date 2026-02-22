@@ -10,6 +10,10 @@ const DEFAULT_TAB_TITLE_PROMPT_FORMAT: &str = "{cwd}";
 const DEFAULT_TAB_TITLE_COMMAND_FORMAT: &str = "{command}";
 const DEFAULT_TERM: &str = "xterm-256color";
 const DEFAULT_COLORTERM: &str = "truecolor";
+const DEFAULT_MOUSE_SCROLL_MULTIPLIER: f32 = 3.0;
+const MIN_MOUSE_SCROLL_MULTIPLIER: f32 = 0.1;
+const MAX_MOUSE_SCROLL_MULTIPLIER: f32 = 1_000.0;
+const DEFAULT_CURSOR_BLINK: bool = true;
 
 const DEFAULT_CONFIG: &str = "# Main settings\n\
 theme = termy\n\
@@ -38,11 +42,17 @@ window_height = 820\n\
 font_family = JetBrains Mono\n\
 # Terminal font size in pixels\n\
 font_size = 14\n\
+# Cursor style shared by terminal and inline inputs (line|block)\n\
+# cursor_style = block\n\
+# Enable cursor blink for terminal and inline inputs\n\
+# cursor_blink = true\n\
 # Terminal background opacity (0.0 = fully transparent, 1.0 = opaque)\n\
 # transparent_background_opacity = 1.0\n\
 # Inner terminal padding in pixels\n\
 padding_x = 12\n\
 padding_y = 8\n\
+# Mouse wheel scroll speed multiplier\n\
+# mouse_scroll_multiplier = 3\n\
 \n\
 # Advanced runtime settings (usually leave these as defaults)\n\
 # Preferred shell executable path\n\
@@ -168,6 +178,28 @@ impl Default for TabTitleConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CursorStyle {
+    Line,
+    Block,
+}
+
+impl CursorStyle {
+    fn from_str(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "line" | "bar" | "beam" | "ibeam" => Some(Self::Line),
+            "block" | "box" => Some(Self::Block),
+            _ => None,
+        }
+    }
+}
+
+impl Default for CursorStyle {
+    fn default() -> Self {
+        Self::Block
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AppConfig {
     pub theme: ThemeId,
@@ -182,9 +214,12 @@ pub struct AppConfig {
     pub window_height: f32,
     pub font_family: String,
     pub font_size: f32,
+    pub cursor_style: CursorStyle,
+    pub cursor_blink: bool,
     pub transparent_background_opacity: f32,
     pub padding_x: f32,
     pub padding_y: f32,
+    pub mouse_scroll_multiplier: f32,
     pub command_palette_show_keybinds: bool,
     pub keybind_lines: Vec<KeybindConfigLine>,
 }
@@ -210,9 +245,12 @@ impl Default for AppConfig {
             window_height: 820.0,
             font_family: "JetBrains Mono".to_string(),
             font_size: 14.0,
+            cursor_style: CursorStyle::default(),
+            cursor_blink: DEFAULT_CURSOR_BLINK,
             transparent_background_opacity: 1.0,
             padding_x: 12.0,
             padding_y: 8.0,
+            mouse_scroll_multiplier: DEFAULT_MOUSE_SCROLL_MULTIPLIER,
             command_palette_show_keybinds: true,
             keybind_lines: Vec::new(),
         }
@@ -357,6 +395,18 @@ impl AppConfig {
                 }
             }
 
+            if key.eq_ignore_ascii_case("cursor_style") {
+                if let Some(cursor_style) = CursorStyle::from_str(value) {
+                    config.cursor_style = cursor_style;
+                }
+            }
+
+            if key.eq_ignore_ascii_case("cursor_blink") {
+                if let Some(cursor_blink) = parse_bool(value) {
+                    config.cursor_blink = cursor_blink;
+                }
+            }
+
             if key.eq_ignore_ascii_case("transparent_background_opacity")
                 || key.eq_ignore_ascii_case("transparent_background_opccaity")
             {
@@ -378,6 +428,15 @@ impl AppConfig {
                     if padding_y >= 0.0 {
                         config.padding_y = padding_y;
                     }
+                }
+            }
+
+            if key.eq_ignore_ascii_case("mouse_scroll_multiplier") {
+                if let Ok(multiplier) = value.parse::<f32>()
+                    && multiplier.is_finite()
+                {
+                    config.mouse_scroll_multiplier =
+                        multiplier.clamp(MIN_MOUSE_SCROLL_MULTIPLIER, MAX_MOUSE_SCROLL_MULTIPLIER);
                 }
             }
 
@@ -562,7 +621,7 @@ fn config_path() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppConfig, TabTitleMode, TabTitleSource, WorkingDirFallback};
+    use super::{AppConfig, CursorStyle, TabTitleMode, TabTitleSource, WorkingDirFallback};
 
     #[test]
     fn tab_title_mode_sets_default_priority() {
@@ -653,5 +712,39 @@ mod tests {
 
         let disabled = AppConfig::from_contents("command_palette_show_keybinds = false\n");
         assert!(!disabled.command_palette_show_keybinds);
+    }
+
+    #[test]
+    fn mouse_scroll_multiplier_parses_and_clamps() {
+        let defaults = AppConfig::from_contents("");
+        assert_eq!(defaults.mouse_scroll_multiplier, 3.0);
+
+        let custom = AppConfig::from_contents("mouse_scroll_multiplier = 2.5\n");
+        assert_eq!(custom.mouse_scroll_multiplier, 2.5);
+
+        let clamped_low = AppConfig::from_contents("mouse_scroll_multiplier = -1\n");
+        assert_eq!(clamped_low.mouse_scroll_multiplier, 0.1);
+
+        let clamped_high = AppConfig::from_contents("mouse_scroll_multiplier = 20000\n");
+        assert_eq!(clamped_high.mouse_scroll_multiplier, 1_000.0);
+    }
+
+    #[test]
+    fn cursor_style_and_blink_parse_and_default() {
+        let defaults = AppConfig::from_contents("");
+        assert_eq!(defaults.cursor_style, CursorStyle::Block);
+        assert!(defaults.cursor_blink);
+
+        let line = AppConfig::from_contents("cursor_style = line\n");
+        assert_eq!(line.cursor_style, CursorStyle::Line);
+
+        let line_alias = AppConfig::from_contents("cursor_style = bar\n");
+        assert_eq!(line_alias.cursor_style, CursorStyle::Line);
+
+        let block = AppConfig::from_contents("cursor_style = block\n");
+        assert_eq!(block.cursor_style, CursorStyle::Block);
+
+        let blink_disabled = AppConfig::from_contents("cursor_blink = false\n");
+        assert!(!blink_disabled.cursor_blink);
     }
 }
