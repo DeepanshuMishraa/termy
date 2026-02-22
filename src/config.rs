@@ -13,6 +13,9 @@ const DEFAULT_COLORTERM: &str = "truecolor";
 const DEFAULT_MOUSE_SCROLL_MULTIPLIER: f32 = 3.0;
 const DEFAULT_SCROLLBACK_HISTORY: usize = 2000;
 const MAX_SCROLLBACK_HISTORY: usize = 100_000;
+const DEFAULT_MAX_TABS: usize = 10;
+const MAX_TABS_LIMIT: usize = 100;
+const DEFAULT_INACTIVE_TAB_SCROLLBACK: Option<usize> = None;
 const MIN_MOUSE_SCROLL_MULTIPLIER: f32 = 0.1;
 const MAX_MOUSE_SCROLL_MULTIPLIER: f32 = 1_000.0;
 const DEFAULT_CURSOR_BLINK: bool = true;
@@ -25,6 +28,8 @@ term = xterm-256color\n\
 # working_dir = ~/Documents\n\
 # Show tab bar above the terminal grid\n\
 # use_tabs = true\n\
+# Maximum number of tabs (lower = less memory usage)\n\
+# max_tabs = 10\n\
 # Tab title mode. Supported values: smart, shell, explicit, static\n\
 # smart = manual rename > explicit title > shell/app title > fallback\n\
 tab_title_mode = smart\n\
@@ -65,6 +70,8 @@ padding_y = 8\n\
 # colorterm = truecolor\n\
 # Scrollback history lines (lower = less memory, max 100000)\n\
 # scrollback_history = 2000\n\
+# Scrollback for inactive tabs (saves memory with many tabs)\n\
+# inactive_tab_scrollback = 500\n\
 # Keybindings (Ghostty-style trigger overrides)\n\
 # keybind = cmd-p=toggle_command_palette\n\
 # keybind = cmd-c=copy\n\
@@ -210,6 +217,7 @@ pub struct AppConfig {
     pub working_dir: Option<String>,
     pub working_dir_fallback: WorkingDirFallback,
     pub use_tabs: bool,
+    pub max_tabs: usize,
     pub tab_title: TabTitleConfig,
     pub shell: Option<String>,
     pub term: String,
@@ -225,6 +233,7 @@ pub struct AppConfig {
     pub padding_y: f32,
     pub mouse_scroll_multiplier: f32,
     pub scrollback_history: usize,
+    pub inactive_tab_scrollback: Option<usize>,
     pub command_palette_show_keybinds: bool,
     pub keybind_lines: Vec<KeybindConfigLine>,
 }
@@ -242,6 +251,7 @@ impl Default for AppConfig {
             working_dir: None,
             working_dir_fallback: WorkingDirFallback::default(),
             use_tabs: true,
+            max_tabs: DEFAULT_MAX_TABS,
             tab_title: TabTitleConfig::default(),
             shell: None,
             term: DEFAULT_TERM.to_string(),
@@ -257,6 +267,7 @@ impl Default for AppConfig {
             padding_y: 8.0,
             mouse_scroll_multiplier: DEFAULT_MOUSE_SCROLL_MULTIPLIER,
             scrollback_history: DEFAULT_SCROLLBACK_HISTORY,
+            inactive_tab_scrollback: DEFAULT_INACTIVE_TAB_SCROLLBACK,
             command_palette_show_keybinds: true,
             keybind_lines: Vec::new(),
         }
@@ -311,6 +322,12 @@ impl AppConfig {
             if key.eq_ignore_ascii_case("use_tabs") {
                 if let Some(use_tabs) = parse_bool(value) {
                     config.use_tabs = use_tabs;
+                }
+            }
+
+            if key.eq_ignore_ascii_case("max_tabs") {
+                if let Ok(max_tabs) = value.parse::<usize>() {
+                    config.max_tabs = max_tabs.clamp(1, MAX_TABS_LIMIT);
                 }
             }
 
@@ -451,6 +468,12 @@ impl AppConfig {
             {
                 if let Ok(history) = value.parse::<usize>() {
                     config.scrollback_history = history.min(MAX_SCROLLBACK_HISTORY);
+                }
+            }
+
+            if key.eq_ignore_ascii_case("inactive_tab_scrollback") {
+                if let Ok(history) = value.parse::<usize>() {
+                    config.inactive_tab_scrollback = Some(history.min(MAX_SCROLLBACK_HISTORY));
                 }
             }
 
@@ -775,5 +798,20 @@ mod tests {
 
         let clamped_high = AppConfig::from_contents("scrollback_history = 200000\n");
         assert_eq!(clamped_high.scrollback_history, 100_000);
+    }
+
+    #[test]
+    fn max_tabs_parses_and_clamps() {
+        let defaults = AppConfig::from_contents("");
+        assert_eq!(defaults.max_tabs, 10);
+
+        let custom = AppConfig::from_contents("max_tabs = 5\n");
+        assert_eq!(custom.max_tabs, 5);
+
+        let clamped_low = AppConfig::from_contents("max_tabs = 0\n");
+        assert_eq!(clamped_low.max_tabs, 1);
+
+        let clamped_high = AppConfig::from_contents("max_tabs = 500\n");
+        assert_eq!(clamped_high.max_tabs, 100);
     }
 }

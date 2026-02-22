@@ -488,6 +488,18 @@ impl Terminal {
     pub fn has_pending_events(&self) -> bool {
         !self.events_rx.is_empty()
     }
+
+    /// Update the scrollback history size. This can be used to reduce memory
+    /// for inactive tabs by temporarily shrinking their history.
+    pub fn set_scrollback_history(&self, history_size: usize) {
+        let mut term = self.term.lock();
+        // Create a new config with the updated scrollback history
+        // We use default values for other config options since they don't
+        // typically change at runtime
+        let mut config = TermConfig::default();
+        config.scrolling_history = history_size;
+        term.set_options(config);
+    }
 }
 
 /// Convert a GPUI keystroke into bytes for the terminal PTY.
