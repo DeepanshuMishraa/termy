@@ -1268,6 +1268,10 @@ impl TerminalView {
         // Focus the terminal on click
         self.focus_handle.focus(window, cx);
         self.reset_cursor_blink_phase();
+        self.finish_tab_drag();
+        if self.hovered_tab.take().is_some() {
+            cx.notify();
+        }
 
         if event.button != MouseButton::Left {
             return;
@@ -1314,6 +1318,10 @@ impl TerminalView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.hovered_tab.take().is_some() {
+            cx.notify();
+        }
+
         if self.terminal_scrollbar_drag.is_some() {
             if event.dragging() {
                 self.handle_terminal_scrollbar_drag(event.position, window, cx);
@@ -1359,6 +1367,10 @@ impl TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if event.button == MouseButton::Left {
+            self.finish_tab_drag();
+        }
+
         if event.button == MouseButton::Left && self.finish_terminal_scrollbar_drag(cx) {
             cx.stop_propagation();
             cx.notify();
@@ -1467,14 +1479,7 @@ impl TerminalView {
     }
 
     pub(super) fn titlebar_height(&self) -> f32 {
-        #[cfg(target_os = "windows")]
-        {
-            0.0
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            TITLEBAR_HEIGHT
-        }
+        TITLEBAR_HEIGHT
     }
 
     pub(super) fn update_banner_height(&self) -> f32 {

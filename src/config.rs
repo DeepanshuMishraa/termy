@@ -14,8 +14,6 @@ const DEFAULT_COLORTERM: &str = "truecolor";
 const DEFAULT_MOUSE_SCROLL_MULTIPLIER: f32 = 3.0;
 const DEFAULT_SCROLLBACK_HISTORY: usize = 2000;
 const MAX_SCROLLBACK_HISTORY: usize = 100_000;
-const DEFAULT_MAX_TABS: usize = 10;
-const MAX_TABS_LIMIT: usize = 100;
 const DEFAULT_INACTIVE_TAB_SCROLLBACK: Option<usize> = None;
 const MIN_MOUSE_SCROLL_MULTIPLIER: f32 = 0.1;
 const MAX_MOUSE_SCROLL_MULTIPLIER: f32 = 1_000.0;
@@ -29,11 +27,9 @@ theme = termy\n\
 term = xterm-256color\n\
 # Startup directory for new terminal sessions (~ supported)\n\
 # working_dir = ~/Documents\n\
-# Show tab bar above the terminal grid\n\
+# Show compact tab strip (stays visible with one tab)\n\
 # use_tabs = true\n\
-# Maximum number of tabs (lower = less memory usage)\n\
-# max_tabs = 10\n\
-# Hide custom titlebar buttons (settings/update/new-tab)\n\
+# Hide compact top-strip buttons (settings/update/new-tab)\n\
 # hide_titlebar_buttons = false\n\
 # Warn before quitting when tabs are busy (running command/fullscreen TUI)\n\
 # warn_on_quit_with_running_process = true\n\
@@ -396,7 +392,6 @@ pub struct AppConfig {
     pub working_dir: Option<String>,
     pub working_dir_fallback: WorkingDirFallback,
     pub use_tabs: bool,
-    pub max_tabs: usize,
     pub hide_titlebar_buttons: bool,
     pub warn_on_quit_with_running_process: bool,
     pub tab_title: TabTitleConfig,
@@ -436,7 +431,6 @@ impl Default for AppConfig {
             working_dir: None,
             working_dir_fallback: WorkingDirFallback::default(),
             use_tabs: true,
-            max_tabs: DEFAULT_MAX_TABS,
             hide_titlebar_buttons: DEFAULT_HIDE_TITLEBAR_BUTTONS,
             warn_on_quit_with_running_process: DEFAULT_WARN_ON_QUIT_WITH_RUNNING_PROCESS,
             tab_title: TabTitleConfig::default(),
@@ -526,12 +520,6 @@ impl AppConfig {
             if key.eq_ignore_ascii_case("use_tabs") {
                 if let Some(use_tabs) = parse_bool(value) {
                     config.use_tabs = use_tabs;
-                }
-            }
-
-            if key.eq_ignore_ascii_case("max_tabs") {
-                if let Ok(max_tabs) = value.parse::<usize>() {
-                    config.max_tabs = max_tabs.clamp(1, MAX_TABS_LIMIT);
                 }
             }
 
@@ -1310,21 +1298,6 @@ mod tests {
 
         let clamped_high = AppConfig::from_contents("scrollback_history = 200000\n");
         assert_eq!(clamped_high.scrollback_history, 100_000);
-    }
-
-    #[test]
-    fn max_tabs_parses_and_clamps() {
-        let defaults = AppConfig::from_contents("");
-        assert_eq!(defaults.max_tabs, 10);
-
-        let custom = AppConfig::from_contents("max_tabs = 5\n");
-        assert_eq!(custom.max_tabs, 5);
-
-        let clamped_low = AppConfig::from_contents("max_tabs = 0\n");
-        assert_eq!(clamped_low.max_tabs, 1);
-
-        let clamped_high = AppConfig::from_contents("max_tabs = 500\n");
-        assert_eq!(clamped_high.max_tabs, 100);
     }
 
     #[test]

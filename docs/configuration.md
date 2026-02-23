@@ -137,8 +137,10 @@ Explicit payload examples:
 - Values: string, or `none`/`unset`/`default`/`auto` to disable
 
 `use_tabs`
-- Default: `false`
+- Default: `true`
 - Values: `true`/`false`
+- What it does: shows Termy's compact tab strip. When enabled, the tab strip stays visible even with a single tab.
+- Tab behavior: tab widths are content-based, the row scrolls horizontally when tabs overflow, and close buttons appear on the active or hovered tab.
 
 `hide_titlebar_buttons`
 - Default: `false`

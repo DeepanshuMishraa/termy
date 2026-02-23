@@ -1,54 +1,93 @@
 use super::*;
 
 impl TerminalView {
-    pub(super) fn tab_bar_layout(&self, viewport_width: f32) -> TabBarLayout {
-        let tab_count = self.tabs.len().max(1) as f32;
-        let total_gap = (self.tabs.len().saturating_sub(1) as f32) * TAB_PILL_GAP;
-        let available =
-            (viewport_width - (TAB_HORIZONTAL_PADDING * 2.0) - total_gap).max(tab_count);
-        let tab_pill_width = (available / tab_count).max(1.0);
-
-        TabBarLayout {
-            tab_pill_width,
-            tab_padding_x: Self::tab_pill_padding_x(tab_pill_width),
-        }
-    }
-
-    pub(super) fn tab_pill_padding_x(tab_pill_width: f32) -> f32 {
-        if tab_pill_width >= TAB_PILL_COMPACT_THRESHOLD {
-            TAB_PILL_NORMAL_PADDING
-        } else {
-            TAB_PILL_COMPACT_PADDING
-        }
+    pub(super) fn tab_display_width_for_title(title: &str) -> f32 {
+        let title_chars = title.trim().chars().count() as f32;
+        let text_width = title_chars * TAB_TITLE_CHAR_WIDTH;
+        let width = (TAB_TEXT_PADDING_X * 2.0) + text_width + TAB_CLOSE_SLOT_WIDTH;
+        width.clamp(TAB_MIN_WIDTH, TAB_MAX_WIDTH)
     }
 
     pub(super) fn tab_shows_close(
-        tab_pill_width: f32,
         is_active: bool,
-        tab_padding_x: f32,
+        hovered_tab: Option<usize>,
+        index: usize,
     ) -> bool {
-        // Keep close affordance visible on the active tab whenever there is
-        // enough room for the hit target and side padding.
-        let min_hit_target_width = TAB_CLOSE_HITBOX + (tab_padding_x * 2.0);
-        if tab_pill_width < min_hit_target_width {
+        is_active || hovered_tab == Some(index)
+    }
+
+    fn remap_index_after_move(index: usize, from: usize, to: usize) -> usize {
+        if index == from {
+            return to;
+        }
+
+        if from < to {
+            if (from + 1..=to).contains(&index) {
+                return index - 1;
+            }
+            index
+        } else if (to..from).contains(&index) {
+            index + 1
+        } else {
+            index
+        }
+    }
+
+    pub(super) fn begin_tab_drag(&mut self, index: usize) {
+        if index < self.tabs.len() {
+            self.tab_drag = Some(TabDragState {
+                dragged_index: index,
+            });
+        }
+    }
+
+    pub(super) fn finish_tab_drag(&mut self) {
+        self.tab_drag = None;
+    }
+
+    pub(super) fn drag_tab_to(&mut self, target_index: usize, cx: &mut Context<Self>) {
+        let Some(drag) = self.tab_drag else {
+            return;
+        };
+
+        if target_index >= self.tabs.len() || drag.dragged_index == target_index {
+            return;
+        }
+
+        if self.reorder_tab(drag.dragged_index, target_index, cx) {
+            self.tab_drag = Some(TabDragState {
+                dragged_index: target_index,
+            });
+        }
+    }
+
+    pub(super) fn reorder_tab(&mut self, from: usize, to: usize, cx: &mut Context<Self>) -> bool {
+        if from >= self.tabs.len() || to >= self.tabs.len() || from == to {
             return false;
         }
 
-        if is_active {
-            return true;
+        let moved_tab = self.tabs.remove(from);
+        self.tabs.insert(to, moved_tab);
+
+        self.active_tab = Self::remap_index_after_move(self.active_tab, from, to);
+        self.renaming_tab = self
+            .renaming_tab
+            .map(|index| Self::remap_index_after_move(index, from, to));
+        self.hovered_tab = self
+            .hovered_tab
+            .map(|index| Self::remap_index_after_move(index, from, to));
+
+        if let Some(drag) = &mut self.tab_drag {
+            drag.dragged_index = Self::remap_index_after_move(drag.dragged_index, from, to);
         }
 
-        tab_pill_width >= TAB_INACTIVE_CLOSE_MIN_WIDTH
+        self.scroll_active_tab_into_view();
+        cx.notify();
+        true
     }
 
     pub(super) fn add_tab(&mut self, cx: &mut Context<Self>) {
         if !self.use_tabs {
-            return;
-        }
-
-        // Enforce max_tabs limit to control memory usage
-        if self.tabs.len() >= self.max_tabs {
-            termy_toast::warning(format!("Maximum {} tabs reached", self.max_tabs));
             return;
         }
 
@@ -74,7 +113,10 @@ impl TerminalView {
         self.renaming_tab = None;
         self.rename_input.clear();
         self.inline_input_selecting = false;
+        self.hovered_tab = None;
+        self.tab_drag = None;
         self.clear_selection();
+        self.scroll_active_tab_into_view();
         cx.notify();
     }
 
@@ -103,7 +145,21 @@ impl TerminalView {
             _ => {}
         }
 
+        self.hovered_tab = match self.hovered_tab {
+            Some(hovered) if hovered == index => None,
+            Some(hovered) if hovered > index => Some(hovered - 1),
+            value => value,
+        };
+        self.tab_drag = match self.tab_drag {
+            Some(TabDragState { dragged_index }) if dragged_index == index => None,
+            Some(TabDragState { dragged_index }) if dragged_index > index => Some(TabDragState {
+                dragged_index: dragged_index - 1,
+            }),
+            value => value,
+        };
+
         self.clear_selection();
+        self.scroll_active_tab_into_view();
         cx.notify();
     }
 
@@ -127,6 +183,7 @@ impl TerminalView {
             self.switch_tab(index, cx);
         }
 
+        self.finish_tab_drag();
         self.renaming_tab = Some(index);
         self.rename_input.set_text(self.tabs[index].title.clone());
         self.reset_cursor_blink_phase();
@@ -158,7 +215,9 @@ impl TerminalView {
         self.renaming_tab = None;
         self.rename_input.clear();
         self.inline_input_selecting = false;
+        self.finish_tab_drag();
         self.clear_selection();
+        self.scroll_active_tab_into_view();
         cx.notify();
     }
 
@@ -176,6 +235,7 @@ impl TerminalView {
         self.renaming_tab = None;
         self.rename_input.clear();
         self.inline_input_selecting = false;
+        self.finish_tab_drag();
         cx.notify();
     }
 
@@ -187,6 +247,48 @@ impl TerminalView {
         self.renaming_tab = None;
         self.rename_input.clear();
         self.inline_input_selecting = false;
+        self.finish_tab_drag();
         cx.notify();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tab_display_width_for_title_clamps_to_min() {
+        let width = TerminalView::tab_display_width_for_title("a");
+        assert_eq!(width, TAB_MIN_WIDTH);
+    }
+
+    #[test]
+    fn tab_display_width_for_title_clamps_to_max() {
+        let very_long_title = "x".repeat(200);
+        let width = TerminalView::tab_display_width_for_title(&very_long_title);
+        assert_eq!(width, TAB_MAX_WIDTH);
+    }
+
+    #[test]
+    fn remap_index_after_move_handles_move_to_right() {
+        assert_eq!(TerminalView::remap_index_after_move(1, 1, 3), 3);
+        assert_eq!(TerminalView::remap_index_after_move(2, 1, 3), 1);
+        assert_eq!(TerminalView::remap_index_after_move(3, 1, 3), 2);
+        assert_eq!(TerminalView::remap_index_after_move(0, 1, 3), 0);
+    }
+
+    #[test]
+    fn remap_index_after_move_handles_move_to_left() {
+        assert_eq!(TerminalView::remap_index_after_move(3, 3, 1), 1);
+        assert_eq!(TerminalView::remap_index_after_move(1, 3, 1), 2);
+        assert_eq!(TerminalView::remap_index_after_move(2, 3, 1), 3);
+        assert_eq!(TerminalView::remap_index_after_move(4, 3, 1), 4);
+    }
+
+    #[test]
+    fn tab_shows_close_for_active_or_hovered() {
+        assert!(TerminalView::tab_shows_close(true, None, 1));
+        assert!(TerminalView::tab_shows_close(false, Some(1), 1));
+        assert!(!TerminalView::tab_shows_close(false, Some(2), 1));
     }
 }

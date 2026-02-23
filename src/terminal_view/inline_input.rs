@@ -565,6 +565,7 @@ pub(super) struct InlineInputElement {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
 pub(super) enum InlineInputAlignment {
     Left,
     Center,

@@ -126,6 +126,7 @@ impl TerminalView {
         }
 
         self.tabs[index].title = next;
+        self.tabs[index].display_width = Self::tab_display_width_for_title(&self.tabs[index].title);
         true
     }
 
