@@ -18,7 +18,6 @@ const DEFAULT_INACTIVE_TAB_SCROLLBACK: Option<usize> = None;
 const MIN_MOUSE_SCROLL_MULTIPLIER: f32 = 0.1;
 const MAX_MOUSE_SCROLL_MULTIPLIER: f32 = 1_000.0;
 const DEFAULT_CURSOR_BLINK: bool = true;
-const DEFAULT_HIDE_TITLEBAR_BUTTONS: bool = false;
 const DEFAULT_WARN_ON_QUIT_WITH_RUNNING_PROCESS: bool = true;
 
 const DEFAULT_CONFIG: &str = "# Main settings\n\
@@ -29,8 +28,6 @@ term = xterm-256color\n\
 # working_dir = ~/Documents\n\
 # Show compact tab strip (stays visible with one tab)\n\
 # use_tabs = true\n\
-# Hide compact top-strip buttons (settings/update/new-tab)\n\
-# hide_titlebar_buttons = false\n\
 # Warn before quitting when tabs are busy (running command/fullscreen TUI)\n\
 # warn_on_quit_with_running_process = true\n\
 # Tab title mode. Supported values: smart, shell, explicit, static\n\
@@ -392,7 +389,6 @@ pub struct AppConfig {
     pub working_dir: Option<String>,
     pub working_dir_fallback: WorkingDirFallback,
     pub use_tabs: bool,
-    pub hide_titlebar_buttons: bool,
     pub warn_on_quit_with_running_process: bool,
     pub tab_title: TabTitleConfig,
     pub shell: Option<String>,
@@ -431,7 +427,6 @@ impl Default for AppConfig {
             working_dir: None,
             working_dir_fallback: WorkingDirFallback::default(),
             use_tabs: true,
-            hide_titlebar_buttons: DEFAULT_HIDE_TITLEBAR_BUTTONS,
             warn_on_quit_with_running_process: DEFAULT_WARN_ON_QUIT_WITH_RUNNING_PROCESS,
             tab_title: TabTitleConfig::default(),
             shell: None,
@@ -520,12 +515,6 @@ impl AppConfig {
             if key.eq_ignore_ascii_case("use_tabs") {
                 if let Some(use_tabs) = parse_bool(value) {
                     config.use_tabs = use_tabs;
-                }
-            }
-
-            if key.eq_ignore_ascii_case("hide_titlebar_buttons") {
-                if let Some(hide) = parse_bool(value) {
-                    config.hide_titlebar_buttons = hide;
                 }
             }
 
@@ -1301,16 +1290,20 @@ mod tests {
     }
 
     #[test]
-    fn titlebar_buttons_and_quit_warning_parse_and_defaults() {
+    fn quit_warning_parse_and_defaults() {
         let defaults = AppConfig::from_contents("");
-        assert!(!defaults.hide_titlebar_buttons);
         assert!(defaults.warn_on_quit_with_running_process);
 
+        let configured = AppConfig::from_contents("warn_on_quit_with_running_process = false\n");
+        assert!(!configured.warn_on_quit_with_running_process);
+    }
+
+    #[test]
+    fn removed_hide_titlebar_buttons_key_is_ignored_as_unknown() {
         let configured = AppConfig::from_contents(
             "hide_titlebar_buttons = true\n\
              warn_on_quit_with_running_process = false\n",
         );
-        assert!(configured.hide_titlebar_buttons);
         assert!(!configured.warn_on_quit_with_running_process);
     }
 

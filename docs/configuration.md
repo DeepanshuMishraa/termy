@@ -142,11 +142,6 @@ Explicit payload examples:
 - What it does: shows Termy's compact tab strip. When enabled, the tab strip stays visible even with a single tab.
 - Tab behavior: tab widths are content-based, the row scrolls horizontally when tabs overflow, and close buttons appear on the active or hovered tab.
 
-`hide_titlebar_buttons`
-- Default: `false`
-- Values: `true`/`false`
-- What it does: hides Termy custom titlebar buttons (settings, update, new-tab). Native OS window controls remain visible.
-
 `warn_on_quit_with_running_process`
 - Default: `true`
 - Values: `true`/`false`

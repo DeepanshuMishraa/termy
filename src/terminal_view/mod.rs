@@ -70,13 +70,6 @@ const TOP_STRIP_CONTENT_OFFSET_Y: f32 = 0.0;
 const TOP_STRIP_BRAND_TEXT_SIZE: f32 = 13.0;
 const TOP_STRIP_CONTEXT_TEXT_SIZE: f32 = 13.0;
 const TOP_STRIP_TEXT_BASELINE_NUDGE_Y: f32 = 0.0;
-const TITLEBAR_PLUS_SIZE: f32 = 18.0;
-const TITLEBAR_BUTTON_GAP: f32 = 4.0;
-const TITLEBAR_BUTTON_ICON_SIZE: f32 = 10.0;
-const TITLEBAR_SETTINGS_ICON_SIZE: f32 = 12.0;
-const TITLEBAR_NEW_TAB_ICON_SIZE: f32 = 10.0;
-const TITLEBAR_BUTTON_ICON_BASELINE_NUDGE_Y: f32 = -0.5;
-const TITLEBAR_SETTINGS_ICON_BASELINE_NUDGE_Y: f32 = -1.0;
 const TAB_HORIZONTAL_PADDING: f32 = 8.0;
 const TAB_ITEM_HEIGHT: f32 = 32.0;
 const TAB_ITEM_GAP: f32 = 0.0;
@@ -92,6 +85,11 @@ const TAB_DROP_MARKER_WIDTH: f32 = 2.0;
 const TAB_DROP_MARKER_INSET_Y: f32 = 3.0;
 const TAB_DRAG_AUTOSCROLL_EDGE_WIDTH: f32 = 32.0;
 const TAB_DRAG_AUTOSCROLL_MAX_STEP: f32 = 24.0;
+const TABBAR_ACTION_RAIL_WIDTH: f32 = 40.0;
+const TABBAR_NEW_TAB_BUTTON_SIZE: f32 = 22.0;
+const TABBAR_NEW_TAB_BUTTON_RADIUS: f32 = 2.0;
+const TABBAR_NEW_TAB_ICON_SIZE: f32 = 13.0;
+const TABBAR_NEW_TAB_ICON_BASELINE_NUDGE_Y: f32 = -1.0;
 const MAX_TAB_TITLE_CHARS: usize = 96;
 const DEFAULT_TAB_TITLE: &str = "Terminal";
 const COMMAND_TITLE_DELAY_MS: u64 = 250;
@@ -504,7 +502,6 @@ pub struct TerminalView {
     colors: TerminalColors,
     use_tabs: bool,
     inactive_tab_scrollback: Option<usize>,
-    hide_titlebar_buttons: bool,
     warn_on_quit_with_running_process: bool,
     tab_title: TabTitleConfig,
     tab_shell_integration: TabTitleShellIntegration,
@@ -991,7 +988,6 @@ impl TerminalView {
             colors,
             use_tabs: config.use_tabs,
             inactive_tab_scrollback: config.inactive_tab_scrollback,
-            hide_titlebar_buttons: config.hide_titlebar_buttons,
             warn_on_quit_with_running_process: config.warn_on_quit_with_running_process,
             tab_title,
             tab_shell_integration,
@@ -1091,7 +1087,6 @@ impl TerminalView {
         self.colors = TerminalColors::from_theme(&config.theme, &config.colors);
         self.use_tabs = config.use_tabs;
         self.inactive_tab_scrollback = config.inactive_tab_scrollback;
-        self.hide_titlebar_buttons = config.hide_titlebar_buttons;
         self.warn_on_quit_with_running_process = config.warn_on_quit_with_running_process;
         self.tab_title = config.tab_title.clone();
         self.tab_shell_integration = TabTitleShellIntegration {

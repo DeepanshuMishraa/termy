@@ -343,40 +343,49 @@ impl TerminalView {
         )
     }
 
-    fn render_chrome_icon_button(
+    fn render_tabbar_new_tab_button(
         &self,
-        id: &'static str,
-        label: &'static str,
-        icon_size: f32,
-        baseline_nudge_y: f32,
         bg: gpui::Rgba,
+        hover_bg: gpui::Rgba,
+        border: gpui::Rgba,
+        hover_border: gpui::Rgba,
         text: gpui::Rgba,
-        on_click: impl Fn(&mut Self, &MouseDownEvent, &mut Window, &mut Context<Self>) + 'static,
+        hover_text: gpui::Rgba,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         div()
-            .id(id)
-            .w(px(TITLEBAR_PLUS_SIZE))
-            .h(px(TITLEBAR_PLUS_SIZE))
-            .rounded_sm()
+            .id("tabbar-new-tab")
+            .w(px(TABBAR_NEW_TAB_BUTTON_SIZE))
+            .h(px(TABBAR_NEW_TAB_BUTTON_SIZE))
+            .rounded(px(TABBAR_NEW_TAB_BUTTON_RADIUS))
             .bg(bg)
+            .border_1()
+            .border_color(border)
             .text_color(text)
             .cursor_pointer()
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                    on_click(this, event, window, cx);
+                cx.listener(|this, _event: &MouseDownEvent, _window, cx| {
+                    this.add_tab(cx);
+                    cx.stop_propagation();
                 }),
             )
+            .hover(move |style| {
+                style
+                    .bg(hover_bg)
+                    .border_color(hover_border)
+                    .text_color(hover_text)
+            })
             .child(
                 div()
                     .size_full()
                     .flex()
                     .items_center()
                     .justify_center()
-                    .text_size(px(icon_size))
-                    .mt(px(baseline_nudge_y))
-                    .child(label),
+                    .text_size(px(TABBAR_NEW_TAB_ICON_SIZE))
+                    .font_weight(FontWeight::MEDIUM)
+                    .mt(px(TABBAR_NEW_TAB_ICON_BASELINE_NUDGE_Y))
+                    .child("+"),
             )
             .into_any_element()
     }
@@ -522,19 +531,10 @@ impl Render for TerminalView {
 
         let focus_handle = self.focus_handle.clone();
         let show_tab_bar = self.show_tab_bar();
-        let show_custom_titlebar_buttons = !self.hide_titlebar_buttons;
-        let show_titlebar_update_button = show_custom_titlebar_buttons && cfg!(target_os = "macos");
-        let show_titlebar_new_tab_button = show_custom_titlebar_buttons && self.use_tabs;
-        let custom_titlebar_button_count = if show_custom_titlebar_buttons {
-            1 + usize::from(show_titlebar_update_button) + usize::from(show_titlebar_new_tab_button)
+        let tabbar_action_rail_width = if show_tab_bar {
+            TABBAR_ACTION_RAIL_WIDTH
         } else {
-            0
-        };
-        let titlebar_side_slot_width = if custom_titlebar_button_count == 0 {
             0.0
-        } else {
-            let button_count = custom_titlebar_button_count as f32;
-            (button_count * TITLEBAR_PLUS_SIZE) + ((button_count - 1.0) * TITLEBAR_BUTTON_GAP)
         };
         let titlebar_left_padding = if cfg!(target_os = "macos") {
             TOP_STRIP_MACOS_TRAFFIC_LIGHT_PADDING
@@ -549,18 +549,6 @@ impl Render for TerminalView {
         titlebar_brand_text.a = 0.9;
         let mut titlebar_context_text = colors.foreground;
         titlebar_context_text.a = 0.62;
-        let mut titlebar_plus_bg = colors.foreground;
-        titlebar_plus_bg.a = if show_custom_titlebar_buttons {
-            self.scaled_chrome_alpha(0.08)
-        } else {
-            0.0
-        };
-        let mut titlebar_plus_text = colors.foreground;
-        titlebar_plus_text.a = if show_custom_titlebar_buttons {
-            0.92
-        } else {
-            0.0
-        };
         let mut tabbar_bg = terminal_surface_bg;
         if !show_tab_bar {
             tabbar_bg.a = 0.0;
@@ -586,6 +574,18 @@ impl Render for TerminalView {
         close_button_hover_text.a = 0.98;
         let mut tab_drop_marker_color = colors.cursor;
         tab_drop_marker_color.a = self.scaled_chrome_alpha(0.95);
+        let mut tabbar_new_tab_bg = colors.foreground;
+        tabbar_new_tab_bg.a = self.scaled_chrome_alpha(0.11);
+        let mut tabbar_new_tab_hover_bg = colors.foreground;
+        tabbar_new_tab_hover_bg.a = self.scaled_chrome_alpha(0.2);
+        let mut tabbar_new_tab_border = colors.foreground;
+        tabbar_new_tab_border.a = self.scaled_chrome_alpha(0.24);
+        let mut tabbar_new_tab_hover_border = colors.cursor;
+        tabbar_new_tab_hover_border.a = self.scaled_chrome_alpha(0.76);
+        let mut tabbar_new_tab_text = colors.foreground;
+        tabbar_new_tab_text.a = 0.9;
+        let mut tabbar_new_tab_hover_text = colors.cursor;
+        tabbar_new_tab_hover_text.a = 0.98;
         let mut selection_bg = colors.cursor;
         selection_bg.a = SELECTION_BG_ALPHA;
         let selection_fg = colors.background;
@@ -641,8 +641,9 @@ impl Render for TerminalView {
                 let hovered_changed =
                     this.hovered_tab.take().is_some() || this.hovered_tab_close.take().is_some();
                 let drag_changed = if event.dragging() {
-                    let viewport_width: f32 = window.viewport_size().width.into();
-                    this.update_tab_drag_preview(event.position.x.into(), viewport_width, cx)
+                    let viewport_width = this.tab_strip_drag_viewport_width(window);
+                    let pointer_x = Into::<f32>::into(event.position.x).clamp(0.0, viewport_width);
+                    this.update_tab_drag_preview(pointer_x, viewport_width, cx)
                 } else {
                     if this.tab_drag.is_some() {
                         this.commit_tab_drag(cx);
@@ -789,12 +790,10 @@ impl Render for TerminalView {
                                 hovered_changed = true;
                             }
                             let drag_changed = if event.dragging() {
-                                let viewport_width: f32 = window.viewport_size().width.into();
-                                this.update_tab_drag_preview(
-                                    event.position.x.into(),
-                                    viewport_width,
-                                    cx,
-                                )
+                                let viewport_width = this.tab_strip_drag_viewport_width(window);
+                                let pointer_x =
+                                    Into::<f32>::into(event.position.x).clamp(0.0, viewport_width);
+                                this.update_tab_drag_preview(pointer_x, viewport_width, cx)
                             } else {
                                 false
                             };
@@ -892,6 +891,11 @@ impl Render for TerminalView {
                     ),
             );
         }
+        let tab_baseline_y = tab_chrome_layout
+            .as_ref()
+            .map_or(TABBAR_HEIGHT - TAB_STROKE_THICKNESS, |layout| {
+                layout.baseline_y
+            });
 
         let tabs_row = div()
             .w_full()
@@ -903,7 +907,65 @@ impl Render for TerminalView {
                     .h_full()
                     .flex()
                     .items_end()
-                    .child(tabs_scroll_content),
+                    .child(
+                        div()
+                            .id("tabs-scroll-viewport")
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .h_full()
+                            .child(tabs_scroll_content),
+                    )
+                    .children(show_tab_bar.then(|| {
+                        div()
+                            .id("tabbar-action-rail")
+                            .relative()
+                            .flex_none()
+                            .w(px(tabbar_action_rail_width))
+                            .h(px(TABBAR_HEIGHT))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .on_mouse_move(cx.listener(
+                                |this, event: &MouseMoveEvent, window, cx| {
+                                    let hovered_changed = this.hovered_tab.take().is_some()
+                                        || this.hovered_tab_close.take().is_some();
+                                    if !event.dragging() {
+                                        if hovered_changed {
+                                            cx.notify();
+                                        }
+                                        return;
+                                    }
+
+                                    let viewport_width = this.tab_strip_drag_viewport_width(window);
+                                    let pointer_x = Into::<f32>::into(event.position.x)
+                                        .clamp(0.0, viewport_width);
+                                    if !this.update_tab_drag_preview(pointer_x, viewport_width, cx)
+                                        && hovered_changed
+                                    {
+                                        cx.notify();
+                                    }
+                                },
+                            ))
+                            .child(
+                                div()
+                                    .absolute()
+                                    .left_0()
+                                    .right_0()
+                                    .top(px(tab_baseline_y))
+                                    .h(px(TAB_STROKE_THICKNESS))
+                                    .bg(tab_stroke_color),
+                            )
+                            .child(self.render_tabbar_new_tab_button(
+                                tabbar_new_tab_bg,
+                                tabbar_new_tab_hover_bg,
+                                tabbar_new_tab_border,
+                                tabbar_new_tab_hover_border,
+                                tabbar_new_tab_text,
+                                tabbar_new_tab_hover_text,
+                                cx,
+                            ))
+                            .into_any_element()
+                    })),
             );
 
         // Build update banner element (macOS only)
@@ -990,69 +1052,6 @@ impl Render for TerminalView {
             "Terminal"
         };
         let titlebar_element: Option<AnyElement> = (titlebar_height > 0.0).then(|| {
-            let mut right_controls = div()
-                .w(px(titlebar_side_slot_width))
-                .h(px(TITLEBAR_PLUS_SIZE));
-            if show_custom_titlebar_buttons {
-                right_controls = div()
-                    .flex()
-                    .items_center()
-                    .gap(px(TITLEBAR_BUTTON_GAP))
-                    .child(self.render_chrome_icon_button(
-                        "titlebar-settings",
-                        "\u{2699}",
-                        TITLEBAR_SETTINGS_ICON_SIZE,
-                        TITLEBAR_SETTINGS_ICON_BASELINE_NUDGE_Y,
-                        titlebar_plus_bg,
-                        titlebar_plus_text,
-                        |this, _event, window, cx| {
-                            this.execute_command_action(
-                                CommandAction::OpenSettings,
-                                false,
-                                window,
-                                cx,
-                            );
-                            cx.stop_propagation();
-                        },
-                        cx,
-                    ))
-                    .children(show_titlebar_update_button.then(|| {
-                        self.render_chrome_icon_button(
-                            "titlebar-update",
-                            "\u{21BB}",
-                            TITLEBAR_BUTTON_ICON_SIZE,
-                            TITLEBAR_BUTTON_ICON_BASELINE_NUDGE_Y,
-                            titlebar_plus_bg,
-                            titlebar_plus_text,
-                            |this, _event, window, cx| {
-                                this.execute_command_action(
-                                    CommandAction::CheckForUpdates,
-                                    false,
-                                    window,
-                                    cx,
-                                );
-                                cx.stop_propagation();
-                            },
-                            cx,
-                        )
-                    }))
-                    .children(show_titlebar_new_tab_button.then(|| {
-                        self.render_chrome_icon_button(
-                            "titlebar-new-tab",
-                            "+",
-                            TITLEBAR_NEW_TAB_ICON_SIZE,
-                            TITLEBAR_BUTTON_ICON_BASELINE_NUDGE_Y,
-                            titlebar_plus_bg,
-                            titlebar_plus_text,
-                            |this, _event, _window, cx| {
-                                this.add_tab(cx);
-                                cx.stop_propagation();
-                            },
-                            cx,
-                        )
-                    }));
-            }
-
             div()
                 .id("titlebar")
                 .w_full()
@@ -1072,13 +1071,10 @@ impl Render for TerminalView {
                         changed = true;
                     }
                     if event.dragging() {
-                        let viewport_width: f32 = window.viewport_size().width.into();
-                        if !this.update_tab_drag_preview(
-                            event.position.x.into(),
-                            viewport_width,
-                            cx,
-                        ) && changed
-                        {
+                        let viewport_width = this.tab_strip_drag_viewport_width(window);
+                        let pointer_x =
+                            Into::<f32>::into(event.position.x).clamp(0.0, viewport_width);
+                        if !this.update_tab_drag_preview(pointer_x, viewport_width, cx) && changed {
                             cx.notify();
                         }
                         return;
@@ -1127,8 +1123,7 @@ impl Render for TerminalView {
                                         .text_size(px(TOP_STRIP_CONTEXT_TEXT_SIZE))
                                         .child(active_context_label),
                                 ),
-                        )
-                        .child(right_controls),
+                        ),
                 )
                 .into_any()
         });

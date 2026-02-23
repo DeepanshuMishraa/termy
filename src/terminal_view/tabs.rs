@@ -59,6 +59,15 @@ impl TerminalView {
         .detach();
     }
 
+    pub(super) fn tab_strip_drag_viewport_width(&self, window: &Window) -> f32 {
+        let viewport_width: f32 = window.viewport_size().width.into();
+        if !self.show_tab_bar() {
+            return viewport_width.max(0.0);
+        }
+
+        (viewport_width - TABBAR_ACTION_RAIL_WIDTH).max(0.0)
+    }
+
     pub(super) fn tab_display_width_for_title(title: &str) -> f32 {
         let title_chars = title.trim().chars().count() as f32;
         let text_width = title_chars * TAB_TITLE_CHAR_WIDTH;
