@@ -90,6 +90,7 @@ impl TerminalView {
         position: gpui::Point<Pixels>,
         clamp: bool,
     ) -> Option<CellPos> {
+        let (padding_x, padding_y) = self.effective_terminal_padding();
         let size = self.active_terminal().size();
         if size.cols == 0 || size.rows == 0 {
             return None;
@@ -97,8 +98,8 @@ impl TerminalView {
 
         let mut x: f32 = position.x.into();
         let mut y: f32 = position.y.into();
-        x -= self.padding_x;
-        y -= self.chrome_height() + self.padding_y;
+        x -= padding_x;
+        y -= self.chrome_height() + padding_y;
 
         let cell_width: f32 = size.cell_width.into();
         let cell_height: f32 = size.cell_height.into();
@@ -342,6 +343,7 @@ impl TerminalView {
     }
 
     pub(super) fn sync_terminal_size(&mut self, window: &Window, cell_size: Size<Pixels>) {
+        let (padding_x, padding_y) = self.effective_terminal_padding();
         let viewport = window.viewport_size();
         let viewport_width: f32 = viewport.width.into();
         let viewport_height: f32 = viewport.height.into();
@@ -352,11 +354,24 @@ impl TerminalView {
             return;
         }
 
-        let terminal_width = (viewport_width - (self.padding_x * 2.0)).max(cell_width * 2.0);
+        let terminal_width = (viewport_width - (padding_x * 2.0)).max(cell_width * 2.0);
         let terminal_height =
-            (viewport_height - self.chrome_height() - (self.padding_y * 2.0)).max(cell_height);
-        let cols = (terminal_width / cell_width).floor().max(2.0) as u16;
-        let rows = (terminal_height / cell_height).floor().max(1.0) as u16;
+            (viewport_height - self.chrome_height() - (padding_y * 2.0)).max(cell_height);
+        // In alternate-screen UIs (e.g. fullscreen TUIs), use edge-to-edge sizing
+        // so partial-cell remainders don't leave a visible strip on the right/bottom.
+        let edge_to_edge_grid = self.active_terminal().alternate_screen_mode();
+        let cols = if edge_to_edge_grid {
+            (terminal_width / cell_width).ceil()
+        } else {
+            (terminal_width / cell_width).floor()
+        }
+        .max(2.0) as u16;
+        let rows = if edge_to_edge_grid {
+            (terminal_height / cell_height).ceil()
+        } else {
+            (terminal_height / cell_height).floor()
+        }
+        .max(1.0) as u16;
 
         for tab in &mut self.tabs {
             let current = tab.terminal.size();

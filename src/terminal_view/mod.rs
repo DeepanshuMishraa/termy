@@ -475,6 +475,14 @@ impl TerminalView {
         scaled_chrome_alpha_for_opacity(base_alpha, self.background_opacity)
     }
 
+    fn effective_terminal_padding(&self) -> (f32, f32) {
+        if self.active_terminal().alternate_screen_mode() {
+            (0.0, 0.0)
+        } else {
+            (self.padding_x, self.padding_y)
+        }
+    }
+
     fn overlay_style(&self) -> OverlayStyleBuilder<'_> {
         OverlayStyleBuilder::new(&self.colors, self.background_opacity)
     }

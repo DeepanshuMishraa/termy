@@ -62,6 +62,7 @@ impl Render for TerminalView {
         let font_size = self.font_size;
         self.sync_window_background_appearance(window);
         let effective_background_opacity = self.background_opacity_factor();
+        let (effective_padding_x, effective_padding_y) = self.effective_terminal_padding();
 
         self.sync_terminal_size(window, cell_size);
 
@@ -1078,8 +1079,8 @@ impl Render for TerminalView {
                     .on_drop(cx.listener(Self::handle_file_drop))
                     .flex_1()
                     .w_full()
-                    .px(px(self.padding_x))
-                    .py(px(self.padding_y))
+                    .px(px(effective_padding_x))
+                    .py(px(effective_padding_y))
                     .overflow_hidden()
                     .bg(terminal_surface_bg_hsla)
                     .font_family(font_family.clone())

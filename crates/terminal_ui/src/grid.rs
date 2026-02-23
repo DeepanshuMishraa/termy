@@ -59,7 +59,9 @@ impl IntoElement for TerminalGrid {
 /// This is used to avoid painting cell backgrounds that match the terminal's default background,
 /// which can cause visual artifacts due to slight color differences between ANSI colors.
 fn colors_approximately_equal(a: &Hsla, b: &Hsla) -> bool {
-    const EPSILON: f32 = 0.02;
+    // Keep this tolerance tight: broad matching can skip legitimate near-default
+    // app backgrounds and create visible seams/strips at edges.
+    const EPSILON: f32 = 0.001;
     (a.h - b.h).abs() < EPSILON
         && (a.s - b.s).abs() < EPSILON
         && (a.l - b.l).abs() < EPSILON
