@@ -33,6 +33,8 @@ pub struct TerminalGrid {
     pub cell_size: Size<Pixels>,
     pub cols: usize,
     pub rows: usize,
+    /// Clear color used to reset the grid surface every frame.
+    pub clear_bg: Hsla,
     pub default_bg: Hsla,
     pub cursor_color: Hsla,
     pub selection_bg: Hsla,
@@ -137,7 +139,7 @@ impl Element for TerminalGrid {
         window.paint_quad(quad(
             grid_bounds,
             px(0.0),
-            self.default_bg,
+            self.clear_bg,
             gpui::Edges::default(),
             Hsla::transparent_black(),
             gpui::BorderStyle::default(),

@@ -55,7 +55,9 @@ font_size = 14\n\
 # Enable cursor blink for terminal and inline inputs\n\
 # cursor_blink = true\n\
 # Terminal background opacity (0.0 = fully transparent, 1.0 = opaque)\n\
-# transparent_background_opacity = 1.0\n\
+# background_opacity = 1.0\n\
+# Enable/disable platform blur for transparent backgrounds\n\
+# background_blur = false\n\
 # Inner terminal padding in pixels\n\
 padding_x = 12\n\
 padding_y = 8\n\
@@ -237,7 +239,8 @@ pub struct AppConfig {
     pub font_size: f32,
     pub cursor_style: CursorStyle,
     pub cursor_blink: bool,
-    pub transparent_background_opacity: f32,
+    pub background_opacity: f32,
+    pub background_blur: bool,
     pub padding_x: f32,
     pub padding_y: f32,
     pub mouse_scroll_multiplier: f32,
@@ -272,7 +275,8 @@ impl Default for AppConfig {
             font_size: 14.0,
             cursor_style: CursorStyle::default(),
             cursor_blink: DEFAULT_CURSOR_BLINK,
-            transparent_background_opacity: 1.0,
+            background_opacity: 1.0,
+            background_blur: false,
             padding_x: 12.0,
             padding_y: 8.0,
             mouse_scroll_multiplier: DEFAULT_MOUSE_SCROLL_MULTIPLIER,
@@ -454,11 +458,15 @@ impl AppConfig {
                 }
             }
 
-            if key.eq_ignore_ascii_case("transparent_background_opacity")
-                || key.eq_ignore_ascii_case("transparent_background_opccaity")
-            {
+            if key.eq_ignore_ascii_case("background_opacity") {
                 if let Ok(opacity) = value.parse::<f32>() {
-                    config.transparent_background_opacity = opacity.clamp(0.0, 1.0);
+                    config.background_opacity = opacity.clamp(0.0, 1.0);
+                }
+            }
+
+            if key.eq_ignore_ascii_case("background_blur") {
+                if let Some(enabled) = parse_bool(value) {
+                    config.background_blur = enabled;
                 }
             }
 
@@ -937,6 +945,29 @@ mod tests {
 
         let clamped_high = AppConfig::from_contents("mouse_scroll_multiplier = 20000\n");
         assert_eq!(clamped_high.mouse_scroll_multiplier, 1_000.0);
+    }
+
+    #[test]
+    fn background_opacity_and_blur_parse_and_default() {
+        let defaults = AppConfig::from_contents("");
+        assert_eq!(defaults.background_opacity, 1.0);
+        assert!(!defaults.background_blur);
+
+        let configured = AppConfig::from_contents(
+            "background_opacity = 0.9\n\
+             background_blur = true\n",
+        );
+        assert_eq!(configured.background_opacity, 0.9);
+        assert!(configured.background_blur);
+
+        let clamped_low = AppConfig::from_contents("background_opacity = -0.5\n");
+        assert_eq!(clamped_low.background_opacity, 0.0);
+
+        let clamped_high = AppConfig::from_contents("background_opacity = 4.0\n");
+        assert_eq!(clamped_high.background_opacity, 1.0);
+
+        let old_key_ignored = AppConfig::from_contents("transparent_background_opacity = 0.2\n");
+        assert_eq!(old_key_ignored.background_opacity, 1.0);
     }
 
     #[test]

@@ -574,20 +574,20 @@ impl TerminalView {
         };
 
         let mut selected_bg = self.colors.cursor;
-        selected_bg.a = 0.2;
+        selected_bg.a = self.adaptive_overlay_panel_alpha(0.2);
         let mut selected_border = self.colors.cursor;
-        selected_border.a = 0.35;
+        selected_border.a = self.adaptive_overlay_panel_alpha(0.35);
         let mut transparent = self.colors.background;
         transparent.a = 0.0;
 
         let mut primary_text = self.colors.foreground;
-        primary_text.a = 0.95;
+        primary_text.a = self.adaptive_overlay_panel_alpha(0.95);
         let mut shortcut_bg = self.colors.cursor;
-        shortcut_bg.a = 0.1;
+        shortcut_bg.a = self.adaptive_overlay_panel_alpha(0.1);
         let mut shortcut_border = self.colors.cursor;
-        shortcut_border.a = 0.22;
+        shortcut_border.a = self.adaptive_overlay_panel_alpha(0.22);
         let mut shortcut_text = self.colors.foreground;
-        shortcut_text.a = 0.8;
+        shortcut_text.a = self.adaptive_overlay_panel_alpha(0.8);
 
         let mut rows = Vec::with_capacity(range.len());
         for index in range {
@@ -670,15 +670,15 @@ impl TerminalView {
         let list_height = COMMAND_PALETTE_MAX_ITEMS as f32 * COMMAND_PALETTE_ROW_HEIGHT;
 
         let mut overlay_bg = self.colors.background;
-        overlay_bg.a = 0.78;
+        overlay_bg.a = self.adaptive_overlay_dim_alpha(0.78);
         let mut panel_bg = self.colors.background;
-        panel_bg.a = 0.98;
+        panel_bg.a = self.adaptive_overlay_panel_alpha(0.98);
         let mut panel_border = self.colors.cursor;
-        panel_border.a = 0.24;
+        panel_border.a = self.adaptive_overlay_panel_alpha(0.24);
         let mut primary_text = self.colors.foreground;
-        primary_text.a = 0.95;
+        primary_text.a = self.adaptive_overlay_panel_alpha(0.95);
         let mut muted_text = self.colors.foreground;
-        muted_text.a = 0.62;
+        muted_text.a = self.adaptive_overlay_panel_alpha(0.62);
         let mut transparent = self.colors.background;
         transparent.a = 0.0;
         let input_font = Font {
@@ -686,11 +686,11 @@ impl TerminalView {
             ..Font::default()
         };
         let mut input_selection = self.colors.cursor;
-        input_selection.a = 0.28;
+        input_selection.a = self.adaptive_overlay_panel_alpha(0.28);
         let mut scrollbar_track = self.colors.cursor;
-        scrollbar_track.a = 0.1;
+        scrollbar_track.a = self.adaptive_overlay_panel_alpha(0.1);
         let mut scrollbar_thumb = self.colors.cursor;
-        scrollbar_thumb.a = 0.42;
+        scrollbar_thumb.a = self.adaptive_overlay_panel_alpha(0.42);
 
         let list = if items.is_empty() {
             div()

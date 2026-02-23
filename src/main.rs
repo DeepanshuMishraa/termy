@@ -12,7 +12,7 @@ use gpui::SystemMenuType;
 use gpui::{
     App, Application, Bounds, Menu, MenuItem, WindowBounds, WindowOptions, prelude::*, px, size,
 };
-use terminal_view::TerminalView;
+use terminal_view::{TerminalView, initial_window_background_appearance};
 
 pub(crate) const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -57,6 +57,7 @@ fn main() {
 
         let app_config = config::AppConfig::load_or_create();
         keybindings::install_keybindings(cx, &app_config);
+        let window_background = initial_window_background_appearance(&app_config);
         let window_width = app_config.window_width;
         let window_height = app_config.window_height;
         #[cfg(target_os = "windows")]
@@ -95,6 +96,7 @@ fn main() {
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 titlebar,
+                window_background,
                 ..Default::default()
             },
             |window, cx| cx.new(|cx| TerminalView::new(window, cx)),

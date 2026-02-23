@@ -192,11 +192,17 @@ Explicit payload examples:
 - Values: `true`/`false`
 - What it does: enables/disables cursor blinking for both terminal and inline inputs.
 
-`transparent_background_opacity`
+`background_opacity`
 - Default: `1.0`
 - Values: number between `0.0` and `1.0`
-- What it does: controls terminal background transparency (`0.0` fully transparent, `1.0` opaque)
-- Note: `transparent_background_opccaity` (misspelled) is also accepted for backward compatibility.
+- What it does: controls whole-window background transparency (`0.0` fully transparent, `1.0` opaque).
+
+`background_blur`
+- Default: `false`
+- Values: `true`/`false`
+- What it does: requests platform blur for transparent backgrounds.
+- Note: blur strength is not configurable in v1; this is on/off only.
+- Note: support depends on platform/session/compositor.
 
 `padding_x`
 - Default: `12`
