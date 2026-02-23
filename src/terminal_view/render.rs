@@ -9,24 +9,65 @@ impl Focusable for TerminalView {
 }
 
 impl TerminalView {
-    fn terminal_scrollbar_marker_offset(&self, max_offset: f32, line_height: f32) -> Option<f32> {
-        if !self.search_open {
-            return None;
-        }
-        if line_height <= f32::EPSILON {
-            return None;
-        }
-
-        let current = self.search_state.results().current()?;
-        let marker_display_offset = if current.line < 0 {
-            (-current.line) as f32 * line_height
+    fn terminal_scrollbar_marker_offset_for_line(
+        line: i32,
+        max_offset: f32,
+        line_height: f32,
+    ) -> f32 {
+        debug_assert!(line_height > f32::EPSILON);
+        let marker_display_offset = if line < 0 {
+            (-line) as f32 * line_height
         } else {
             0.0
         };
-        Some(scrollbar::invert_offset_axis(
-            marker_display_offset,
-            max_offset,
-        ))
+        scrollbar::invert_offset_axis(marker_display_offset, max_offset)
+    }
+
+    fn terminal_scrollbar_marker_tops(
+        &self,
+        range: scrollbar::ScrollbarRange,
+        metrics: scrollbar::ScrollbarMetrics,
+        line_height: f32,
+        marker_height: f32,
+    ) -> (Vec<f32>, Option<f32>) {
+        if !self.search_open || line_height <= f32::EPSILON {
+            return (Vec::new(), None);
+        }
+
+        let results = self.search_state.results();
+        let marker_height = marker_height.max(0.0);
+        let marker_top_limit = (metrics.track_height - marker_height).max(0.0);
+        let dedupe_bucket_size = marker_height.max(1.0);
+        let mut marker_tops = Vec::with_capacity(results.count().min(256));
+        let mut last_bucket = None;
+
+        for search_match in results.matches() {
+            let offset = Self::terminal_scrollbar_marker_offset_for_line(
+                search_match.line,
+                range.max_offset,
+                line_height,
+            );
+            let top = scrollbar::marker_top_for_offset(offset, range, metrics)
+                .clamp(0.0, marker_top_limit);
+            let bucket = (top / dedupe_bucket_size).round() as i32;
+            if last_bucket == Some(bucket) {
+                continue;
+            }
+
+            last_bucket = Some(bucket);
+            marker_tops.push(top);
+        }
+
+        let current_marker_top = results.current().map(|current| {
+            let offset = Self::terminal_scrollbar_marker_offset_for_line(
+                current.line,
+                range.max_offset,
+                line_height,
+            );
+            scrollbar::marker_top_for_offset(offset, range, metrics).clamp(0.0, marker_top_limit)
+        });
+
+        (marker_tops, current_marker_top)
     }
 
     fn render_terminal_scrollbar_overlay(
@@ -77,14 +118,20 @@ impl TerminalView {
             active_thumb_color: self
                 .scrollbar_color(overlay_style, TERMINAL_SCROLLBAR_THUMB_ACTIVE_ALPHA),
             marker_color: Some(
-                self.scrollbar_color(overlay_style, TERMINAL_SCROLLBAR_MARKER_ALPHA),
+                self.scrollbar_color(overlay_style, TERMINAL_SCROLLBAR_MATCH_MARKER_ALPHA),
+            ),
+            current_marker_color: Some(
+                overlay_style.panel_cursor(TERMINAL_SCROLLBAR_CURRENT_MARKER_ALPHA),
             ),
         }
         .scale_alpha(alpha);
 
-        let marker_top = self
-            .terminal_scrollbar_marker_offset(range.max_offset, line_height)
-            .map(|offset| scrollbar::marker_top_for_offset(offset, range, metrics));
+        let (marker_tops, current_marker_top) = self.terminal_scrollbar_marker_tops(
+            range,
+            metrics,
+            line_height,
+            TERMINAL_SCROLLBAR_MARKER_HEIGHT,
+        );
 
         Some(
             div()
@@ -107,7 +154,8 @@ impl TerminalView {
                             metrics,
                             style,
                             self.terminal_scrollbar_visibility_controller.is_dragging(),
-                            marker_top,
+                            &marker_tops,
+                            current_marker_top,
                             TERMINAL_SCROLLBAR_MARKER_HEIGHT,
                         )),
                 )

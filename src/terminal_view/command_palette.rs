@@ -719,6 +719,7 @@ impl TerminalView {
                     thumb_color: scrollbar_thumb,
                     active_thumb_color: scrollbar_thumb,
                     marker_color: None,
+                    current_marker_color: None,
                 };
                 list_container = list_container.child(
                     div()
@@ -731,6 +732,7 @@ impl TerminalView {
                             metrics,
                             style,
                             false,
+                            &[],
                             None,
                             0.0,
                         )),

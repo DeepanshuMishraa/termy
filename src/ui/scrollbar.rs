@@ -36,6 +36,7 @@ pub struct ScrollbarPaintStyle {
     pub thumb_color: Rgba,
     pub active_thumb_color: Rgba,
     pub marker_color: Option<Rgba>,
+    pub current_marker_color: Option<Rgba>,
 }
 
 impl ScrollbarPaintStyle {
@@ -53,6 +54,9 @@ impl ScrollbarPaintStyle {
             active_thumb_color: scale_color_alpha(self.active_thumb_color, alpha),
             marker_color: self
                 .marker_color
+                .map(|color| scale_color_alpha(color, alpha)),
+            current_marker_color: self
+                .current_marker_color
                 .map(|color| scale_color_alpha(color, alpha)),
         }
     }
@@ -220,7 +224,8 @@ pub fn render_vertical(
     metrics: ScrollbarMetrics,
     style: ScrollbarPaintStyle,
     thumb_active: bool,
-    marker_top: Option<f32>,
+    marker_tops: &[f32],
+    current_marker_top: Option<f32>,
     marker_height: f32,
 ) -> AnyElement {
     let thumb_color = if thumb_active {
@@ -230,20 +235,41 @@ pub fn render_vertical(
     };
     let thumb_inset = style.thumb_inset.max(0.0);
     let marker_inset = style.marker_inset.max(0.0);
+    let marker_radius = style.marker_radius.max(0.0);
+    let mut marker_elements = Vec::new();
+    if marker_height > 0.0 {
+        let marker_top_max = (metrics.track_height - marker_height).max(0.0);
 
-    let marker = marker_top
-        .filter(|_| marker_height > 0.0)
-        .zip(style.marker_color)
-        .map(|(top, color)| {
-            div()
-                .absolute()
-                .left(px(marker_inset))
-                .right(px(marker_inset))
-                .top(px(top.clamp(0.0, metrics.track_height)))
-                .h(px(marker_height))
-                .rounded(px(style.marker_radius.max(0.0)))
-                .bg(color)
-        });
+        if let Some(color) = style.marker_color {
+            marker_elements.extend(marker_tops.iter().copied().map(|top| {
+                div()
+                    .absolute()
+                    .left(px(marker_inset))
+                    .right(px(marker_inset))
+                    .top(px(top.clamp(0.0, marker_top_max)))
+                    .h(px(marker_height))
+                    .rounded(px(marker_radius))
+                    .bg(color)
+                    .into_any_element()
+            }));
+        }
+
+        if let Some(color) = style.current_marker_color {
+            if let Some(top) = current_marker_top {
+                marker_elements.push(
+                    div()
+                        .absolute()
+                        .left(px(marker_inset))
+                        .right(px(marker_inset))
+                        .top(px(top.clamp(0.0, marker_top_max)))
+                        .h(px(marker_height))
+                        .rounded(px(marker_radius))
+                        .bg(color)
+                        .into_any_element(),
+                );
+            }
+        }
+    }
 
     div()
         .id(id)
@@ -262,7 +288,7 @@ pub fn render_vertical(
                 .rounded(px(style.thumb_radius.max(0.0)))
                 .bg(thumb_color),
         )
-        .children(marker)
+        .children(marker_elements)
         .into_any_element()
 }
 
