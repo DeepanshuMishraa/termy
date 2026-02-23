@@ -219,6 +219,93 @@ Explicit payload examples:
 - Default: `true`
 - Values: `true`/`false`
 
+## Custom Colors
+
+Override individual theme colors using a `[colors]` section. All colors are hex format (`#RRGGBB`).
+
+### Basic Example
+
+```txt
+theme = termy
+
+[colors]
+foreground = #e7ebf5
+background = #0b1020
+cursor = #a7e9a3
+```
+
+### All Color Keys
+
+| Key | Alias | Description |
+|-----|-------|-------------|
+| `foreground` | `fg` | Default text color |
+| `background` | `bg` | Terminal background |
+| `cursor` | - | Cursor color |
+| `black` | `color0` | ANSI black |
+| `red` | `color1` | ANSI red |
+| `green` | `color2` | ANSI green |
+| `yellow` | `color3` | ANSI yellow |
+| `blue` | `color4` | ANSI blue |
+| `magenta` | `color5` | ANSI magenta |
+| `cyan` | `color6` | ANSI cyan |
+| `white` | `color7` | ANSI white |
+| `bright_black` | `color8` | ANSI bright black |
+| `bright_red` | `color9` | ANSI bright red |
+| `bright_green` | `color10` | ANSI bright green |
+| `bright_yellow` | `color11` | ANSI bright yellow |
+| `bright_blue` | `color12` | ANSI bright blue |
+| `bright_magenta` | `color13` | ANSI bright magenta |
+| `bright_cyan` | `color14` | ANSI bright cyan |
+| `bright_white` | `color15` | ANSI bright white |
+
+### Full Example
+
+```txt
+theme = termy
+
+[colors]
+foreground = #e7ebf5
+background = #0b1020
+cursor = #a7e9a3
+
+# Normal colors
+black = #0b1020
+red = #f1b8c5
+green = #a7e9a3
+yellow = #f7dba0
+blue = #a3c5f7
+magenta = #d3b8f0
+cyan = #99e5eb
+white = #d5d9e5
+
+# Bright colors
+bright_black = #4a4e5a
+bright_red = #ffb8b8
+bright_green = #b8ffb8
+bright_yellow = #fffab8
+bright_blue = #b8d4ff
+bright_magenta = #e5b8ff
+bright_cyan = #b8ffff
+bright_white = #ffffff
+```
+
+### Importing Colors from JSON
+
+Use the command palette action "Import Colors from JSON" to import colors from a JSON file. The JSON format is:
+
+```json
+{
+  "foreground": "#e7ebf5",
+  "background": "#0b1020",
+  "cursor": "#a7e9a3",
+  "black": "#0b1020",
+  "red": "#f1b8c5",
+  "green": "#a7e9a3"
+}
+```
+
+Keys starting with `$` are ignored (useful for JSON schema references).
+
 ## Shell Integration Snippets
 
 If `tab_title_shell_integration = true`, Termy exports:
