@@ -939,7 +939,7 @@ impl Render for TerminalView {
                                     "titlebar-settings",
                                     "\u{2699}",
                                     TITLEBAR_SETTINGS_ICON_SIZE,
-                                    TITLEBAR_BUTTON_ICON_BASELINE_NUDGE_Y,
+                                    TITLEBAR_SETTINGS_ICON_BASELINE_NUDGE_Y,
                                     titlebar_plus_bg,
                                     titlebar_plus_text,
                                     |_this, _event, _window, cx| {
