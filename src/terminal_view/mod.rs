@@ -1282,7 +1282,8 @@ impl TerminalView {
 
     pub(super) fn scroll_active_tab_into_view(&self) {
         if self.show_tab_bar() && self.active_tab < self.tabs.len() {
-            self.tab_strip_scroll_handle.scroll_to_item(self.active_tab);
+            self.tab_strip_scroll_handle
+                .scroll_to_item(self.active_tab.saturating_add(1));
         }
     }
 
