@@ -5,6 +5,29 @@ use objc2_app_kit::{NSAlert, NSAlertFirstButtonReturn, NSAlertSecondButtonReturn
 #[cfg(target_os = "macos")]
 use objc2_foundation::NSString;
 
+#[cfg(target_os = "linux")]
+use std::process::Command;
+
+#[cfg(target_os = "windows")]
+use windows::Win32::UI::WindowsAndMessaging::{
+    MessageBoxW, IDYES, MB_ICONINFORMATION, MB_OK, MB_YESNO,
+};
+
+#[cfg(target_os = "windows")]
+fn wide_string(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+#[cfg(target_os = "linux")]
+fn has_command(cmd: &str) -> bool {
+    Command::new("which")
+        .arg(cmd)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
 pub fn show_alert(title: &str, message: &str) {
     #[cfg(target_os = "macos")]
     {
@@ -21,7 +44,36 @@ pub fn show_alert(title: &str, message: &str) {
         });
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    {
+        if has_command("zenity") {
+            let _ = Command::new("zenity")
+                .args(["--info", "--title", title, "--text", message])
+                .status();
+        } else if has_command("kdialog") {
+            let _ = Command::new("kdialog")
+                .args(["--msgbox", message, "--title", title])
+                .status();
+        } else {
+            eprintln!("[native_sdk] show_alert: {title}: {message}");
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let wide_title = wide_string(title);
+        let wide_message = wide_string(message);
+        unsafe {
+            MessageBoxW(
+                None,
+                windows::core::PCWSTR(wide_message.as_ptr()),
+                windows::core::PCWSTR(wide_title.as_ptr()),
+                MB_OK | MB_ICONINFORMATION,
+            );
+        }
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {
         eprintln!("[native_sdk] show_alert: {title}: {message}");
     }
@@ -53,7 +105,40 @@ pub fn confirm(title: &str, message: &str) -> bool {
         })
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    {
+        if has_command("zenity") {
+            Command::new("zenity")
+                .args(["--question", "--title", title, "--text", message])
+                .status()
+                .is_ok_and(|s| s.success())
+        } else if has_command("kdialog") {
+            Command::new("kdialog")
+                .args(["--yesno", message, "--title", title])
+                .status()
+                .is_ok_and(|s| s.success())
+        } else {
+            eprintln!("[native_sdk] confirm: {title}: {message}");
+            false
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let wide_title = wide_string(title);
+        let wide_message = wide_string(message);
+        let result = unsafe {
+            MessageBoxW(
+                None,
+                windows::core::PCWSTR(wide_message.as_ptr()),
+                windows::core::PCWSTR(wide_title.as_ptr()),
+                MB_YESNO | MB_ICONINFORMATION,
+            )
+        };
+        result == IDYES
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {
         eprintln!("[native_sdk] confirm: {title}: {message}");
         false
