@@ -123,6 +123,15 @@ impl SearchResults {
         }
     }
 
+    pub fn jump_to_first(&mut self) -> Option<&SearchMatch> {
+        self.jump_to(0)
+    }
+
+    pub fn jump_to_last(&mut self) -> Option<&SearchMatch> {
+        let index = self.matches.len().checked_sub(1)?;
+        self.jump_to(index)
+    }
+
     pub fn jump_to_nearest(&mut self, target_line: i32) -> Option<&SearchMatch> {
         if self.matches.is_empty() {
             return None;
@@ -229,6 +238,23 @@ mod tests {
         assert_eq!(results.current().unwrap().line, 0);
 
         results.jump_to_nearest(100);
+        assert_eq!(results.current().unwrap().line, -10);
+    }
+
+    #[test]
+    fn test_jump_to_last() {
+        let matches = vec![
+            SearchMatch::new(-10, 0, 5),
+            SearchMatch::new(-5, 0, 5),
+            SearchMatch::new(0, 0, 5),
+            SearchMatch::new(5, 0, 5),
+        ];
+        let mut results = SearchResults::from_matches(matches);
+
+        results.jump_to_last();
+        assert_eq!(results.current().unwrap().line, 5);
+
+        results.jump_to_first();
         assert_eq!(results.current().unwrap().line, -10);
     }
 }

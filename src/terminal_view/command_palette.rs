@@ -387,7 +387,12 @@ impl TerminalView {
         true
     }
 
-    pub(super) fn handle_command_palette_key_down(&mut self, key: &str, cx: &mut Context<Self>) {
+    pub(super) fn handle_command_palette_key_down(
+        &mut self,
+        key: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         match key {
             "escape" => {
                 match Self::command_palette_escape_action(self.command_palette_mode) {
@@ -399,7 +404,7 @@ impl TerminalView {
                 return;
             }
             "enter" => {
-                self.execute_command_palette_selection(cx);
+                self.execute_command_palette_selection(window, cx);
                 return;
             }
             "up" => {
@@ -431,7 +436,7 @@ impl TerminalView {
         }
     }
 
-    fn execute_command_palette_selection(&mut self, cx: &mut Context<Self>) {
+    fn execute_command_palette_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let items = self.filtered_command_palette_items();
         if items.is_empty() {
             return;
@@ -440,17 +445,18 @@ impl TerminalView {
         let index = self.command_palette_selected.min(items.len() - 1);
         let item_kind = items[index].kind.clone();
 
-        self.execute_command_palette_item(item_kind, cx);
+        self.execute_command_palette_item(item_kind, window, cx);
     }
 
     fn execute_command_palette_item(
         &mut self,
         item_kind: CommandPaletteItemKind,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         match item_kind {
             CommandPaletteItemKind::Command(action) => {
-                self.execute_command_palette_action(action, cx)
+                self.execute_command_palette_action(action, window, cx)
             }
             CommandPaletteItemKind::Theme(theme_id) => {
                 self.select_theme_from_palette(&theme_id, cx)
@@ -476,7 +482,12 @@ impl TerminalView {
         }
     }
 
-    fn execute_command_palette_action(&mut self, action: CommandAction, cx: &mut Context<Self>) {
+    fn execute_command_palette_action(
+        &mut self,
+        action: CommandAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let keep_open = action == CommandAction::SwitchTheme;
         if !keep_open {
             self.command_palette_open = false;
@@ -484,7 +495,7 @@ impl TerminalView {
             self.reset_command_palette_state();
         }
 
-        self.execute_command_action(action, false, cx);
+        self.execute_command_action(action, false, window, cx);
 
         if keep_open {
             return;
@@ -607,9 +618,9 @@ impl TerminalView {
                     }))
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(move |this, _event, _window, cx| {
+                        cx.listener(move |this, _event, window, cx| {
                             this.command_palette_selected = index;
-                            this.execute_command_palette_item(item_kind.clone(), cx);
+                            this.execute_command_palette_item(item_kind.clone(), window, cx);
                             cx.stop_propagation();
                         }),
                     )

@@ -61,7 +61,14 @@ impl TerminalView {
         )
         .expect("Failed to create terminal tab");
 
-        self.tabs.push(TerminalTab::new(terminal));
+        let predicted_prompt_cwd = Self::predicted_prompt_cwd(
+            self.configured_working_dir.as_deref(),
+            self.terminal_runtime.working_dir_fallback,
+        );
+        let predicted_title =
+            Self::predicted_prompt_seed_title(&self.tab_title, predicted_prompt_cwd.as_deref());
+
+        self.tabs.push(TerminalTab::new(terminal, predicted_title));
         self.active_tab = self.tabs.len() - 1;
         self.refresh_tab_title(self.active_tab);
         self.renaming_tab = None;
@@ -102,6 +109,29 @@ impl TerminalView {
 
     pub(super) fn close_active_tab(&mut self, cx: &mut Context<Self>) {
         self.close_tab(self.active_tab, cx);
+    }
+
+    pub(super) fn begin_rename_tab(&mut self, index: usize, cx: &mut Context<Self>) {
+        if !self.use_tabs || index >= self.tabs.len() {
+            return;
+        }
+
+        if self.command_palette_open {
+            self.close_command_palette(cx);
+        }
+        if self.search_open {
+            self.close_search(cx);
+        }
+
+        if self.active_tab != index {
+            self.switch_tab(index, cx);
+        }
+
+        self.renaming_tab = Some(index);
+        self.rename_input.set_text(self.tabs[index].title.clone());
+        self.reset_cursor_blink_phase();
+        self.inline_input_selecting = false;
+        cx.notify();
     }
 
     pub(super) fn switch_tab(&mut self, index: usize, cx: &mut Context<Self>) {

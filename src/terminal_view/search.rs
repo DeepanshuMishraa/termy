@@ -102,6 +102,8 @@ impl TerminalView {
         self.search_state.set_query(&query);
 
         if !self.search_state.has_valid_pattern() {
+            self.search_state.clear_results_preserving_query();
+            self.clear_terminal_scrollbar_marker_cache();
             return;
         }
 
@@ -124,9 +126,8 @@ impl TerminalView {
             });
         });
 
-        // Jump to nearest match to current viewport
-        let viewport_center = -(display_offset as i32) + rows / 2;
-        self.search_state.jump_to_nearest(viewport_center);
+        // Start from the newest output match.
+        self.search_state.jump_to_last();
         if self.search_state.results().is_empty() {
             self.clear_terminal_scrollbar_marker_cache();
         }
@@ -150,6 +151,17 @@ impl TerminalView {
     }
 
     pub(super) fn handle_search_input_changed(&mut self, cx: &mut Context<Self>) {
+        let query = self.search_input.text().to_string();
+        self.search_state.set_query(&query);
+        if !self.search_state.has_valid_pattern() {
+            // Cancel pending debounced searches and drop stale highlights immediately.
+            self.search_debounce_token = self.search_debounce_token.wrapping_add(1);
+            self.search_state.clear_results_preserving_query();
+            self.clear_terminal_scrollbar_marker_cache();
+            cx.notify();
+            return;
+        }
+
         // Debounce search
         self.search_debounce_token = self.search_debounce_token.wrapping_add(1);
         let token = self.search_debounce_token;
