@@ -8,6 +8,11 @@ impl Focusable for TerminalView {
 
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Process pending OSC 52 clipboard writes
+        if let Some(text) = self.pending_clipboard.take() {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
+
         self.toast_manager.ingest_pending();
         self.toast_manager.tick_with_hovered(self.hovered_toast);
         if let Some((_, copied_at)) = self.copied_toast_feedback
@@ -148,8 +153,10 @@ impl Render for TerminalView {
         let show_titlebar_plus = self.use_tabs && !show_windows_controls;
         let titlebar_side_slot_width = if show_windows_controls {
             WINDOWS_TITLEBAR_CONTROLS_WIDTH
+        } else if show_titlebar_plus {
+            (TITLEBAR_PLUS_SIZE * 3.0) + 8.0
         } else {
-            TITLEBAR_PLUS_SIZE
+            (TITLEBAR_PLUS_SIZE * 2.0) + 4.0
         };
         let viewport = window.viewport_size();
         let tab_layout = self.tab_bar_layout(viewport.width.into());
@@ -696,38 +703,82 @@ impl Render for TerminalView {
                                         .child("x"),
                                 )
                         } else {
-                            if show_titlebar_plus {
-                                div()
-                                    .w(px(TITLEBAR_PLUS_SIZE))
-                                    .h(px(TITLEBAR_PLUS_SIZE))
-                                    .rounded_sm()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .bg(titlebar_plus_bg)
-                                    .text_color(titlebar_plus_text)
-                                    .text_size(px(16.0))
-                                    .cursor_pointer()
-                                    .on_mouse_down(
-                                        MouseButton::Left,
-                                        cx.listener(|this, _event, _window, cx| {
-                                            this.add_tab(cx);
-                                            cx.stop_propagation();
-                                        }),
-                                    )
-                                    .child("+")
-                            } else {
-                                div()
-                                    .w(px(TITLEBAR_PLUS_SIZE))
-                                    .h(px(TITLEBAR_PLUS_SIZE))
-                                    .rounded_sm()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .bg(titlebar_plus_bg)
-                                    .text_color(titlebar_plus_text)
-                                    .text_size(px(16.0))
-                            }
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(4.0))
+                                .child(
+                                    div()
+                                        .id("titlebar-settings")
+                                        .w(px(TITLEBAR_PLUS_SIZE))
+                                        .h(px(TITLEBAR_PLUS_SIZE))
+                                        .rounded_sm()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .bg(titlebar_plus_bg)
+                                        .text_color(titlebar_plus_text)
+                                        .text_size(px(14.0))
+                                        .cursor_pointer()
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(|_this, _event, _window, cx| {
+                                                config::open_config_file();
+                                                termy_toast::info("Opened config file");
+                                                cx.notify();
+                                                cx.stop_propagation();
+                                            }),
+                                        )
+                                        .child("\u{2699}"),
+                                )
+                                .child(
+                                    div()
+                                        .id("titlebar-update")
+                                        .w(px(TITLEBAR_PLUS_SIZE))
+                                        .h(px(TITLEBAR_PLUS_SIZE))
+                                        .rounded_sm()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .bg(titlebar_plus_bg)
+                                        .text_color(titlebar_plus_text)
+                                        .text_size(px(13.0))
+                                        .cursor_pointer()
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(|this, _event, _window, cx| {
+                                                this.execute_command_action(
+                                                    CommandAction::CheckForUpdates,
+                                                    false,
+                                                    cx,
+                                                );
+                                                cx.stop_propagation();
+                                            }),
+                                        )
+                                        .child("\u{21BB}"),
+                                )
+                                .children(show_titlebar_plus.then(|| {
+                                    div()
+                                        .id("titlebar-new-tab")
+                                        .w(px(TITLEBAR_PLUS_SIZE))
+                                        .h(px(TITLEBAR_PLUS_SIZE))
+                                        .rounded_sm()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .bg(titlebar_plus_bg)
+                                        .text_color(titlebar_plus_text)
+                                        .text_size(px(16.0))
+                                        .cursor_pointer()
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(|this, _event, _window, cx| {
+                                                this.add_tab(cx);
+                                                cx.stop_propagation();
+                                            }),
+                                        )
+                                        .child("+")
+                                }))
                         }),
                 )
                 .into_any()
@@ -749,7 +800,7 @@ impl Render for TerminalView {
                 let slide_offset = toast.slide_offset();
 
                 // Clean, minimal icons and subtle accent colors
-                let (icon, accent) = match toast.kind {
+                let (icon, accent, _is_loading) = match toast.kind {
                     termy_toast::ToastKind::Info => (
                         "\u{2139}", // ℹ info symbol
                         gpui::Rgba {
@@ -758,6 +809,7 @@ impl Render for TerminalView {
                             b: 0.92,
                             a: opacity,
                         },
+                        false,
                     ),
                     termy_toast::ToastKind::Success => (
                         "\u{2713}", // ✓ checkmark
@@ -767,6 +819,7 @@ impl Render for TerminalView {
                             b: 0.55,
                             a: opacity,
                         },
+                        false,
                     ),
                     termy_toast::ToastKind::Warning => (
                         "\u{26A0}", // ⚠ warning
@@ -776,6 +829,7 @@ impl Render for TerminalView {
                             b: 0.38,
                             a: opacity,
                         },
+                        false,
                     ),
                     termy_toast::ToastKind::Error => (
                         "\u{2715}", // ✕ x mark
@@ -785,7 +839,24 @@ impl Render for TerminalView {
                             b: 0.45,
                             a: opacity,
                         },
+                        false,
                     ),
+                    termy_toast::ToastKind::Loading => {
+                        // Animated spinner using braille characters
+                        const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+                        let elapsed_ms = toast.created_at.elapsed().as_millis() as usize;
+                        let frame_index = (elapsed_ms / 80) % SPINNER_FRAMES.len();
+                        (
+                            SPINNER_FRAMES[frame_index],
+                            gpui::Rgba {
+                                r: 0.53,
+                                g: 0.70,
+                                b: 0.92,
+                                a: opacity,
+                            },
+                            true,
+                        )
+                    }
                 };
 
                 // Subtle, glassy background with animation

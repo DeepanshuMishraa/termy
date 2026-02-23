@@ -52,6 +52,39 @@ impl TerminalView {
         }
     }
 
+    fn import_colors_action(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let file = rfd::AsyncFileDialog::new()
+                .add_filter("JSON", &["json"])
+                .set_title("Import Colors")
+                .pick_file()
+                .await;
+
+            let Some(file) = file else {
+                return;
+            };
+
+            let path = file.path().to_path_buf();
+            let result = config::import_colors_from_json(&path);
+
+            let _ = cx.update(|cx| {
+                this.update(cx, |view, cx| {
+                    match result {
+                        Ok(msg) => {
+                            termy_toast::success(msg);
+                            view.reload_config(cx);
+                        }
+                        Err(err) => {
+                            termy_toast::error(err);
+                        }
+                    }
+                    cx.notify();
+                })
+            });
+        })
+        .detach();
+    }
+
     pub(super) fn position_to_cell(
         &self,
         position: gpui::Point<Pixels>,
@@ -414,6 +447,7 @@ impl TerminalView {
             _ if shortcuts_suspended => {}
             CommandAction::Quit => cx.quit(),
             CommandAction::OpenConfig => config::open_config_file(),
+            CommandAction::ImportColors => self.import_colors_action(cx),
             CommandAction::AppInfo => {
                 let config_path = self
                     .config_path
@@ -456,7 +490,7 @@ impl TerminalView {
                     if let Some(updater) = self.auto_updater.as_ref() {
                         AutoUpdater::check(updater.downgrade(), cx);
                     }
-                    termy_toast::info("Checking for updates");
+                    self.update_check_toast_id = Some(termy_toast::loading("Checking for updates"));
                     cx.notify();
                 }
 
