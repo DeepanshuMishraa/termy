@@ -43,12 +43,6 @@ impl ScrollbarPaintStyle {
     pub fn scale_alpha(self, alpha: f32) -> Self {
         let alpha = alpha.clamp(0.0, 1.0);
         Self {
-            width: self.width,
-            track_radius: self.track_radius,
-            thumb_radius: self.thumb_radius,
-            thumb_inset: self.thumb_inset,
-            marker_inset: self.marker_inset,
-            marker_radius: self.marker_radius,
             track_color: scale_color_alpha(self.track_color, alpha),
             thumb_color: scale_color_alpha(self.thumb_color, alpha),
             active_thumb_color: scale_color_alpha(self.active_thumb_color, alpha),
@@ -58,6 +52,7 @@ impl ScrollbarPaintStyle {
             current_marker_color: self
                 .current_marker_color
                 .map(|color| scale_color_alpha(color, alpha)),
+            ..self
         }
     }
 }
@@ -93,7 +88,7 @@ impl ScrollbarVisibilityController {
     }
 
     pub fn alpha(
-        self,
+        &self,
         mode: ScrollbarVisibilityMode,
         now: Instant,
         hold_duration: Duration,
@@ -128,7 +123,7 @@ impl ScrollbarVisibilityController {
     }
 
     pub fn needs_animation(
-        self,
+        &self,
         mode: ScrollbarVisibilityMode,
         now: Instant,
         hold_duration: Duration,

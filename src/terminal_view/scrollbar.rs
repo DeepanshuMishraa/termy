@@ -90,8 +90,11 @@ where
     let dedupe_bucket_size = marker_height.max(1.0);
     let mut marker_tops = Vec::new();
     let mut last_bucket = None;
+    let mut previous_line = None;
 
     for line in lines {
+        debug_assert!(previous_line.map_or(true, |previous| previous <= line));
+        previous_line = Some(line);
         let top = marker_top_for_line(line, history_size, viewport_rows, marker_top_limit);
         let bucket = (top / dedupe_bucket_size).round() as i32;
         if last_bucket == Some(bucket) {

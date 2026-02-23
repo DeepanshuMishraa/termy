@@ -454,7 +454,8 @@ impl TerminalView {
         window: &Window,
     ) -> Option<TerminalScrollbarHit> {
         let (display_offset, _) = self.active_terminal().scroll_state();
-        let force_visible = display_offset > 0;
+        let force_visible = display_offset > 0
+            && self.terminal_scrollbar_mode() != ui_scrollbar::ScrollbarVisibilityMode::AlwaysOff;
         let alpha = self.terminal_scrollbar_alpha(Instant::now());
         if !force_visible
             && alpha <= f32::EPSILON
