@@ -26,6 +26,9 @@ const CARD_BG: u32 = 0x15151d;
 const INPUT_BG: u32 = 0x101019;
 const INPUT_ACTIVE_BORDER: u32 = 0x6366f1;
 const SETTINGS_INLINE_INPUT_LINE_HEIGHT_MULTIPLIER: f32 = 1.35;
+const NUMERIC_INPUT_WIDTH: f32 = 220.0;
+const NUMERIC_INPUT_HEIGHT: f32 = 34.0;
+const NUMERIC_STEP_BUTTON_SIZE: f32 = 24.0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum EditableField {
@@ -878,7 +881,8 @@ impl SettingsWindow {
             Vec::new()
         };
         let mut theme_dropdown = None;
-        if is_theme_field && is_active && !theme_suggestions.is_empty() {
+        let theme_dropdown_open = is_theme_field && is_active && !theme_suggestions.is_empty();
+        if theme_dropdown_open {
             let mut list = div().flex().flex_col().py_1();
             for theme_id in theme_suggestions {
                 let theme_label = theme_id.clone();
@@ -905,6 +909,11 @@ impl SettingsWindow {
             theme_dropdown = Some(
                 div()
                     .id("theme-suggestions-list")
+                    .occlude()
+                    .absolute()
+                    .top(px(34.0))
+                    .left_0()
+                    .right_0()
                     .max_h(px(180.0))
                     .overflow_scroll()
                     .overflow_x_hidden()
@@ -912,6 +921,12 @@ impl SettingsWindow {
                     .bg(rgb(INPUT_BG))
                     .border_1()
                     .border_color(rgb(BORDER_COLOR))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|_view, _event: &MouseDownEvent, _window, cx| {
+                            cx.stop_propagation();
+                        }),
+                    )
                     .on_scroll_wheel(cx.listener(
                         |_view, _event: &ScrollWheelEvent, _window, cx| {
                             cx.stop_propagation();
@@ -931,8 +946,8 @@ impl SettingsWindow {
                 .child(
                     div()
                         .id(SharedString::from(format!("dec-{field:?}")))
-                        .w(px(22.0))
-                        .h(px(22.0))
+                        .w(px(NUMERIC_STEP_BUTTON_SIZE))
+                        .h(px(NUMERIC_STEP_BUTTON_SIZE))
                         .rounded_sm()
                         .cursor_pointer()
                         .flex()
@@ -950,16 +965,23 @@ impl SettingsWindow {
                 .child(
                     div()
                         .flex_1()
-                        .text_sm()
-                        .text_color(rgb(TEXT_SECONDARY))
-                        .text_align(TextAlign::Right)
-                        .child(display_value),
+                        .h_full()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(rgb(TEXT_SECONDARY))
+                                .text_align(TextAlign::Center)
+                                .child(display_value),
+                        ),
                 )
                 .child(
                     div()
                         .id(SharedString::from(format!("inc-{field:?}")))
-                        .w(px(22.0))
-                        .h(px(22.0))
+                        .w(px(NUMERIC_STEP_BUTTON_SIZE))
+                        .h(px(NUMERIC_STEP_BUTTON_SIZE))
                         .rounded_sm()
                         .cursor_pointer()
                         .flex()
@@ -995,8 +1017,8 @@ impl SettingsWindow {
             .rounded_lg()
             .bg(rgb(CARD_BG))
             .border_1()
-            .border_color(if is_active {
-                rgb(INPUT_ACTIVE_BORDER)
+            .border_color(if theme_dropdown_open {
+                rgba(0x00000000)
             } else {
                 rgb(BORDER_COLOR)
             })
@@ -1086,15 +1108,22 @@ impl SettingsWindow {
             )
             .child(
                 div()
-                    .flex_1()
-                    .min_w(px(220.0))
-                    .max_w(px(560.0))
+                    .when(is_numeric, |s| s.w(px(NUMERIC_INPUT_WIDTH)).flex_none())
+                    .when(!is_numeric, |s| {
+                        s.flex_1().min_w(px(220.0)).max_w(px(560.0))
+                    })
+                    .relative()
+                    .h(if is_numeric {
+                        px(NUMERIC_INPUT_HEIGHT)
+                    } else {
+                        px(28.0)
+                    })
                     .flex()
                     .flex_col()
                     .gap_1()
                     .child(
                         div()
-                            .h(px(28.0))
+                            .h_full()
                             .px_2()
                             .rounded_md()
                             .bg(rgb(INPUT_BG))
