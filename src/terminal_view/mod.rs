@@ -83,6 +83,10 @@ const TERMINAL_SCROLLBAR_TRACK_WIDTH: f32 = 12.0;
 const TERMINAL_SCROLLBAR_MIN_THUMB_HEIGHT: f32 = 40.0;
 const TERMINAL_SCROLLBAR_HOLD_MS: u64 = 900;
 const TERMINAL_SCROLLBAR_FADE_MS: u64 = 140;
+const TERMINAL_SCROLLBAR_HOLD_DURATION: Duration =
+    Duration::from_millis(TERMINAL_SCROLLBAR_HOLD_MS);
+const TERMINAL_SCROLLBAR_FADE_DURATION: Duration =
+    Duration::from_millis(TERMINAL_SCROLLBAR_FADE_MS);
 const TERMINAL_SCROLLBAR_GUTTER_ALPHA: f32 = 0.14;
 const TERMINAL_SCROLLBAR_TRACK_ALPHA: f32 = 0.28;
 const TERMINAL_SCROLLBAR_THUMB_ALPHA: f32 = 0.56;
@@ -590,14 +594,6 @@ impl TerminalView {
         }
     }
 
-    fn terminal_scrollbar_hold_duration() -> Duration {
-        Duration::from_millis(TERMINAL_SCROLLBAR_HOLD_MS)
-    }
-
-    fn terminal_scrollbar_fade_duration() -> Duration {
-        Duration::from_millis(TERMINAL_SCROLLBAR_FADE_MS)
-    }
-
     pub(super) fn terminal_scrollbar_mode(&self) -> ScrollbarVisibilityMode {
         match self.terminal_scrollbar_visibility {
             TerminalScrollbarVisibility::Off => ScrollbarVisibilityMode::AlwaysOff,
@@ -610,8 +606,8 @@ impl TerminalView {
         self.terminal_scrollbar_visibility_controller.alpha(
             self.terminal_scrollbar_mode(),
             now,
-            Self::terminal_scrollbar_hold_duration(),
-            Self::terminal_scrollbar_fade_duration(),
+            TERMINAL_SCROLLBAR_HOLD_DURATION,
+            TERMINAL_SCROLLBAR_FADE_DURATION,
         )
     }
 
@@ -719,8 +715,8 @@ impl TerminalView {
             .needs_animation(
                 self.terminal_scrollbar_mode(),
                 now,
-                Self::terminal_scrollbar_hold_duration(),
-                Self::terminal_scrollbar_fade_duration(),
+                TERMINAL_SCROLLBAR_HOLD_DURATION,
+                TERMINAL_SCROLLBAR_FADE_DURATION,
             )
     }
 

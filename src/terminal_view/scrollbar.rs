@@ -71,6 +71,12 @@ pub(super) fn marker_top_for_line(
     (line_index / max_index) * marker_top_limit
 }
 
+/// Maps line positions to marker tops and deduplicates adjacent marker buckets.
+///
+/// The input `lines` should be ordered (for example ascending line numbers or the
+/// stable search-result order) because deduplication only compares each bucket
+/// to the previous bucket using `dedupe_bucket_size` derived from `marker_height`.
+/// Callers with unsorted input should sort first or use a different strategy.
 pub(super) fn deduped_marker_tops<I>(
     lines: I,
     history_size: usize,

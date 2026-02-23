@@ -78,6 +78,8 @@ impl TerminalView {
         force_visible: bool,
     ) -> Option<AnyElement> {
         let now = Instant::now();
+        let force_visible = force_visible
+            && self.terminal_scrollbar_mode() != ui_scrollbar::ScrollbarVisibilityMode::AlwaysOff;
         let alpha = if force_visible {
             1.0
         } else {

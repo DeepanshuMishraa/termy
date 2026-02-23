@@ -88,7 +88,7 @@ impl ScrollbarVisibilityController {
         self.dragging = false;
     }
 
-    pub fn is_dragging(self) -> bool {
+    pub fn is_dragging(&self) -> bool {
         self.dragging
     }
 
@@ -225,6 +225,14 @@ pub fn render_vertical(
     let marker_radius = style.marker_radius.max(0.0);
     let mut marker_elements = Vec::new();
     if marker_height > 0.0 {
+        let marker_count = if style.marker_color.is_some() {
+            marker_tops.len()
+        } else {
+            0
+        };
+        let current_marker_count =
+            usize::from(style.current_marker_color.is_some() && current_marker_top.is_some());
+        marker_elements.reserve(marker_count.saturating_add(current_marker_count));
         let marker_top_max = (metrics.track_height - marker_height).max(0.0);
 
         if let Some(color) = style.marker_color {

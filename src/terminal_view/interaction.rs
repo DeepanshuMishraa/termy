@@ -1007,6 +1007,8 @@ impl TerminalView {
         if self.terminal_scrollbar_drag.is_some() {
             if event.dragging() {
                 self.handle_terminal_scrollbar_drag(event.position, window, cx);
+            } else if self.finish_terminal_scrollbar_drag(cx) {
+                cx.notify();
             }
             cx.stop_propagation();
             return;
