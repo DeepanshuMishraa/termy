@@ -63,9 +63,6 @@ const TOP_STRIP_SIDE_PADDING: f32 = 10.0;
 const TOP_STRIP_MACOS_TRAFFIC_LIGHT_PADDING: f32 = 78.0;
 #[cfg(not(macos_sdk_26))]
 const TOP_STRIP_MACOS_TRAFFIC_LIGHT_PADDING: f32 = 71.0;
-#[cfg(target_os = "macos")]
-const TOP_STRIP_CONTENT_OFFSET_Y: f32 = 0.0;
-#[cfg(not(target_os = "macos"))]
 const TOP_STRIP_CONTENT_OFFSET_Y: f32 = 0.0;
 const TOP_STRIP_BRAND_TEXT_SIZE: f32 = 13.0;
 const TOP_STRIP_CONTEXT_TEXT_SIZE: f32 = 13.0;
@@ -96,6 +93,7 @@ const TABBAR_NEW_TAB_BUTTON_SIZE: f32 = 22.0;
 const TABBAR_NEW_TAB_BUTTON_RADIUS: f32 = 2.0;
 const TABBAR_NEW_TAB_ICON_SIZE: f32 = 13.0;
 const TABBAR_NEW_TAB_ICON_BASELINE_NUDGE_Y: f32 = -1.0;
+const TAB_STRIP_LEFT_PADDING_ITEM_OFFSET: usize = 1;
 const MAX_TAB_TITLE_CHARS: usize = 96;
 const DEFAULT_TAB_TITLE: &str = "Terminal";
 const COMMAND_TITLE_DELAY_MS: u64 = 250;
@@ -1267,12 +1265,8 @@ impl TerminalView {
         }
     }
 
-    fn tab_strip_visible(use_tabs: bool) -> bool {
-        use_tabs
-    }
-
     fn show_tab_bar(&self) -> bool {
-        Self::tab_strip_visible(self.use_tabs)
+        self.use_tabs
     }
 
     fn active_context_title(&self) -> &str {
@@ -1285,8 +1279,12 @@ impl TerminalView {
 
     pub(super) fn scroll_active_tab_into_view(&self) {
         if self.show_tab_bar() && self.active_tab < self.tabs.len() {
-            self.tab_strip_scroll_handle
-                .scroll_to_item(self.active_tab.saturating_add(1));
+            // render.rs inserts the left padding spacer as child index 0 in the tracked
+            // tab strip, so tab N is rendered at scroll item N + TAB_STRIP_LEFT_PADDING_ITEM_OFFSET.
+            self.tab_strip_scroll_handle.scroll_to_item(
+                self.active_tab
+                    .saturating_add(TAB_STRIP_LEFT_PADDING_ITEM_OFFSET),
+            );
         }
     }
 
@@ -1392,11 +1390,5 @@ mod tests {
         let opaque = adaptive_overlay_panel_alpha_with_floor_for_opacity(base, 1.0, floor);
         assert!(translucent >= floor);
         assert!(opaque < floor);
-    }
-
-    #[test]
-    fn tab_strip_visibility_depends_on_use_tabs_flag_only() {
-        assert!(TerminalView::tab_strip_visible(true));
-        assert!(!TerminalView::tab_strip_visible(false));
     }
 }

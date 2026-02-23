@@ -5,24 +5,41 @@ fn main() {
     {
         use std::process::Command;
 
-        let output = Command::new("xcrun")
+        match Command::new("xcrun")
             .args(["--sdk", "macosx", "--show-sdk-version"])
             .output()
-            .expect("failed to query macOS SDK version with xcrun");
-
-        let sdk_version = String::from_utf8(output.stdout)
-            .expect("failed to parse macOS SDK version output as UTF-8");
-
-        let major_version: Option<u32> = sdk_version
-            .trim()
-            .split('.')
-            .next()
-            .and_then(|v| v.parse().ok());
-
-        if let Some(major) = major_version
-            && major >= 26
         {
-            println!("cargo:rustc-cfg=macos_sdk_26");
+            Ok(output) if output.status.success() => match String::from_utf8(output.stdout) {
+                Ok(sdk_version) => {
+                    let major_version = sdk_version
+                        .trim()
+                        .split('.')
+                        .next()
+                        .and_then(|v| v.parse::<u32>().ok());
+
+                    if let Some(major) = major_version
+                        && major >= 26
+                    {
+                        println!("cargo::rustc-cfg=macos_sdk_26");
+                    }
+                }
+                Err(err) => {
+                    println!(
+                        "cargo:warning=skipping macOS SDK cfg detection; non-UTF8 xcrun output: {err}"
+                    );
+                }
+            },
+            Ok(output) => {
+                println!(
+                    "cargo:warning=skipping macOS SDK cfg detection; xcrun exited with status {}",
+                    output.status
+                );
+            }
+            Err(err) => {
+                println!(
+                    "cargo:warning=skipping macOS SDK cfg detection; failed to execute xcrun: {err}"
+                );
+            }
         }
     }
 

@@ -85,11 +85,12 @@ impl TerminalView {
         let title_chars = title.trim().chars().count() as f32;
         let text_width = title_chars * TAB_TITLE_CHAR_WIDTH;
         let base_width = (TAB_TEXT_PADDING_X * 2.0) + text_width + TAB_CLOSE_SLOT_WIDTH;
-        let width = if base_width <= TAB_MIN_WIDTH {
-            base_width + TAB_TITLE_LAYOUT_SLACK_PX
-        } else {
-            base_width
-        };
+        let slack_start = TAB_MIN_WIDTH - TAB_TITLE_LAYOUT_SLACK_PX;
+        let slack_end = TAB_MIN_WIDTH + TAB_TITLE_LAYOUT_SLACK_PX;
+        let slack_span = (slack_end - slack_start).max(f32::EPSILON);
+        let slack_factor = ((slack_end - base_width) / slack_span).clamp(0.0, 1.0);
+        let effective_slack = TAB_TITLE_LAYOUT_SLACK_PX * slack_factor;
+        let width = base_width + effective_slack;
         width.clamp(TAB_MIN_WIDTH, max_width.max(TAB_MIN_WIDTH))
     }
 
@@ -550,7 +551,7 @@ mod tests {
     }
 
     #[test]
-    fn tab_display_width_for_title_only_applies_slack_for_short_titles() {
+    fn tab_display_width_for_title_tapers_slack_for_short_titles() {
         let long_title = "x".repeat(15);
         let long_width =
             TerminalView::tab_display_width_for_title_with_max(&long_title, TAB_MAX_WIDTH * 2.0);
@@ -562,12 +563,21 @@ mod tests {
         let short_title = "x".repeat(7);
         let short_width =
             TerminalView::tab_display_width_for_title_with_max(&short_title, TAB_MAX_WIDTH * 2.0);
-        let expected_short = ((TAB_TEXT_PADDING_X * 2.0)
+        let short_base = (TAB_TEXT_PADDING_X * 2.0)
             + (short_title.chars().count() as f32 * TAB_TITLE_CHAR_WIDTH)
-            + TAB_CLOSE_SLOT_WIDTH
-            + TAB_TITLE_LAYOUT_SLACK_PX)
-            .clamp(TAB_MIN_WIDTH, TAB_MAX_WIDTH * 2.0);
-        assert_eq!(short_width, expected_short);
+            + TAB_CLOSE_SLOT_WIDTH;
+        assert!(short_width > short_base);
+        assert!(short_width < short_base + TAB_TITLE_LAYOUT_SLACK_PX);
+    }
+
+    #[test]
+    fn tab_display_width_for_title_is_monotonic_near_slack_transition() {
+        let width_7 = TerminalView::tab_display_width_for_title_with_max("xxxxxxx", 512.0);
+        let width_8 = TerminalView::tab_display_width_for_title_with_max("xxxxxxxx", 512.0);
+        let width_9 = TerminalView::tab_display_width_for_title_with_max("xxxxxxxxx", 512.0);
+
+        assert!(width_7 < width_8);
+        assert!(width_8 < width_9);
     }
 
     #[test]

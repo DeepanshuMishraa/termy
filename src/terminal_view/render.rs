@@ -1090,8 +1090,6 @@ impl Render for TerminalView {
                     }
                     if this.tab_drag.is_some() {
                         this.commit_tab_drag(cx);
-                    } else if this.finish_tab_drag() {
-                        changed = true;
                     }
                     if changed {
                         cx.notify();
