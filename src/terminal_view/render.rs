@@ -572,8 +572,7 @@ impl Render for TerminalView {
         active_tab_bg.a = 0.0;
         let mut hovered_tab_bg = colors.foreground;
         hovered_tab_bg.a = self.scaled_chrome_alpha(0.13);
-        let mut inactive_tab_border = colors.foreground;
-        inactive_tab_border.a = 0.12;
+        let inactive_tab_border = tabbar_border;
         let active_tab_border = inactive_tab_border;
         let mut active_tab_text = colors.foreground;
         active_tab_text.a = 0.95;
@@ -592,7 +591,7 @@ impl Render for TerminalView {
             .as_ref()
             .map(|link| (link.row, link.start_col, link.end_col));
         let active_tab_content_span = if show_tab_bar && self.active_tab < self.tabs.len() {
-            let mut active_left = 0.0;
+            let mut active_left = TAB_HORIZONTAL_PADDING;
             for tab in self.tabs.iter().take(self.active_tab) {
                 active_left += tab.display_width + TAB_ITEM_GAP;
             }
@@ -608,6 +607,8 @@ impl Render for TerminalView {
             .flex()
             .relative()
             .items_end()
+            .pl(px(TAB_HORIZONTAL_PADDING))
+            .pr(px(TAB_HORIZONTAL_PADDING))
             .gap(px(TAB_ITEM_GAP))
             .overflow_x_scroll()
             .track_scroll(&self.tab_strip_scroll_handle)
@@ -651,6 +652,12 @@ impl Render for TerminalView {
                     active_tab_border
                 } else {
                     inactive_tab_border
+                };
+                let right_edge_touches_active_gap = is_active || (index + 1 == self.active_tab);
+                let side_stroke_bottom_inset = if right_edge_touches_active_gap {
+                    0.0
+                } else {
+                    1.0
                 };
 
                 let mut close_text_color = if is_active {
@@ -703,10 +710,6 @@ impl Render for TerminalView {
                     .flex_none()
                     .relative()
                     .bg(tab_bg)
-                    .border_1()
-                    .border_b(px(0.0))
-                    .border_l(px(if index == 0 { 1.0 } else { 0.0 }))
-                    .border_color(tab_border)
                     .w(px(tab.display_width))
                     .h(px(TAB_ITEM_HEIGHT))
                     .px(px(TAB_TEXT_PADDING_X))
@@ -742,7 +745,35 @@ impl Render for TerminalView {
                         cx.listener(|this, _event: &MouseUpEvent, _window, _cx| {
                             this.finish_tab_drag();
                         }),
-                    );
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .right_0()
+                            .top_0()
+                            .h(px(1.0))
+                            .bg(tab_border),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .right_0()
+                            .top(px(1.0))
+                            .bottom(px(side_stroke_bottom_inset))
+                            .w(px(1.0))
+                            .bg(tab_border),
+                    )
+                    .children((index == 0).then(|| {
+                        let left_stroke_bottom_inset = if is_active { 0.0 } else { 1.0 };
+                        div()
+                            .absolute()
+                            .left_0()
+                            .top(px(1.0))
+                            .bottom(px(left_stroke_bottom_inset))
+                            .w(px(1.0))
+                            .bg(tab_border)
+                    }));
 
                 tabs_scroll_content = tabs_scroll_content.child(
                     tab_shell
@@ -783,6 +814,9 @@ impl Render for TerminalView {
         if show_tab_bar {
             if let Some((active_left, active_width)) = active_tab_content_span {
                 let active_right = active_left + active_width;
+                let gap_inset = 0.0;
+                let left_segment_width = (active_left - gap_inset).max(0.0);
+                let right_segment_left = active_right + gap_inset;
                 tabs_scroll_content = tabs_scroll_content.child(
                     div()
                         .absolute()
@@ -796,13 +830,13 @@ impl Render for TerminalView {
                                 .left_0()
                                 .bottom_0()
                                 .h(px(1.0))
-                                .w(px(active_left.max(0.0)))
+                                .w(px(left_segment_width))
                                 .bg(tabbar_border),
                         )
                         .child(
                             div()
                                 .absolute()
-                                .left(px(active_right))
+                                .left(px(right_segment_left))
                                 .right_0()
                                 .bottom_0()
                                 .h(px(1.0))
@@ -826,31 +860,12 @@ impl Render for TerminalView {
             .w_full()
             .h(px(if show_tab_bar { TABBAR_HEIGHT } else { 0.0 }))
             .relative()
-            .children(show_tab_bar.then(|| {
-                div()
-                    .absolute()
-                    .left_0()
-                    .bottom_0()
-                    .h(px(1.0))
-                    .w(px(TAB_HORIZONTAL_PADDING))
-                    .bg(tabbar_border)
-            }))
-            .children(show_tab_bar.then(|| {
-                div()
-                    .absolute()
-                    .right_0()
-                    .bottom_0()
-                    .h(px(1.0))
-                    .w(px(TAB_HORIZONTAL_PADDING))
-                    .bg(tabbar_border)
-            }))
             .child(
                 div()
                     .w_full()
                     .h_full()
                     .flex()
                     .items_end()
-                    .px(px(TAB_HORIZONTAL_PADDING))
                     .child(tabs_scroll_content),
             );
 
