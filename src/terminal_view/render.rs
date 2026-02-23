@@ -618,6 +618,7 @@ impl Render for TerminalView {
             .track_scroll(&self.tab_strip_scroll_handle)
             .on_scroll_wheel(
                 cx.listener(|_this, _event: &ScrollWheelEvent, _window, cx| {
+                    cx.notify();
                     cx.stop_propagation();
                 }),
             )
@@ -710,6 +711,7 @@ impl Render for TerminalView {
                     .bg(tab_bg)
                     .border_1()
                     .border_b(px(0.0))
+                    .border_l(px(if index == 0 { 1.0 } else { 0.0 }))
                     .border_color(tab_border)
                     .w(px(tab.display_width))
                     .h(px(TAB_ITEM_HEIGHT))
@@ -1013,6 +1015,7 @@ impl Render for TerminalView {
                         .w_full()
                         .flex()
                         .items_center()
+                        .mt(px(TOP_STRIP_CONTENT_OFFSET_Y))
                         .gap(px(8.0))
                         .pl(px(titlebar_left_padding))
                         .pr(px(TOP_STRIP_SIDE_PADDING))

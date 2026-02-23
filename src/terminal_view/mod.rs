@@ -62,6 +62,10 @@ const TOP_STRIP_SIDE_PADDING: f32 = 10.0;
 const TOP_STRIP_MACOS_TRAFFIC_LIGHT_PADDING: f32 = 78.0;
 #[cfg(not(macos_sdk_26))]
 const TOP_STRIP_MACOS_TRAFFIC_LIGHT_PADDING: f32 = 71.0;
+#[cfg(target_os = "macos")]
+const TOP_STRIP_CONTENT_OFFSET_Y: f32 = 0.0;
+#[cfg(not(target_os = "macos"))]
+const TOP_STRIP_CONTENT_OFFSET_Y: f32 = 0.0;
 const TOP_STRIP_BRAND_TEXT_SIZE: f32 = 13.0;
 const TOP_STRIP_CONTEXT_TEXT_SIZE: f32 = 13.0;
 const TOP_STRIP_TEXT_BASELINE_NUDGE_Y: f32 = 0.0;
