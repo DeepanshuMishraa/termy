@@ -88,6 +88,8 @@ const TAB_CLOSE_SLOT_WIDTH: f32 = 20.0;
 const TAB_CLOSE_HITBOX: f32 = TAB_CLOSE_SLOT_WIDTH;
 const TAB_STROKE_FOREGROUND_MIX: f32 = 0.12;
 const TAB_STROKE_THICKNESS: f32 = 1.0;
+const TAB_DROP_MARKER_WIDTH: f32 = 2.0;
+const TAB_DROP_MARKER_INSET_Y: f32 = 3.0;
 const MAX_TAB_TITLE_CHARS: usize = 96;
 const DEFAULT_TAB_TITLE: &str = "Terminal";
 const COMMAND_TITLE_DELAY_MS: u64 = 250;
@@ -173,7 +175,8 @@ struct TerminalScrollbarDragState {
 
 #[derive(Clone, Copy, Debug)]
 struct TabDragState {
-    dragged_index: usize,
+    source_index: usize,
+    drop_slot: Option<usize>,
 }
 
 #[derive(Clone, Copy, Debug)]

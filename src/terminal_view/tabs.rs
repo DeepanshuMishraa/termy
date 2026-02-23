@@ -1,5 +1,11 @@
 use super::*;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum TabDropMarkerSide {
+    Left,
+    Right,
+}
+
 impl TerminalView {
     pub(super) fn tab_display_width_for_title(title: &str) -> f32 {
         let title_chars = title.trim().chars().count() as f32;
@@ -36,75 +42,131 @@ impl TerminalView {
     pub(super) fn begin_tab_drag(&mut self, index: usize) {
         if index < self.tabs.len() {
             self.tab_drag = Some(TabDragState {
-                dragged_index: index,
+                source_index: index,
+                drop_slot: None,
             });
         }
     }
 
-    pub(super) fn finish_tab_drag(&mut self) {
+    pub(super) fn finish_tab_drag(&mut self) -> bool {
+        let marker_was_visible = self
+            .tab_drag
+            .as_ref()
+            .and_then(|drag| drag.drop_slot)
+            .is_some();
         self.tab_drag = None;
+        marker_was_visible
     }
 
-    fn drag_reorder_crosses_threshold(
-        dragged_index: usize,
-        target_index: usize,
+    fn tab_drop_slot_from_pointer_x_for_widths(
+        tab_widths: impl IntoIterator<Item = f32>,
         pointer_x: f32,
-        target_midpoint_x: f32,
-    ) -> bool {
-        if target_index > dragged_index {
-            pointer_x >= target_midpoint_x
-        } else if target_index < dragged_index {
-            pointer_x <= target_midpoint_x
+        scroll_offset_x: f32,
+    ) -> usize {
+        let mut left = TAB_HORIZONTAL_PADDING + scroll_offset_x;
+        let mut slot = 0;
+
+        for width in tab_widths {
+            let midpoint_x = left + (width * 0.5);
+            if pointer_x < midpoint_x {
+                return slot;
+            }
+
+            left += width + TAB_ITEM_GAP;
+            slot += 1;
+        }
+
+        slot
+    }
+
+    fn tab_drop_slot_from_pointer_x(&self, pointer_x: f32) -> usize {
+        let scroll_offset_x: f32 = self.tab_strip_scroll_handle.offset().x.into();
+        Self::tab_drop_slot_from_pointer_x_for_widths(
+            self.tabs.iter().map(|tab| tab.display_width),
+            pointer_x,
+            scroll_offset_x,
+        )
+    }
+
+    fn normalized_drop_slot(source_index: usize, raw_slot: usize) -> Option<usize> {
+        if raw_slot == source_index || raw_slot == source_index.saturating_add(1) {
+            return None;
+        }
+        Some(raw_slot)
+    }
+
+    fn reorder_target_index_for_drop_slot(source_index: usize, drop_slot: usize) -> usize {
+        if drop_slot > source_index {
+            drop_slot - 1
         } else {
-            false
+            drop_slot
         }
     }
 
-    fn tab_midpoint_x(&self, index: usize) -> Option<f32> {
+    fn tab_drop_marker_side_for_slot(index: usize, drop_slot: usize) -> Option<TabDropMarkerSide> {
+        if drop_slot == index {
+            Some(TabDropMarkerSide::Left)
+        } else if drop_slot == index.saturating_add(1) {
+            Some(TabDropMarkerSide::Right)
+        } else {
+            None
+        }
+    }
+
+    pub(super) fn tab_drop_marker_side(&self, index: usize) -> Option<TabDropMarkerSide> {
         if index >= self.tabs.len() {
             return None;
         }
 
-        let scroll_offset_x: f32 = self.tab_strip_scroll_handle.offset().x.into();
-        let mut left = TAB_HORIZONTAL_PADDING + scroll_offset_x;
-        for tab in self.tabs.iter().take(index) {
-            left += tab.display_width + TAB_ITEM_GAP;
-        }
-
-        Some(left + (self.tabs[index].display_width * 0.5))
+        let drop_slot = self.tab_drag.and_then(|drag| drag.drop_slot)?;
+        Self::tab_drop_marker_side_for_slot(index, drop_slot)
     }
 
-    pub(super) fn drag_tab_to(
+    pub(super) fn update_tab_drag_marker(
         &mut self,
-        target_index: usize,
         pointer_x: f32,
         cx: &mut Context<Self>,
-    ) {
-        let Some(drag) = self.tab_drag else {
+    ) -> bool {
+        let Some(source_index) = self.tab_drag.map(|drag| drag.source_index) else {
+            return false;
+        };
+
+        let raw_drop_slot = self.tab_drop_slot_from_pointer_x(pointer_x);
+        let next_drop_slot = Self::normalized_drop_slot(source_index, raw_drop_slot);
+
+        let Some(drag) = self.tab_drag.as_mut() else {
+            return false;
+        };
+        if drag.drop_slot == next_drop_slot {
+            return false;
+        }
+
+        drag.drop_slot = next_drop_slot;
+        cx.notify();
+        true
+    }
+
+    pub(super) fn commit_tab_drag(&mut self, cx: &mut Context<Self>) {
+        let Some(TabDragState {
+            source_index,
+            drop_slot,
+        }) = self.tab_drag.take()
+        else {
             return;
         };
 
-        if target_index >= self.tabs.len() || drag.dragged_index == target_index {
-            return;
-        }
-
-        let Some(target_midpoint_x) = self.tab_midpoint_x(target_index) else {
+        let Some(drop_slot) = drop_slot else {
             return;
         };
 
-        if !Self::drag_reorder_crosses_threshold(
-            drag.dragged_index,
-            target_index,
-            pointer_x,
-            target_midpoint_x,
-        ) {
+        let target_index = Self::reorder_target_index_for_drop_slot(source_index, drop_slot);
+        if source_index == target_index {
+            cx.notify();
             return;
         }
 
-        if self.reorder_tab(drag.dragged_index, target_index, cx) {
-            self.tab_drag = Some(TabDragState {
-                dragged_index: target_index,
-            });
+        if !self.reorder_tab(source_index, target_index, cx) {
+            cx.notify();
         }
     }
 
@@ -123,10 +185,7 @@ impl TerminalView {
         self.hovered_tab = self
             .hovered_tab
             .map(|index| Self::remap_index_after_move(index, from, to));
-
-        if let Some(drag) = &mut self.tab_drag {
-            drag.dragged_index = Self::remap_index_after_move(drag.dragged_index, from, to);
-        }
+        self.tab_drag = None;
 
         self.scroll_active_tab_into_view();
         cx.notify();
@@ -197,13 +256,7 @@ impl TerminalView {
             Some(hovered) if hovered > index => Some(hovered - 1),
             value => value,
         };
-        self.tab_drag = match self.tab_drag {
-            Some(TabDragState { dragged_index }) if dragged_index == index => None,
-            Some(TabDragState { dragged_index }) if dragged_index > index => Some(TabDragState {
-                dragged_index: dragged_index - 1,
-            }),
-            value => value,
-        };
+        self.tab_drag = None;
 
         self.clear_selection();
         self.scroll_active_tab_into_view();
@@ -340,18 +393,69 @@ mod tests {
     }
 
     #[test]
-    fn drag_reorder_crosses_threshold_respects_direction() {
-        assert!(!TerminalView::drag_reorder_crosses_threshold(
-            0, 1, 49.0, 50.0
-        ));
-        assert!(TerminalView::drag_reorder_crosses_threshold(
-            0, 1, 50.0, 50.0
-        ));
-        assert!(!TerminalView::drag_reorder_crosses_threshold(
-            2, 1, 51.0, 50.0
-        ));
-        assert!(TerminalView::drag_reorder_crosses_threshold(
-            2, 1, 50.0, 50.0
-        ));
+    fn normalized_drop_slot_filters_noop_boundaries() {
+        assert_eq!(TerminalView::normalized_drop_slot(2, 2), None);
+        assert_eq!(TerminalView::normalized_drop_slot(2, 3), None);
+        assert_eq!(TerminalView::normalized_drop_slot(2, 1), Some(1));
+        assert_eq!(TerminalView::normalized_drop_slot(2, 4), Some(4));
+    }
+
+    #[test]
+    fn reorder_target_index_for_drop_slot_moves_right_correctly() {
+        assert_eq!(TerminalView::reorder_target_index_for_drop_slot(1, 3), 2);
+        assert_eq!(TerminalView::reorder_target_index_for_drop_slot(0, 3), 2);
+    }
+
+    #[test]
+    fn reorder_target_index_for_drop_slot_moves_left_correctly() {
+        assert_eq!(TerminalView::reorder_target_index_for_drop_slot(3, 1), 1);
+        assert_eq!(TerminalView::reorder_target_index_for_drop_slot(2, 0), 0);
+    }
+
+    #[test]
+    fn tab_drop_slot_from_pointer_x_respects_midpoints() {
+        let widths = [100.0, 100.0, 100.0];
+        assert_eq!(
+            TerminalView::tab_drop_slot_from_pointer_x_for_widths(widths, 40.0, 0.0),
+            0
+        );
+        assert_eq!(
+            TerminalView::tab_drop_slot_from_pointer_x_for_widths(widths, 70.0, 0.0),
+            1
+        );
+        assert_eq!(
+            TerminalView::tab_drop_slot_from_pointer_x_for_widths(widths, 170.0, 0.0),
+            2
+        );
+        assert_eq!(
+            TerminalView::tab_drop_slot_from_pointer_x_for_widths(widths, 270.0, 0.0),
+            3
+        );
+    }
+
+    #[test]
+    fn tab_drop_slot_from_pointer_x_respects_scroll_offset() {
+        let widths = [100.0, 100.0];
+        assert_eq!(
+            TerminalView::tab_drop_slot_from_pointer_x_for_widths(widths, 40.0, 0.0),
+            0
+        );
+        assert_eq!(
+            TerminalView::tab_drop_slot_from_pointer_x_for_widths(widths, 40.0, -30.0),
+            1
+        );
+    }
+
+    #[test]
+    fn tab_drop_marker_side_maps_slot_to_left_and_right_edges() {
+        assert_eq!(
+            TerminalView::tab_drop_marker_side_for_slot(2, 2),
+            Some(TabDropMarkerSide::Left)
+        );
+        assert_eq!(
+            TerminalView::tab_drop_marker_side_for_slot(2, 3),
+            Some(TabDropMarkerSide::Right)
+        );
+        assert_eq!(TerminalView::tab_drop_marker_side_for_slot(2, 1), None);
     }
 }

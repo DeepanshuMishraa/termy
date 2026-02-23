@@ -1,4 +1,5 @@
 use super::scrollbar as terminal_scrollbar;
+use super::tabs::TabDropMarkerSide;
 use super::*;
 use crate::ui::scrollbar::{self as ui_scrollbar, ScrollbarPaintStyle};
 
@@ -583,6 +584,8 @@ impl Render for TerminalView {
         close_button_hover_bg.a = self.scaled_chrome_alpha(0.24);
         let mut close_button_hover_text = colors.foreground;
         close_button_hover_text.a = 0.98;
+        let mut tab_drop_marker_color = colors.cursor;
+        tab_drop_marker_color.a = self.scaled_chrome_alpha(0.95);
         let mut selection_bg = colors.cursor;
         selection_bg.a = SELECTION_BG_ALPHA;
         let selection_fg = colors.background;
@@ -634,8 +637,20 @@ impl Render for TerminalView {
                     cx.stop_propagation();
                 }),
             )
-            .on_mouse_move(cx.listener(|this, _event: &MouseMoveEvent, _window, cx| {
-                if this.hovered_tab.take().is_some() {
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
+                    this.commit_tab_drag(cx);
+                }),
+            )
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
+                let hovered_changed = this.hovered_tab.take().is_some();
+                let marker_changed = if event.dragging() {
+                    this.update_tab_drag_marker(event.position.x.into(), cx)
+                } else {
+                    false
+                };
+                if hovered_changed && !marker_changed {
                     cx.notify();
                 }
             }));
@@ -659,6 +674,7 @@ impl Render for TerminalView {
                 let is_hovered = self.hovered_tab == Some(index);
                 let show_tab_close = Self::tab_shows_close(is_active, self.hovered_tab, index);
                 let is_renaming = self.renaming_tab == Some(index);
+                let tab_drop_marker_side = self.tab_drop_marker_side(index);
                 let label = tab.title.clone();
                 let rename_text_color = if is_active {
                     active_tab_text
@@ -708,7 +724,6 @@ impl Render for TerminalView {
                             MouseButton::Left,
                             cx.listener(move |this, _event: &MouseDownEvent, _window, cx| {
                                 this.close_tab(close_tab_index, cx);
-                                this.finish_tab_drag();
                                 cx.stop_propagation();
                             }),
                         )
@@ -740,32 +755,56 @@ impl Render for TerminalView {
                             this.begin_tab_drag(switch_tab_index);
                             if event.click_count == 2 {
                                 this.begin_rename_tab(switch_tab_index, cx);
-                                this.finish_tab_drag();
                             }
                             cx.stop_propagation();
                         }),
                     )
                     .on_mouse_move(
                         cx.listener(move |this, event: &MouseMoveEvent, _window, cx| {
-                            if this.hovered_tab != Some(hover_tab_index) {
+                            let hovered_changed = if this.hovered_tab != Some(hover_tab_index) {
                                 this.hovered_tab = Some(hover_tab_index);
+                                true
+                            } else {
+                                false
+                            };
+                            let marker_changed = if event.dragging() {
+                                this.update_tab_drag_marker(event.position.x.into(), cx)
+                            } else {
+                                false
+                            };
+                            if hovered_changed && !marker_changed {
                                 cx.notify();
-                            }
-                            if event.dragging() {
-                                this.drag_tab_to(hover_tab_index, event.position.x.into(), cx);
                             }
                             cx.stop_propagation();
                         }),
                     )
                     .on_mouse_up(
                         MouseButton::Left,
-                        cx.listener(|this, _event: &MouseUpEvent, _window, _cx| {
-                            this.finish_tab_drag();
+                        cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
+                            this.commit_tab_drag(cx);
                         }),
                     )
                     .child(render_tab_stroke(tab_strokes.top))
                     .children(tab_strokes.left_boundary.map(render_tab_stroke))
                     .children(tab_strokes.right_boundary.map(render_tab_stroke));
+
+                let drop_marker = tab_drop_marker_side.map(|side| {
+                    let marker_x = match side {
+                        TabDropMarkerSide::Left => 0.0,
+                        TabDropMarkerSide::Right => tab.display_width - TAB_DROP_MARKER_WIDTH,
+                    }
+                    .max(0.0);
+                    let marker_height =
+                        (TAB_ITEM_HEIGHT - (TAB_DROP_MARKER_INSET_Y * 2.0)).max(0.0);
+
+                    div()
+                        .absolute()
+                        .left(px(marker_x))
+                        .top(px(TAB_DROP_MARKER_INSET_Y))
+                        .w(px(TAB_DROP_MARKER_WIDTH))
+                        .h(px(marker_height))
+                        .bg(tab_drop_marker_color)
+                });
 
                 tabs_scroll_content = tabs_scroll_content.child(
                     tab_shell
@@ -798,7 +837,8 @@ impl Render for TerminalView {
                                 title_text.child(label).into_any_element()
                             },
                         ))
-                        .child(close_button),
+                        .child(close_button)
+                        .children(drop_marker),
                 );
             }
             tabs_scroll_content = tabs_scroll_content.child(
@@ -1010,8 +1050,8 @@ impl Render for TerminalView {
                     if this.hovered_tab.take().is_some() {
                         changed = true;
                     }
-                    if this.tab_drag.is_some() {
-                        this.finish_tab_drag();
+                    if this.finish_tab_drag() {
+                        changed = true;
                     }
                     if changed {
                         cx.notify();
