@@ -201,19 +201,6 @@ pub fn offset_from_thumb_top(
     (thumb_top.clamp(0.0, metrics.travel) / metrics.travel) * max_offset
 }
 
-pub fn marker_top_for_offset(
-    marker_offset: f32,
-    range: ScrollbarRange,
-    metrics: ScrollbarMetrics,
-) -> f32 {
-    let max_offset = range.max_offset.max(0.0);
-    if max_offset <= f32::EPSILON || metrics.travel <= f32::EPSILON {
-        return 0.0;
-    }
-
-    (marker_offset.clamp(0.0, max_offset) / max_offset) * metrics.travel
-}
-
 pub fn invert_offset_axis(offset: f32, max_offset: f32) -> f32 {
     let max_offset = max_offset.max(0.0);
     (max_offset - offset.clamp(0.0, max_offset)).clamp(0.0, max_offset)

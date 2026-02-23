@@ -9,28 +9,34 @@ impl Focusable for TerminalView {
 }
 
 impl TerminalView {
-    fn terminal_scrollbar_marker_offset_for_line(
+    fn terminal_scrollbar_marker_top_for_line(
         line: i32,
-        max_offset: f32,
-        line_height: f32,
+        history_size: usize,
+        viewport_rows: usize,
+        marker_top_limit: f32,
     ) -> f32 {
-        debug_assert!(line_height > f32::EPSILON);
-        let marker_display_offset = if line < 0 {
-            (-line) as f32 * line_height
-        } else {
-            0.0
-        };
-        scrollbar::invert_offset_axis(marker_display_offset, max_offset)
+        if marker_top_limit <= f32::EPSILON {
+            return 0.0;
+        }
+
+        let content_line_count = history_size.saturating_add(viewport_rows).max(1);
+        let max_index = (content_line_count.saturating_sub(1)) as f32;
+        if max_index <= f32::EPSILON {
+            return 0.0;
+        }
+
+        let line_index = (line as f32 + history_size as f32).clamp(0.0, max_index);
+        (line_index / max_index) * marker_top_limit
     }
 
     fn terminal_scrollbar_marker_tops(
         &self,
-        range: scrollbar::ScrollbarRange,
         metrics: scrollbar::ScrollbarMetrics,
-        line_height: f32,
+        history_size: usize,
+        viewport_rows: usize,
         marker_height: f32,
     ) -> (Vec<f32>, Option<f32>) {
-        if !self.search_open || line_height <= f32::EPSILON {
+        if !self.search_open {
             return (Vec::new(), None);
         }
 
@@ -42,13 +48,12 @@ impl TerminalView {
         let mut last_bucket = None;
 
         for search_match in results.matches() {
-            let offset = Self::terminal_scrollbar_marker_offset_for_line(
+            let top = Self::terminal_scrollbar_marker_top_for_line(
                 search_match.line,
-                range.max_offset,
-                line_height,
+                history_size,
+                viewport_rows,
+                marker_top_limit,
             );
-            let top = scrollbar::marker_top_for_offset(offset, range, metrics)
-                .clamp(0.0, marker_top_limit);
             let bucket = (top / dedupe_bucket_size).round() as i32;
             if last_bucket == Some(bucket) {
                 continue;
@@ -59,12 +64,12 @@ impl TerminalView {
         }
 
         let current_marker_top = results.current().map(|current| {
-            let offset = Self::terminal_scrollbar_marker_offset_for_line(
+            Self::terminal_scrollbar_marker_top_for_line(
                 current.line,
-                range.max_offset,
-                line_height,
-            );
-            scrollbar::marker_top_for_offset(offset, range, metrics).clamp(0.0, marker_top_limit)
+                history_size,
+                viewport_rows,
+                marker_top_limit,
+            )
         });
 
         (marker_tops, current_marker_top)
@@ -97,6 +102,7 @@ impl TerminalView {
         }
 
         let max_offset = history_size as f32 * line_height;
+        let viewport_rows = ((viewport_height / line_height).round().max(1.0)) as usize;
         let range = scrollbar::ScrollbarRange {
             offset: scrollbar::invert_offset_axis(display_offset as f32 * line_height, max_offset),
             max_offset,
@@ -127,9 +133,9 @@ impl TerminalView {
         .scale_alpha(alpha);
 
         let (marker_tops, current_marker_top) = self.terminal_scrollbar_marker_tops(
-            range,
             metrics,
-            line_height,
+            history_size,
+            viewport_rows,
             TERMINAL_SCROLLBAR_MARKER_HEIGHT,
         );
 
