@@ -143,6 +143,43 @@ impl TerminalView {
                 .into_any_element(),
         )
     }
+
+    fn render_titlebar_icon_button(
+        &self,
+        id: &'static str,
+        icon: &'static str,
+        icon_size: f32,
+        icon_nudge_y: f32,
+        background: gpui::Rgba,
+        icon_color: gpui::Rgba,
+        on_click: impl Fn(&mut Self, &MouseDownEvent, &mut Window, &mut Context<Self>) + 'static,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        div()
+            .id(id)
+            .w(px(TITLEBAR_PLUS_SIZE))
+            .h(px(TITLEBAR_PLUS_SIZE))
+            .rounded(px(TITLEBAR_BUTTON_CORNER_RADIUS))
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(background)
+            .cursor_pointer()
+            .on_mouse_down(MouseButton::Left, cx.listener(on_click))
+            .child(
+                div()
+                    .w(px(TITLEBAR_BUTTON_ICON_BOX_SIZE))
+                    .h(px(TITLEBAR_BUTTON_ICON_BOX_SIZE))
+                    .mt(px(icon_nudge_y))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_color(icon_color)
+                    .text_size(px(icon_size))
+                    .child(icon),
+            )
+            .into_any_element()
+    }
 }
 
 impl Render for TerminalView {
@@ -286,13 +323,20 @@ impl Render for TerminalView {
         let focus_handle = self.focus_handle.clone();
         let show_tab_bar = self.show_tab_bar();
         let show_windows_controls = cfg!(target_os = "windows");
-        let show_titlebar_plus = self.use_tabs && !show_windows_controls;
+        let show_custom_titlebar_buttons = !show_windows_controls && !self.hide_titlebar_buttons;
+        let show_titlebar_new_tab_button = show_custom_titlebar_buttons && self.use_tabs;
+        let custom_titlebar_button_count = if show_custom_titlebar_buttons {
+            2 + usize::from(show_titlebar_new_tab_button)
+        } else {
+            0
+        };
         let titlebar_side_slot_width = if show_windows_controls {
             WINDOWS_TITLEBAR_CONTROLS_WIDTH
-        } else if show_titlebar_plus {
-            (TITLEBAR_PLUS_SIZE * 3.0) + 8.0
+        } else if custom_titlebar_button_count == 0 {
+            0.0
         } else {
-            (TITLEBAR_PLUS_SIZE * 2.0) + 4.0
+            let button_count = custom_titlebar_button_count as f32;
+            (button_count * TITLEBAR_PLUS_SIZE) + ((button_count - 1.0) * TITLEBAR_BUTTON_GAP)
         };
         let viewport = window.viewport_size();
         let tab_layout = self.tab_bar_layout(viewport.width.into());
@@ -304,13 +348,17 @@ impl Render for TerminalView {
         let mut titlebar_text = colors.foreground;
         titlebar_text.a = 0.82;
         let mut titlebar_plus_bg = colors.cursor;
-        titlebar_plus_bg.a = if show_titlebar_plus {
+        titlebar_plus_bg.a = if show_custom_titlebar_buttons {
             self.scaled_chrome_alpha(0.2)
         } else {
             0.0
         };
         let mut titlebar_plus_text = colors.foreground;
-        titlebar_plus_text.a = if show_titlebar_plus { 0.92 } else { 0.0 };
+        titlebar_plus_text.a = if show_custom_titlebar_buttons {
+            0.92
+        } else {
+            0.0
+        };
         let mut tabbar_bg = colors.background;
         tabbar_bg.a = if show_tab_bar {
             self.scaled_chrome_alpha(0.92)
@@ -392,8 +440,11 @@ impl Render for TerminalView {
                         .cursor_pointer()
                         .on_mouse_down(
                             MouseButton::Left,
-                            cx.listener(move |this, _event, _window, cx| {
+                            cx.listener(move |this, event: &MouseDownEvent, _window, cx| {
                                 this.switch_tab(switch_tab_index, cx);
+                                if event.click_count == 2 {
+                                    this.begin_rename_tab(switch_tab_index, cx);
+                                }
                             }),
                         )
                         .child(div().w(px(close_slot_width)).h(px(TAB_CLOSE_HITBOX)))
@@ -641,7 +692,10 @@ impl Render for TerminalView {
                                         MouseButton::Left,
                                         cx.listener(move |this, _event, _window, cx| {
                                             match this.restart_application() {
-                                                Ok(()) => cx.quit(),
+                                                Ok(()) => {
+                                                    this.allow_quit_without_prompt = true;
+                                                    cx.quit();
+                                                }
                                                 Err(error) => {
                                                     termy_toast::error(format!(
                                                         "Restart failed: {}",
@@ -876,85 +930,66 @@ impl Render for TerminalView {
                                         .text_size(px(12.0))
                                         .child("x"),
                                 )
-                        } else {
+                        } else if show_custom_titlebar_buttons {
                             div()
                                 .flex()
                                 .items_center()
-                                .gap(px(4.0))
-                                .child(
-                                    div()
-                                        .id("titlebar-settings")
-                                        .w(px(TITLEBAR_PLUS_SIZE))
-                                        .h(px(TITLEBAR_PLUS_SIZE))
-                                        .rounded_sm()
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .bg(titlebar_plus_bg)
-                                        .text_color(titlebar_plus_text)
-                                        .text_size(px(14.0))
-                                        .cursor_pointer()
-                                        .on_mouse_down(
-                                            MouseButton::Left,
-                                            cx.listener(|this, _event, _window, cx| {
-                                                this.execute_command_action(
-                                                    CommandAction::OpenSettings,
-                                                    false,
-                                                    cx,
-                                                );
-                                                cx.stop_propagation();
-                                            }),
-                                        )
-                                        .child("\u{2699}"),
-                                )
-                                .child(
-                                    div()
-                                        .id("titlebar-update")
-                                        .w(px(TITLEBAR_PLUS_SIZE))
-                                        .h(px(TITLEBAR_PLUS_SIZE))
-                                        .rounded_sm()
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .bg(titlebar_plus_bg)
-                                        .text_color(titlebar_plus_text)
-                                        .text_size(px(13.0))
-                                        .cursor_pointer()
-                                        .on_mouse_down(
-                                            MouseButton::Left,
-                                            cx.listener(|this, _event, _window, cx| {
-                                                this.execute_command_action(
-                                                    CommandAction::CheckForUpdates,
-                                                    false,
-                                                    cx,
-                                                );
-                                                cx.stop_propagation();
-                                            }),
-                                        )
-                                        .child("\u{21BB}"),
-                                )
-                                .children(show_titlebar_plus.then(|| {
-                                    div()
-                                        .id("titlebar-new-tab")
-                                        .w(px(TITLEBAR_PLUS_SIZE))
-                                        .h(px(TITLEBAR_PLUS_SIZE))
-                                        .rounded_sm()
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .bg(titlebar_plus_bg)
-                                        .text_color(titlebar_plus_text)
-                                        .text_size(px(16.0))
-                                        .cursor_pointer()
-                                        .on_mouse_down(
-                                            MouseButton::Left,
-                                            cx.listener(|this, _event, _window, cx| {
-                                                this.add_tab(cx);
-                                                cx.stop_propagation();
-                                            }),
-                                        )
-                                        .child("+")
+                                .gap(px(TITLEBAR_BUTTON_GAP))
+                                .child(self.render_titlebar_icon_button(
+                                    "titlebar-settings",
+                                    "\u{2699}",
+                                    TITLEBAR_SETTINGS_ICON_SIZE,
+                                    TITLEBAR_SETTINGS_ICON_BASELINE_NUDGE_Y,
+                                    titlebar_plus_bg,
+                                    titlebar_plus_text,
+                                    |this, _event, window, cx| {
+                                        this.execute_command_action(
+                                            CommandAction::OpenSettings,
+                                            false,
+                                            window,
+                                            cx,
+                                        );
+                                        cx.stop_propagation();
+                                    },
+                                    cx,
+                                ))
+                                .child(self.render_titlebar_icon_button(
+                                    "titlebar-update",
+                                    "\u{21BB}",
+                                    TITLEBAR_BUTTON_ICON_SIZE,
+                                    TITLEBAR_BUTTON_ICON_BASELINE_NUDGE_Y,
+                                    titlebar_plus_bg,
+                                    titlebar_plus_text,
+                                    |this, _event, window, cx| {
+                                        this.execute_command_action(
+                                            CommandAction::CheckForUpdates,
+                                            false,
+                                            window,
+                                            cx,
+                                        );
+                                        cx.stop_propagation();
+                                    },
+                                    cx,
+                                ))
+                                .children(show_titlebar_new_tab_button.then(|| {
+                                    self.render_titlebar_icon_button(
+                                        "titlebar-new-tab",
+                                        "+",
+                                        TITLEBAR_NEW_TAB_ICON_SIZE,
+                                        TITLEBAR_BUTTON_ICON_BASELINE_NUDGE_Y,
+                                        titlebar_plus_bg,
+                                        titlebar_plus_text,
+                                        |this, _event, _window, cx| {
+                                            this.add_tab(cx);
+                                            cx.stop_propagation();
+                                        },
+                                        cx,
+                                    )
                                 }))
+                        } else {
+                            div()
+                                .w(px(titlebar_side_slot_width))
+                                .h(px(TITLEBAR_PLUS_SIZE))
                         }),
                 )
                 .into_any()
@@ -1227,6 +1262,7 @@ impl Render for TerminalView {
                     .on_action(cx.listener(Self::handle_zoom_in_action))
                     .on_action(cx.listener(Self::handle_zoom_out_action))
                     .on_action(cx.listener(Self::handle_zoom_reset_action))
+                    .on_action(cx.listener(Self::handle_quit_action))
                     .on_action(cx.listener(Self::handle_open_search_action))
                     .on_action(cx.listener(Self::handle_close_search_action))
                     .on_action(cx.listener(Self::handle_search_next_action))

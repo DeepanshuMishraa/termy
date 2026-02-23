@@ -7,6 +7,7 @@ mod keybindings;
 mod settings_view;
 mod terminal_view;
 mod text_input;
+mod ui;
 
 use commands::{OpenConfig, OpenSettings, Quit};
 #[cfg(target_os = "macos")]
@@ -57,7 +58,6 @@ fn main() {
     env_logger::init();
 
     Application::new().run(|cx: &mut App| {
-        cx.on_action(|_: &Quit, cx| cx.quit());
         cx.on_action(|_: &OpenConfig, _cx| config::open_config_file());
         cx.on_action(|_: &OpenSettings, cx| {
             let bounds = Bounds::centered(None, size(px(800.0), px(600.0)), cx);
@@ -138,8 +138,19 @@ fn main() {
                 ..Default::default()
             },
             move |window, cx| {
-                let startup_config = startup_config.clone();
-                cx.new(|cx| TerminalView::new(window, cx, startup_config.clone()))
+                let view = cx.new({
+                    let startup_config = startup_config;
+                    |cx| TerminalView::new(window, cx, startup_config)
+                });
+                let view_handle = view.downgrade();
+                window.on_window_should_close(cx, move |window, cx| {
+                    view_handle
+                        .update(cx, |view, cx| {
+                            view.handle_window_should_close_request(window, cx)
+                        })
+                        .unwrap_or(true)
+                });
+                view
             },
         )
         .unwrap();

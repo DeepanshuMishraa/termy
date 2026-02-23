@@ -1,6 +1,13 @@
 use super::scrollbar as terminal_scrollbar;
 use super::*;
 use crate::ui::scrollbar as ui_scrollbar;
+use gpui::PromptLevel;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum QuitRequestTarget {
+    Application,
+    WindowClose,
+}
 
 impl TerminalView {
     fn command_palette_mode_for_action(action: CommandAction) -> Option<CommandPaletteMode> {
@@ -43,10 +50,77 @@ impl TerminalView {
         usize::try_from(term_line + display_offset as i32).ok()
     }
 
+    fn prepare_terminal_input_write(&mut self, cx: &mut Context<Self>) {
+        self.terminal_scroll_accumulator_y = 0.0;
+        self.input_scroll_suppress_until =
+            Some(Instant::now() + Duration::from_millis(INPUT_SCROLL_SUPPRESS_MS));
+        self.scroll_to_bottom(cx);
+    }
+
+    fn consume_suppressed_scroll_event(
+        &mut self,
+        touch_phase: TouchPhase,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(until) = self.input_scroll_suppress_until else {
+            return false;
+        };
+
+        match touch_phase {
+            TouchPhase::Started => {
+                self.input_scroll_suppress_until = None;
+                false
+            }
+            TouchPhase::Ended => {
+                self.input_scroll_suppress_until = None;
+                cx.stop_propagation();
+                true
+            }
+            TouchPhase::Moved => {
+                let now = Instant::now();
+                // Block residual momentum until we see a clear gesture boundary.
+                // Fallback timeout keeps non-touch wheel devices from being blocked.
+                let fallback_release = until + Duration::from_millis(INPUT_SCROLL_SUPPRESS_MS * 3);
+                if now < fallback_release {
+                    cx.stop_propagation();
+                    true
+                } else {
+                    self.input_scroll_suppress_until = None;
+                    false
+                }
+            }
+        }
+    }
+
+    fn write_terminal_input(&mut self, input: &[u8], cx: &mut Context<Self>) {
+        if input.is_empty() {
+            return;
+        }
+
+        self.prepare_terminal_input_write(cx);
+        self.active_terminal().write(input);
+    }
+
+    fn write_terminal_paste_input(&mut self, input: &[u8], cx: &mut Context<Self>) {
+        if input.is_empty() {
+            return;
+        }
+
+        self.prepare_terminal_input_write(cx);
+        let terminal = self.active_terminal();
+        if terminal.bracketed_paste_mode() {
+            terminal.write(b"\x1b[200~");
+            terminal.write(input);
+            terminal.write(b"\x1b[201~");
+        } else {
+            terminal.write(input);
+        }
+    }
+
     fn write_copy_fallback_input(&mut self, _cx: &mut Context<Self>) {
         #[cfg(not(target_os = "macos"))]
         {
-            self.active_terminal().write(&[0x03]);
+            self.write_terminal_input(&[0x03], _cx);
             self.clear_selection();
             _cx.notify();
         }
@@ -55,7 +129,7 @@ impl TerminalView {
     fn write_paste_fallback_input(&mut self, _cx: &mut Context<Self>) {
         #[cfg(not(target_os = "macos"))]
         {
-            self.active_terminal().write(&[0x16]);
+            self.write_terminal_input(&[0x16], _cx);
             self.clear_selection();
             _cx.notify();
         }
@@ -609,10 +683,123 @@ impl TerminalView {
         self.has_active_inline_input()
     }
 
+    fn busy_tab_titles_for_quit(&self) -> Vec<String> {
+        self.tabs
+            .iter()
+            .filter(|tab| tab.running_process || tab.terminal.alternate_screen_mode())
+            .map(|tab| {
+                let title = tab.title.trim();
+                if title.is_empty() {
+                    self.fallback_title().to_string()
+                } else {
+                    title.to_string()
+                }
+            })
+            .collect()
+    }
+
+    fn quit_warning_detail(&self, busy_titles: &[String]) -> String {
+        let count = busy_titles.len();
+        let mut detail = format!(
+            "{} tab{} {} running a command or fullscreen terminal app:\n",
+            count,
+            if count == 1 { "" } else { "s" },
+            if count == 1 { "has" } else { "have" },
+        );
+
+        for title in busy_titles {
+            detail.push_str("- ");
+            detail.push_str(title);
+            detail.push('\n');
+        }
+
+        detail.push_str("\nQuit anyway?");
+        detail
+    }
+
+    fn request_quit(
+        &mut self,
+        target: QuitRequestTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.quit_prompt_in_flight {
+            return false;
+        }
+
+        let busy_titles = self.busy_tab_titles_for_quit();
+        if !self.warn_on_quit_with_running_process || busy_titles.is_empty() {
+            if target == QuitRequestTarget::Application {
+                self.allow_quit_without_prompt = true;
+                cx.quit();
+                return false;
+            }
+            return true;
+        }
+
+        self.quit_prompt_in_flight = true;
+        let detail = self.quit_warning_detail(&busy_titles);
+        let prompt = window.prompt(
+            PromptLevel::Warning,
+            "Quit Termy?",
+            Some(&detail),
+            &["Quit", "Cancel"],
+            cx,
+        );
+        let window_handle = window.window_handle();
+
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let confirmed = matches!(prompt.await, Ok(0));
+            let _ = cx.update(|cx| {
+                let mut follow_through = false;
+                if this
+                    .update(cx, |view, _| {
+                        view.quit_prompt_in_flight = false;
+                        if confirmed {
+                            view.allow_quit_without_prompt = true;
+                            follow_through = true;
+                        }
+                    })
+                    .is_err()
+                {
+                    return;
+                }
+
+                if !follow_through {
+                    return;
+                }
+
+                match target {
+                    QuitRequestTarget::Application => cx.quit(),
+                    QuitRequestTarget::WindowClose => {
+                        let _ = window_handle.update(cx, |_, window, _| window.remove_window());
+                    }
+                }
+            });
+        })
+        .detach();
+
+        false
+    }
+
+    pub(crate) fn handle_window_should_close_request(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.allow_quit_without_prompt {
+            self.allow_quit_without_prompt = false;
+            return true;
+        }
+
+        self.request_quit(QuitRequestTarget::WindowClose, window, cx)
+    }
+
     pub(super) fn execute_command_action(
         &mut self,
         action: CommandAction,
         respect_shortcut_suspend: bool,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let shortcuts_suspended = respect_shortcut_suspend && self.command_shortcuts_suspended();
@@ -631,8 +818,10 @@ impl TerminalView {
                     self.set_command_palette_mode(mode, false, cx);
                 }
             }
+            CommandAction::Quit => {
+                self.request_quit(QuitRequestTarget::Application, window, cx);
+            }
             _ if shortcuts_suspended => {}
-            CommandAction::Quit => cx.quit(),
             CommandAction::OpenConfig => config::open_config_file(),
             CommandAction::ImportColors => self.import_colors_action(cx),
             CommandAction::AppInfo => {
@@ -655,7 +844,10 @@ impl TerminalView {
                 self.native_sdk_example_action(cx);
             }
             CommandAction::RestartApp => match self.restart_application() {
-                Ok(()) => cx.quit(),
+                Ok(()) => {
+                    self.allow_quit_without_prompt = true;
+                    cx.quit();
+                }
                 Err(error) => {
                     termy_toast::error(format!("Restart failed: {}", error));
                     cx.notify();
@@ -666,13 +858,8 @@ impl TerminalView {
                     return;
                 }
 
-                self.renaming_tab = Some(self.active_tab);
-                self.rename_input
-                    .set_text(self.tabs[self.active_tab].title.clone());
-                self.reset_cursor_blink_phase();
-                self.inline_input_selecting = false;
+                self.begin_rename_tab(self.active_tab, cx);
                 termy_toast::info("Rename mode enabled");
-                cx.notify();
             }
             CommandAction::CheckForUpdates => {
                 #[cfg(target_os = "macos")]
@@ -701,14 +888,7 @@ impl TerminalView {
             }
             CommandAction::Paste => {
                 if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-                    let terminal = self.active_terminal();
-                    if terminal.bracketed_paste_mode() {
-                        terminal.write(b"\x1b[200~");
-                        terminal.write(text.as_bytes());
-                        terminal.write(b"\x1b[201~");
-                    } else {
-                        terminal.write(text.as_bytes());
-                    }
+                    self.write_terminal_paste_input(text.as_bytes(), cx);
                     self.clear_selection();
                     cx.notify();
                 } else {
@@ -779,203 +959,212 @@ impl TerminalView {
     pub(super) fn handle_toggle_command_palette_action(
         &mut self,
         _: &commands::ToggleCommandPalette,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.execute_command_action(CommandAction::ToggleCommandPalette, true, cx);
+        self.execute_command_action(CommandAction::ToggleCommandPalette, true, window, cx);
     }
 
     pub(super) fn handle_import_colors_action(
         &mut self,
         _: &commands::ImportColors,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.execute_command_action(CommandAction::ImportColors, true, cx);
+        self.execute_command_action(CommandAction::ImportColors, true, window, cx);
     }
 
     pub(super) fn handle_switch_theme_action(
         &mut self,
         _: &commands::SwitchTheme,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.execute_command_action(CommandAction::SwitchTheme, true, cx);
+        self.execute_command_action(CommandAction::SwitchTheme, true, window, cx);
     }
 
     pub(super) fn handle_app_info_action(
         &mut self,
         _: &commands::AppInfo,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.execute_command_action(CommandAction::AppInfo, true, cx);
+        self.execute_command_action(CommandAction::AppInfo, true, window, cx);
     }
 
     pub(super) fn handle_native_sdk_example_action(
         &mut self,
         _: &commands::NativeSdkExample,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.execute_command_action(CommandAction::NativeSdkExample, true, cx);
+        self.execute_command_action(CommandAction::NativeSdkExample, true, window, cx);
     }
 
     pub(super) fn handle_restart_app_action(
         &mut self,
         _: &commands::RestartApp,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.execute_command_action(CommandAction::RestartApp, true, cx);
+        self.execute_command_action(CommandAction::RestartApp, true, window, cx);
     }
 
     pub(super) fn handle_rename_tab_action(
         &mut self,
         _: &commands::RenameTab,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.execute_command_action(CommandAction::RenameTab, true, cx);
+        self.execute_command_action(CommandAction::RenameTab, true, window, cx);
     }
 
     pub(super) fn handle_check_for_updates_action(
         &mut self,
         _: &commands::CheckForUpdates,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.execute_command_action(CommandAction::CheckForUpdates, true, cx);
+        self.execute_command_action(CommandAction::CheckForUpdates, true, window, cx);
     }
 
     pub(super) fn handle_new_tab_action(
         &mut self,
         _: &commands::NewTab,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.execute_command_action(CommandAction::NewTab, true, cx);
+        self.execute_command_action(CommandAction::NewTab, true, window, cx);
     }
 
     pub(super) fn handle_close_tab_action(
         &mut self,
         _: &commands::CloseTab,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.execute_command_action(CommandAction::CloseTab, true, cx);
+        self.execute_command_action(CommandAction::CloseTab, true, window, cx);
     }
 
     pub(super) fn handle_copy_action(
         &mut self,
         _: &commands::Copy,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.execute_command_action(CommandAction::Copy, true, cx);
+        self.execute_command_action(CommandAction::Copy, true, window, cx);
     }
 
     pub(super) fn handle_paste_action(
         &mut self,
         _: &commands::Paste,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.execute_command_action(CommandAction::Paste, true, cx);
+        self.execute_command_action(CommandAction::Paste, true, window, cx);
     }
 
     pub(super) fn handle_zoom_in_action(
         &mut self,
         _: &commands::ZoomIn,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.execute_command_action(CommandAction::ZoomIn, true, cx);
+        self.execute_command_action(CommandAction::ZoomIn, true, window, cx);
     }
 
     pub(super) fn handle_zoom_out_action(
         &mut self,
         _: &commands::ZoomOut,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.execute_command_action(CommandAction::ZoomOut, true, cx);
+        self.execute_command_action(CommandAction::ZoomOut, true, window, cx);
     }
 
     pub(super) fn handle_zoom_reset_action(
         &mut self,
         _: &commands::ZoomReset,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.execute_command_action(CommandAction::ZoomReset, true, cx);
+        self.execute_command_action(CommandAction::ZoomReset, true, window, cx);
+    }
+
+    pub(super) fn handle_quit_action(
+        &mut self,
+        _: &commands::Quit,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.execute_command_action(CommandAction::Quit, true, window, cx);
     }
 
     pub(super) fn handle_open_search_action(
         &mut self,
         _: &commands::OpenSearch,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.execute_command_action(CommandAction::OpenSearch, true, cx);
+        self.execute_command_action(CommandAction::OpenSearch, true, window, cx);
     }
 
     pub(super) fn handle_close_search_action(
         &mut self,
         _: &commands::CloseSearch,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.execute_command_action(CommandAction::CloseSearch, true, cx);
+        self.execute_command_action(CommandAction::CloseSearch, true, window, cx);
     }
 
     pub(super) fn handle_search_next_action(
         &mut self,
         _: &commands::SearchNext,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.execute_command_action(CommandAction::SearchNext, true, cx);
+        self.execute_command_action(CommandAction::SearchNext, true, window, cx);
     }
 
     pub(super) fn handle_search_previous_action(
         &mut self,
         _: &commands::SearchPrevious,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.execute_command_action(CommandAction::SearchPrevious, true, cx);
+        self.execute_command_action(CommandAction::SearchPrevious, true, window, cx);
     }
 
     pub(super) fn handle_toggle_search_case_sensitive_action(
         &mut self,
         _: &commands::ToggleSearchCaseSensitive,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.execute_command_action(CommandAction::ToggleSearchCaseSensitive, true, cx);
+        self.execute_command_action(CommandAction::ToggleSearchCaseSensitive, true, window, cx);
     }
 
     pub(super) fn handle_toggle_search_regex_action(
         &mut self,
         _: &commands::ToggleSearchRegex,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.execute_command_action(CommandAction::ToggleSearchRegex, true, cx);
+        self.execute_command_action(CommandAction::ToggleSearchRegex, true, window, cx);
     }
 
     pub(super) fn handle_key_down(
         &mut self,
         event: &KeyDownEvent,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.reset_cursor_blink_phase();
         let key = event.keystroke.key.as_str();
 
         if self.command_palette_open {
-            self.handle_command_palette_key_down(key, cx);
+            self.handle_command_palette_key_down(key, window, cx);
             return;
         }
 
@@ -999,12 +1188,7 @@ impl TerminalView {
         }
 
         if let Some(input) = keystroke_to_input(&event.keystroke) {
-            // Check if this is Ctrl+C (0x03) - scroll to bottom to show where we are
-            if input == [0x03] {
-                self.scroll_to_bottom(cx);
-            }
-
-            self.active_terminal().write(&input);
+            self.write_terminal_input(&input, cx);
             self.clear_selection();
             // Request a redraw to show the typed character
             cx.notify();
@@ -1014,10 +1198,13 @@ impl TerminalView {
     fn scroll_to_bottom(&mut self, cx: &mut Context<Self>) {
         let (display_offset, _) = self.active_terminal().scroll_state();
         if display_offset > 0 {
-            // Scroll down to offset 0 (live output)
-            self.active_terminal()
+            // Scroll down to offset 0 (live output).
+            let changed = self
+                .active_terminal()
                 .scroll_display(-(display_offset as i32));
-            self.mark_terminal_scrollbar_activity(cx);
+            if changed {
+                self.mark_terminal_scrollbar_activity(cx);
+            }
         }
     }
 
@@ -1173,6 +1360,10 @@ impl TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.consume_suppressed_scroll_event(event.touch_phase, cx) {
+            return;
+        }
+
         cx.stop_propagation();
         if matches!(event.touch_phase, TouchPhase::Moved) {
             self.mark_terminal_scrollbar_activity(cx);
@@ -1212,14 +1403,7 @@ impl TerminalView {
             text.push('\'');
         }
 
-        let terminal = self.active_terminal();
-        if terminal.bracketed_paste_mode() {
-            terminal.write(b"\x1b[200~");
-            terminal.write(text.as_bytes());
-            terminal.write(b"\x1b[201~");
-        } else {
-            terminal.write(text.as_bytes());
-        }
+        self.write_terminal_paste_input(text.as_bytes(), cx);
         cx.notify();
     }
 

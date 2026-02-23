@@ -29,6 +29,30 @@ impl TerminalView {
             .replace("{command}", command.unwrap_or(""))
     }
 
+    pub(super) fn should_seed_predicted_prompt_title(tab_title: &TabTitleConfig) -> bool {
+        tab_title
+            .priority
+            .iter()
+            .any(|source| *source == TabTitleSource::Explicit)
+    }
+
+    pub(super) fn predicted_prompt_seed_title(
+        tab_title: &TabTitleConfig,
+        cwd: Option<&str>,
+    ) -> Option<String> {
+        if !Self::should_seed_predicted_prompt_title(tab_title) {
+            return None;
+        }
+
+        let resolved = Self::resolve_template(&tab_title.prompt_format, cwd, None);
+        let resolved = resolved.trim();
+        if resolved.is_empty() {
+            return None;
+        }
+
+        Some(Self::truncate_tab_title(resolved))
+    }
+
     pub(super) fn parse_explicit_title(&self, title: &str) -> Option<ExplicitTitlePayload> {
         let prefix = self.tab_title.explicit_prefix.trim();
         if prefix.is_empty() {
@@ -193,12 +217,17 @@ impl TerminalView {
 
         if let Some(explicit_payload) = self.parse_explicit_title(title) {
             return match explicit_payload {
-                ExplicitTitlePayload::Prompt(prompt_title)
-                | ExplicitTitlePayload::Title(prompt_title) => {
+                ExplicitTitlePayload::Prompt(prompt_title) => {
+                    self.tabs[index].running_process = false;
+                    self.cancel_pending_command_title(index);
+                    self.set_explicit_title(index, prompt_title)
+                }
+                ExplicitTitlePayload::Title(prompt_title) => {
                     self.cancel_pending_command_title(index);
                     self.set_explicit_title(index, prompt_title)
                 }
                 ExplicitTitlePayload::Command(command_title) => {
+                    self.tabs[index].running_process = true;
                     self.schedule_delayed_command_title(
                         index,
                         command_title,
@@ -226,6 +255,7 @@ impl TerminalView {
 
         self.cancel_pending_command_title(index);
         let tab = &mut self.tabs[index];
+        tab.running_process = false;
         let had_shell = tab.shell_title.take().is_some();
         let had_explicit = tab.explicit_title.take().is_some();
         if !had_shell && !had_explicit {
@@ -233,5 +263,36 @@ impl TerminalView {
         }
 
         self.refresh_tab_title(index)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{TabTitleConfig, TabTitleSource};
+
+    #[test]
+    fn predicted_prompt_seed_title_uses_cwd_template_when_explicit_is_enabled() {
+        let config = TabTitleConfig::default();
+        let title = TerminalView::predicted_prompt_seed_title(&config, Some("~/projects/termy"));
+        assert_eq!(title.as_deref(), Some("~/projects/termy"));
+    }
+
+    #[test]
+    fn predicted_prompt_seed_title_skips_static_only_priority() {
+        let mut config = TabTitleConfig::default();
+        config.priority = vec![TabTitleSource::Manual, TabTitleSource::Fallback];
+
+        let title = TerminalView::predicted_prompt_seed_title(&config, Some("~/projects/termy"));
+        assert!(title.is_none());
+    }
+
+    #[test]
+    fn predicted_prompt_seed_title_ignores_empty_resolved_output() {
+        let mut config = TabTitleConfig::default();
+        config.prompt_format = "{cwd}".to_string();
+
+        let title = TerminalView::predicted_prompt_seed_title(&config, None);
+        assert!(title.is_none());
     }
 }
