@@ -860,13 +860,8 @@ impl TerminalView {
                     return;
                 }
 
-                self.renaming_tab = Some(self.active_tab);
-                self.rename_input
-                    .set_text(self.tabs[self.active_tab].title.clone());
-                self.reset_cursor_blink_phase();
-                self.inline_input_selecting = false;
+                self.begin_rename_tab(self.active_tab, cx);
                 termy_toast::info("Rename mode enabled");
-                cx.notify();
             }
             CommandAction::CheckForUpdates => {
                 #[cfg(target_os = "macos")]

@@ -440,8 +440,11 @@ impl Render for TerminalView {
                         .cursor_pointer()
                         .on_mouse_down(
                             MouseButton::Left,
-                            cx.listener(move |this, _event, _window, cx| {
+                            cx.listener(move |this, event: &MouseDownEvent, _window, cx| {
                                 this.switch_tab(switch_tab_index, cx);
+                                if event.click_count == 2 {
+                                    this.begin_rename_tab(switch_tab_index, cx);
+                                }
                             }),
                         )
                         .child(div().w(px(close_slot_width)).h(px(TAB_CLOSE_HITBOX)))

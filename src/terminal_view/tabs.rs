@@ -111,6 +111,29 @@ impl TerminalView {
         self.close_tab(self.active_tab, cx);
     }
 
+    pub(super) fn begin_rename_tab(&mut self, index: usize, cx: &mut Context<Self>) {
+        if !self.use_tabs || index >= self.tabs.len() {
+            return;
+        }
+
+        if self.command_palette_open {
+            self.close_command_palette(cx);
+        }
+        if self.search_open {
+            self.close_search(cx);
+        }
+
+        if self.active_tab != index {
+            self.switch_tab(index, cx);
+        }
+
+        self.renaming_tab = Some(index);
+        self.rename_input.set_text(self.tabs[index].title.clone());
+        self.reset_cursor_blink_phase();
+        self.inline_input_selecting = false;
+        cx.notify();
+    }
+
     pub(super) fn switch_tab(&mut self, index: usize, cx: &mut Context<Self>) {
         if index >= self.tabs.len() || index == self.active_tab {
             return;
