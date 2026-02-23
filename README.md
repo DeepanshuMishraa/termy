@@ -84,6 +84,27 @@ Or with API key credentials:
 Output:
 - `target/release/Termy-<version>-macos-<arch>-signed.dmg`
 
+## Installation (macOS)
+
+### Homebrew (recommended)
+
+Tap once:
+
+```sh
+brew tap lassejlv/termy https://github.com/lassejlv/termy
+```
+
+Install:
+
+```sh
+brew install --cask termy
+```
+
+If `termy` is ambiguous in your local taps, use:
+
+```sh
+brew install --cask lassejlv/termy/termy
+```
 ## Build Setup.exe (Windows)
 
 Install Inno Setup once:
