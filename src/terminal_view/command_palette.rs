@@ -668,19 +668,26 @@ impl TerminalView {
     pub(super) fn render_command_palette_modal(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let items = self.filtered_command_palette_items();
         let list_height = COMMAND_PALETTE_MAX_ITEMS as f32 * COMMAND_PALETTE_ROW_HEIGHT;
+        let opacity = self.background_opacity_factor();
+        let solid_panel_min_alpha = if opacity < 1.0 { 0.90 } else { 0.0 };
+        let solid_input_min_alpha = if opacity < 1.0 { 0.76 } else { 0.0 };
 
         let mut overlay_bg = self.colors.background;
         overlay_bg.a = self.adaptive_overlay_dim_alpha(0.78);
         let mut panel_bg = self.colors.background;
-        panel_bg.a = self.adaptive_overlay_panel_alpha(0.98);
+        panel_bg.a = self
+            .adaptive_overlay_panel_alpha(0.98)
+            .max(solid_panel_min_alpha);
         let mut panel_border = self.colors.cursor;
         panel_border.a = self.adaptive_overlay_panel_alpha(0.24);
         let mut primary_text = self.colors.foreground;
         primary_text.a = self.adaptive_overlay_panel_alpha(0.95);
         let mut muted_text = self.colors.foreground;
         muted_text.a = self.adaptive_overlay_panel_alpha(0.62);
-        let mut transparent = self.colors.background;
-        transparent.a = 0.0;
+        let mut input_bg = self.colors.background;
+        input_bg.a = self
+            .adaptive_overlay_panel_alpha(0.64)
+            .max(solid_input_min_alpha);
         let input_font = Font {
             family: self.font_family.clone(),
             ..Font::default()
@@ -797,7 +804,7 @@ impl TerminalView {
                                     .py(px(8.0))
                                     .relative()
                                     .rounded_sm()
-                                    .bg(transparent)
+                                    .bg(input_bg)
                                     .border_1()
                                     .border_color(panel_border)
                                     .child(div().w_full().h_full().relative().child(

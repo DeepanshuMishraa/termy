@@ -81,7 +81,7 @@ const SEARCH_DEBOUNCE_MS: u64 = 50;
 const TOAST_COPY_FEEDBACK_MS: u64 = 1200;
 const CHROME_ALPHA_FLOOR_RATIO: f32 = 0.55;
 const OVERLAY_PANEL_ALPHA_FLOOR_RATIO: f32 = 0.72;
-const OVERLAY_DIM_EXTRA_ALPHA: f32 = 0.22;
+const OVERLAY_DIM_MIN_SCALE: f32 = 0.25;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct CellPos {
@@ -256,7 +256,8 @@ fn scaled_chrome_alpha_for_opacity(base_alpha: f32, background_opacity: f32) -> 
 
 fn adaptive_overlay_dim_alpha_for_opacity(base_alpha: f32, background_opacity: f32) -> f32 {
     let opacity = background_opacity_factor(background_opacity);
-    (base_alpha + (1.0 - opacity) * OVERLAY_DIM_EXTRA_ALPHA).clamp(0.0, 0.96)
+    let scale = OVERLAY_DIM_MIN_SCALE + (1.0 - OVERLAY_DIM_MIN_SCALE) * opacity;
+    (base_alpha * scale).clamp(0.0, base_alpha)
 }
 
 fn adaptive_overlay_panel_alpha_for_opacity(base_alpha: f32, background_opacity: f32) -> f32 {
@@ -833,6 +834,6 @@ mod tests {
         let base = 0.78;
         let high_opacity = adaptive_overlay_dim_alpha_for_opacity(base, 1.0);
         let low_opacity = adaptive_overlay_dim_alpha_for_opacity(base, 0.2);
-        assert!(low_opacity > high_opacity);
+        assert!(low_opacity < high_opacity);
     }
 }
