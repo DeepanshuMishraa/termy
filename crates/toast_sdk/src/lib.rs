@@ -7,6 +7,7 @@ pub enum ToastKind {
     Success,
     Warning,
     Error,
+    Loading,
 }
 
 /// Duration of the fade-in animation in milliseconds
@@ -163,11 +164,49 @@ impl ToastManager {
         for request in drain_pending() {
             self.push(request);
         }
+        for request in drain_pending_with_id() {
+            self.push_with_id(request);
+        }
+        for update in drain_pending_updates() {
+            self.apply_update(update);
+        }
     }
 
-    /// Returns true if any toast is currently animating (fade in or fade out)
+    pub fn push_with_id(&mut self, request: ToastRequestWithId) {
+        self.active.push(Toast {
+            id: request.id,
+            kind: request.kind,
+            message: request.message,
+            created_at: Instant::now(),
+            paused_at: None,
+            paused_total: Duration::ZERO,
+            duration: request.duration,
+        });
+    }
+
+    pub fn apply_update(&mut self, update: ToastUpdate) {
+        if let Some(toast) = self.active.iter_mut().find(|t| t.id == update.id) {
+            toast.kind = update.kind;
+            toast.message = update.message;
+            // Reset duration to default for non-loading toasts
+            if update.kind != ToastKind::Loading {
+                toast.duration = DEFAULT_TOAST_DURATION;
+                // Reset created_at so it starts fresh timing from now
+                toast.created_at = Instant::now();
+                toast.paused_at = None;
+                toast.paused_total = Duration::ZERO;
+            }
+        }
+    }
+
+    /// Returns true if any toast is currently animating (fade in, fade out, or loading spinner)
     pub fn is_animating(&self) -> bool {
         self.active.iter().any(|toast| {
+            // Loading toasts are always animating (spinner)
+            if toast.kind == ToastKind::Loading {
+                return true;
+            }
+
             let elapsed = toast.elapsed();
             let elapsed_ms = elapsed.as_millis() as u64;
             let remaining_ms = toast.duration.saturating_sub(elapsed).as_millis() as u64;
@@ -235,4 +274,81 @@ pub fn success_long(message: impl Into<String>) {
 /// Show an error toast that stays longer (8 seconds)
 pub fn error_long(message: impl Into<String>) {
     enqueue_toast(ToastKind::Error, message, Some(Duration::from_millis(8000)));
+}
+
+/// Show a loading toast (stays indefinitely until updated or dismissed)
+pub fn loading(message: impl Into<String>) -> u64 {
+    enqueue_toast_with_id(
+        ToastKind::Loading,
+        message,
+        Some(Duration::from_secs(60 * 60)), // 1 hour (effectively indefinite)
+    )
+}
+
+/// Enqueue a toast and return its ID for later updates
+pub fn enqueue_toast_with_id(
+    kind: ToastKind,
+    message: impl Into<String>,
+    duration: Option<Duration>,
+) -> u64 {
+    static NEXT_PENDING_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let id = NEXT_PENDING_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+    let request = ToastRequestWithId {
+        id,
+        kind,
+        message: message.into(),
+        duration: duration.unwrap_or(DEFAULT_TOAST_DURATION),
+    };
+
+    let mut queue = pending_with_id().lock().expect("toast queue lock poisoned");
+    queue.push(request);
+    id
+}
+
+/// Update an existing toast's kind and message
+pub fn update_toast(id: u64, kind: ToastKind, message: impl Into<String>) {
+    let update = ToastUpdate {
+        id,
+        kind,
+        message: message.into(),
+    };
+    let mut queue = pending_updates().lock().expect("toast update queue lock poisoned");
+    queue.push(update);
+}
+
+#[derive(Clone, Debug)]
+pub struct ToastRequestWithId {
+    pub id: u64,
+    pub kind: ToastKind,
+    pub message: String,
+    pub duration: Duration,
+}
+
+#[derive(Clone, Debug)]
+pub struct ToastUpdate {
+    pub id: u64,
+    pub kind: ToastKind,
+    pub message: String,
+}
+
+static TOAST_QUEUE_WITH_ID: OnceLock<Mutex<Vec<ToastRequestWithId>>> = OnceLock::new();
+static TOAST_UPDATE_QUEUE: OnceLock<Mutex<Vec<ToastUpdate>>> = OnceLock::new();
+
+fn pending_with_id() -> &'static Mutex<Vec<ToastRequestWithId>> {
+    TOAST_QUEUE_WITH_ID.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn pending_updates() -> &'static Mutex<Vec<ToastUpdate>> {
+    TOAST_UPDATE_QUEUE.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+pub fn drain_pending_with_id() -> Vec<ToastRequestWithId> {
+    let mut queue = pending_with_id().lock().expect("toast queue lock poisoned");
+    std::mem::take(&mut *queue)
+}
+
+pub fn drain_pending_updates() -> Vec<ToastUpdate> {
+    let mut queue = pending_updates().lock().expect("toast update queue lock poisoned");
+    std::mem::take(&mut *queue)
 }

@@ -202,6 +202,8 @@ pub struct TerminalView {
     show_update_banner: bool,
     #[cfg(target_os = "macos")]
     last_notified_update_state: Option<UpdateState>,
+    #[cfg(target_os = "macos")]
+    update_check_toast_id: Option<u64>,
 }
 
 impl TerminalView {
@@ -369,6 +371,8 @@ impl TerminalView {
             show_update_banner: false,
             #[cfg(target_os = "macos")]
             last_notified_update_state: None,
+            #[cfg(target_os = "macos")]
+            update_check_toast_id: None,
         };
         view.refresh_tab_title(0);
 

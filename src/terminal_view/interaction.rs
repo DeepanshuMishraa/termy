@@ -490,7 +490,7 @@ impl TerminalView {
                     if let Some(updater) = self.auto_updater.as_ref() {
                         AutoUpdater::check(updater.downgrade(), cx);
                     }
-                    termy_toast::info("Checking for updates");
+                    self.update_check_toast_id = Some(termy_toast::loading("Checking for updates"));
                     cx.notify();
                 }
 

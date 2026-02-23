@@ -800,7 +800,7 @@ impl Render for TerminalView {
                 let slide_offset = toast.slide_offset();
 
                 // Clean, minimal icons and subtle accent colors
-                let (icon, accent) = match toast.kind {
+                let (icon, accent, _is_loading) = match toast.kind {
                     termy_toast::ToastKind::Info => (
                         "\u{2139}", // ℹ info symbol
                         gpui::Rgba {
@@ -809,6 +809,7 @@ impl Render for TerminalView {
                             b: 0.92,
                             a: opacity,
                         },
+                        false,
                     ),
                     termy_toast::ToastKind::Success => (
                         "\u{2713}", // ✓ checkmark
@@ -818,6 +819,7 @@ impl Render for TerminalView {
                             b: 0.55,
                             a: opacity,
                         },
+                        false,
                     ),
                     termy_toast::ToastKind::Warning => (
                         "\u{26A0}", // ⚠ warning
@@ -827,6 +829,7 @@ impl Render for TerminalView {
                             b: 0.38,
                             a: opacity,
                         },
+                        false,
                     ),
                     termy_toast::ToastKind::Error => (
                         "\u{2715}", // ✕ x mark
@@ -836,7 +839,24 @@ impl Render for TerminalView {
                             b: 0.45,
                             a: opacity,
                         },
+                        false,
                     ),
+                    termy_toast::ToastKind::Loading => {
+                        // Animated spinner using braille characters
+                        const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+                        let elapsed_ms = toast.created_at.elapsed().as_millis() as usize;
+                        let frame_index = (elapsed_ms / 80) % SPINNER_FRAMES.len();
+                        (
+                            SPINNER_FRAMES[frame_index],
+                            gpui::Rgba {
+                                r: 0.53,
+                                g: 0.70,
+                                b: 0.92,
+                                a: opacity,
+                            },
+                            true,
+                        )
+                    }
                 };
 
                 // Subtle, glassy background with animation
