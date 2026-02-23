@@ -28,6 +28,11 @@ pub fn default_keybinds() -> Vec<DefaultKeybind> {
             trigger: "secondary-w",
             action: CommandAction::CloseTab,
         },
+        #[cfg(target_os = "macos")]
+        DefaultKeybind {
+            trigger: "secondary-m",
+            action: CommandAction::MinimizeWindow,
+        },
         DefaultKeybind {
             trigger: "secondary-=",
             action: CommandAction::ZoomIn,

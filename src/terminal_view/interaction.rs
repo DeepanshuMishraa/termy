@@ -879,6 +879,7 @@ impl TerminalView {
             }
             CommandAction::NewTab => self.add_tab(cx),
             CommandAction::CloseTab => self.close_active_tab(cx),
+            CommandAction::MinimizeWindow => {}
             CommandAction::Copy => {
                 if let Some(selected) = self.selected_text() {
                     cx.write_to_clipboard(ClipboardItem::new_string(selected));
@@ -1044,6 +1045,15 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) {
         self.execute_command_action(CommandAction::CloseTab, true, window, cx);
+    }
+
+    pub(super) fn handle_minimize_window_action(
+        &mut self,
+        _: &commands::MinimizeWindow,
+        window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) {
+        window.minimize_window();
     }
 
     pub(super) fn handle_copy_action(

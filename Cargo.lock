@@ -5280,6 +5280,7 @@ dependencies = [
  "serde_json",
  "smol",
  "termy_auto_update",
+ "termy_auto_update_ui",
  "termy_native_sdk",
  "termy_search",
  "termy_terminal_ui",
@@ -5300,6 +5301,13 @@ dependencies = [
  "serde",
  "serde_json",
  "ureq",
+]
+
+[[package]]
+name = "termy_auto_update_ui"
+version = "0.1.0"
+dependencies = [
+ "termy_auto_update",
 ]
 
 [[package]]

@@ -16,6 +16,7 @@ These are installed by default before any user `keybind` directives are applied:
 - `secondary-p` -> `toggle_command_palette`
 - `secondary-t` -> `new_tab`
 - `secondary-w` -> `close_tab`
+- macOS: `secondary-m` -> `minimize_window`
 - `secondary-=` -> `zoom_in`
 - `secondary-+` -> `zoom_in`
 - `secondary--` -> `zoom_out`
@@ -61,6 +62,7 @@ Configurable actions:
 - `toggle_command_palette`
 - `new_tab`
 - `close_tab`
+- `minimize_window`
 - `copy`
 - `paste`
 - `zoom_in`

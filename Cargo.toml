@@ -3,6 +3,7 @@ members = [
   ".",
   "crates/native_sdk",
   "crates/auto_update",
+  "crates/auto_update_ui",
   "crates/themes",
   "crates/terminal_ui",
   "crates/toast_sdk",
@@ -48,6 +49,7 @@ serde_json = "1.0"
 
 # Termy Workspace Crates
 termy_auto_update = { path = "crates/auto_update" }
+termy_auto_update_ui = { path = "crates/auto_update_ui" }
 termy_themes = { path = "crates/themes" }
 termy_terminal_ui = { path = "crates/terminal_ui" }
 termy_toast = { path = "crates/toast_sdk" }

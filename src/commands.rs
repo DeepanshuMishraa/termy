@@ -174,6 +174,7 @@ define_commands!(
             CommandPaletteVisibility::TabsOnly
         ))
     ),
+    (MinimizeWindow, "minimize_window", TERMINAL_CONTEXT, None),
     (
         RenameTab,
         "rename_tab",

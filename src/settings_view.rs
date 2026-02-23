@@ -1011,9 +1011,19 @@ impl SettingsWindow {
     fn handle_key_down(
         &mut self,
         event: &KeyDownEvent,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if event.keystroke.modifiers.secondary()
+            && !event.keystroke.modifiers.alt
+            && !event.keystroke.modifiers.control
+            && !event.keystroke.modifiers.function
+            && event.keystroke.key.eq_ignore_ascii_case("w")
+        {
+            window.remove_window();
+            return;
+        }
+
         if self.active_input.is_none() {
             return;
         }

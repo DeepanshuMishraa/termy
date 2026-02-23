@@ -170,6 +170,9 @@ impl ToastManager {
         for update in drain_pending_updates() {
             self.apply_update(update);
         }
+        for dismiss in drain_pending_dismisses() {
+            self.dismiss(dismiss.id);
+        }
     }
 
     pub fn push_with_id(&mut self, request: ToastRequestWithId) {
@@ -334,8 +337,14 @@ pub struct ToastUpdate {
     pub message: String,
 }
 
+#[derive(Clone, Debug)]
+pub struct ToastDismiss {
+    pub id: u64,
+}
+
 static TOAST_QUEUE_WITH_ID: OnceLock<Mutex<Vec<ToastRequestWithId>>> = OnceLock::new();
 static TOAST_UPDATE_QUEUE: OnceLock<Mutex<Vec<ToastUpdate>>> = OnceLock::new();
+static TOAST_DISMISS_QUEUE: OnceLock<Mutex<Vec<ToastDismiss>>> = OnceLock::new();
 
 fn pending_with_id() -> &'static Mutex<Vec<ToastRequestWithId>> {
     TOAST_QUEUE_WITH_ID.get_or_init(|| Mutex::new(Vec::new()))
@@ -343,6 +352,10 @@ fn pending_with_id() -> &'static Mutex<Vec<ToastRequestWithId>> {
 
 fn pending_updates() -> &'static Mutex<Vec<ToastUpdate>> {
     TOAST_UPDATE_QUEUE.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn pending_dismisses() -> &'static Mutex<Vec<ToastDismiss>> {
+    TOAST_DISMISS_QUEUE.get_or_init(|| Mutex::new(Vec::new()))
 }
 
 pub fn drain_pending_with_id() -> Vec<ToastRequestWithId> {
@@ -354,5 +367,19 @@ pub fn drain_pending_updates() -> Vec<ToastUpdate> {
     let mut queue = pending_updates()
         .lock()
         .expect("toast update queue lock poisoned");
+    std::mem::take(&mut *queue)
+}
+
+pub fn dismiss_toast(id: u64) {
+    let mut queue = pending_dismisses()
+        .lock()
+        .expect("toast dismiss queue lock poisoned");
+    queue.push(ToastDismiss { id });
+}
+
+pub fn drain_pending_dismisses() -> Vec<ToastDismiss> {
+    let mut queue = pending_dismisses()
+        .lock()
+        .expect("toast dismiss queue lock poisoned");
     std::mem::take(&mut *queue)
 }
