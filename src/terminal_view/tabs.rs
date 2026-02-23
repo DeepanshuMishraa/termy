@@ -68,11 +68,51 @@ impl TerminalView {
         (viewport_width - TABBAR_ACTION_RAIL_WIDTH).max(0.0)
     }
 
-    pub(super) fn tab_display_width_for_title(title: &str) -> f32 {
+    pub(super) fn effective_tab_max_width_for_viewport(
+        viewport_width: f32,
+        tab_count: usize,
+    ) -> f32 {
+        let content_width = (viewport_width - (TAB_HORIZONTAL_PADDING * 2.0)).max(TAB_MAX_WIDTH);
+        let share = content_width / tab_count.max(1) as f32;
+        let elastic_growth = (share - TAB_MAX_WIDTH).max(0.0) * TAB_ADAPTIVE_GROWTH_FACTOR;
+        let elastic = TAB_MAX_WIDTH + elastic_growth;
+        let hard_cap = (content_width * TAB_ADAPTIVE_HARD_CAP_RATIO).max(TAB_MAX_WIDTH);
+
+        elastic.min(hard_cap)
+    }
+
+    pub(super) fn tab_display_width_for_title_with_max(title: &str, max_width: f32) -> f32 {
         let title_chars = title.trim().chars().count() as f32;
         let text_width = title_chars * TAB_TITLE_CHAR_WIDTH;
-        let width = (TAB_TEXT_PADDING_X * 2.0) + text_width + TAB_CLOSE_SLOT_WIDTH;
-        width.clamp(TAB_MIN_WIDTH, TAB_MAX_WIDTH)
+        let base_width = (TAB_TEXT_PADDING_X * 2.0) + text_width + TAB_CLOSE_SLOT_WIDTH;
+        let width = if base_width <= TAB_MIN_WIDTH {
+            base_width + TAB_TITLE_LAYOUT_SLACK_PX
+        } else {
+            base_width
+        };
+        width.clamp(TAB_MIN_WIDTH, max_width.max(TAB_MIN_WIDTH))
+    }
+
+    pub(super) fn tab_display_width_for_title(title: &str) -> f32 {
+        Self::tab_display_width_for_title_with_max(title, TAB_MAX_WIDTH)
+    }
+
+    pub(super) fn sync_tab_display_widths_for_viewport(&mut self, viewport_width: f32) -> bool {
+        let effective_max =
+            Self::effective_tab_max_width_for_viewport(viewport_width, self.tabs.len());
+        let mut changed = false;
+
+        for tab in &mut self.tabs {
+            let next_width = Self::tab_display_width_for_title_with_max(&tab.title, effective_max);
+            if (tab.display_width - next_width).abs() <= f32::EPSILON {
+                continue;
+            }
+
+            tab.display_width = next_width;
+            changed = true;
+        }
+
+        changed
     }
 
     pub(super) fn tab_shows_close(
@@ -250,10 +290,15 @@ impl TerminalView {
         }
         self.tab_drag_pointer_x = Some(pointer_x);
         self.tab_drag_viewport_width = viewport_width.max(0.0);
+        let widths_changed =
+            self.sync_tab_display_widths_for_viewport(self.tab_drag_viewport_width);
 
         let scrolled = self.auto_scroll_tab_strip_during_drag(pointer_x, viewport_width);
         let marker_changed = self.update_tab_drag_marker(pointer_x, cx);
         if scrolled && !marker_changed {
+            cx.notify();
+        }
+        if widths_changed && !scrolled && !marker_changed {
             cx.notify();
         }
         if scrolled {
@@ -261,7 +306,7 @@ impl TerminalView {
         } else {
             self.tab_drag_autoscroll_animating = false;
         }
-        scrolled || marker_changed
+        scrolled || marker_changed || widths_changed
     }
 
     pub(super) fn commit_tab_drag(&mut self, cx: &mut Context<Self>) {
@@ -484,6 +529,13 @@ impl TerminalView {
 mod tests {
     use super::*;
 
+    fn assert_float_eq(actual: f32, expected: f32) {
+        assert!(
+            (actual - expected).abs() < 0.0001,
+            "expected {expected}, got {actual}"
+        );
+    }
+
     #[test]
     fn tab_display_width_for_title_clamps_to_min() {
         let width = TerminalView::tab_display_width_for_title("a");
@@ -495,6 +547,55 @@ mod tests {
         let very_long_title = "x".repeat(200);
         let width = TerminalView::tab_display_width_for_title(&very_long_title);
         assert_eq!(width, TAB_MAX_WIDTH);
+    }
+
+    #[test]
+    fn tab_display_width_for_title_only_applies_slack_for_short_titles() {
+        let long_title = "x".repeat(15);
+        let long_width =
+            TerminalView::tab_display_width_for_title_with_max(&long_title, TAB_MAX_WIDTH * 2.0);
+        let expected_long = (TAB_TEXT_PADDING_X * 2.0)
+            + (long_title.chars().count() as f32 * TAB_TITLE_CHAR_WIDTH)
+            + TAB_CLOSE_SLOT_WIDTH;
+        assert_eq!(long_width, expected_long);
+
+        let short_title = "x".repeat(7);
+        let short_width =
+            TerminalView::tab_display_width_for_title_with_max(&short_title, TAB_MAX_WIDTH * 2.0);
+        let expected_short = ((TAB_TEXT_PADDING_X * 2.0)
+            + (short_title.chars().count() as f32 * TAB_TITLE_CHAR_WIDTH)
+            + TAB_CLOSE_SLOT_WIDTH
+            + TAB_TITLE_LAYOUT_SLACK_PX)
+            .clamp(TAB_MIN_WIDTH, TAB_MAX_WIDTH * 2.0);
+        assert_eq!(short_width, expected_short);
+    }
+
+    #[test]
+    fn tab_display_width_for_title_with_max_uses_provided_cap() {
+        let very_long_title = "x".repeat(200);
+        let width = TerminalView::tab_display_width_for_title_with_max(&very_long_title, 512.0);
+        assert_eq!(width, 512.0);
+    }
+
+    #[test]
+    fn effective_tab_max_width_grows_for_sparse_tabs() {
+        let effective = TerminalView::effective_tab_max_width_for_viewport(1600.0, 1);
+        assert!(effective > TAB_MAX_WIDTH);
+    }
+
+    #[test]
+    fn effective_tab_max_width_stays_baseline_for_crowded_tabs() {
+        let effective = TerminalView::effective_tab_max_width_for_viewport(1600.0, 8);
+        assert_float_eq(effective, TAB_MAX_WIDTH);
+    }
+
+    #[test]
+    fn effective_tab_max_width_respects_hard_cap_ratio() {
+        let viewport_width = 4000.0;
+        let content_width = (viewport_width - (TAB_HORIZONTAL_PADDING * 2.0)).max(TAB_MAX_WIDTH);
+        let expected_hard_cap = (content_width * TAB_ADAPTIVE_HARD_CAP_RATIO).max(TAB_MAX_WIDTH);
+        let effective = TerminalView::effective_tab_max_width_for_viewport(viewport_width, 1);
+        assert_float_eq(effective, expected_hard_cap);
     }
 
     #[test]
@@ -587,5 +688,36 @@ mod tests {
             Some(TabDropMarkerSide::Right)
         );
         assert_eq!(TerminalView::tab_drop_marker_side_for_slot(2, 1), None);
+    }
+
+    #[test]
+    fn tab_drop_slot_mapping_is_stable_with_adaptive_widths() {
+        let effective_max = TerminalView::effective_tab_max_width_for_viewport(1500.0, 3);
+        let widths = [
+            TerminalView::tab_display_width_for_title_with_max(
+                "~/Desktop/claudeCode/claude-code-provider-proxy/docs",
+                effective_max,
+            ),
+            TerminalView::tab_display_width_for_title_with_max("~", effective_max),
+            TerminalView::tab_display_width_for_title_with_max("~/projects/termy", effective_max),
+        ];
+
+        let first_midpoint = TAB_HORIZONTAL_PADDING + (widths[0] * 0.5);
+        assert_eq!(
+            TerminalView::tab_drop_slot_from_pointer_x_for_widths(
+                widths,
+                first_midpoint - 1.0,
+                0.0,
+            ),
+            0
+        );
+        assert_eq!(
+            TerminalView::tab_drop_slot_from_pointer_x_for_widths(
+                widths,
+                first_midpoint + 1.0,
+                0.0,
+            ),
+            1
+        );
     }
 }

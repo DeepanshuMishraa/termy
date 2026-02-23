@@ -10,6 +10,54 @@ impl TerminalView {
         normalized
     }
 
+    pub(super) fn tab_title_char_budget(display_width: f32) -> usize {
+        let text_area =
+            (display_width - (TAB_TEXT_PADDING_X * 2.0) - TAB_CLOSE_SLOT_WIDTH).max(0.0);
+        (text_area / TAB_TITLE_CHAR_WIDTH).floor() as usize
+    }
+
+    pub(super) fn format_tab_label_for_render(title: &str, max_chars: usize) -> String {
+        let char_count = title.chars().count();
+        if char_count <= max_chars {
+            return title.to_string();
+        }
+
+        if max_chars <= 3 {
+            return ".".repeat(max_chars);
+        }
+
+        let is_path_like = title.contains('/') || title.contains('\\');
+        if !is_path_like {
+            // Non-path titles keep end-truncation behavior through render-level text ellipsis.
+            return title.to_string();
+        }
+
+        let chars: Vec<char> = title.chars().collect();
+        let basename_len = chars
+            .iter()
+            .rposition(|ch| *ch == '/' || *ch == '\\')
+            .map_or(chars.len(), |index| chars.len().saturating_sub(index + 1));
+        let min_tail = (max_chars - 3) / 2;
+        let preferred_tail = (basename_len + 1).min(max_chars - 4);
+        let tail_chars = min_tail.max(preferred_tail);
+        let head_chars = max_chars - 3 - tail_chars;
+
+        let mut formatted = String::with_capacity(max_chars);
+        for ch in chars.iter().take(head_chars) {
+            formatted.push(*ch);
+        }
+        formatted.push_str("...");
+        for ch in chars
+            .iter()
+            .skip(chars.len().saturating_sub(tail_chars))
+            .take(tail_chars)
+        {
+            formatted.push(*ch);
+        }
+
+        formatted
+    }
+
     pub(super) fn fallback_title(&self) -> &str {
         let fallback = self.tab_title.fallback.trim();
         if fallback.is_empty() {
@@ -295,5 +343,39 @@ mod tests {
 
         let title = TerminalView::predicted_prompt_seed_title(&config, None);
         assert!(title.is_none());
+    }
+
+    #[test]
+    fn tab_title_char_budget_accounts_for_padding_and_close_slot() {
+        let budget = TerminalView::tab_title_char_budget(TAB_MIN_WIDTH);
+        assert_eq!(budget, 7);
+    }
+
+    #[test]
+    fn format_tab_label_for_render_middle_squeezes_path_titles() {
+        let title = "~/Desktop/claudeCode/claude-code-provider-proxy/docs";
+        let formatted = TerminalView::format_tab_label_for_render(title, 24);
+
+        assert_eq!(formatted.chars().count(), 24);
+        assert!(formatted.contains("..."));
+        assert!(formatted.starts_with("~/"));
+        assert!(formatted.ends_with("/docs"));
+    }
+
+    #[test]
+    fn format_tab_label_for_render_returns_dots_for_tiny_budgets() {
+        let title = "~/Desktop/claudeCode/claude-code-provider-proxy/docs";
+        assert_eq!(TerminalView::format_tab_label_for_render(title, 3), "...");
+        assert_eq!(TerminalView::format_tab_label_for_render(title, 2), "..");
+        assert_eq!(TerminalView::format_tab_label_for_render(title, 0), "");
+    }
+
+    #[test]
+    fn format_tab_label_for_render_leaves_non_path_titles_for_end_truncation() {
+        let title = "cargo test --workspace --all-features";
+        assert_eq!(
+            TerminalView::format_tab_label_for_render(title, 8),
+            "cargo test --workspace --all-features"
+        );
     }
 }

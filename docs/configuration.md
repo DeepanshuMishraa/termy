@@ -140,7 +140,7 @@ Explicit payload examples:
 - Default: `true`
 - Values: `true`/`false`
 - What it does: shows Termy's compact tab strip. When enabled, the tab strip stays visible even with a single tab.
-- Tab behavior: tab widths are content-based, the row scrolls horizontally when tabs overflow, and close buttons appear on the active or hovered tab.
+- Tab behavior: tab widths are content-based with an adaptive max width when few tabs are open, the row scrolls horizontally when tabs overflow, long path-like titles are middle-squeezed (for example `~/Desktop/.../docs`) when needed, and close buttons appear on the active or hovered tab.
 
 `warn_on_quit_with_running_process`
 - Default: `true`

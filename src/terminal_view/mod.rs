@@ -75,8 +75,12 @@ const TAB_ITEM_HEIGHT: f32 = 32.0;
 const TAB_ITEM_GAP: f32 = 0.0;
 const TAB_TEXT_PADDING_X: f32 = 10.0;
 const TAB_TITLE_CHAR_WIDTH: f32 = 7.0;
+// Adds a small cushion to avoid early clipping from glyph/metrics variance.
+const TAB_TITLE_LAYOUT_SLACK_PX: f32 = 18.0;
 const TAB_MIN_WIDTH: f32 = 96.0;
 const TAB_MAX_WIDTH: f32 = 420.0;
+const TAB_ADAPTIVE_GROWTH_FACTOR: f32 = 0.85;
+const TAB_ADAPTIVE_HARD_CAP_RATIO: f32 = 0.60;
 const TAB_CLOSE_SLOT_WIDTH: f32 = 24.0;
 const TAB_CLOSE_HITBOX: f32 = TAB_CLOSE_SLOT_WIDTH;
 const TAB_STROKE_FOREGROUND_MIX: f32 = 0.12;

@@ -536,6 +536,8 @@ impl Render for TerminalView {
         } else {
             0.0
         };
+        let tab_strip_viewport_width = self.tab_strip_drag_viewport_width(window);
+        self.sync_tab_display_widths_for_viewport(tab_strip_viewport_width);
         let titlebar_left_padding = if cfg!(target_os = "macos") {
             TOP_STRIP_MACOS_TRAFFIC_LIGHT_PADDING
         } else {
@@ -681,7 +683,10 @@ impl Render for TerminalView {
                 );
                 let is_renaming = self.renaming_tab == Some(index);
                 let tab_drop_marker_side = self.tab_drop_marker_side(index);
-                let label = tab.title.clone();
+                let label = Self::format_tab_label_for_render(
+                    &tab.title,
+                    Self::tab_title_char_budget(tab.display_width),
+                );
                 let rename_text_color = if is_active {
                     active_tab_text
                 } else {
@@ -830,7 +835,11 @@ impl Render for TerminalView {
                         .child(div().flex_1().min_w(px(0.0)).h_full().relative().child(
                             if is_renaming {
                                 self.render_inline_input_layer(
-                                    Font::default(),
+                                    Font {
+                                        family: font_family.clone(),
+                                        weight: FontWeight::NORMAL,
+                                        ..Default::default()
+                                    },
                                     px(12.0),
                                     rename_text_color.into(),
                                     rename_selection_color.into(),
@@ -838,21 +847,16 @@ impl Render for TerminalView {
                                     cx,
                                 )
                             } else {
-                                let title_is_path_like =
-                                    label.contains('/') || label.contains('\\');
-                                let mut title_text = div()
+                                let title_text = div()
                                     .size_full()
                                     .flex()
                                     .items_center()
                                     .overflow_x_hidden()
                                     .whitespace_nowrap()
+                                    .font_family(font_family.clone())
                                     .text_color(rename_text_color)
-                                    .text_size(px(12.0));
-                                title_text = if title_is_path_like {
-                                    title_text.text_ellipsis_start()
-                                } else {
-                                    title_text.text_ellipsis()
-                                };
+                                    .text_size(px(12.0))
+                                    .text_ellipsis();
                                 title_text.child(label).into_any_element()
                             },
                         ))
