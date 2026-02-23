@@ -37,6 +37,74 @@ Create app + DMG:
 Output:
 - `target/release/Termy-<version>-macos-<arch>.dmg`
 
+## Build Signed + Notarized DMG (macOS)
+
+Before first use:
+
+1. Set a real bundle identifier in `Cargo.toml` under `[package.metadata.bundle]` (`identifier = "..."`).
+2. Install `cargo-bundle` once:
+
+```sh
+cargo install cargo-bundle
+```
+
+3. Configure notarization credentials using either method:
+
+Profile method (keychain profile):
+
+```sh
+xcrun notarytool store-credentials TERMY_NOTARY \
+  --apple-id "<apple-id>" \
+  --team-id "<team-id>" \
+  --password "<app-specific-password>"
+```
+
+API key method (`.p8`):
+- Get your App Store Connect key file (usually `.p8`), key ID, and issuer ID.
+- Pass them directly to the build script (example below).
+
+Create signed + notarized DMG:
+
+```sh
+./scripts/build-dmg-signed.sh \
+  --sign-identity "Developer ID Application: Your Name (TEAMID)" \
+  --notary-profile TERMY_NOTARY
+```
+
+Or with API key credentials:
+
+```sh
+./scripts/build-dmg-signed.sh \
+  --sign-identity "Developer ID Application: Your Name (TEAMID)" \
+  --notary-key "/path/to/AuthKey_ABC123XYZ.p8" \
+  --notary-key-id "ABC123XYZ" \
+  --notary-issuer "00000000-0000-0000-0000-000000000000"
+```
+
+Output:
+- `target/release/Termy-<version>-macos-<arch>-signed.dmg`
+
+## Installation (macOS)
+
+### Homebrew (recommended)
+
+Tap once:
+
+```sh
+brew tap lassejlv/termy https://github.com/lassejlv/termy
+```
+
+Install:
+
+```sh
+brew install --cask termy
+```
+
+If `termy` is ambiguous in your local taps, use:
+
+```sh
+brew install --cask lassejlv/termy/termy
+```
 ## Build Setup.exe (Windows)
 
 Install Inno Setup once:
