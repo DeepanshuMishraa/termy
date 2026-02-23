@@ -681,9 +681,6 @@ pub fn import_colors_from_json(json_path: &Path) -> Result<String, String> {
             if trimmed.eq_ignore_ascii_case("[colors]") {
                 colors_section_found = true;
                 in_colors_section = true;
-            if trimmed.eq_ignore_ascii_case("[colors]") {
-                colors_section_found = true;
-                in_colors_section = true;
                 new_config.push_str(line);
                 new_config.push('\n');
                 for color_line in &color_lines {
