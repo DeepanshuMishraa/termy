@@ -7,6 +7,58 @@ pub(super) enum TabDropMarkerSide {
 }
 
 impl TerminalView {
+    fn clear_tab_drag_preview_state(&mut self) {
+        self.tab_drag_pointer_x = None;
+        self.tab_drag_viewport_width = 0.0;
+        self.tab_drag_autoscroll_animating = false;
+    }
+
+    fn ensure_tab_drag_autoscroll_animation(&mut self, cx: &mut Context<Self>) {
+        if self.tab_drag_autoscroll_animating {
+            return;
+        }
+        self.tab_drag_autoscroll_animating = true;
+
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            loop {
+                smol::Timer::after(Duration::from_millis(16)).await;
+                let keep_animating = match cx.update(|cx| {
+                    this.update(cx, |view, cx| {
+                        if !view.tab_drag_autoscroll_animating || view.tab_drag.is_none() {
+                            view.tab_drag_autoscroll_animating = false;
+                            return false;
+                        }
+
+                        let Some(pointer_x) = view.tab_drag_pointer_x else {
+                            view.tab_drag_autoscroll_animating = false;
+                            return false;
+                        };
+                        let viewport_width = view.tab_drag_viewport_width;
+                        let scrolled =
+                            view.auto_scroll_tab_strip_during_drag(pointer_x, viewport_width);
+                        let marker_changed = view.update_tab_drag_marker(pointer_x, cx);
+                        if scrolled && !marker_changed {
+                            cx.notify();
+                        }
+                        if !scrolled {
+                            view.tab_drag_autoscroll_animating = false;
+                            return false;
+                        }
+                        true
+                    })
+                }) {
+                    Ok(keep_animating) => keep_animating,
+                    _ => break,
+                };
+
+                if !keep_animating {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
     pub(super) fn tab_display_width_for_title(title: &str) -> f32 {
         let title_chars = title.trim().chars().count() as f32;
         let text_width = title_chars * TAB_TITLE_CHAR_WIDTH;
@@ -41,6 +93,7 @@ impl TerminalView {
 
     pub(super) fn begin_tab_drag(&mut self, index: usize) {
         if index < self.tabs.len() {
+            self.clear_tab_drag_preview_state();
             self.tab_drag = Some(TabDragState {
                 source_index: index,
                 drop_slot: None,
@@ -55,6 +108,7 @@ impl TerminalView {
             .and_then(|drag| drag.drop_slot)
             .is_some();
         self.tab_drag = None;
+        self.clear_tab_drag_preview_state();
         marker_was_visible
     }
 
@@ -122,11 +176,7 @@ impl TerminalView {
         Self::tab_drop_marker_side_for_slot(index, drop_slot)
     }
 
-    pub(super) fn update_tab_drag_marker(
-        &mut self,
-        pointer_x: f32,
-        cx: &mut Context<Self>,
-    ) -> bool {
+    fn update_tab_drag_marker(&mut self, pointer_x: f32, cx: &mut Context<Self>) -> bool {
         let Some(source_index) = self.tab_drag.map(|drag| drag.source_index) else {
             return false;
         };
@@ -146,11 +196,71 @@ impl TerminalView {
         true
     }
 
+    fn auto_scroll_tab_strip_during_drag(&mut self, pointer_x: f32, viewport_width: f32) -> bool {
+        if self.tab_drag.is_none() || viewport_width <= f32::EPSILON {
+            return false;
+        }
+
+        let max_scroll: f32 = self.tab_strip_scroll_handle.max_offset().width.into();
+        if max_scroll <= f32::EPSILON {
+            return false;
+        }
+
+        let edge = TAB_DRAG_AUTOSCROLL_EDGE_WIDTH
+            .min(viewport_width * 0.5)
+            .max(f32::EPSILON);
+        let left_strength = ((edge - pointer_x) / edge).clamp(0.0, 1.0);
+        let right_start = (viewport_width - edge).max(0.0);
+        let right_strength = ((pointer_x - right_start) / edge).clamp(0.0, 1.0);
+        let delta = (right_strength - left_strength) * TAB_DRAG_AUTOSCROLL_MAX_STEP;
+        if delta.abs() <= f32::EPSILON {
+            return false;
+        }
+
+        let offset = self.tab_strip_scroll_handle.offset();
+        let current_scroll = -Into::<f32>::into(offset.x);
+        let next_scroll = (current_scroll + delta).clamp(0.0, max_scroll);
+        if (next_scroll - current_scroll).abs() <= f32::EPSILON {
+            return false;
+        }
+
+        self.tab_strip_scroll_handle
+            .set_offset(point(px(-next_scroll), offset.y));
+        true
+    }
+
+    pub(super) fn update_tab_drag_preview(
+        &mut self,
+        pointer_x: f32,
+        viewport_width: f32,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.tab_drag.is_none() {
+            return false;
+        }
+        self.tab_drag_pointer_x = Some(pointer_x);
+        self.tab_drag_viewport_width = viewport_width.max(0.0);
+
+        let scrolled = self.auto_scroll_tab_strip_during_drag(pointer_x, viewport_width);
+        let marker_changed = self.update_tab_drag_marker(pointer_x, cx);
+        if scrolled && !marker_changed {
+            cx.notify();
+        }
+        if scrolled {
+            self.ensure_tab_drag_autoscroll_animation(cx);
+        } else {
+            self.tab_drag_autoscroll_animating = false;
+        }
+        scrolled || marker_changed
+    }
+
     pub(super) fn commit_tab_drag(&mut self, cx: &mut Context<Self>) {
+        let drag = self.tab_drag.take();
+        self.clear_tab_drag_preview_state();
         let Some(TabDragState {
             source_index,
             drop_slot,
-        }) = self.tab_drag.take()
+        }) = drag
         else {
             return;
         };
@@ -185,7 +295,6 @@ impl TerminalView {
         self.hovered_tab = self
             .hovered_tab
             .map(|index| Self::remap_index_after_move(index, from, to));
-        self.tab_drag = None;
 
         self.scroll_active_tab_into_view();
         cx.notify();
@@ -220,7 +329,7 @@ impl TerminalView {
         self.rename_input.clear();
         self.inline_input_selecting = false;
         self.hovered_tab = None;
-        self.tab_drag = None;
+        self.finish_tab_drag();
         self.clear_selection();
         self.scroll_active_tab_into_view();
         cx.notify();
@@ -256,7 +365,7 @@ impl TerminalView {
             Some(hovered) if hovered > index => Some(hovered - 1),
             value => value,
         };
-        self.tab_drag = None;
+        self.finish_tab_drag();
 
         self.clear_selection();
         self.scroll_active_tab_into_view();

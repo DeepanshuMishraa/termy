@@ -14,7 +14,7 @@ use gpui::{
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Render, ScrollHandle,
     ScrollWheelEvent, SharedString, Size, StatefulInteractiveElement, Styled, TouchPhase,
     UniformListScrollHandle, WeakEntity, Window, WindowBackgroundAppearance, WindowControlArea,
-    div, px,
+    div, point, px,
 };
 use std::{
     env, fs,
@@ -90,6 +90,8 @@ const TAB_STROKE_FOREGROUND_MIX: f32 = 0.12;
 const TAB_STROKE_THICKNESS: f32 = 1.0;
 const TAB_DROP_MARKER_WIDTH: f32 = 2.0;
 const TAB_DROP_MARKER_INSET_Y: f32 = 3.0;
+const TAB_DRAG_AUTOSCROLL_EDGE_WIDTH: f32 = 32.0;
+const TAB_DRAG_AUTOSCROLL_MAX_STEP: f32 = 24.0;
 const MAX_TAB_TITLE_CHARS: usize = 96;
 const DEFAULT_TAB_TITLE: &str = "Terminal";
 const COMMAND_TITLE_DELAY_MS: u64 = 250;
@@ -551,6 +553,9 @@ pub struct TerminalView {
     input_scroll_suppress_until: Option<Instant>,
     hovered_tab: Option<usize>,
     tab_drag: Option<TabDragState>,
+    tab_drag_pointer_x: Option<f32>,
+    tab_drag_viewport_width: f32,
+    tab_drag_autoscroll_animating: bool,
     terminal_scrollbar_visibility: TerminalScrollbarVisibility,
     terminal_scrollbar_style: TerminalScrollbarStyle,
     terminal_scrollbar_visibility_controller: ScrollbarVisibilityController,
@@ -1034,6 +1039,9 @@ impl TerminalView {
             input_scroll_suppress_until: None,
             hovered_tab: None,
             tab_drag: None,
+            tab_drag_pointer_x: None,
+            tab_drag_viewport_width: 0.0,
+            tab_drag_autoscroll_animating: false,
             terminal_scrollbar_visibility: config.terminal_scrollbar_visibility,
             terminal_scrollbar_style: config.terminal_scrollbar_style,
             terminal_scrollbar_visibility_controller: ScrollbarVisibilityController::default(),

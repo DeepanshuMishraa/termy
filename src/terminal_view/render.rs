@@ -637,20 +637,19 @@ impl Render for TerminalView {
                     cx.stop_propagation();
                 }),
             )
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
-                    this.commit_tab_drag(cx);
-                }),
-            )
-            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
                 let hovered_changed = this.hovered_tab.take().is_some();
-                let marker_changed = if event.dragging() {
-                    this.update_tab_drag_marker(event.position.x.into(), cx)
+                let drag_changed = if event.dragging() {
+                    let viewport_width: f32 = window.viewport_size().width.into();
+                    this.update_tab_drag_preview(event.position.x.into(), viewport_width, cx)
                 } else {
+                    if this.tab_drag.is_some() {
+                        this.commit_tab_drag(cx);
+                        return;
+                    }
                     false
                 };
-                if hovered_changed && !marker_changed {
+                if hovered_changed && !drag_changed {
                     cx.notify();
                 }
             }));
@@ -760,28 +759,27 @@ impl Render for TerminalView {
                         }),
                     )
                     .on_mouse_move(
-                        cx.listener(move |this, event: &MouseMoveEvent, _window, cx| {
+                        cx.listener(move |this, event: &MouseMoveEvent, window, cx| {
                             let hovered_changed = if this.hovered_tab != Some(hover_tab_index) {
                                 this.hovered_tab = Some(hover_tab_index);
                                 true
                             } else {
                                 false
                             };
-                            let marker_changed = if event.dragging() {
-                                this.update_tab_drag_marker(event.position.x.into(), cx)
+                            let drag_changed = if event.dragging() {
+                                let viewport_width: f32 = window.viewport_size().width.into();
+                                this.update_tab_drag_preview(
+                                    event.position.x.into(),
+                                    viewport_width,
+                                    cx,
+                                )
                             } else {
                                 false
                             };
-                            if hovered_changed && !marker_changed {
+                            if hovered_changed && !drag_changed {
                                 cx.notify();
                             }
                             cx.stop_propagation();
-                        }),
-                    )
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
-                            this.commit_tab_drag(cx);
                         }),
                     )
                     .child(render_tab_stroke(tab_strokes.top))
@@ -1045,12 +1043,26 @@ impl Render for TerminalView {
                     MouseButton::Left,
                     cx.listener(Self::handle_titlebar_mouse_down),
                 )
-                .on_mouse_move(cx.listener(|this, _event: &MouseMoveEvent, _window, cx| {
+                .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
                     let mut changed = false;
                     if this.hovered_tab.take().is_some() {
                         changed = true;
                     }
-                    if this.finish_tab_drag() {
+                    if event.dragging() {
+                        let viewport_width: f32 = window.viewport_size().width.into();
+                        if !this.update_tab_drag_preview(
+                            event.position.x.into(),
+                            viewport_width,
+                            cx,
+                        ) && changed
+                        {
+                            cx.notify();
+                        }
+                        return;
+                    }
+                    if this.tab_drag.is_some() {
+                        this.commit_tab_drag(cx);
+                    } else if this.finish_tab_drag() {
                         changed = true;
                     }
                     if changed {
@@ -1331,6 +1343,17 @@ impl Render for TerminalView {
             .flex_col()
             .size_full()
             .bg(root_bg)
+            .capture_any_mouse_up(cx.listener(|this, event: &MouseUpEvent, _window, cx| {
+                if event.button == MouseButton::Left {
+                    this.commit_tab_drag(cx);
+                }
+            }))
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
+                    this.commit_tab_drag(cx);
+                }),
+            )
             .children(titlebar_element)
             .child(
                 div()

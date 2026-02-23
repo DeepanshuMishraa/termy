@@ -1268,7 +1268,12 @@ impl TerminalView {
         // Focus the terminal on click
         self.focus_handle.focus(window, cx);
         self.reset_cursor_blink_phase();
-        let mut changed = self.finish_tab_drag();
+        let mut changed = false;
+        if event.button == MouseButton::Left && self.tab_drag.is_some() {
+            self.commit_tab_drag(cx);
+        } else if self.finish_tab_drag() {
+            changed = true;
+        }
         if self.hovered_tab.take().is_some() {
             changed = true;
         }
@@ -1321,6 +1326,10 @@ impl TerminalView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.tab_drag.is_some() && !event.dragging() {
+            self.commit_tab_drag(cx);
+        }
+
         if self.hovered_tab.take().is_some() {
             cx.notify();
         }
@@ -1370,11 +1379,6 @@ impl TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let mut changed = false;
-        if event.button == MouseButton::Left {
-            changed = self.finish_tab_drag();
-        }
-
         if event.button == MouseButton::Left && self.finish_terminal_scrollbar_drag(cx) {
             cx.stop_propagation();
             cx.notify();
@@ -1382,9 +1386,6 @@ impl TerminalView {
         }
 
         if event.button != MouseButton::Left || !self.selection_dragging {
-            if changed {
-                cx.notify();
-            }
             return;
         }
 
