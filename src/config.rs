@@ -677,9 +677,10 @@ pub fn import_colors_from_json(json_path: &Path) -> Result<String, String> {
         let trimmed = line.trim();
 
         if trimmed.starts_with('[') && trimmed.ends_with(']') {
-            if in_colors_section {
-                in_colors_section = false;
-            }
+            in_colors_section = false;
+            if trimmed.eq_ignore_ascii_case("[colors]") {
+                colors_section_found = true;
+                in_colors_section = true;
             if trimmed.eq_ignore_ascii_case("[colors]") {
                 colors_section_found = true;
                 in_colors_section = true;
