@@ -896,10 +896,12 @@ impl Render for TerminalView {
                                         .cursor_pointer()
                                         .on_mouse_down(
                                             MouseButton::Left,
-                                            cx.listener(|_this, _event, _window, cx| {
-                                                config::open_config_file();
-                                                termy_toast::info("Opened config file");
-                                                cx.notify();
+                                            cx.listener(|this, _event, _window, cx| {
+                                                this.execute_command_action(
+                                                    CommandAction::OpenSettings,
+                                                    false,
+                                                    cx,
+                                                );
                                                 cx.stop_propagation();
                                             }),
                                         )
@@ -1214,6 +1216,7 @@ impl Render for TerminalView {
                     .on_action(cx.listener(Self::handle_import_colors_action))
                     .on_action(cx.listener(Self::handle_switch_theme_action))
                     .on_action(cx.listener(Self::handle_app_info_action))
+                    .on_action(cx.listener(Self::handle_native_sdk_example_action))
                     .on_action(cx.listener(Self::handle_restart_app_action))
                     .on_action(cx.listener(Self::handle_rename_tab_action))
                     .on_action(cx.listener(Self::handle_check_for_updates_action))

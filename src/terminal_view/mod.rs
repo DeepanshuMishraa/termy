@@ -17,9 +17,10 @@ use gpui::{
 };
 use std::{
     fs,
+    hash::{DefaultHasher, Hash, Hasher},
     path::PathBuf,
     process::Command,
-    time::{Duration, Instant, SystemTime},
+    time::{Duration, Instant},
 };
 use termy_search::SearchState;
 use termy_terminal_ui::{
@@ -471,7 +472,7 @@ pub struct TerminalView {
     configured_working_dir: Option<String>,
     terminal_runtime: TerminalRuntimeConfig,
     config_path: Option<PathBuf>,
-    config_last_modified: Option<SystemTime>,
+    config_fingerprint: Option<u64>,
     font_family: SharedString,
     base_font_size: f32,
     font_size: Pixels,
@@ -550,8 +551,11 @@ impl TerminalView {
         }
     }
 
-    fn config_last_modified(path: &PathBuf) -> Option<SystemTime> {
-        fs::metadata(path).ok()?.modified().ok()
+    fn config_fingerprint(path: &PathBuf) -> Option<u64> {
+        let contents = fs::read(path).ok()?;
+        let mut hasher = DefaultHasher::new();
+        contents.hash(&mut hasher);
+        Some(hasher.finish())
     }
 
     fn background_opacity_factor(&self) -> f32 {
@@ -837,7 +841,7 @@ impl TerminalView {
         .detach();
 
         let config_path = config::ensure_config_file();
-        let config_last_modified = config_path.as_ref().and_then(Self::config_last_modified);
+        let config_fingerprint = config_path.as_ref().and_then(Self::config_fingerprint);
         let theme_id = config.theme.clone();
         let colors = TerminalColors::from_theme(&config.theme, &config.colors);
         let base_font_size = config.font_size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
@@ -877,7 +881,7 @@ impl TerminalView {
             configured_working_dir,
             terminal_runtime,
             config_path,
-            config_last_modified,
+            config_fingerprint,
             font_family: config.font_family.into(),
             base_font_size,
             font_size: px(base_font_size),
@@ -1011,17 +1015,15 @@ impl TerminalView {
             }
         };
 
-        let Some(modified) = Self::config_last_modified(&path) else {
+        let Some(fingerprint) = Self::config_fingerprint(&path) else {
             return false;
         };
 
-        if let Some(last) = self.config_last_modified
-            && modified <= last
-        {
+        if self.config_fingerprint == Some(fingerprint) {
             return false;
         }
 
-        self.config_last_modified = Some(modified);
+        self.config_fingerprint = Some(fingerprint);
         let config = AppConfig::load_or_create();
         let changed = self.apply_runtime_config(config, cx);
         if changed {
@@ -1032,7 +1034,7 @@ impl TerminalView {
 
     pub(super) fn reload_config(&mut self, cx: &mut Context<Self>) {
         if let Some(path) = &self.config_path {
-            self.config_last_modified = Self::config_last_modified(path);
+            self.config_fingerprint = Self::config_fingerprint(path);
         }
         let config = AppConfig::load_or_create();
         self.apply_runtime_config(config, cx);

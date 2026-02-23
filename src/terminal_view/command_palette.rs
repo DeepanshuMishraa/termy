@@ -492,7 +492,7 @@ impl TerminalView {
 
         match action {
             CommandAction::OpenConfig => {
-                termy_toast::info("Opened config file");
+                termy_toast::info("Opened settings file");
                 cx.notify();
             }
             CommandAction::NewTab => termy_toast::success("Opened new tab"),
@@ -504,6 +504,7 @@ impl TerminalView {
             CommandAction::Quit
             | CommandAction::SwitchTheme
             | CommandAction::AppInfo
+            | CommandAction::NativeSdkExample
             | CommandAction::RestartApp
             | CommandAction::RenameTab
             | CommandAction::CheckForUpdates
@@ -515,7 +516,8 @@ impl TerminalView {
             | CommandAction::SearchNext
             | CommandAction::SearchPrevious
             | CommandAction::ToggleSearchCaseSensitive
-            | CommandAction::ToggleSearchRegex => {}
+            | CommandAction::ToggleSearchRegex
+            | CommandAction::OpenSettings => {}
         }
     }
 

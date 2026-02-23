@@ -195,6 +195,16 @@ define_commands!(
         ))
     ),
     (
+        NativeSdkExample,
+        "native_sdk_example",
+        TERMINAL_CONTEXT,
+        Some(palette(
+            "Native SDK Example",
+            "native sdk modal popup confirm dialog example",
+            CommandPaletteVisibility::Always
+        ))
+    ),
+    (
         RestartApp,
         "restart_app",
         TERMINAL_CONTEXT,
@@ -209,8 +219,18 @@ define_commands!(
         "open_config",
         GLOBAL_CONTEXT,
         Some(palette(
-            "Open Config",
-            "settings preferences",
+            "Open Settings File",
+            "settings file config edit",
+            CommandPaletteVisibility::Always
+        ))
+    ),
+    (
+        OpenSettings,
+        "open_settings",
+        GLOBAL_CONTEXT,
+        Some(palette(
+            "Settings",
+            "settings preferences options",
             CommandPaletteVisibility::Always
         ))
     ),

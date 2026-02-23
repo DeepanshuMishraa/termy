@@ -5232,7 +5232,7 @@ dependencies = [
 
 [[package]]
 name = "termy"
-version = "0.1.26"
+version = "0.1.27"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -5247,6 +5247,7 @@ dependencies = [
  "serde_json",
  "smol",
  "termy_auto_update",
+ "termy_native_sdk",
  "termy_search",
  "termy_terminal_ui",
  "termy_themes",
@@ -5266,6 +5267,16 @@ dependencies = [
  "serde",
  "serde_json",
  "ureq",
+]
+
+[[package]]
+name = "termy_native_sdk"
+version = "0.1.0"
+dependencies = [
+ "dispatch2",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
 ]
 
 [[package]]

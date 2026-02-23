@@ -94,6 +94,31 @@ impl TerminalView {
         .detach();
     }
 
+    fn native_sdk_example_action(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            termy_native_sdk::show_alert(
+                "Update Available",
+                "A new Termy update is available and ready to install.",
+            );
+            let confirmed = termy_native_sdk::confirm(
+                "Install Update",
+                "Would you like to install the latest update now?",
+            );
+
+            let _ = cx.update(|cx| {
+                this.update(cx, |_view, cx| {
+                    if confirmed {
+                        termy_toast::success("Update install confirmed");
+                    } else {
+                        termy_toast::info("Update installation postponed");
+                    }
+                    cx.notify();
+                })
+            });
+        })
+        .detach();
+    }
+
     pub(super) fn position_to_cell(
         &self,
         position: gpui::Point<Pixels>,
@@ -626,6 +651,9 @@ impl TerminalView {
                 termy_toast::info(message);
                 cx.notify();
             }
+            CommandAction::NativeSdkExample => {
+                self.native_sdk_example_action(cx);
+            }
             CommandAction::RestartApp => match self.restart_application() {
                 Ok(()) => cx.quit(),
                 Err(error) => {
@@ -711,6 +739,40 @@ impl TerminalView {
                 self.perform_search();
                 cx.notify();
             }
+            CommandAction::OpenSettings => {
+                use crate::settings_view::SettingsWindow;
+                use gpui::{Bounds, WindowBounds, WindowOptions, px, size};
+                let bounds = Bounds::centered(None, size(px(800.0), px(600.0)), cx);
+
+                #[cfg(target_os = "macos")]
+                let titlebar = Some(gpui::TitlebarOptions {
+                    title: Some("Settings".into()),
+                    appears_transparent: true,
+                    traffic_light_position: Some(gpui::point(px(12.0), px(10.0))),
+                    ..Default::default()
+                });
+                #[cfg(target_os = "windows")]
+                let titlebar = Some(gpui::TitlebarOptions {
+                    title: Some("Settings".into()),
+                    ..Default::default()
+                });
+                #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+                let titlebar = Some(gpui::TitlebarOptions {
+                    title: Some("Settings".into()),
+                    appears_transparent: true,
+                    ..Default::default()
+                });
+
+                cx.open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(bounds)),
+                        titlebar,
+                        ..Default::default()
+                    },
+                    |window, cx| cx.new(|cx| SettingsWindow::new(window, cx)),
+                )
+                .ok();
+            }
         }
     }
 
@@ -748,6 +810,15 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) {
         self.execute_command_action(CommandAction::AppInfo, true, cx);
+    }
+
+    pub(super) fn handle_native_sdk_example_action(
+        &mut self,
+        _: &commands::NativeSdkExample,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.execute_command_action(CommandAction::NativeSdkExample, true, cx);
     }
 
     pub(super) fn handle_restart_app_action(
