@@ -264,6 +264,8 @@ pub enum TerminalEvent {
     Bell,
     /// Terminal exited
     Exit,
+    /// OSC 52 clipboard store request
+    ClipboardStore(String),
 }
 
 /// Event listener that forwards alacritty events to our channel
@@ -479,6 +481,9 @@ impl Terminal {
                 AlacEvent::ResetTitle => events.push(TerminalEvent::ResetTitle),
                 AlacEvent::Bell => events.push(TerminalEvent::Bell),
                 AlacEvent::Exit => events.push(TerminalEvent::Exit),
+                AlacEvent::ClipboardStore(_, text) => {
+                    events.push(TerminalEvent::ClipboardStore(text));
+                }
                 _ => {}
             }
         }

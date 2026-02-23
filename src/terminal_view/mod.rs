@@ -194,6 +194,8 @@ pub struct TerminalView {
     search_input: InlineInputState,
     search_state: SearchState,
     search_debounce_token: u64,
+    // Pending clipboard write from OSC 52
+    pending_clipboard: Option<String>,
     #[cfg(target_os = "macos")]
     auto_updater: Option<Entity<AutoUpdater>>,
     #[cfg(target_os = "macos")]
@@ -286,7 +288,7 @@ impl TerminalView {
         let config = AppConfig::load_or_create();
         let config_path = config::ensure_config_file();
         let config_last_modified = config_path.as_ref().and_then(Self::config_last_modified);
-        let colors = TerminalColors::from_theme(&config.theme);
+        let colors = TerminalColors::from_theme(&config.theme, &config.colors);
         let base_font_size = config.font_size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
         let padding_x = config.padding_x.max(0.0);
         let padding_y = config.padding_y.max(0.0);
@@ -360,6 +362,7 @@ impl TerminalView {
             search_input: InlineInputState::new(String::new()),
             search_state: SearchState::new(),
             search_debounce_token: 0,
+            pending_clipboard: None,
             #[cfg(target_os = "macos")]
             auto_updater: None,
             #[cfg(target_os = "macos")]
@@ -387,7 +390,7 @@ impl TerminalView {
 
     fn apply_runtime_config(&mut self, config: AppConfig, cx: &mut Context<Self>) -> bool {
         keybindings::install_keybindings(cx, &config);
-        self.colors = TerminalColors::from_theme(&config.theme);
+        self.colors = TerminalColors::from_theme(&config.theme, &config.colors);
         self.use_tabs = config.use_tabs;
         self.tab_title = config.tab_title.clone();
         self.tab_shell_integration = TabTitleShellIntegration {
@@ -505,6 +508,10 @@ impl TerminalView {
                         {
                             should_redraw = true;
                         }
+                    }
+                    TerminalEvent::ClipboardStore(text) => {
+                        self.pending_clipboard = Some(text);
+                        should_redraw = true;
                     }
                 }
             }

@@ -1,17 +1,13 @@
+use crate::config::CustomColors;
 use alacritty_terminal::vte::ansi::{Color as AnsiColor, NamedColor, Rgb as AnsiRgb};
 use gpui::Rgba;
 use termy_themes as themes;
 
-/// Default terminal color palette (based on typical terminal colors)
 #[derive(Clone)]
 pub struct TerminalColors {
-    /// Standard 16 ANSI colors
     pub ansi: [Rgba; 16],
-    /// Default foreground color
     pub foreground: Rgba,
-    /// Default background color
     pub background: Rgba,
-    /// Cursor color
     pub cursor: Rgba,
 }
 
@@ -19,24 +15,22 @@ impl Default for TerminalColors {
     fn default() -> Self {
         Self {
             ansi: [
-                // Normal colors (0-7)
-                rgba(0x00, 0x00, 0x00), // Black
-                rgba(0xCD, 0x00, 0x00), // Red
-                rgba(0x00, 0xCD, 0x00), // Green
-                rgba(0xCD, 0xCD, 0x00), // Yellow
-                rgba(0x00, 0x00, 0xEE), // Blue
-                rgba(0xCD, 0x00, 0xCD), // Magenta
-                rgba(0x00, 0xCD, 0xCD), // Cyan
-                rgba(0xE5, 0xE5, 0xE5), // White
-                // Bright colors (8-15)
-                rgba(0x7F, 0x7F, 0x7F), // Bright Black (Gray)
-                rgba(0xFF, 0x00, 0x00), // Bright Red
-                rgba(0x00, 0xFF, 0x00), // Bright Green
-                rgba(0xFF, 0xFF, 0x00), // Bright Yellow
-                rgba(0x5C, 0x5C, 0xFF), // Bright Blue
-                rgba(0xFF, 0x00, 0xFF), // Bright Magenta
-                rgba(0x00, 0xFF, 0xFF), // Bright Cyan
-                rgba(0xFF, 0xFF, 0xFF), // Bright White
+                rgba(0x00, 0x00, 0x00),
+                rgba(0xCD, 0x00, 0x00),
+                rgba(0x00, 0xCD, 0x00),
+                rgba(0xCD, 0xCD, 0x00),
+                rgba(0x00, 0x00, 0xEE),
+                rgba(0xCD, 0x00, 0xCD),
+                rgba(0x00, 0xCD, 0xCD),
+                rgba(0xE5, 0xE5, 0xE5),
+                rgba(0x7F, 0x7F, 0x7F),
+                rgba(0xFF, 0x00, 0x00),
+                rgba(0x00, 0xFF, 0x00),
+                rgba(0xFF, 0xFF, 0x00),
+                rgba(0x5C, 0x5C, 0xFF),
+                rgba(0xFF, 0x00, 0xFF),
+                rgba(0x00, 0xFF, 0xFF),
+                rgba(0xFF, 0xFF, 0xFF),
             ],
             foreground: rgba(0xE5, 0xE5, 0xE5),
             background: rgba(0x1E, 0x1E, 0x1E),
@@ -46,10 +40,11 @@ impl Default for TerminalColors {
 }
 
 impl TerminalColors {
-    pub fn from_theme(theme: &str) -> Self {
+    pub fn from_theme(theme: &str, custom: &CustomColors) -> Self {
         let theme_colors = themes::resolve_theme(theme).unwrap_or_else(themes::termy);
-
-        Self::from_theme_colors(theme_colors)
+        let mut colors = Self::from_theme_colors(theme_colors);
+        colors.apply_custom(custom);
+        colors
     }
 
     fn from_theme_colors(theme: themes::ThemeColors) -> Self {
@@ -58,6 +53,23 @@ impl TerminalColors {
             foreground: theme.foreground,
             background: theme.background,
             cursor: theme.cursor,
+        }
+    }
+
+    fn apply_custom(&mut self, custom: &CustomColors) {
+        if let Some(fg) = custom.foreground {
+            self.foreground = fg;
+        }
+        if let Some(bg) = custom.background {
+            self.background = bg;
+        }
+        if let Some(cursor) = custom.cursor {
+            self.cursor = cursor;
+        }
+        for (i, color) in custom.ansi.iter().enumerate() {
+            if let Some(c) = color {
+                self.ansi[i] = *c;
+            }
         }
     }
 

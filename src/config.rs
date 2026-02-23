@@ -1,3 +1,4 @@
+use gpui::Rgba;
 use std::{
     env, fs,
     path::{Path, PathBuf},
@@ -211,6 +212,14 @@ impl Default for CursorStyle {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct CustomColors {
+    pub foreground: Option<Rgba>,
+    pub background: Option<Rgba>,
+    pub cursor: Option<Rgba>,
+    pub ansi: [Option<Rgba>; 16],
+}
+
 #[derive(Debug, Clone)]
 pub struct AppConfig {
     pub theme: ThemeId,
@@ -236,6 +245,7 @@ pub struct AppConfig {
     pub inactive_tab_scrollback: Option<usize>,
     pub command_palette_show_keybinds: bool,
     pub keybind_lines: Vec<KeybindConfigLine>,
+    pub colors: CustomColors,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -270,6 +280,7 @@ impl Default for AppConfig {
             inactive_tab_scrollback: DEFAULT_INACTIVE_TAB_SCROLLBACK,
             command_palette_show_keybinds: true,
             keybind_lines: Vec::new(),
+            colors: CustomColors::default(),
         }
     }
 }
@@ -291,15 +302,28 @@ impl AppConfig {
     fn from_contents(contents: &str) -> Self {
         let mut config = Self::default();
         let mut tab_title_priority_overridden = false;
+        let mut in_colors_section = false;
+
         for (line_number, line) in contents.lines().enumerate() {
             let line = line.trim();
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
 
+            if line.starts_with('[') && line.ends_with(']') {
+                let section = &line[1..line.len() - 1].trim().to_ascii_lowercase();
+                in_colors_section = section == "colors";
+                continue;
+            }
+
             let mut parts = line.splitn(2, '=');
             let key = parts.next().unwrap_or("").trim();
             let value = parts.next().unwrap_or("").trim();
+
+            if in_colors_section {
+                parse_color_entry(&mut config.colors, key, value);
+                continue;
+            }
 
             if key.eq_ignore_ascii_case("theme") {
                 if let Some(theme) = parse_theme_id(value) {
@@ -538,6 +562,53 @@ fn parse_optional_string_value(value: &str) -> Option<String> {
         return None;
     }
     Some(parsed)
+}
+
+fn parse_hex_color(value: &str) -> Option<Rgba> {
+    let hex = value.trim().trim_start_matches('#');
+    if hex.len() != 6 {
+        return None;
+    }
+    let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+    Some(Rgba {
+        r: r as f32 / 255.0,
+        g: g as f32 / 255.0,
+        b: b as f32 / 255.0,
+        a: 1.0,
+    })
+}
+
+fn parse_color_entry(colors: &mut CustomColors, key: &str, value: &str) {
+    let key_lower = key.to_ascii_lowercase();
+    let color = match parse_hex_color(value) {
+        Some(c) => c,
+        None => return,
+    };
+
+    match key_lower.as_str() {
+        "foreground" | "fg" => colors.foreground = Some(color),
+        "background" | "bg" => colors.background = Some(color),
+        "cursor" => colors.cursor = Some(color),
+        "black" | "color0" => colors.ansi[0] = Some(color),
+        "red" | "color1" => colors.ansi[1] = Some(color),
+        "green" | "color2" => colors.ansi[2] = Some(color),
+        "yellow" | "color3" => colors.ansi[3] = Some(color),
+        "blue" | "color4" => colors.ansi[4] = Some(color),
+        "magenta" | "color5" => colors.ansi[5] = Some(color),
+        "cyan" | "color6" => colors.ansi[6] = Some(color),
+        "white" | "color7" => colors.ansi[7] = Some(color),
+        "bright_black" | "color8" => colors.ansi[8] = Some(color),
+        "bright_red" | "color9" => colors.ansi[9] = Some(color),
+        "bright_green" | "color10" => colors.ansi[10] = Some(color),
+        "bright_yellow" | "color11" => colors.ansi[11] = Some(color),
+        "bright_blue" | "color12" => colors.ansi[12] = Some(color),
+        "bright_magenta" | "color13" => colors.ansi[13] = Some(color),
+        "bright_cyan" | "color14" => colors.ansi[14] = Some(color),
+        "bright_white" | "color15" => colors.ansi[15] = Some(color),
+        _ => {}
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -813,5 +884,36 @@ mod tests {
 
         let clamped_high = AppConfig::from_contents("max_tabs = 500\n");
         assert_eq!(clamped_high.max_tabs, 100);
+    }
+
+    #[test]
+    fn custom_colors_parse() {
+        let config = AppConfig::from_contents(
+            "theme = termy\n\
+             \n\
+             [colors]\n\
+             foreground = #e7ebf5\n\
+             background = #0b1020\n\
+             cursor = #a7e9a3\n\
+             black = #0b1020\n\
+             red = #f1b8c5\n\
+             color10 = #00ff00\n",
+        );
+
+        let fg = config.colors.foreground.unwrap();
+        assert!((fg.r - 0.906).abs() < 0.01);
+        assert!((fg.g - 0.922).abs() < 0.01);
+        assert!((fg.b - 0.961).abs() < 0.01);
+
+        let bg = config.colors.background.unwrap();
+        assert!((bg.r - 0.043).abs() < 0.01);
+        assert!((bg.g - 0.063).abs() < 0.01);
+        assert!((bg.b - 0.125).abs() < 0.01);
+
+        assert!(config.colors.cursor.is_some());
+        assert!(config.colors.ansi[0].is_some());
+        assert!(config.colors.ansi[1].is_some());
+        assert!(config.colors.ansi[10].is_some());
+        assert!(config.colors.ansi[2].is_none());
     }
 }

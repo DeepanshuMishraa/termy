@@ -8,6 +8,11 @@ impl Focusable for TerminalView {
 
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Process pending OSC 52 clipboard writes
+        if let Some(text) = self.pending_clipboard.take() {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
+
         self.toast_manager.ingest_pending();
         self.toast_manager.tick_with_hovered(self.hovered_toast);
         if let Some((_, copied_at)) = self.copied_toast_feedback
