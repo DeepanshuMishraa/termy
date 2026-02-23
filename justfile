@@ -19,7 +19,18 @@ generate-icon:
 
 # just build-dmg -- --version 0.1.0 --arch arm64 --target aarch64-apple-darwin
 build-dmg *args:
-    ./scripts/build-dmg.sh {{ args }}
+    set -- {{ args }}; \
+    if [ "${1-}" = "--" ]; then shift; fi; \
+    ./scripts/build-dmg.sh "$@"
+
+# Build signed/notarized macOS DMG
+# Example:
+
+# just build-dmg-signed -- --sign-identity "Developer ID Application: Your Name (TEAMID)" --notary-profile TERMY_NOTARY
+build-dmg-signed *args:
+    set -- {{ args }}; \
+    if [ "${1-}" = "--" ]; then shift; fi; \
+    ./scripts/build-dmg-signed.sh "$@"
 
 # Build Windows Setup.exe via Inno Setup
 # Example:
