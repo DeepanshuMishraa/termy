@@ -55,7 +55,9 @@ font_size = 14\n\
 # Enable cursor blink for terminal and inline inputs\n\
 # cursor_blink = true\n\
 # Terminal background opacity (0.0 = fully transparent, 1.0 = opaque)\n\
-# transparent_background_opacity = 1.0\n\
+# background_opacity = 1.0\n\
+# Enable/disable platform blur for transparent backgrounds\n\
+# background_blur = false\n\
 # Inner terminal padding in pixels\n\
 padding_x = 12\n\
 padding_y = 8\n\
@@ -237,7 +239,8 @@ pub struct AppConfig {
     pub font_size: f32,
     pub cursor_style: CursorStyle,
     pub cursor_blink: bool,
-    pub transparent_background_opacity: f32,
+    pub background_opacity: f32,
+    pub background_blur: bool,
     pub padding_x: f32,
     pub padding_y: f32,
     pub mouse_scroll_multiplier: f32,
@@ -272,7 +275,8 @@ impl Default for AppConfig {
             font_size: 14.0,
             cursor_style: CursorStyle::default(),
             cursor_blink: DEFAULT_CURSOR_BLINK,
-            transparent_background_opacity: 1.0,
+            background_opacity: 1.0,
+            background_blur: false,
             padding_x: 12.0,
             padding_y: 8.0,
             mouse_scroll_multiplier: DEFAULT_MOUSE_SCROLL_MULTIPLIER,
@@ -454,11 +458,15 @@ impl AppConfig {
                 }
             }
 
-            if key.eq_ignore_ascii_case("transparent_background_opacity")
-                || key.eq_ignore_ascii_case("transparent_background_opccaity")
-            {
+            if key.eq_ignore_ascii_case("background_opacity") {
                 if let Ok(opacity) = value.parse::<f32>() {
-                    config.transparent_background_opacity = opacity.clamp(0.0, 1.0);
+                    config.background_opacity = opacity.clamp(0.0, 1.0);
+                }
+            }
+
+            if key.eq_ignore_ascii_case("background_blur") {
+                if let Some(enabled) = parse_bool(value) {
+                    config.background_blur = enabled;
                 }
             }
 
@@ -612,13 +620,14 @@ fn parse_color_entry(colors: &mut CustomColors, key: &str, value: &str) {
 }
 
 pub fn import_colors_from_json(json_path: &Path) -> Result<String, String> {
-    let contents = fs::read_to_string(json_path)
-        .map_err(|e| format!("Failed to read file: {}", e))?;
+    let contents =
+        fs::read_to_string(json_path).map_err(|e| format!("Failed to read file: {}", e))?;
 
-    let json: serde_json::Value = serde_json::from_str(&contents)
-        .map_err(|e| format!("Invalid JSON: {}", e))?;
+    let json: serde_json::Value =
+        serde_json::from_str(&contents).map_err(|e| format!("Invalid JSON: {}", e))?;
 
-    let colors = json.as_object()
+    let colors = json
+        .as_object()
         .ok_or_else(|| "JSON must be an object".to_string())?;
 
     let mut color_lines = Vec::new();
@@ -628,7 +637,8 @@ pub fn import_colors_from_json(json_path: &Path) -> Result<String, String> {
             continue;
         }
 
-        let hex = value.as_str()
+        let hex = value
+            .as_str()
             .ok_or_else(|| format!("Color '{}' must be a hex string", key))?;
 
         if parse_hex_color(hex).is_none() {
@@ -665,8 +675,8 @@ pub fn import_colors_from_json(json_path: &Path) -> Result<String, String> {
         return Err("No valid colors found in JSON".to_string());
     }
 
-    let config_path = ensure_config_file()
-        .ok_or_else(|| "Could not locate config file".to_string())?;
+    let config_path =
+        ensure_config_file().ok_or_else(|| "Could not locate config file".to_string())?;
 
     let existing = fs::read_to_string(&config_path).unwrap_or_default();
     let mut new_config = String::new();
@@ -707,8 +717,7 @@ pub fn import_colors_from_json(json_path: &Path) -> Result<String, String> {
         }
     }
 
-    fs::write(&config_path, new_config)
-        .map_err(|e| format!("Failed to write config: {}", e))?;
+    fs::write(&config_path, new_config).map_err(|e| format!("Failed to write config: {}", e))?;
 
     Ok(format!("Imported {} colors", color_lines.len()))
 }
@@ -937,6 +946,35 @@ mod tests {
 
         let clamped_high = AppConfig::from_contents("mouse_scroll_multiplier = 20000\n");
         assert_eq!(clamped_high.mouse_scroll_multiplier, 1_000.0);
+    }
+
+    #[test]
+    fn background_opacity_and_blur_parse_and_default() {
+        let defaults = AppConfig::from_contents("");
+        assert_eq!(defaults.background_opacity, 1.0);
+        assert!(!defaults.background_blur);
+
+        let configured = AppConfig::from_contents(
+            "background_opacity = 0.9\n\
+             background_blur = true\n",
+        );
+        assert_eq!(configured.background_opacity, 0.9);
+        assert!(configured.background_blur);
+
+        let configured_numeric_true = AppConfig::from_contents("background_blur = 1\n");
+        assert!(configured_numeric_true.background_blur);
+
+        let configured_numeric_false = AppConfig::from_contents("background_blur = 0\n");
+        assert!(!configured_numeric_false.background_blur);
+
+        let clamped_low = AppConfig::from_contents("background_opacity = -0.5\n");
+        assert_eq!(clamped_low.background_opacity, 0.0);
+
+        let clamped_high = AppConfig::from_contents("background_opacity = 4.0\n");
+        assert_eq!(clamped_high.background_opacity, 1.0);
+
+        let old_key_ignored = AppConfig::from_contents("transparent_background_opacity = 0.2\n");
+        assert_eq!(old_key_ignored.background_opacity, 1.0);
     }
 
     #[test]

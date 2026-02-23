@@ -60,15 +60,9 @@ impl Render for TerminalView {
         let colors = self.colors.clone();
         let font_family = self.font_family.clone();
         let font_size = self.font_size;
-        let background_opacity = self.transparent_background_opacity;
-        #[cfg(target_os = "windows")]
-        let effective_background_opacity = if background_opacity < 1.0 {
-            1.0
-        } else {
-            background_opacity
-        };
-        #[cfg(not(target_os = "windows"))]
-        let effective_background_opacity = background_opacity;
+        self.sync_window_background_appearance(window);
+        let effective_background_opacity = self.background_opacity_factor();
+        let (effective_padding_x, effective_padding_y) = self.effective_terminal_padding();
 
         self.sync_terminal_size(window, cell_size);
 
@@ -115,6 +109,7 @@ impl Render for TerminalView {
                     fg.g *= DIM_TEXT_FACTOR;
                     fg.b *= DIM_TEXT_FACTOR;
                 }
+                bg.a *= effective_background_opacity;
 
                 let c = cell_content.c;
                 let is_cursor = show_cursor && col == cursor_col && row == cursor_row;
@@ -162,27 +157,35 @@ impl Render for TerminalView {
         let tab_layout = self.tab_bar_layout(viewport.width.into());
         let titlebar_height = self.titlebar_height();
         let mut titlebar_bg = colors.background;
-        titlebar_bg.a = 0.96;
+        titlebar_bg.a = self.scaled_chrome_alpha(0.96);
         let mut titlebar_border = colors.cursor;
         titlebar_border.a = 0.18;
         let mut titlebar_text = colors.foreground;
         titlebar_text.a = 0.82;
         let mut titlebar_plus_bg = colors.cursor;
-        titlebar_plus_bg.a = if show_titlebar_plus { 0.2 } else { 0.0 };
+        titlebar_plus_bg.a = if show_titlebar_plus {
+            self.scaled_chrome_alpha(0.2)
+        } else {
+            0.0
+        };
         let mut titlebar_plus_text = colors.foreground;
         titlebar_plus_text.a = if show_titlebar_plus { 0.92 } else { 0.0 };
         let mut tabbar_bg = colors.background;
-        tabbar_bg.a = if show_tab_bar { 0.92 } else { 0.0 };
+        tabbar_bg.a = if show_tab_bar {
+            self.scaled_chrome_alpha(0.92)
+        } else {
+            0.0
+        };
         let mut tabbar_border = colors.cursor;
         tabbar_border.a = if show_tab_bar { 0.14 } else { 0.0 };
         let mut active_tab_bg = colors.cursor;
-        active_tab_bg.a = 0.2;
+        active_tab_bg.a = self.scaled_chrome_alpha(0.2);
         let mut active_tab_border = colors.cursor;
         active_tab_border.a = 0.32;
         let mut active_tab_text = colors.foreground;
         active_tab_text.a = 0.95;
         let mut inactive_tab_bg = colors.background;
-        inactive_tab_bg.a = 0.56;
+        inactive_tab_bg.a = self.scaled_chrome_alpha(0.56);
         let mut inactive_tab_border = colors.cursor;
         inactive_tab_border.a = 0.12;
         let mut inactive_tab_text = colors.foreground;
@@ -577,7 +580,8 @@ impl Render for TerminalView {
         #[cfg(not(target_os = "macos"))]
         let banner_element: Option<AnyElement> = None;
         let mut terminal_surface_bg = colors.background;
-        terminal_surface_bg.a *= effective_background_opacity;
+        terminal_surface_bg.a = self.scaled_background_alpha(terminal_surface_bg.a);
+        let terminal_surface_bg_hsla: gpui::Hsla = terminal_surface_bg.into();
 
         // Search highlight colors tuned for strong contrast on dark terminal themes.
         let search_match_bg = gpui::Hsla {
@@ -598,7 +602,8 @@ impl Render for TerminalView {
             cell_size,
             cols: terminal_size.cols as usize,
             rows: terminal_size.rows as usize,
-            default_bg: terminal_surface_bg.into(),
+            clear_bg: gpui::Hsla::transparent_black(),
+            default_bg: terminal_surface_bg_hsla,
             cursor_color: colors.cursor.into(),
             selection_bg: selection_bg.into(),
             selection_fg: selection_fg.into(),
@@ -843,7 +848,8 @@ impl Render for TerminalView {
                     ),
                     termy_toast::ToastKind::Loading => {
                         // Animated spinner using braille characters
-                        const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+                        const SPINNER_FRAMES: &[&str] =
+                            &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
                         let elapsed_ms = toast.created_at.elapsed().as_millis() as usize;
                         let frame_index = (elapsed_ms / 80) % SPINNER_FRAMES.len();
                         (
@@ -1008,7 +1014,7 @@ impl Render for TerminalView {
             )
         };
         let mut root_bg = colors.background;
-        root_bg.a *= effective_background_opacity;
+        root_bg.a = self.scaled_background_alpha(root_bg.a);
 
         div()
             .id("termy-root")
@@ -1074,10 +1080,10 @@ impl Render for TerminalView {
                     .on_drop(cx.listener(Self::handle_file_drop))
                     .flex_1()
                     .w_full()
-                    .px(px(self.padding_x))
-                    .py(px(self.padding_y))
+                    .px(px(effective_padding_x))
+                    .py(px(effective_padding_y))
                     .overflow_hidden()
-                    .bg(terminal_surface_bg)
+                    .bg(terminal_surface_bg_hsla)
                     .font_family(font_family.clone())
                     .text_size(font_size)
                     .child(terminal_grid)

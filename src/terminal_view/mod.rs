@@ -11,7 +11,7 @@ use gpui::{
     Focusable, Font, FontWeight, InteractiveElement, IntoElement, KeyDownEvent, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Render, ScrollWheelEvent,
     SharedString, Size, StatefulInteractiveElement, Styled, TouchPhase, UniformListScrollHandle,
-    WeakEntity, Window, WindowControlArea, div, px,
+    WeakEntity, Window, WindowBackgroundAppearance, WindowControlArea, div, px,
 };
 use std::{
     fs,
@@ -79,6 +79,30 @@ const SEARCH_BAR_WIDTH: f32 = 320.0;
 const SEARCH_BAR_HEIGHT: f32 = 36.0;
 const SEARCH_DEBOUNCE_MS: u64 = 50;
 const TOAST_COPY_FEEDBACK_MS: u64 = 1200;
+const OVERLAY_PANEL_ALPHA_FLOOR_RATIO: f32 = 0.72;
+const OVERLAY_DIM_MIN_SCALE: f32 = 0.25;
+const OVERLAY_PANEL_BORDER_ALPHA: f32 = 0.24;
+const OVERLAY_PRIMARY_TEXT_ALPHA: f32 = 0.95;
+const OVERLAY_MUTED_TEXT_ALPHA: f32 = 0.62;
+const COMMAND_PALETTE_PANEL_SOLID_ALPHA: f32 = 0.90;
+const COMMAND_PALETTE_INPUT_SOLID_ALPHA: f32 = 0.76;
+const COMMAND_PALETTE_ROW_SELECTED_BG_ALPHA: f32 = 0.20;
+const COMMAND_PALETTE_ROW_SELECTED_BORDER_ALPHA: f32 = 0.35;
+const COMMAND_PALETTE_SHORTCUT_BG_ALPHA: f32 = 0.10;
+const COMMAND_PALETTE_SHORTCUT_BORDER_ALPHA: f32 = 0.22;
+const COMMAND_PALETTE_SHORTCUT_TEXT_ALPHA: f32 = 0.80;
+const COMMAND_PALETTE_DIM_ALPHA: f32 = 0.78;
+const COMMAND_PALETTE_PANEL_BG_ALPHA: f32 = 0.98;
+const COMMAND_PALETTE_INPUT_BG_ALPHA: f32 = 0.64;
+const COMMAND_PALETTE_INPUT_SELECTION_ALPHA: f32 = 0.28;
+const COMMAND_PALETTE_SCROLLBAR_TRACK_ALPHA: f32 = 0.10;
+const COMMAND_PALETTE_SCROLLBAR_THUMB_ALPHA: f32 = 0.42;
+const SEARCH_BAR_BG_ALPHA: f32 = 0.96;
+const SEARCH_INPUT_BG_ALPHA: f32 = 0.60;
+const SEARCH_COUNTER_TEXT_ALPHA: f32 = 0.60;
+const SEARCH_BUTTON_TEXT_ALPHA: f32 = 0.70;
+const SEARCH_BUTTON_HOVER_BG_ALPHA: f32 = 0.20;
+const SEARCH_INPUT_SELECTION_ALPHA: f32 = 0.30;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct CellPos {
@@ -137,6 +161,211 @@ struct CommandPaletteItem {
     action: CommandAction,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+enum BackgroundPlatform {
+    MacOs,
+    Windows,
+    Linux,
+    Other,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BackgroundSupportContext {
+    platform: BackgroundPlatform,
+    linux_wayland_session: bool,
+}
+
+impl BackgroundSupportContext {
+    fn current() -> Self {
+        #[cfg(target_os = "macos")]
+        let platform = BackgroundPlatform::MacOs;
+        #[cfg(target_os = "windows")]
+        let platform = BackgroundPlatform::Windows;
+        #[cfg(target_os = "linux")]
+        let platform = BackgroundPlatform::Linux;
+        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+        let platform = BackgroundPlatform::Other;
+
+        #[cfg(target_os = "linux")]
+        let linux_wayland_session = std::env::var("XDG_SESSION_TYPE")
+            .ok()
+            .is_some_and(|session_type| session_type.eq_ignore_ascii_case("wayland"))
+            || std::env::var_os("WAYLAND_DISPLAY").is_some();
+        #[cfg(not(target_os = "linux"))]
+        let linux_wayland_session = false;
+
+        Self {
+            platform,
+            linux_wayland_session,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BlurFallbackReason {
+    None,
+    KnownUnsupported,
+    UnknownSupport,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ResolvedBackgroundAppearance {
+    appearance: WindowBackgroundAppearance,
+    blur_fallback: BlurFallbackReason,
+}
+
+fn resolve_background_appearance(
+    background_opacity: f32,
+    background_blur: bool,
+    context: BackgroundSupportContext,
+) -> ResolvedBackgroundAppearance {
+    let opacity = background_opacity.clamp(0.0, 1.0);
+    if opacity >= 1.0 {
+        return ResolvedBackgroundAppearance {
+            appearance: WindowBackgroundAppearance::Opaque,
+            blur_fallback: BlurFallbackReason::None,
+        };
+    }
+
+    if !background_blur {
+        return ResolvedBackgroundAppearance {
+            appearance: WindowBackgroundAppearance::Transparent,
+            blur_fallback: BlurFallbackReason::None,
+        };
+    }
+
+    match context.platform {
+        BackgroundPlatform::MacOs | BackgroundPlatform::Windows => ResolvedBackgroundAppearance {
+            appearance: WindowBackgroundAppearance::Blurred,
+            blur_fallback: BlurFallbackReason::None,
+        },
+        BackgroundPlatform::Linux => {
+            if context.linux_wayland_session {
+                ResolvedBackgroundAppearance {
+                    appearance: WindowBackgroundAppearance::Blurred,
+                    blur_fallback: BlurFallbackReason::UnknownSupport,
+                }
+            } else {
+                ResolvedBackgroundAppearance {
+                    appearance: WindowBackgroundAppearance::Transparent,
+                    blur_fallback: BlurFallbackReason::KnownUnsupported,
+                }
+            }
+        }
+        BackgroundPlatform::Other => ResolvedBackgroundAppearance {
+            appearance: WindowBackgroundAppearance::Blurred,
+            blur_fallback: BlurFallbackReason::UnknownSupport,
+        },
+    }
+}
+
+fn background_opacity_factor(background_opacity: f32) -> f32 {
+    background_opacity.clamp(0.0, 1.0)
+}
+
+fn scaled_background_alpha_for_opacity(base_alpha: f32, background_opacity: f32) -> f32 {
+    (base_alpha * background_opacity_factor(background_opacity)).clamp(0.0, 1.0)
+}
+
+fn scaled_chrome_alpha_for_opacity(base_alpha: f32, background_opacity: f32) -> f32 {
+    scaled_background_alpha_for_opacity(base_alpha, background_opacity)
+}
+
+fn adaptive_overlay_dim_alpha_for_opacity(base_alpha: f32, background_opacity: f32) -> f32 {
+    let opacity = background_opacity_factor(background_opacity);
+    let scale = OVERLAY_DIM_MIN_SCALE + (1.0 - OVERLAY_DIM_MIN_SCALE) * opacity;
+    (base_alpha * scale).clamp(0.0, base_alpha)
+}
+
+fn adaptive_overlay_panel_alpha_for_opacity(base_alpha: f32, background_opacity: f32) -> f32 {
+    let floor = base_alpha * OVERLAY_PANEL_ALPHA_FLOOR_RATIO;
+    scaled_background_alpha_for_opacity(base_alpha, background_opacity)
+        .max(floor)
+        .clamp(0.0, 1.0)
+}
+
+fn adaptive_overlay_panel_alpha_with_floor_for_opacity(
+    base_alpha: f32,
+    background_opacity: f32,
+    translucent_floor_alpha: f32,
+) -> f32 {
+    let alpha = adaptive_overlay_panel_alpha_for_opacity(base_alpha, background_opacity);
+    if background_opacity_factor(background_opacity) < 1.0 {
+        alpha.max(translucent_floor_alpha).clamp(0.0, 1.0)
+    } else {
+        alpha
+    }
+}
+
+#[derive(Clone, Copy)]
+struct OverlayStyleBuilder<'a> {
+    colors: &'a TerminalColors,
+    background_opacity: f32,
+}
+
+impl<'a> OverlayStyleBuilder<'a> {
+    fn new(colors: &'a TerminalColors, background_opacity: f32) -> Self {
+        Self {
+            colors,
+            background_opacity,
+        }
+    }
+
+    fn dim_background(self, base_alpha: f32) -> gpui::Rgba {
+        let alpha = adaptive_overlay_dim_alpha_for_opacity(base_alpha, self.background_opacity);
+        self.with_alpha(self.colors.background, alpha)
+    }
+
+    fn panel_background(self, base_alpha: f32) -> gpui::Rgba {
+        let alpha = adaptive_overlay_panel_alpha_for_opacity(base_alpha, self.background_opacity);
+        self.with_alpha(self.colors.background, alpha)
+    }
+
+    fn panel_background_with_floor(
+        self,
+        base_alpha: f32,
+        translucent_floor_alpha: f32,
+    ) -> gpui::Rgba {
+        let alpha = adaptive_overlay_panel_alpha_with_floor_for_opacity(
+            base_alpha,
+            self.background_opacity,
+            translucent_floor_alpha,
+        );
+        self.with_alpha(self.colors.background, alpha)
+    }
+
+    fn panel_cursor(self, base_alpha: f32) -> gpui::Rgba {
+        let alpha = adaptive_overlay_panel_alpha_for_opacity(base_alpha, self.background_opacity);
+        self.with_alpha(self.colors.cursor, alpha)
+    }
+
+    fn panel_foreground(self, base_alpha: f32) -> gpui::Rgba {
+        let alpha = adaptive_overlay_panel_alpha_for_opacity(base_alpha, self.background_opacity);
+        self.with_alpha(self.colors.foreground, alpha)
+    }
+
+    fn transparent_background(self) -> gpui::Rgba {
+        self.with_alpha(self.colors.background, 0.0)
+    }
+
+    fn with_alpha(self, mut color: gpui::Rgba, alpha: f32) -> gpui::Rgba {
+        color.a = alpha.clamp(0.0, 1.0);
+        color
+    }
+}
+
+pub(crate) fn initial_window_background_appearance(
+    config: &AppConfig,
+) -> WindowBackgroundAppearance {
+    resolve_background_appearance(
+        config.background_opacity,
+        config.background_blur,
+        BackgroundSupportContext::current(),
+    )
+    .appearance
+}
+
 /// The main terminal view component
 pub struct TerminalView {
     tabs: Vec<TerminalTab>,
@@ -161,7 +390,11 @@ pub struct TerminalView {
     cursor_style: AppCursorStyle,
     cursor_blink: bool,
     cursor_blink_visible: bool,
-    transparent_background_opacity: f32,
+    background_opacity: f32,
+    background_blur: bool,
+    background_support_context: BackgroundSupportContext,
+    last_window_background_appearance: Option<WindowBackgroundAppearance>,
+    warned_blur_unsupported_once: bool,
     padding_x: f32,
     padding_y: f32,
     mouse_scroll_multiplier: f32,
@@ -226,7 +459,54 @@ impl TerminalView {
         fs::metadata(path).ok()?.modified().ok()
     }
 
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn background_opacity_factor(&self) -> f32 {
+        background_opacity_factor(self.background_opacity)
+    }
+
+    fn scaled_background_alpha(&self, base_alpha: f32) -> f32 {
+        scaled_background_alpha_for_opacity(base_alpha, self.background_opacity)
+    }
+
+    fn scaled_chrome_alpha(&self, base_alpha: f32) -> f32 {
+        scaled_chrome_alpha_for_opacity(base_alpha, self.background_opacity)
+    }
+
+    fn effective_terminal_padding(&self) -> (f32, f32) {
+        if self.active_terminal().alternate_screen_mode() {
+            (0.0, 0.0)
+        } else {
+            (self.padding_x, self.padding_y)
+        }
+    }
+
+    fn overlay_style(&self) -> OverlayStyleBuilder<'_> {
+        OverlayStyleBuilder::new(&self.colors, self.background_opacity)
+    }
+
+    fn sync_window_background_appearance(&mut self, window: &mut Window) {
+        let resolved = resolve_background_appearance(
+            self.background_opacity,
+            self.background_blur,
+            self.background_support_context,
+        );
+
+        if self.last_window_background_appearance != Some(resolved.appearance) {
+            window.set_background_appearance(resolved.appearance);
+            self.last_window_background_appearance = Some(resolved.appearance);
+        }
+
+        if self.background_blur
+            && resolved.blur_fallback == BlurFallbackReason::KnownUnsupported
+            && !self.warned_blur_unsupported_once
+        {
+            self.warned_blur_unsupported_once = true;
+            termy_toast::warning(
+                "Background blur is unsupported in this session; using transparency",
+            );
+        }
+    }
+
+    pub fn new(window: &mut Window, cx: &mut Context<Self>, config: AppConfig) -> Self {
         let focus_handle = cx.focus_handle();
         let (event_wakeup_tx, event_wakeup_rx) = bounded(1);
 
@@ -287,13 +567,13 @@ impl TerminalView {
         })
         .detach();
 
-        let config = AppConfig::load_or_create();
         let config_path = config::ensure_config_file();
         let config_last_modified = config_path.as_ref().and_then(Self::config_last_modified);
         let colors = TerminalColors::from_theme(&config.theme, &config.colors);
         let base_font_size = config.font_size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
         let padding_x = config.padding_x.max(0.0);
         let padding_y = config.padding_y.max(0.0);
+        let background_support_context = BackgroundSupportContext::current();
         let configured_working_dir = config.working_dir.clone();
         let tab_title = config.tab_title.clone();
         let tab_shell_integration = TabTitleShellIntegration {
@@ -333,7 +613,11 @@ impl TerminalView {
             cursor_style: config.cursor_style,
             cursor_blink: config.cursor_blink,
             cursor_blink_visible: true,
-            transparent_background_opacity: config.transparent_background_opacity,
+            background_opacity: config.background_opacity,
+            background_blur: config.background_blur,
+            background_support_context,
+            last_window_background_appearance: None,
+            warned_blur_unsupported_once: false,
             padding_x,
             padding_y,
             mouse_scroll_multiplier: config.mouse_scroll_multiplier,
@@ -410,7 +694,8 @@ impl TerminalView {
         self.cursor_blink = config.cursor_blink;
         self.cursor_blink_visible = true;
         self.cell_size = None;
-        self.transparent_background_opacity = config.transparent_background_opacity;
+        self.background_opacity = config.background_opacity;
+        self.background_blur = config.background_blur;
         self.padding_x = config.padding_x.max(0.0);
         self.padding_y = config.padding_y.max(0.0);
         self.mouse_scroll_multiplier = config.mouse_scroll_multiplier;
@@ -554,5 +839,105 @@ impl TerminalView {
 
     fn active_terminal(&self) -> &Terminal {
         &self.tabs[self.active_tab].terminal
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_background_appearance_is_opaque_when_opacity_is_full() {
+        let resolved = resolve_background_appearance(
+            1.0,
+            true,
+            BackgroundSupportContext {
+                platform: BackgroundPlatform::MacOs,
+                linux_wayland_session: false,
+            },
+        );
+        assert_eq!(resolved.appearance, WindowBackgroundAppearance::Opaque);
+        assert_eq!(resolved.blur_fallback, BlurFallbackReason::None);
+    }
+
+    #[test]
+    fn resolve_background_appearance_is_transparent_without_blur() {
+        let resolved = resolve_background_appearance(
+            0.85,
+            false,
+            BackgroundSupportContext {
+                platform: BackgroundPlatform::Windows,
+                linux_wayland_session: false,
+            },
+        );
+        assert_eq!(resolved.appearance, WindowBackgroundAppearance::Transparent);
+        assert_eq!(resolved.blur_fallback, BlurFallbackReason::None);
+    }
+
+    #[test]
+    fn resolve_background_appearance_blur_is_known_unsupported_on_linux_non_wayland() {
+        let resolved = resolve_background_appearance(
+            0.9,
+            true,
+            BackgroundSupportContext {
+                platform: BackgroundPlatform::Linux,
+                linux_wayland_session: false,
+            },
+        );
+        assert_eq!(resolved.appearance, WindowBackgroundAppearance::Transparent);
+        assert_eq!(resolved.blur_fallback, BlurFallbackReason::KnownUnsupported);
+    }
+
+    #[test]
+    fn resolve_background_appearance_blur_is_unknown_on_linux_wayland() {
+        let resolved = resolve_background_appearance(
+            0.9,
+            true,
+            BackgroundSupportContext {
+                platform: BackgroundPlatform::Linux,
+                linux_wayland_session: true,
+            },
+        );
+        assert_eq!(resolved.appearance, WindowBackgroundAppearance::Blurred);
+        assert_eq!(resolved.blur_fallback, BlurFallbackReason::UnknownSupport);
+    }
+
+    #[test]
+    fn resolve_background_appearance_blur_is_enabled_on_macos() {
+        let resolved = resolve_background_appearance(
+            0.9,
+            true,
+            BackgroundSupportContext {
+                platform: BackgroundPlatform::MacOs,
+                linux_wayland_session: false,
+            },
+        );
+        assert_eq!(resolved.appearance, WindowBackgroundAppearance::Blurred);
+        assert_eq!(resolved.blur_fallback, BlurFallbackReason::None);
+    }
+
+    #[test]
+    fn chrome_alpha_scales_without_floor() {
+        let base = 0.92;
+        let alpha = scaled_chrome_alpha_for_opacity(base, 0.1);
+        assert_eq!(alpha, base * 0.1);
+    }
+
+    #[test]
+    fn overlay_dim_gets_stronger_as_opacity_decreases() {
+        let base = 0.78;
+        let high_opacity = adaptive_overlay_dim_alpha_for_opacity(base, 1.0);
+        let low_opacity = adaptive_overlay_dim_alpha_for_opacity(base, 0.2);
+        assert!(low_opacity < high_opacity);
+    }
+
+    #[test]
+    fn overlay_panel_floor_applies_only_when_background_is_translucent() {
+        let base = 0.64;
+        let floor = 0.76;
+        let translucent = adaptive_overlay_panel_alpha_with_floor_for_opacity(base, 0.2, floor);
+        let opaque = adaptive_overlay_panel_alpha_with_floor_for_opacity(base, 1.0, floor);
+        assert!(translucent >= floor);
+        assert!(opaque < floor);
     }
 }

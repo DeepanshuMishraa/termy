@@ -33,6 +33,8 @@ pub struct TerminalGrid {
     pub cell_size: Size<Pixels>,
     pub cols: usize,
     pub rows: usize,
+    /// Clear color used to reset the grid surface every frame.
+    pub clear_bg: Hsla,
     pub default_bg: Hsla,
     pub cursor_color: Hsla,
     pub selection_bg: Hsla,
@@ -57,7 +59,9 @@ impl IntoElement for TerminalGrid {
 /// This is used to avoid painting cell backgrounds that match the terminal's default background,
 /// which can cause visual artifacts due to slight color differences between ANSI colors.
 fn colors_approximately_equal(a: &Hsla, b: &Hsla) -> bool {
-    const EPSILON: f32 = 0.02;
+    // Keep this tolerance tight: broad matching can skip legitimate near-default
+    // app backgrounds and create visible seams/strips at edges.
+    const EPSILON: f32 = 0.001;
     (a.h - b.h).abs() < EPSILON
         && (a.s - b.s).abs() < EPSILON
         && (a.l - b.l).abs() < EPSILON
@@ -137,7 +141,7 @@ impl Element for TerminalGrid {
         window.paint_quad(quad(
             grid_bounds,
             px(0.0),
-            self.default_bg,
+            self.clear_bg,
             gpui::Edges::default(),
             Hsla::transparent_black(),
             gpui::BorderStyle::default(),

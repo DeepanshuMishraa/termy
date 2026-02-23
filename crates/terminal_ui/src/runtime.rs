@@ -546,6 +546,12 @@ impl Terminal {
         let term = self.term.lock();
         term.mode().contains(TermMode::BRACKETED_PASTE)
     }
+
+    /// Check if the terminal is currently in alternate screen mode
+    pub fn alternate_screen_mode(&self) -> bool {
+        let term = self.term.lock();
+        term.mode().contains(TermMode::ALT_SCREEN)
+    }
 }
 
 /// Convert a GPUI keystroke into bytes for the terminal PTY.

@@ -165,18 +165,13 @@ impl TerminalView {
 
     pub(super) fn render_search_bar(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = &self.colors;
-        let mut bar_bg = colors.background;
-        bar_bg.a = 0.96;
-        let mut bar_border = colors.cursor;
-        bar_border.a = 0.24;
-        let mut input_bg = colors.background;
-        input_bg.a = 0.6;
-        let mut counter_text = colors.foreground;
-        counter_text.a = 0.6;
-        let mut button_text = colors.foreground;
-        button_text.a = 0.7;
-        let mut button_hover_bg = colors.cursor;
-        button_hover_bg.a = 0.2;
+        let overlay_style = self.overlay_style();
+        let bar_bg = overlay_style.panel_background(SEARCH_BAR_BG_ALPHA);
+        let bar_border = overlay_style.panel_cursor(OVERLAY_PANEL_BORDER_ALPHA);
+        let input_bg = overlay_style.panel_background(SEARCH_INPUT_BG_ALPHA);
+        let counter_text = overlay_style.panel_foreground(SEARCH_COUNTER_TEXT_ALPHA);
+        let button_text = overlay_style.panel_foreground(SEARCH_BUTTON_TEXT_ALPHA);
+        let button_hover_bg = overlay_style.panel_cursor(SEARCH_BUTTON_HOVER_BG_ALPHA);
 
         let (current, total) = self.search_state.results().position().unwrap_or((0, 0));
 
@@ -227,9 +222,9 @@ impl TerminalView {
                         px(12.0),
                         colors.foreground.into(),
                         {
-                            let mut sel = colors.cursor;
-                            sel.a = 0.3;
-                            sel.into()
+                            overlay_style
+                                .panel_cursor(SEARCH_INPUT_SELECTION_ALPHA)
+                                .into()
                         },
                         InlineInputAlignment::Left,
                         cx,

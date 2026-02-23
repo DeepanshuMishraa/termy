@@ -572,22 +572,14 @@ impl TerminalView {
         } else {
             self.command_palette_selected.min(items.len() - 1)
         };
-
-        let mut selected_bg = self.colors.cursor;
-        selected_bg.a = 0.2;
-        let mut selected_border = self.colors.cursor;
-        selected_border.a = 0.35;
-        let mut transparent = self.colors.background;
-        transparent.a = 0.0;
-
-        let mut primary_text = self.colors.foreground;
-        primary_text.a = 0.95;
-        let mut shortcut_bg = self.colors.cursor;
-        shortcut_bg.a = 0.1;
-        let mut shortcut_border = self.colors.cursor;
-        shortcut_border.a = 0.22;
-        let mut shortcut_text = self.colors.foreground;
-        shortcut_text.a = 0.8;
+        let overlay_style = self.overlay_style();
+        let selected_bg = overlay_style.panel_cursor(COMMAND_PALETTE_ROW_SELECTED_BG_ALPHA);
+        let selected_border = overlay_style.panel_cursor(COMMAND_PALETTE_ROW_SELECTED_BORDER_ALPHA);
+        let transparent = overlay_style.transparent_background();
+        let primary_text = overlay_style.panel_foreground(OVERLAY_PRIMARY_TEXT_ALPHA);
+        let shortcut_bg = overlay_style.panel_cursor(COMMAND_PALETTE_SHORTCUT_BG_ALPHA);
+        let shortcut_border = overlay_style.panel_cursor(COMMAND_PALETTE_SHORTCUT_BORDER_ALPHA);
+        let shortcut_text = overlay_style.panel_foreground(COMMAND_PALETTE_SHORTCUT_TEXT_ALPHA);
 
         let mut rows = Vec::with_capacity(range.len());
         for index in range {
@@ -668,29 +660,26 @@ impl TerminalView {
     pub(super) fn render_command_palette_modal(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let items = self.filtered_command_palette_items();
         let list_height = COMMAND_PALETTE_MAX_ITEMS as f32 * COMMAND_PALETTE_ROW_HEIGHT;
-
-        let mut overlay_bg = self.colors.background;
-        overlay_bg.a = 0.78;
-        let mut panel_bg = self.colors.background;
-        panel_bg.a = 0.98;
-        let mut panel_border = self.colors.cursor;
-        panel_border.a = 0.24;
-        let mut primary_text = self.colors.foreground;
-        primary_text.a = 0.95;
-        let mut muted_text = self.colors.foreground;
-        muted_text.a = 0.62;
-        let mut transparent = self.colors.background;
-        transparent.a = 0.0;
+        let overlay_style = self.overlay_style();
+        let overlay_bg = overlay_style.dim_background(COMMAND_PALETTE_DIM_ALPHA);
+        let panel_bg = overlay_style.panel_background_with_floor(
+            COMMAND_PALETTE_PANEL_BG_ALPHA,
+            COMMAND_PALETTE_PANEL_SOLID_ALPHA,
+        );
+        let panel_border = overlay_style.panel_cursor(OVERLAY_PANEL_BORDER_ALPHA);
+        let primary_text = overlay_style.panel_foreground(OVERLAY_PRIMARY_TEXT_ALPHA);
+        let muted_text = overlay_style.panel_foreground(OVERLAY_MUTED_TEXT_ALPHA);
+        let input_bg = overlay_style.panel_background_with_floor(
+            COMMAND_PALETTE_INPUT_BG_ALPHA,
+            COMMAND_PALETTE_INPUT_SOLID_ALPHA,
+        );
         let input_font = Font {
             family: self.font_family.clone(),
             ..Font::default()
         };
-        let mut input_selection = self.colors.cursor;
-        input_selection.a = 0.28;
-        let mut scrollbar_track = self.colors.cursor;
-        scrollbar_track.a = 0.1;
-        let mut scrollbar_thumb = self.colors.cursor;
-        scrollbar_thumb.a = 0.42;
+        let input_selection = overlay_style.panel_cursor(COMMAND_PALETTE_INPUT_SELECTION_ALPHA);
+        let scrollbar_track = overlay_style.panel_cursor(COMMAND_PALETTE_SCROLLBAR_TRACK_ALPHA);
+        let scrollbar_thumb = overlay_style.panel_cursor(COMMAND_PALETTE_SCROLLBAR_THUMB_ALPHA);
 
         let list = if items.is_empty() {
             div()
@@ -797,7 +786,7 @@ impl TerminalView {
                                     .py(px(8.0))
                                     .relative()
                                     .rounded_sm()
-                                    .bg(transparent)
+                                    .bg(input_bg)
                                     .border_1()
                                     .border_color(panel_border)
                                     .child(div().w_full().h_full().relative().child(
