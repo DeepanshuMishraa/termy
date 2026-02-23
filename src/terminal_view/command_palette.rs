@@ -672,8 +672,10 @@ impl TerminalView {
             ..Font::default()
         };
         let input_selection = overlay_style.panel_cursor(COMMAND_PALETTE_INPUT_SELECTION_ALPHA);
-        let scrollbar_track = overlay_style.panel_cursor(COMMAND_PALETTE_SCROLLBAR_TRACK_ALPHA);
-        let scrollbar_thumb = overlay_style.panel_cursor(COMMAND_PALETTE_SCROLLBAR_THUMB_ALPHA);
+        let scrollbar_track =
+            self.scrollbar_color(overlay_style, COMMAND_PALETTE_SCROLLBAR_TRACK_ALPHA);
+        let scrollbar_thumb =
+            self.scrollbar_color(overlay_style, COMMAND_PALETTE_SCROLLBAR_THUMB_ALPHA);
 
         let list = if items.is_empty() {
             div()
@@ -708,11 +710,11 @@ impl TerminalView {
             {
                 let style = ScrollbarPaintStyle {
                     width: COMMAND_PALETTE_SCROLLBAR_WIDTH,
-                    track_radius: COMMAND_PALETTE_SCROLLBAR_WIDTH * 0.5,
-                    thumb_radius: COMMAND_PALETTE_SCROLLBAR_WIDTH * 0.5,
+                    track_radius: 0.0,
+                    thumb_radius: 0.0,
                     thumb_inset: 0.0,
                     marker_inset: 0.0,
-                    marker_radius: COMMAND_PALETTE_SCROLLBAR_WIDTH * 0.5,
+                    marker_radius: 0.0,
                     track_color: scrollbar_track,
                     thumb_color: scrollbar_thumb,
                     active_thumb_color: scrollbar_thumb,

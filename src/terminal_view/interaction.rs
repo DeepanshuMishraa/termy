@@ -481,8 +481,13 @@ impl TerminalView {
         position: gpui::Point<Pixels>,
         window: &Window,
     ) -> Option<TerminalScrollbarHit> {
+        let (display_offset, _) = self.active_terminal().scroll_state();
+        let force_visible = display_offset > 0;
         let alpha = self.terminal_scrollbar_alpha(Instant::now());
-        if alpha <= f32::EPSILON && !self.terminal_scrollbar_visibility_controller.is_dragging() {
+        if !force_visible
+            && alpha <= f32::EPSILON
+            && !self.terminal_scrollbar_visibility_controller.is_dragging()
+        {
             return None;
         }
 

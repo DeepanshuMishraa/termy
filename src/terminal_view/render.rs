@@ -38,7 +38,12 @@ impl TerminalView {
         track_height: f32,
     ) -> Option<AnyElement> {
         let now = Instant::now();
-        let alpha = self.terminal_scrollbar_alpha(now);
+        let force_visible = display_offset > 0;
+        let alpha = if force_visible {
+            1.0
+        } else {
+            self.terminal_scrollbar_alpha(now)
+        };
         if alpha <= f32::EPSILON && !self.terminal_scrollbar_visibility_controller.is_dragging() {
             return None;
         }
@@ -67,11 +72,13 @@ impl TerminalView {
             thumb_inset: TERMINAL_SCROLLBAR_THUMB_INSET,
             marker_inset: TERMINAL_SCROLLBAR_THUMB_INSET,
             marker_radius: TERMINAL_SCROLLBAR_THUMB_RADIUS,
-            track_color: overlay_style.panel_foreground(TERMINAL_SCROLLBAR_TRACK_ALPHA),
-            thumb_color: overlay_style.panel_foreground(TERMINAL_SCROLLBAR_THUMB_ALPHA),
-            active_thumb_color: overlay_style
-                .panel_foreground(TERMINAL_SCROLLBAR_THUMB_ACTIVE_ALPHA),
-            marker_color: Some(overlay_style.panel_foreground(TERMINAL_SCROLLBAR_MARKER_ALPHA)),
+            track_color: self.scrollbar_color(overlay_style, TERMINAL_SCROLLBAR_TRACK_ALPHA),
+            thumb_color: self.scrollbar_color(overlay_style, TERMINAL_SCROLLBAR_THUMB_ALPHA),
+            active_thumb_color: self
+                .scrollbar_color(overlay_style, TERMINAL_SCROLLBAR_THUMB_ACTIVE_ALPHA),
+            marker_color: Some(
+                self.scrollbar_color(overlay_style, TERMINAL_SCROLLBAR_MARKER_ALPHA),
+            ),
         }
         .scale_alpha(alpha);
 

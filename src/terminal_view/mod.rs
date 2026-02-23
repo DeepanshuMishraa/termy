@@ -2,7 +2,7 @@ use crate::colors::TerminalColors;
 use crate::commands::{self, CommandAction};
 use crate::config::{
     self, AppConfig, CursorStyle as AppCursorStyle, TabTitleConfig, TabTitleSource,
-    TerminalScrollbarVisibility,
+    TerminalScrollbarStyle, TerminalScrollbarVisibility,
 };
 use crate::keybindings;
 use crate::ui::scrollbar::{ScrollbarVisibilityController, ScrollbarVisibilityMode};
@@ -91,6 +91,7 @@ const TERMINAL_SCROLLBAR_MARKER_HEIGHT: f32 = 2.0;
 const TERMINAL_SCROLLBAR_TRACK_RADIUS: f32 = 0.0;
 const TERMINAL_SCROLLBAR_THUMB_RADIUS: f32 = 0.0;
 const TERMINAL_SCROLLBAR_THUMB_INSET: f32 = 1.0;
+const TERMINAL_SCROLLBAR_MUTED_THEME_BLEND: f32 = 0.38;
 const SEARCH_BAR_WIDTH: f32 = 320.0;
 const SEARCH_BAR_HEIGHT: f32 = 36.0;
 const SEARCH_DEBOUNCE_MS: u64 = 50;
@@ -346,6 +347,17 @@ fn adaptive_overlay_panel_alpha_with_floor_for_opacity(
     }
 }
 
+fn blend_rgba(base: gpui::Rgba, tint: gpui::Rgba, tint_factor: f32) -> gpui::Rgba {
+    let tint_factor = tint_factor.clamp(0.0, 1.0);
+    let base_factor = 1.0 - tint_factor;
+    gpui::Rgba {
+        r: (base.r * base_factor) + (tint.r * tint_factor),
+        g: (base.g * base_factor) + (tint.g * tint_factor),
+        b: (base.b * base_factor) + (tint.b * tint_factor),
+        a: (base.a * base_factor) + (tint.a * tint_factor),
+    }
+}
+
 #[derive(Clone, Copy)]
 struct OverlayStyleBuilder<'a> {
     colors: &'a TerminalColors,
@@ -471,6 +483,7 @@ pub struct TerminalView {
     inline_input_selecting: bool,
     terminal_scroll_accumulator_y: f32,
     terminal_scrollbar_visibility: TerminalScrollbarVisibility,
+    terminal_scrollbar_style: TerminalScrollbarStyle,
     terminal_scrollbar_visibility_controller: ScrollbarVisibilityController,
     terminal_scrollbar_animation_active: bool,
     terminal_scrollbar_drag: Option<TerminalScrollbarDragState>,
@@ -537,6 +550,22 @@ impl TerminalView {
         OverlayStyleBuilder::new(&self.colors, self.background_opacity)
     }
 
+    fn scrollbar_color(
+        &self,
+        overlay_style: OverlayStyleBuilder<'_>,
+        base_alpha: f32,
+    ) -> gpui::Rgba {
+        match self.terminal_scrollbar_style {
+            TerminalScrollbarStyle::Neutral => overlay_style.panel_foreground(base_alpha),
+            TerminalScrollbarStyle::MutedTheme => {
+                let background = overlay_style.panel_background(base_alpha);
+                let accent = overlay_style.panel_cursor(base_alpha);
+                blend_rgba(background, accent, TERMINAL_SCROLLBAR_MUTED_THEME_BLEND)
+            }
+            TerminalScrollbarStyle::Theme => overlay_style.panel_cursor(base_alpha),
+        }
+    }
+
     fn terminal_scrollbar_hold_duration() -> Duration {
         Duration::from_millis(TERMINAL_SCROLLBAR_HOLD_MS)
     }
@@ -548,7 +577,7 @@ impl TerminalView {
     pub(super) fn terminal_scrollbar_mode(&self) -> ScrollbarVisibilityMode {
         match self.terminal_scrollbar_visibility {
             TerminalScrollbarVisibility::Off => ScrollbarVisibilityMode::AlwaysOff,
-            TerminalScrollbarVisibility::On => ScrollbarVisibilityMode::AlwaysOn,
+            TerminalScrollbarVisibility::Always => ScrollbarVisibilityMode::AlwaysOn,
             TerminalScrollbarVisibility::OnScroll => ScrollbarVisibilityMode::OnScroll,
         }
     }
@@ -841,6 +870,7 @@ impl TerminalView {
             inline_input_selecting: false,
             terminal_scroll_accumulator_y: 0.0,
             terminal_scrollbar_visibility: config.terminal_scrollbar_visibility,
+            terminal_scrollbar_style: config.terminal_scrollbar_style,
             terminal_scrollbar_visibility_controller: ScrollbarVisibilityController::default(),
             terminal_scrollbar_animation_active: false,
             terminal_scrollbar_drag: None,
@@ -907,6 +937,7 @@ impl TerminalView {
             self.terminal_scrollbar_drag = None;
             self.terminal_scrollbar_animation_active = false;
         }
+        self.terminal_scrollbar_style = config.terminal_scrollbar_style;
         self.command_palette_show_keybinds = config.command_palette_show_keybinds;
 
         for index in 0..self.tabs.len() {
