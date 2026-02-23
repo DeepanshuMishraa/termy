@@ -756,9 +756,7 @@ impl TerminalView {
                     .update(cx, |view, _| {
                         view.quit_prompt_in_flight = false;
                         if confirmed {
-                            if target == QuitRequestTarget::Application {
-                                view.allow_quit_without_prompt = true;
-                            }
+                            view.allow_quit_without_prompt = true;
                             follow_through = true;
                         }
                     })
@@ -820,10 +818,10 @@ impl TerminalView {
                     self.set_command_palette_mode(mode, false, cx);
                 }
             }
-            _ if shortcuts_suspended => {}
             CommandAction::Quit => {
                 self.request_quit(QuitRequestTarget::Application, window, cx);
             }
+            _ if shortcuts_suspended => {}
             CommandAction::OpenConfig => config::open_config_file(),
             CommandAction::ImportColors => self.import_colors_action(cx),
             CommandAction::AppInfo => {
