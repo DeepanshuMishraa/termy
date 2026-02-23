@@ -1,6 +1,13 @@
 use super::*;
 
 impl TerminalView {
+    fn command_palette_mode_for_action(action: CommandAction) -> Option<CommandPaletteMode> {
+        match action {
+            CommandAction::SwitchTheme => Some(CommandPaletteMode::Themes),
+            _ => None,
+        }
+    }
+
     pub(super) fn has_selection(&self) -> bool {
         matches!((self.selection_anchor, self.selection_head), (Some(anchor), Some(head)) if self.selection_moved || anchor != head)
     }
@@ -460,7 +467,10 @@ impl TerminalView {
                 }
             }
             CommandAction::SwitchTheme => {
-                self.open_theme_palette(cx);
+                if let Some(mode) = Self::command_palette_mode_for_action(action) {
+                    self.command_palette_open = true;
+                    self.set_command_palette_mode(mode, false, cx);
+                }
             }
             _ if shortcuts_suspended => {}
             CommandAction::Quit => cx.quit(),
@@ -1075,5 +1085,17 @@ mod tests {
             0
         );
         assert_eq!(accumulated, 12.0);
+    }
+
+    #[test]
+    fn switch_theme_action_maps_to_theme_palette_mode() {
+        assert_eq!(
+            TerminalView::command_palette_mode_for_action(CommandAction::SwitchTheme),
+            Some(CommandPaletteMode::Themes)
+        );
+        assert_eq!(
+            TerminalView::command_palette_mode_for_action(CommandAction::OpenConfig),
+            None
+        );
     }
 }

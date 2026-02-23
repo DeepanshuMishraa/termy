@@ -4,60 +4,6 @@ const GLOBAL_CONTEXT: Option<&str> = None;
 const TERMINAL_CONTEXT: Option<&str> = Some("Terminal");
 const INLINE_INPUT_CONTEXT: Option<&str> = Some("InlineInput");
 
-actions!(
-    termy,
-    [
-        Quit,
-        OpenConfig,
-        ImportColors,
-        SwitchTheme,
-        AppInfo,
-        RestartApp,
-        RenameTab,
-        CheckForUpdates,
-        ToggleCommandPalette,
-        NewTab,
-        CloseTab,
-        Copy,
-        Paste,
-        ZoomIn,
-        ZoomOut,
-        ZoomReset,
-        OpenSearch,
-        CloseSearch,
-        SearchNext,
-        SearchPrevious,
-        ToggleSearchCaseSensitive,
-        ToggleSearchRegex,
-    ]
-);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum CommandAction {
-    Quit,
-    OpenConfig,
-    ImportColors,
-    SwitchTheme,
-    AppInfo,
-    RestartApp,
-    RenameTab,
-    CheckForUpdates,
-    ToggleCommandPalette,
-    NewTab,
-    CloseTab,
-    Copy,
-    Paste,
-    ZoomIn,
-    ZoomOut,
-    ZoomReset,
-    OpenSearch,
-    CloseSearch,
-    SearchNext,
-    SearchPrevious,
-    ToggleSearchCaseSensitive,
-    ToggleSearchRegex,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandPaletteVisibility {
     Always,
@@ -123,322 +69,246 @@ const fn command(
     }
 }
 
-const COMMAND_SPECS: &[CommandSpec] = &[
-    command(
-        CommandAction::NewTab,
+macro_rules! define_commands {
+    ($(($variant:ident, $config_name:literal, $context:expr, $palette:expr)),+ $(,)?) => {
+        actions!(
+            termy,
+            [$( $variant, )+]
+        );
+
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        pub enum CommandAction {
+            $( $variant, )+
+        }
+
+        const COMMAND_SPECS: &[CommandSpec] = &[
+            $(command(CommandAction::$variant, $config_name, $context, $palette),)+
+        ];
+
+        impl CommandAction {
+            #[cfg(test)]
+            pub fn specs() -> &'static [CommandSpec] {
+                COMMAND_SPECS
+            }
+
+            #[cfg(test)]
+            pub fn all() -> impl std::iter::ExactSizeIterator<Item = Self> + Clone {
+                COMMAND_SPECS.iter().map(|spec| spec.action)
+            }
+
+            pub fn from_config_name(name: &str) -> Option<Self> {
+                let normalized = name.trim().to_ascii_lowercase().replace('-', "_");
+                COMMAND_SPECS
+                    .iter()
+                    .find_map(|spec| (spec.config_name == normalized).then_some(spec.action))
+            }
+
+            pub fn all_config_names() -> impl std::iter::ExactSizeIterator<Item = &'static str> {
+                COMMAND_SPECS.iter().map(|spec| spec.config_name)
+            }
+
+            pub fn palette_entries(use_tabs: bool) -> Vec<CommandPaletteEntry> {
+                COMMAND_SPECS
+                    .iter()
+                    .filter_map(|spec| {
+                        let palette = spec.palette?;
+                        if !palette.visibility.is_visible(use_tabs) {
+                            return None;
+                        }
+
+                        Some(CommandPaletteEntry {
+                            action: spec.action,
+                            title: palette.title,
+                            keywords: palette.keywords,
+                        })
+                    })
+                    .collect()
+            }
+
+            pub fn to_key_binding(self, trigger: &str) -> KeyBinding {
+                match self {
+                    $(Self::$variant => KeyBinding::new(trigger, $variant, $context),)+
+                }
+            }
+
+            pub fn keybinding_label(
+                self,
+                window: &Window,
+                focus_handle: &FocusHandle,
+            ) -> Option<String> {
+                let binding = match self {
+                    $(Self::$variant => window.highest_precedence_binding_for_action_in(&$variant, focus_handle),)+
+                };
+
+                binding.map(|binding| {
+                    binding
+                        .keystrokes()
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+            }
+        }
+    };
+}
+
+define_commands!(
+    (
+        NewTab,
         "new_tab",
         TERMINAL_CONTEXT,
         Some(palette(
             "New Tab",
             "create tab",
-            CommandPaletteVisibility::TabsOnly,
-        )),
+            CommandPaletteVisibility::TabsOnly
+        ))
     ),
-    command(
-        CommandAction::CloseTab,
+    (
+        CloseTab,
         "close_tab",
         TERMINAL_CONTEXT,
         Some(palette(
             "Close Tab",
             "remove tab",
-            CommandPaletteVisibility::TabsOnly,
-        )),
+            CommandPaletteVisibility::TabsOnly
+        ))
     ),
-    command(
-        CommandAction::RenameTab,
+    (
+        RenameTab,
         "rename_tab",
         TERMINAL_CONTEXT,
         Some(palette(
             "Rename Tab",
             "title name",
-            CommandPaletteVisibility::TabsOnly,
-        )),
+            CommandPaletteVisibility::TabsOnly
+        ))
     ),
-    command(
-        CommandAction::AppInfo,
+    (
+        AppInfo,
         "app_info",
         TERMINAL_CONTEXT,
         Some(palette(
             "App Info",
             "information version about build",
-            CommandPaletteVisibility::Always,
-        )),
+            CommandPaletteVisibility::Always
+        ))
     ),
-    command(
-        CommandAction::RestartApp,
+    (
+        RestartApp,
         "restart_app",
         TERMINAL_CONTEXT,
         Some(palette(
             "Restart App",
             "relaunch reopen restart",
-            CommandPaletteVisibility::Always,
-        )),
+            CommandPaletteVisibility::Always
+        ))
     ),
-    command(
-        CommandAction::OpenConfig,
+    (
+        OpenConfig,
         "open_config",
         GLOBAL_CONTEXT,
         Some(palette(
             "Open Config",
             "settings preferences",
-            CommandPaletteVisibility::Always,
-        )),
+            CommandPaletteVisibility::Always
+        ))
     ),
-    command(
-        CommandAction::ImportColors,
+    (
+        ImportColors,
         "import_colors",
         TERMINAL_CONTEXT,
         Some(palette(
             "Import Colors",
             "theme palette json",
-            CommandPaletteVisibility::Always,
-        )),
+            CommandPaletteVisibility::Always
+        ))
     ),
-    command(
-        CommandAction::SwitchTheme,
+    (
+        SwitchTheme,
         "switch_theme",
         TERMINAL_CONTEXT,
         Some(palette(
             "Switch Theme",
             "theme palette colors appearance",
-            CommandPaletteVisibility::Always,
-        )),
+            CommandPaletteVisibility::Always
+        ))
     ),
-    command(
-        CommandAction::ZoomIn,
+    (
+        ZoomIn,
         "zoom_in",
         TERMINAL_CONTEXT,
         Some(palette(
             "Zoom In",
             "font increase",
-            CommandPaletteVisibility::Always,
-        )),
+            CommandPaletteVisibility::Always
+        ))
     ),
-    command(
-        CommandAction::ZoomOut,
+    (
+        ZoomOut,
         "zoom_out",
         TERMINAL_CONTEXT,
         Some(palette(
             "Zoom Out",
             "font decrease",
-            CommandPaletteVisibility::Always,
-        )),
+            CommandPaletteVisibility::Always
+        ))
     ),
-    command(
-        CommandAction::ZoomReset,
+    (
+        ZoomReset,
         "zoom_reset",
         TERMINAL_CONTEXT,
         Some(palette(
             "Reset Zoom",
             "font default",
-            CommandPaletteVisibility::Always,
-        )),
+            CommandPaletteVisibility::Always
+        ))
     ),
-    command(
-        CommandAction::OpenSearch,
+    (
+        OpenSearch,
         "open_search",
         TERMINAL_CONTEXT,
         Some(palette(
             "Find",
             "search lookup text",
-            CommandPaletteVisibility::Always,
-        )),
+            CommandPaletteVisibility::Always
+        ))
     ),
-    command(
-        CommandAction::CheckForUpdates,
+    (
+        CheckForUpdates,
         "check_for_updates",
         TERMINAL_CONTEXT,
         Some(palette(
             "Check for Updates",
             "release version updater",
-            CommandPaletteVisibility::MacOsOnly,
-        )),
+            CommandPaletteVisibility::MacOsOnly
+        ))
     ),
-    command(CommandAction::Quit, "quit", GLOBAL_CONTEXT, None),
-    command(
-        CommandAction::ToggleCommandPalette,
+    (Quit, "quit", GLOBAL_CONTEXT, None),
+    (
+        ToggleCommandPalette,
         "toggle_command_palette",
         TERMINAL_CONTEXT,
-        None,
+        None
     ),
-    command(CommandAction::Copy, "copy", TERMINAL_CONTEXT, None),
-    command(CommandAction::Paste, "paste", TERMINAL_CONTEXT, None),
-    command(
-        CommandAction::CloseSearch,
-        "close_search",
-        TERMINAL_CONTEXT,
-        None,
-    ),
-    command(
-        CommandAction::SearchNext,
-        "search_next",
-        TERMINAL_CONTEXT,
-        None,
-    ),
-    command(
-        CommandAction::SearchPrevious,
-        "search_previous",
-        TERMINAL_CONTEXT,
-        None,
-    ),
-    command(
-        CommandAction::ToggleSearchCaseSensitive,
+    (Copy, "copy", TERMINAL_CONTEXT, None),
+    (Paste, "paste", TERMINAL_CONTEXT, None),
+    (CloseSearch, "close_search", TERMINAL_CONTEXT, None),
+    (SearchNext, "search_next", TERMINAL_CONTEXT, None),
+    (SearchPrevious, "search_previous", TERMINAL_CONTEXT, None),
+    (
+        ToggleSearchCaseSensitive,
         "toggle_search_case_sensitive",
         TERMINAL_CONTEXT,
-        None,
+        None
     ),
-    command(
-        CommandAction::ToggleSearchRegex,
+    (
+        ToggleSearchRegex,
         "toggle_search_regex",
         TERMINAL_CONTEXT,
-        None,
+        None
     ),
-];
-
-impl CommandAction {
-    pub fn specs() -> &'static [CommandSpec] {
-        COMMAND_SPECS
-    }
-
-    pub fn all() -> impl std::iter::ExactSizeIterator<Item = Self> + Clone {
-        COMMAND_SPECS.iter().map(|spec| spec.action)
-    }
-
-    pub fn from_config_name(name: &str) -> Option<Self> {
-        let normalized = name.trim().to_ascii_lowercase().replace('-', "_");
-        COMMAND_SPECS
-            .iter()
-            .find_map(|spec| (spec.config_name == normalized).then_some(spec.action))
-    }
-
-    pub fn all_config_names() -> impl std::iter::ExactSizeIterator<Item = &'static str> {
-        COMMAND_SPECS.iter().map(|spec| spec.config_name)
-    }
-
-    pub fn palette_entries(use_tabs: bool) -> Vec<CommandPaletteEntry> {
-        COMMAND_SPECS
-            .iter()
-            .filter_map(|spec| {
-                let palette = spec.palette?;
-                if !palette.visibility.is_visible(use_tabs) {
-                    return None;
-                }
-
-                Some(CommandPaletteEntry {
-                    action: spec.action,
-                    title: palette.title,
-                    keywords: palette.keywords,
-                })
-            })
-            .collect()
-    }
-
-    pub fn to_key_binding(self, trigger: &str) -> KeyBinding {
-        let context = self.spec().context;
-        match self {
-            Self::Quit => KeyBinding::new(trigger, Quit, context),
-            Self::OpenConfig => KeyBinding::new(trigger, OpenConfig, context),
-            Self::ImportColors => KeyBinding::new(trigger, ImportColors, context),
-            Self::SwitchTheme => KeyBinding::new(trigger, SwitchTheme, context),
-            Self::AppInfo => KeyBinding::new(trigger, AppInfo, context),
-            Self::RestartApp => KeyBinding::new(trigger, RestartApp, context),
-            Self::RenameTab => KeyBinding::new(trigger, RenameTab, context),
-            Self::CheckForUpdates => KeyBinding::new(trigger, CheckForUpdates, context),
-            Self::ToggleCommandPalette => KeyBinding::new(trigger, ToggleCommandPalette, context),
-            Self::NewTab => KeyBinding::new(trigger, NewTab, context),
-            Self::CloseTab => KeyBinding::new(trigger, CloseTab, context),
-            Self::Copy => KeyBinding::new(trigger, Copy, context),
-            Self::Paste => KeyBinding::new(trigger, Paste, context),
-            Self::ZoomIn => KeyBinding::new(trigger, ZoomIn, context),
-            Self::ZoomOut => KeyBinding::new(trigger, ZoomOut, context),
-            Self::ZoomReset => KeyBinding::new(trigger, ZoomReset, context),
-            Self::OpenSearch => KeyBinding::new(trigger, OpenSearch, context),
-            Self::CloseSearch => KeyBinding::new(trigger, CloseSearch, context),
-            Self::SearchNext => KeyBinding::new(trigger, SearchNext, context),
-            Self::SearchPrevious => KeyBinding::new(trigger, SearchPrevious, context),
-            Self::ToggleSearchCaseSensitive => {
-                KeyBinding::new(trigger, ToggleSearchCaseSensitive, context)
-            }
-            Self::ToggleSearchRegex => KeyBinding::new(trigger, ToggleSearchRegex, context),
-        }
-    }
-
-    pub fn keybinding_label(self, window: &Window, focus_handle: &FocusHandle) -> Option<String> {
-        let binding = match self {
-            Self::Quit => window.highest_precedence_binding_for_action_in(&Quit, focus_handle),
-            Self::OpenConfig => {
-                window.highest_precedence_binding_for_action_in(&OpenConfig, focus_handle)
-            }
-            Self::ImportColors => {
-                window.highest_precedence_binding_for_action_in(&ImportColors, focus_handle)
-            }
-            Self::SwitchTheme => {
-                window.highest_precedence_binding_for_action_in(&SwitchTheme, focus_handle)
-            }
-            Self::AppInfo => {
-                window.highest_precedence_binding_for_action_in(&AppInfo, focus_handle)
-            }
-            Self::RestartApp => {
-                window.highest_precedence_binding_for_action_in(&RestartApp, focus_handle)
-            }
-            Self::RenameTab => {
-                window.highest_precedence_binding_for_action_in(&RenameTab, focus_handle)
-            }
-            Self::CheckForUpdates => {
-                window.highest_precedence_binding_for_action_in(&CheckForUpdates, focus_handle)
-            }
-            Self::ToggleCommandPalette => {
-                window.highest_precedence_binding_for_action_in(&ToggleCommandPalette, focus_handle)
-            }
-            Self::NewTab => window.highest_precedence_binding_for_action_in(&NewTab, focus_handle),
-            Self::CloseTab => {
-                window.highest_precedence_binding_for_action_in(&CloseTab, focus_handle)
-            }
-            Self::Copy => window.highest_precedence_binding_for_action_in(&Copy, focus_handle),
-            Self::Paste => window.highest_precedence_binding_for_action_in(&Paste, focus_handle),
-            Self::ZoomIn => window.highest_precedence_binding_for_action_in(&ZoomIn, focus_handle),
-            Self::ZoomOut => {
-                window.highest_precedence_binding_for_action_in(&ZoomOut, focus_handle)
-            }
-            Self::ZoomReset => {
-                window.highest_precedence_binding_for_action_in(&ZoomReset, focus_handle)
-            }
-            Self::OpenSearch => {
-                window.highest_precedence_binding_for_action_in(&OpenSearch, focus_handle)
-            }
-            Self::CloseSearch => {
-                window.highest_precedence_binding_for_action_in(&CloseSearch, focus_handle)
-            }
-            Self::SearchNext => {
-                window.highest_precedence_binding_for_action_in(&SearchNext, focus_handle)
-            }
-            Self::SearchPrevious => {
-                window.highest_precedence_binding_for_action_in(&SearchPrevious, focus_handle)
-            }
-            Self::ToggleSearchCaseSensitive => window
-                .highest_precedence_binding_for_action_in(&ToggleSearchCaseSensitive, focus_handle),
-            Self::ToggleSearchRegex => {
-                window.highest_precedence_binding_for_action_in(&ToggleSearchRegex, focus_handle)
-            }
-        };
-
-        binding.map(|binding| {
-            binding
-                .keystrokes()
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(" ")
-        })
-    }
-
-    fn spec(self) -> &'static CommandSpec {
-        COMMAND_SPECS
-            .iter()
-            .find(|spec| spec.action == self)
-            .expect("CommandAction missing command spec")
-    }
-}
+);
 
 actions!(
     termy_inline_input,

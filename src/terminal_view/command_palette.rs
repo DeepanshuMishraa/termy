@@ -27,6 +27,12 @@ impl CommandPaletteItem {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CommandPaletteEscapeAction {
+    ClosePalette,
+    BackToCommands,
+}
+
 impl TerminalView {
     fn command_palette_base_scroll_handle(&self) -> gpui::ScrollHandle {
         self.command_palette_scroll_handle
@@ -60,7 +66,7 @@ impl TerminalView {
         action.keybinding_label(window, &self.focus_handle)
     }
 
-    fn set_command_palette_mode(
+    pub(super) fn set_command_palette_mode(
         &mut self,
         mode: CommandPaletteMode,
         animate_selection: bool,
@@ -77,11 +83,6 @@ impl TerminalView {
     pub(super) fn open_command_palette(&mut self, cx: &mut Context<Self>) {
         self.command_palette_open = true;
         self.set_command_palette_mode(CommandPaletteMode::Commands, false, cx);
-    }
-
-    pub(super) fn open_theme_palette(&mut self, cx: &mut Context<Self>) {
-        self.command_palette_open = true;
-        self.set_command_palette_mode(CommandPaletteMode::Themes, false, cx);
     }
 
     pub(super) fn close_command_palette(&mut self, cx: &mut Context<Self>) {
@@ -388,10 +389,11 @@ impl TerminalView {
     pub(super) fn handle_command_palette_key_down(&mut self, key: &str, cx: &mut Context<Self>) {
         match key {
             "escape" => {
-                if self.command_palette_mode == CommandPaletteMode::Themes {
-                    self.set_command_palette_mode(CommandPaletteMode::Commands, false, cx);
-                } else {
-                    self.close_command_palette(cx);
+                match Self::command_palette_escape_action(self.command_palette_mode) {
+                    CommandPaletteEscapeAction::ClosePalette => self.close_command_palette(cx),
+                    CommandPaletteEscapeAction::BackToCommands => {
+                        self.set_command_palette_mode(CommandPaletteMode::Commands, false, cx);
+                    }
                 }
                 return;
             }
@@ -418,6 +420,13 @@ impl TerminalView {
                 return;
             }
             _ => {}
+        }
+    }
+
+    fn command_palette_escape_action(mode: CommandPaletteMode) -> CommandPaletteEscapeAction {
+        match mode {
+            CommandPaletteMode::Commands => CommandPaletteEscapeAction::ClosePalette,
+            CommandPaletteMode::Themes => CommandPaletteEscapeAction::BackToCommands,
         }
     }
 
@@ -449,18 +458,15 @@ impl TerminalView {
     }
 
     fn select_theme_from_palette(&mut self, theme_id: &str, cx: &mut Context<Self>) {
-        if theme_id == self.theme_id {
-            self.close_command_palette(cx);
-            termy_toast::info(format!("Theme already set to {}", theme_id));
-            return;
-        }
-
-        match config::set_theme_in_config(theme_id) {
-            Ok(message) => {
+        match self.persist_theme_selection(theme_id, cx) {
+            Ok(true) => {
                 self.close_command_palette(cx);
-                self.reload_config(cx);
-                termy_toast::success(message);
+                termy_toast::success(format!("Theme set to {}", self.theme_id));
                 cx.notify();
+            }
+            Ok(false) => {
+                self.close_command_palette(cx);
+                termy_toast::info(format!("Theme already set to {}", theme_id));
             }
             Err(error) => {
                 termy_toast::error(error);
@@ -943,6 +949,18 @@ mod tests {
         assert_eq!(
             ordered_with_missing_current,
             vec!["tokyo-night", "dracula", "nord"]
+        );
+    }
+
+    #[test]
+    fn escape_action_is_mode_dependent() {
+        assert_eq!(
+            TerminalView::command_palette_escape_action(CommandPaletteMode::Commands),
+            CommandPaletteEscapeAction::ClosePalette
+        );
+        assert_eq!(
+            TerminalView::command_palette_escape_action(CommandPaletteMode::Themes),
+            CommandPaletteEscapeAction::BackToCommands
         );
     }
 }

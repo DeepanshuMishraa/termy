@@ -152,6 +152,68 @@ fn upsert_theme_assignment(contents: &str, theme_id: &str) -> String {
     new_config
 }
 
+fn replace_or_insert_section(
+    contents: &str,
+    section_name: &str,
+    section_lines: &[String],
+) -> String {
+    let mut new_config = String::new();
+    let mut in_target_section = false;
+    let mut target_section_found = false;
+    let target_header = format!("[{}]", section_name);
+
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            in_target_section = false;
+            if trimmed.eq_ignore_ascii_case(&target_header) {
+                target_section_found = true;
+                in_target_section = true;
+                new_config.push_str(line);
+                new_config.push('\n');
+                for section_line in section_lines {
+                    new_config.push_str(section_line);
+                    new_config.push('\n');
+                }
+                continue;
+            }
+        }
+
+        if in_target_section {
+            continue;
+        }
+
+        new_config.push_str(line);
+        new_config.push('\n');
+    }
+
+    if !target_section_found {
+        if !new_config.is_empty() {
+            new_config.push('\n');
+        }
+        new_config.push_str(&target_header);
+        new_config.push('\n');
+        for section_line in section_lines {
+            new_config.push_str(section_line);
+            new_config.push('\n');
+        }
+    }
+
+    new_config
+}
+
+fn update_config_contents<R>(
+    updater: impl FnOnce(&str) -> Result<(String, R), String>,
+) -> Result<R, String> {
+    let config_path =
+        ensure_config_file().ok_or_else(|| "Could not locate config file".to_string())?;
+    let existing =
+        fs::read_to_string(&config_path).map_err(|e| format!("Failed to read config: {}", e))?;
+    let (updated, result) = updater(&existing)?;
+    fs::write(&config_path, updated).map_err(|e| format!("Failed to write config: {}", e))?;
+    Ok(result)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TabTitleSource {
     Manual,
@@ -721,63 +783,24 @@ pub fn import_colors_from_json(json_path: &Path) -> Result<String, String> {
     if color_lines.is_empty() {
         return Err("No valid colors found in JSON".to_string());
     }
-
-    let config_path =
-        ensure_config_file().ok_or_else(|| "Could not locate config file".to_string())?;
-
-    let existing = fs::read_to_string(&config_path).unwrap_or_default();
-    let mut new_config = String::new();
-    let mut in_colors_section = false;
-    let mut colors_section_found = false;
-
-    for line in existing.lines() {
-        let trimmed = line.trim();
-
-        if trimmed.starts_with('[') && trimmed.ends_with(']') {
-            in_colors_section = false;
-            if trimmed.eq_ignore_ascii_case("[colors]") {
-                colors_section_found = true;
-                in_colors_section = true;
-                new_config.push_str(line);
-                new_config.push('\n');
-                for color_line in &color_lines {
-                    new_config.push_str(color_line);
-                    new_config.push('\n');
-                }
-                continue;
-            }
-        }
-
-        if in_colors_section {
-            continue;
-        }
-
-        new_config.push_str(line);
-        new_config.push('\n');
-    }
-
-    if !colors_section_found {
-        new_config.push_str("\n[colors]\n");
-        for color_line in &color_lines {
-            new_config.push_str(color_line);
-            new_config.push('\n');
-        }
-    }
-
-    fs::write(&config_path, new_config).map_err(|e| format!("Failed to write config: {}", e))?;
-
-    Ok(format!("Imported {} colors", color_lines.len()))
+    let color_count = color_lines.len();
+    update_config_contents(|existing| {
+        Ok((
+            replace_or_insert_section(existing, "colors", &color_lines),
+            (),
+        ))
+    })?;
+    Ok(format!("Imported {} colors", color_count))
 }
 
 pub fn set_theme_in_config(theme_id: &str) -> Result<String, String> {
     let theme = parse_theme_id(theme_id).ok_or_else(|| "Invalid theme id".to_string())?;
-    let config_path =
-        ensure_config_file().ok_or_else(|| "Could not locate config file".to_string())?;
-    let existing =
-        fs::read_to_string(&config_path).map_err(|e| format!("Failed to read config: {}", e))?;
-    let updated = upsert_theme_assignment(&existing, &theme);
-    fs::write(&config_path, updated).map_err(|e| format!("Failed to write config: {}", e))?;
-    Ok(format!("Theme set to {}", theme))
+    update_config_contents(|existing| {
+        Ok((
+            upsert_theme_assignment(existing, &theme),
+            format!("Theme set to {}", theme),
+        ))
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -900,7 +923,7 @@ fn config_path() -> Option<PathBuf> {
 mod tests {
     use super::{
         AppConfig, CursorStyle, TabTitleMode, TabTitleSource, WorkingDirFallback,
-        upsert_theme_assignment,
+        replace_or_insert_section, upsert_theme_assignment,
     };
 
     #[test]
@@ -1132,6 +1155,36 @@ mod tests {
         assert_eq!(
             output,
             "font_size = 14\n\ntheme = tokyo-night\n[colors]\nforeground = #ffffff\n"
+        );
+    }
+
+    #[test]
+    fn replace_or_insert_section_replaces_existing_section_body() {
+        let input = "theme = termy\n[colors]\nforeground = #ffffff\nbackground = #000000\n";
+        let output = replace_or_insert_section(
+            input,
+            "colors",
+            &[
+                "foreground = #111111".to_string(),
+                "cursor = #222222".to_string(),
+            ],
+        );
+
+        assert_eq!(
+            output,
+            "theme = termy\n[colors]\nforeground = #111111\ncursor = #222222\n"
+        );
+    }
+
+    #[test]
+    fn replace_or_insert_section_appends_missing_section() {
+        let input = "theme = termy\nfont_size = 14\n";
+        let output =
+            replace_or_insert_section(input, "colors", &["foreground = #111111".to_string()]);
+
+        assert_eq!(
+            output,
+            "theme = termy\nfont_size = 14\n\n[colors]\nforeground = #111111\n"
         );
     }
 }

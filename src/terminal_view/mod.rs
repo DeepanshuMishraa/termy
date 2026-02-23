@@ -769,6 +769,20 @@ impl TerminalView {
         self.apply_runtime_config(config, cx);
     }
 
+    pub(super) fn persist_theme_selection(
+        &mut self,
+        theme_id: &str,
+        cx: &mut Context<Self>,
+    ) -> Result<bool, String> {
+        if theme_id == self.theme_id {
+            return Ok(false);
+        }
+
+        config::set_theme_in_config(theme_id)?;
+        self.reload_config(cx);
+        Ok(true)
+    }
+
     fn tick_cursor_blink(&mut self) -> bool {
         if !self.cursor_blink {
             if self.cursor_blink_visible {
