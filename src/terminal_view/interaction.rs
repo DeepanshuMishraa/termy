@@ -581,13 +581,30 @@ impl TerminalView {
                 use crate::settings_view::SettingsWindow;
                 use gpui::{Bounds, WindowBounds, WindowOptions, px, size};
                 let bounds = Bounds::centered(None, size(px(800.0), px(600.0)), cx);
+
+                #[cfg(target_os = "macos")]
+                let titlebar = Some(gpui::TitlebarOptions {
+                    title: Some("Settings".into()),
+                    appears_transparent: true,
+                    traffic_light_position: Some(gpui::point(px(12.0), px(10.0))),
+                    ..Default::default()
+                });
+                #[cfg(target_os = "windows")]
+                let titlebar = Some(gpui::TitlebarOptions {
+                    title: Some("Settings".into()),
+                    ..Default::default()
+                });
+                #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+                let titlebar = Some(gpui::TitlebarOptions {
+                    title: Some("Settings".into()),
+                    appears_transparent: true,
+                    ..Default::default()
+                });
+
                 cx.open_window(
                     WindowOptions {
                         window_bounds: Some(WindowBounds::Windowed(bounds)),
-                        titlebar: Some(gpui::TitlebarOptions {
-                            title: Some("Settings".into()),
-                            ..Default::default()
-                        }),
+                        titlebar,
                         ..Default::default()
                     },
                     |window, cx| cx.new(|cx| SettingsWindow::new(window, cx)),

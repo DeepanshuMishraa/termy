@@ -14,7 +14,7 @@ pub fn default_keybinds() -> Vec<DefaultKeybind> {
         },
         DefaultKeybind {
             trigger: "secondary-,",
-            action: CommandAction::OpenConfig,
+            action: CommandAction::OpenSettings,
         },
         DefaultKeybind {
             trigger: "secondary-p",
