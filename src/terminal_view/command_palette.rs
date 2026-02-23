@@ -106,25 +106,37 @@ impl TerminalView {
     }
 
     fn command_palette_theme_items(&self) -> Vec<CommandPaletteItem> {
-        let mut theme_ids: Vec<String> = termy_themes::available_theme_ids()
+        let theme_ids: Vec<String> = termy_themes::available_theme_ids()
             .into_iter()
             .map(ToOwned::to_owned)
             .collect();
 
-        if !theme_ids.iter().any(|theme| theme == &self.theme_id) {
-            theme_ids.push(self.theme_id.clone());
-        }
-
-        theme_ids.sort_unstable();
-        theme_ids.dedup();
-
-        theme_ids
+        Self::ordered_theme_ids_for_palette(theme_ids, &self.theme_id)
             .into_iter()
             .map(|theme| {
                 let is_active = theme == self.theme_id;
                 CommandPaletteItem::theme(theme, is_active)
             })
             .collect()
+    }
+
+    fn ordered_theme_ids_for_palette(
+        mut theme_ids: Vec<String>,
+        current_theme: &str,
+    ) -> Vec<String> {
+        if !theme_ids.iter().any(|theme| theme == current_theme) {
+            theme_ids.push(current_theme.to_string());
+        }
+
+        theme_ids.sort_unstable();
+        theme_ids.dedup();
+
+        if let Some(current_index) = theme_ids.iter().position(|theme| theme == current_theme) {
+            let current = theme_ids.remove(current_index);
+            theme_ids.insert(0, current);
+        }
+
+        theme_ids
     }
 
     pub(super) fn filtered_command_palette_items(&self) -> &[CommandPaletteItem] {
@@ -907,5 +919,30 @@ mod tests {
         // Must clamp to max scroll.
         let clamped = TerminalView::command_palette_next_scroll_y(280.0, 400.0, 300.0, 0.05);
         assert!(clamped <= 300.0);
+    }
+
+    #[test]
+    fn ordered_theme_ids_pin_current_theme_first() {
+        let ordered = TerminalView::ordered_theme_ids_for_palette(
+            vec![
+                "nord".to_string(),
+                "termy".to_string(),
+                "dracula".to_string(),
+                "nord".to_string(),
+            ],
+            "termy",
+        );
+
+        assert_eq!(ordered, vec!["termy", "dracula", "nord"]);
+
+        let ordered_with_missing_current = TerminalView::ordered_theme_ids_for_palette(
+            vec!["nord".to_string(), "dracula".to_string()],
+            "tokyo-night",
+        );
+
+        assert_eq!(
+            ordered_with_missing_current,
+            vec!["tokyo-night", "dracula", "nord"]
+        );
     }
 }
