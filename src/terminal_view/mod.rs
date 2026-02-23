@@ -42,6 +42,7 @@ mod interaction;
 mod render;
 mod scrollbar;
 mod search;
+mod tab_chrome;
 mod tabs;
 mod titles;
 #[cfg(target_os = "macos")]
@@ -85,6 +86,8 @@ const TAB_MIN_WIDTH: f32 = 96.0;
 const TAB_MAX_WIDTH: f32 = 420.0;
 const TAB_CLOSE_SLOT_WIDTH: f32 = 20.0;
 const TAB_CLOSE_HITBOX: f32 = TAB_CLOSE_SLOT_WIDTH;
+const TAB_STROKE_FOREGROUND_MIX: f32 = 0.12;
+const TAB_STROKE_THICKNESS: f32 = 1.0;
 const MAX_TAB_TITLE_CHARS: usize = 96;
 const DEFAULT_TAB_TITLE: &str = "Terminal";
 const COMMAND_TITLE_DELAY_MS: u64 = 250;

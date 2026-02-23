@@ -564,16 +564,17 @@ impl Render for TerminalView {
         if !show_tab_bar {
             tabbar_bg.a = 0.0;
         }
-        let mut tabbar_border = colors.foreground;
-        tabbar_border.a = if show_tab_bar { 0.12 } else { 0.0 };
+        let tab_stroke_color = tab_chrome::resolve_tab_stroke_color(
+            tabbar_bg,
+            colors.foreground,
+            TAB_STROKE_FOREGROUND_MIX,
+        );
         let mut inactive_tab_bg = colors.foreground;
         inactive_tab_bg.a = self.scaled_chrome_alpha(0.10);
         let mut active_tab_bg = terminal_surface_bg;
         active_tab_bg.a = 0.0;
         let mut hovered_tab_bg = colors.foreground;
         hovered_tab_bg.a = self.scaled_chrome_alpha(0.13);
-        let inactive_tab_border = tabbar_border;
-        let active_tab_border = inactive_tab_border;
         let mut active_tab_text = colors.foreground;
         active_tab_text.a = 0.95;
         let mut inactive_tab_text = colors.foreground;
@@ -590,14 +591,32 @@ impl Render for TerminalView {
             .hovered_link
             .as_ref()
             .map(|link| (link.row, link.start_col, link.end_col));
-        let active_tab_content_span = if show_tab_bar && self.active_tab < self.tabs.len() {
-            let mut active_left = TAB_HORIZONTAL_PADDING;
-            for tab in self.tabs.iter().take(self.active_tab) {
-                active_left += tab.display_width + TAB_ITEM_GAP;
-            }
-            Some((active_left, self.tabs[self.active_tab].display_width))
-        } else {
-            None
+        let active_tab_index = (self.active_tab < self.tabs.len()).then_some(self.active_tab);
+        let tab_chrome_layout = show_tab_bar.then(|| {
+            tab_chrome::compute_tab_chrome_layout(
+                self.tabs.iter().map(|tab| tab.display_width),
+                tab_chrome::TabChromeInput {
+                    active_index: active_tab_index,
+                    tabbar_height: TABBAR_HEIGHT,
+                    tab_item_height: TAB_ITEM_HEIGHT,
+                    horizontal_padding: TAB_HORIZONTAL_PADDING,
+                    tab_item_gap: TAB_ITEM_GAP,
+                },
+            )
+        });
+        debug_assert!(
+            tab_chrome_layout
+                .as_ref()
+                .is_none_or(|layout| layout.tab_strokes.len() == self.tabs.len())
+        );
+        let render_tab_stroke = |stroke: tab_chrome::StrokeRect| {
+            div()
+                .absolute()
+                .left(px(stroke.x))
+                .top(px(stroke.y))
+                .w(px(stroke.w))
+                .h(px(stroke.h))
+                .bg(tab_stroke_color)
         };
         let mut tabs_scroll_content = div()
             .id("tabs-scroll-content")
@@ -624,6 +643,9 @@ impl Render for TerminalView {
             }));
 
         if show_tab_bar {
+            let tab_chrome_layout = tab_chrome_layout
+                .as_ref()
+                .expect("tab chrome layout must exist when tab bar is visible");
             for (index, tab) in self.tabs.iter().enumerate() {
                 let switch_tab_index = index;
                 let hover_tab_index = index;
@@ -648,17 +670,7 @@ impl Render for TerminalView {
                 } else {
                     inactive_tab_bg
                 };
-                let tab_border = if is_active {
-                    active_tab_border
-                } else {
-                    inactive_tab_border
-                };
-                let right_edge_touches_active_gap = is_active || (index + 1 == self.active_tab);
-                let side_stroke_bottom_inset = if right_edge_touches_active_gap {
-                    0.0
-                } else {
-                    1.0
-                };
+                let tab_strokes = tab_chrome_layout.tab_strokes[index];
 
                 let mut close_text_color = if is_active {
                     active_tab_text
@@ -746,34 +758,9 @@ impl Render for TerminalView {
                             this.finish_tab_drag();
                         }),
                     )
-                    .child(
-                        div()
-                            .absolute()
-                            .left_0()
-                            .right_0()
-                            .top_0()
-                            .h(px(1.0))
-                            .bg(tab_border),
-                    )
-                    .child(
-                        div()
-                            .absolute()
-                            .right_0()
-                            .top(px(1.0))
-                            .bottom(px(side_stroke_bottom_inset))
-                            .w(px(1.0))
-                            .bg(tab_border),
-                    )
-                    .children((index == 0).then(|| {
-                        let left_stroke_bottom_inset = if is_active { 0.0 } else { 1.0 };
-                        div()
-                            .absolute()
-                            .left_0()
-                            .top(px(1.0))
-                            .bottom(px(left_stroke_bottom_inset))
-                            .w(px(1.0))
-                            .bg(tab_border)
-                    }));
+                    .child(render_tab_stroke(tab_strokes.top))
+                    .children(tab_strokes.left_boundary.map(render_tab_stroke))
+                    .children(tab_strokes.right_boundary.map(render_tab_stroke));
 
                 tabs_scroll_content = tabs_scroll_content.child(
                     tab_shell
@@ -811,47 +798,19 @@ impl Render for TerminalView {
             }
         }
 
-        if show_tab_bar {
-            if let Some((active_left, active_width)) = active_tab_content_span {
-                let active_right = active_left + active_width;
-                let gap_inset = 0.0;
-                let left_segment_width = (active_left - gap_inset).max(0.0);
-                let right_segment_left = active_right + gap_inset;
+        if let Some(layout) = tab_chrome_layout.as_ref() {
+            for segment in &layout.baseline_strokes {
+                tabs_scroll_content = tabs_scroll_content.child(render_tab_stroke(*segment));
+            }
+            if let Some(start_x) = layout.open_ended_baseline_start_x {
                 tabs_scroll_content = tabs_scroll_content.child(
                     div()
                         .absolute()
-                        .left_0()
+                        .left(px(start_x))
                         .right_0()
-                        .bottom_0()
-                        .h(px(1.0))
-                        .child(
-                            div()
-                                .absolute()
-                                .left_0()
-                                .bottom_0()
-                                .h(px(1.0))
-                                .w(px(left_segment_width))
-                                .bg(tabbar_border),
-                        )
-                        .child(
-                            div()
-                                .absolute()
-                                .left(px(right_segment_left))
-                                .right_0()
-                                .bottom_0()
-                                .h(px(1.0))
-                                .bg(tabbar_border),
-                        ),
-                );
-            } else {
-                tabs_scroll_content = tabs_scroll_content.child(
-                    div()
-                        .absolute()
-                        .left_0()
-                        .right_0()
-                        .bottom_0()
-                        .h(px(1.0))
-                        .bg(tabbar_border),
+                        .top(px(layout.baseline_y))
+                        .h(px(TAB_STROKE_THICKNESS))
+                        .bg(tab_stroke_color),
                 );
             }
         }
