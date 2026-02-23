@@ -517,7 +517,8 @@ impl TerminalView {
             | CommandAction::SearchPrevious
             | CommandAction::ToggleSearchCaseSensitive
             | CommandAction::ToggleSearchRegex
-            | CommandAction::OpenSettings => {}
+            | CommandAction::OpenSettings
+            | CommandAction::MinimizeWindow => {}
         }
     }
 

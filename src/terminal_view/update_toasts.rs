@@ -79,11 +79,9 @@ impl TerminalView {
                 );
             }
             Some(UpdateState::UpToDate) => {
-                update_or_create(
-                    &mut self.update_check_toast_id,
-                    termy_toast::ToastKind::Success,
-                    "You're up to date".to_string(),
-                );
+                if let Some(id) = self.update_check_toast_id.take() {
+                    termy_toast::dismiss_toast(id);
+                }
             }
             _ => {}
         }
