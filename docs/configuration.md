@@ -218,6 +218,14 @@ Explicit payload examples:
 - Values: any finite number (clamped to `0.1..=1000`)
 - What it does: multiplies mouse wheel scroll distance. For example, `3` scrolls about three lines per wheel tick.
 
+`terminal_scrollbar_visibility`
+- Default: `on_scroll`
+- Values: `off`, `on`, `on_scroll` (`auto` is accepted as an alias for `on_scroll`)
+- What it does: controls terminal viewport scrollbar visibility behavior.
+- `off`: never show the terminal scrollbar.
+- `on`: always show the terminal scrollbar when scrollback exists.
+- `on_scroll`: show while scrolling/dragging, then auto-hide after inactivity.
+
 `keybind`
 - Default: built-in platform shortcuts
 - Values: repeated `keybind` directives (see `docs/keybindings.md`)

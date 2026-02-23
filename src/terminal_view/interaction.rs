@@ -1,4 +1,5 @@
 use super::*;
+use crate::ui::scrollbar::{self, ScrollbarRange};
 
 impl TerminalView {
     fn command_palette_mode_for_action(action: CommandAction) -> Option<CommandPaletteMode> {
@@ -446,6 +447,144 @@ impl TerminalView {
         }
     }
 
+    fn terminal_scrollbar_range(&self) -> Option<ScrollbarRange> {
+        let size = self.active_terminal().size();
+        if size.rows == 0 {
+            return None;
+        }
+        let line_height: f32 = size.cell_height.into();
+        if line_height <= f32::EPSILON {
+            return None;
+        }
+
+        let (display_offset, history_size) = self.active_terminal().scroll_state();
+        let max_offset = history_size as f32 * line_height;
+        Some(ScrollbarRange {
+            offset: scrollbar::invert_offset_axis(display_offset as f32 * line_height, max_offset),
+            max_offset,
+            viewport_extent: f32::from(size.rows) * line_height,
+        })
+    }
+
+    pub(super) fn terminal_scrollbar_range_and_metrics(
+        &self,
+    ) -> Option<(ScrollbarRange, scrollbar::ScrollbarMetrics)> {
+        let range = self.terminal_scrollbar_range()?;
+        let metrics = scrollbar::compute_metrics(range, TERMINAL_SCROLLBAR_MIN_THUMB_HEIGHT)?;
+        Some((range, metrics))
+    }
+
+    fn terminal_scrollbar_hit_test(
+        &self,
+        position: gpui::Point<Pixels>,
+    ) -> Option<TerminalScrollbarHit> {
+        let alpha = self.terminal_scrollbar_alpha(Instant::now());
+        if alpha <= f32::EPSILON && !self.terminal_scrollbar_visibility_controller.is_dragging() {
+            return None;
+        }
+
+        let viewport = self.terminal_viewport_geometry()?;
+        let scrollbar_left = viewport.origin_x + viewport.width - TERMINAL_SCROLLBAR_GUTTER_WIDTH;
+        let scrollbar_right = viewport.origin_x + viewport.width;
+
+        let x: f32 = position.x.into();
+        if x < scrollbar_left || x > scrollbar_right {
+            return None;
+        }
+
+        let y: f32 = position.y.into();
+        if y < viewport.origin_y || y > viewport.origin_y + viewport.height {
+            return None;
+        }
+
+        let (_range, metrics) = self.terminal_scrollbar_range_and_metrics()?;
+        let local_y = y - viewport.origin_y;
+        let thumb_hit =
+            local_y >= metrics.thumb_top && local_y <= metrics.thumb_top + metrics.thumb_height;
+
+        Some(TerminalScrollbarHit {
+            local_y,
+            thumb_hit,
+            thumb_top: metrics.thumb_top,
+        })
+    }
+
+    fn apply_terminal_scroll_offset(&mut self, target_offset: f32) -> bool {
+        let (display_offset, history_size) = self.active_terminal().scroll_state();
+        let line_height: f32 = self.active_terminal().size().cell_height.into();
+        if line_height <= f32::EPSILON {
+            return false;
+        }
+
+        let max_offset = history_size as f32 * line_height;
+        let target_display_offset = (scrollbar::invert_offset_axis(target_offset, max_offset)
+            / line_height)
+            .round()
+            .clamp(0.0, history_size as f32)
+            .round() as i32;
+        let delta = target_display_offset - display_offset as i32;
+        if delta == 0 {
+            return false;
+        }
+
+        self.active_terminal().scroll_display(delta)
+    }
+
+    fn handle_terminal_scrollbar_mouse_down(
+        &mut self,
+        hit: TerminalScrollbarHit,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((range, metrics)) = self.terminal_scrollbar_range_and_metrics() else {
+            return;
+        };
+
+        if hit.thumb_hit {
+            let thumb_grab_offset = (hit.local_y - hit.thumb_top).clamp(0.0, metrics.thumb_height);
+            self.start_terminal_scrollbar_drag(thumb_grab_offset, cx);
+            cx.notify();
+            return;
+        }
+
+        let changed = self.apply_terminal_scroll_offset(scrollbar::offset_from_track_click(
+            hit.local_y,
+            range,
+            metrics,
+        ));
+        if changed {
+            self.terminal_scroll_accumulator_y = 0.0;
+        }
+        self.mark_terminal_scrollbar_activity(cx);
+        cx.notify();
+    }
+
+    fn handle_terminal_scrollbar_drag(
+        &mut self,
+        position: gpui::Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(drag) = self.terminal_scrollbar_drag else {
+            return;
+        };
+        let Some(viewport) = self.terminal_viewport_geometry() else {
+            return;
+        };
+        let Some((range, metrics)) = self.terminal_scrollbar_range_and_metrics() else {
+            return;
+        };
+
+        let y: f32 = position.y.into();
+        let local_y = (y - viewport.origin_y).clamp(0.0, viewport.height);
+        let thumb_top = (local_y - drag.thumb_grab_offset).clamp(0.0, metrics.travel);
+        let changed = self.apply_terminal_scroll_offset(scrollbar::offset_from_thumb_top(
+            thumb_top, range, metrics,
+        ));
+        if changed {
+            self.terminal_scroll_accumulator_y = 0.0;
+            cx.notify();
+        }
+    }
+
     fn command_shortcuts_suspended(&self) -> bool {
         self.has_active_inline_input()
     }
@@ -796,7 +935,7 @@ impl TerminalView {
         if let Some(input) = keystroke_to_input(&event.keystroke) {
             // Check if this is Ctrl+C (0x03) - scroll to bottom to show where we are
             if input == [0x03] {
-                self.scroll_to_bottom();
+                self.scroll_to_bottom(cx);
             }
 
             self.active_terminal().write(&input);
@@ -806,12 +945,13 @@ impl TerminalView {
         }
     }
 
-    fn scroll_to_bottom(&mut self) {
+    fn scroll_to_bottom(&mut self, cx: &mut Context<Self>) {
         let (display_offset, _) = self.active_terminal().scroll_state();
         if display_offset > 0 {
             // Scroll down to offset 0 (live output)
             self.active_terminal()
                 .scroll_display(-(display_offset as i32));
+            self.mark_terminal_scrollbar_activity(cx);
         }
     }
 
@@ -826,6 +966,12 @@ impl TerminalView {
         self.reset_cursor_blink_phase();
 
         if event.button != MouseButton::Left {
+            return;
+        }
+
+        if let Some(hit) = self.terminal_scrollbar_hit_test(event.position) {
+            self.handle_terminal_scrollbar_mouse_down(hit, cx);
+            cx.stop_propagation();
             return;
         }
 
@@ -864,6 +1010,14 @@ impl TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.terminal_scrollbar_drag.is_some() {
+            if event.dragging() {
+                self.handle_terminal_scrollbar_drag(event.position, cx);
+            }
+            cx.stop_propagation();
+            return;
+        }
+
         if !self.selection_dragging || !event.dragging() {
             if Self::is_link_modifier(event.modifiers) {
                 let next = self
@@ -899,6 +1053,12 @@ impl TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if event.button == MouseButton::Left && self.finish_terminal_scrollbar_drag(cx) {
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
+
         if event.button != MouseButton::Left || !self.selection_dragging {
             return;
         }
@@ -945,6 +1105,11 @@ impl TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        cx.stop_propagation();
+        if matches!(event.touch_phase, TouchPhase::Moved) {
+            self.mark_terminal_scrollbar_activity(cx);
+        }
+
         let delta_lines = self.terminal_scroll_delta_to_lines(event);
         if delta_lines == 0 {
             return;

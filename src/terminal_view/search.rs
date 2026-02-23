@@ -39,7 +39,7 @@ impl TerminalView {
         }
 
         self.search_state.next_match();
-        self.scroll_to_current_match();
+        self.scroll_to_current_match(cx);
         cx.notify();
     }
 
@@ -49,11 +49,11 @@ impl TerminalView {
         }
 
         self.search_state.previous_match();
-        self.scroll_to_current_match();
+        self.scroll_to_current_match(cx);
         cx.notify();
     }
 
-    fn scroll_to_current_match(&mut self) {
+    fn scroll_to_current_match(&mut self, cx: &mut Context<Self>) {
         let Some(current) = self.search_state.results().current() else {
             return;
         };
@@ -91,6 +91,7 @@ impl TerminalView {
 
         if delta != 0 {
             self.active_terminal().scroll_display(delta);
+            self.mark_terminal_scrollbar_activity(cx);
         }
     }
 
@@ -154,7 +155,7 @@ impl TerminalView {
                 this.update(cx, |view, cx| {
                     if view.search_debounce_token == token {
                         view.perform_search();
-                        view.scroll_to_current_match();
+                        view.scroll_to_current_match(cx);
                         cx.notify();
                     }
                 })

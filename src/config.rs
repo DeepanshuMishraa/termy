@@ -63,6 +63,8 @@ padding_x = 12\n\
 padding_y = 8\n\
 # Mouse wheel scroll speed multiplier\n\
 # mouse_scroll_multiplier = 3\n\
+# Terminal scrollbar visibility: off | on | on_scroll\n\
+# scrollbar_visibility = on_scroll\n\
 \n\
 # Advanced runtime settings (usually leave these as defaults)\n\
 # Preferred shell executable path\n\
@@ -323,6 +325,30 @@ impl Default for CursorStyle {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalScrollbarVisibility {
+    Off,
+    On,
+    OnScroll,
+}
+
+impl TerminalScrollbarVisibility {
+    fn from_str(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "off" | "never" => Some(Self::Off),
+            "on" | "always" => Some(Self::On),
+            "on_scroll" | "onscroll" | "auto" => Some(Self::OnScroll),
+            _ => None,
+        }
+    }
+}
+
+impl Default for TerminalScrollbarVisibility {
+    fn default() -> Self {
+        Self::OnScroll
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct CustomColors {
     pub foreground: Option<Rgba>,
@@ -353,6 +379,7 @@ pub struct AppConfig {
     pub padding_x: f32,
     pub padding_y: f32,
     pub mouse_scroll_multiplier: f32,
+    pub terminal_scrollbar_visibility: TerminalScrollbarVisibility,
     pub scrollback_history: usize,
     pub inactive_tab_scrollback: Option<usize>,
     pub command_palette_show_keybinds: bool,
@@ -389,6 +416,7 @@ impl Default for AppConfig {
             padding_x: 12.0,
             padding_y: 8.0,
             mouse_scroll_multiplier: DEFAULT_MOUSE_SCROLL_MULTIPLIER,
+            terminal_scrollbar_visibility: TerminalScrollbarVisibility::default(),
             scrollback_history: DEFAULT_SCROLLBACK_HISTORY,
             inactive_tab_scrollback: DEFAULT_INACTIVE_TAB_SCROLLBACK,
             command_palette_show_keybinds: true,
@@ -601,6 +629,14 @@ impl AppConfig {
                 {
                     config.mouse_scroll_multiplier =
                         multiplier.clamp(MIN_MOUSE_SCROLL_MULTIPLIER, MAX_MOUSE_SCROLL_MULTIPLIER);
+                }
+            }
+
+            if key.eq_ignore_ascii_case("terminal_scrollbar_visibility")
+                || key.eq_ignore_ascii_case("scrollbar_visibility")
+            {
+                if let Some(visibility) = TerminalScrollbarVisibility::from_str(value) {
+                    config.terminal_scrollbar_visibility = visibility;
                 }
             }
 
@@ -922,8 +958,8 @@ fn config_path() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppConfig, CursorStyle, TabTitleMode, TabTitleSource, WorkingDirFallback,
-        replace_or_insert_section, upsert_theme_assignment,
+        AppConfig, CursorStyle, TabTitleMode, TabTitleSource, TerminalScrollbarVisibility,
+        WorkingDirFallback, replace_or_insert_section, upsert_theme_assignment,
     };
 
     #[test]
@@ -1015,6 +1051,39 @@ mod tests {
 
         let disabled = AppConfig::from_contents("command_palette_show_keybinds = false\n");
         assert!(!disabled.command_palette_show_keybinds);
+    }
+
+    #[test]
+    fn terminal_scrollbar_visibility_parses_and_defaults() {
+        let defaults = AppConfig::from_contents("");
+        assert_eq!(
+            defaults.terminal_scrollbar_visibility,
+            TerminalScrollbarVisibility::OnScroll
+        );
+
+        let off = AppConfig::from_contents("terminal_scrollbar_visibility = off\n");
+        assert_eq!(
+            off.terminal_scrollbar_visibility,
+            TerminalScrollbarVisibility::Off
+        );
+
+        let on = AppConfig::from_contents("terminal_scrollbar_visibility = on\n");
+        assert_eq!(
+            on.terminal_scrollbar_visibility,
+            TerminalScrollbarVisibility::On
+        );
+
+        let alias = AppConfig::from_contents("scrollbar_visibility = auto\n");
+        assert_eq!(
+            alias.terminal_scrollbar_visibility,
+            TerminalScrollbarVisibility::OnScroll
+        );
+
+        let invalid = AppConfig::from_contents("terminal_scrollbar_visibility = nope\n");
+        assert_eq!(
+            invalid.terminal_scrollbar_visibility,
+            TerminalScrollbarVisibility::OnScroll
+        );
     }
 
     #[test]

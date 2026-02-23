@@ -1,8 +1,107 @@
 use super::*;
+use crate::ui::scrollbar::{self, ScrollbarPaintStyle};
+use alacritty_terminal::grid::Dimensions;
 
 impl Focusable for TerminalView {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus_handle.clone()
+    }
+}
+
+impl TerminalView {
+    fn terminal_scrollbar_marker_offset(&self, max_offset: f32, line_height: f32) -> Option<f32> {
+        if !self.search_open {
+            return None;
+        }
+        if line_height <= f32::EPSILON {
+            return None;
+        }
+
+        let current = self.search_state.results().current()?;
+        let marker_display_offset = if current.line < 0 {
+            (-current.line) as f32 * line_height
+        } else {
+            0.0
+        };
+        Some(scrollbar::invert_offset_axis(
+            marker_display_offset,
+            max_offset,
+        ))
+    }
+
+    fn render_terminal_scrollbar_overlay(
+        &self,
+        display_offset: usize,
+        history_size: usize,
+        line_height: f32,
+    ) -> Option<AnyElement> {
+        let now = Instant::now();
+        let alpha = self.terminal_scrollbar_alpha(now);
+        if alpha <= f32::EPSILON && !self.terminal_scrollbar_visibility_controller.is_dragging() {
+            return None;
+        }
+        if line_height <= f32::EPSILON || history_size == 0 {
+            return None;
+        }
+
+        let viewport = self.terminal_viewport_geometry()?;
+        let max_offset = history_size as f32 * line_height;
+        let range = scrollbar::ScrollbarRange {
+            offset: scrollbar::invert_offset_axis(display_offset as f32 * line_height, max_offset),
+            max_offset,
+            viewport_extent: viewport.height,
+        };
+        let metrics = scrollbar::compute_metrics(range, TERMINAL_SCROLLBAR_MIN_THUMB_HEIGHT)?;
+        let overlay_style = self.overlay_style();
+        let gutter_bg = overlay_style.panel_background(TERMINAL_SCROLLBAR_GUTTER_ALPHA);
+        let style = ScrollbarPaintStyle {
+            width: TERMINAL_SCROLLBAR_TRACK_WIDTH,
+            track_radius: TERMINAL_SCROLLBAR_TRACK_RADIUS,
+            thumb_radius: TERMINAL_SCROLLBAR_THUMB_RADIUS,
+            thumb_inset: TERMINAL_SCROLLBAR_THUMB_INSET,
+            marker_inset: TERMINAL_SCROLLBAR_THUMB_INSET,
+            marker_radius: TERMINAL_SCROLLBAR_THUMB_RADIUS,
+            track_color: overlay_style.panel_foreground(TERMINAL_SCROLLBAR_TRACK_ALPHA),
+            thumb_color: overlay_style.panel_foreground(TERMINAL_SCROLLBAR_THUMB_ALPHA),
+            active_thumb_color: overlay_style
+                .panel_foreground(TERMINAL_SCROLLBAR_THUMB_ACTIVE_ALPHA),
+            marker_color: Some(overlay_style.panel_foreground(TERMINAL_SCROLLBAR_MARKER_ALPHA)),
+        }
+        .scale_alpha(alpha);
+
+        let marker_top = self
+            .terminal_scrollbar_marker_offset(range.max_offset, line_height)
+            .map(|offset| scrollbar::marker_top_for_offset(offset, range, metrics));
+        let track_left =
+            ((TERMINAL_SCROLLBAR_GUTTER_WIDTH - TERMINAL_SCROLLBAR_TRACK_WIDTH) * 0.5).max(0.0);
+
+        Some(
+            div()
+                .id("terminal-scrollbar-overlay")
+                .absolute()
+                .top_0()
+                .right_0()
+                .bottom_0()
+                .w(px(TERMINAL_SCROLLBAR_GUTTER_WIDTH))
+                .bg(gutter_bg)
+                .child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .left(px(track_left))
+                        .w(px(TERMINAL_SCROLLBAR_TRACK_WIDTH))
+                        .child(scrollbar::render_vertical(
+                            "terminal-scrollbar",
+                            metrics,
+                            style,
+                            self.terminal_scrollbar_visibility_controller.is_dragging(),
+                            marker_top,
+                            TERMINAL_SCROLLBAR_MARKER_HEIGHT,
+                        )),
+                )
+                .into_any_element(),
+        )
     }
 }
 
@@ -83,9 +182,13 @@ impl Render for TerminalView {
         } else {
             None
         };
+        let mut terminal_display_offset = 0usize;
+        let mut terminal_history_size = 0usize;
 
         self.active_terminal().with_term(|term| {
             let content = term.renderable_content();
+            terminal_display_offset = content.display_offset;
+            terminal_history_size = term.grid().history_size();
             let show_cursor = content.display_offset == 0 && cursor_visible;
             for cell in content.display_iter {
                 let point = cell.point;
@@ -614,6 +717,29 @@ impl Render for TerminalView {
             font_size,
             cursor_style: self.terminal_cursor_style(),
         };
+        if self.terminal_scrollbar_mode() == scrollbar::ScrollbarVisibilityMode::OnScroll
+            && !self.terminal_scrollbar_animation_active
+            && self.terminal_scrollbar_needs_animation(Instant::now())
+        {
+            self.start_terminal_scrollbar_animation(cx);
+        }
+        let terminal_line_height: f32 = terminal_size.cell_height.into();
+        let terminal_scrollbar_overlay = self.render_terminal_scrollbar_overlay(
+            terminal_display_offset,
+            terminal_history_size,
+            terminal_line_height,
+        );
+        let terminal_grid_layer = if let Some(viewport) = self.terminal_viewport_geometry() {
+            div()
+                .relative()
+                .w(px(viewport.width))
+                .h(px(viewport.height))
+                .child(terminal_grid)
+                .children(terminal_scrollbar_overlay)
+                .into_any_element()
+        } else {
+            div().child(terminal_grid).into_any_element()
+        };
         let command_palette_overlay = if self.command_palette_open {
             Some(self.render_command_palette_modal(cx))
         } else {
@@ -1088,7 +1214,7 @@ impl Render for TerminalView {
                     .bg(terminal_surface_bg_hsla)
                     .font_family(font_family.clone())
                     .text_size(font_size)
-                    .child(terminal_grid)
+                    .child(terminal_grid_layer)
                     .children(command_palette_overlay)
                     .children(search_overlay),
             )
