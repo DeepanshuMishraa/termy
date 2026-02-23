@@ -54,6 +54,7 @@ macro_rules! define_command_actions {
 define_command_actions!(
     (Quit, "quit", GLOBAL_CONTEXT),
     (OpenConfig, "open_config", GLOBAL_CONTEXT),
+    (ImportColors, "import_colors", TERMINAL_CONTEXT),
     (AppInfo, "app_info", TERMINAL_CONTEXT),
     (RestartApp, "restart_app", TERMINAL_CONTEXT),
     (RenameTab, "rename_tab", TERMINAL_CONTEXT),
@@ -70,7 +71,6 @@ define_command_actions!(
     (ZoomIn, "zoom_in", TERMINAL_CONTEXT),
     (ZoomOut, "zoom_out", TERMINAL_CONTEXT),
     (ZoomReset, "zoom_reset", TERMINAL_CONTEXT),
-    // Search
     (OpenSearch, "open_search", TERMINAL_CONTEXT),
     (CloseSearch, "close_search", TERMINAL_CONTEXT),
     (SearchNext, "search_next", TERMINAL_CONTEXT),

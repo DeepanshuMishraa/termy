@@ -454,6 +454,14 @@ impl TerminalView {
         changed
     }
 
+    pub(super) fn reload_config(&mut self, cx: &mut Context<Self>) {
+        if let Some(path) = &self.config_path {
+            self.config_last_modified = Self::config_last_modified(path);
+        }
+        let config = AppConfig::load_or_create();
+        self.apply_runtime_config(config, cx);
+    }
+
     fn tick_cursor_blink(&mut self) -> bool {
         if !self.cursor_blink {
             if self.cursor_blink_visible {

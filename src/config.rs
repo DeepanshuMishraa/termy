@@ -611,6 +611,106 @@ fn parse_color_entry(colors: &mut CustomColors, key: &str, value: &str) {
     }
 }
 
+pub fn import_colors_from_json(json_path: &Path) -> Result<String, String> {
+    let contents = fs::read_to_string(json_path)
+        .map_err(|e| format!("Failed to read file: {}", e))?;
+
+    let json: serde_json::Value = serde_json::from_str(&contents)
+        .map_err(|e| format!("Invalid JSON: {}", e))?;
+
+    let colors = json.as_object()
+        .ok_or_else(|| "JSON must be an object".to_string())?;
+
+    let mut color_lines = Vec::new();
+
+    for (key, value) in colors {
+        let hex = value.as_str()
+            .ok_or_else(|| format!("Color '{}' must be a hex string", key))?;
+
+        if parse_hex_color(hex).is_none() {
+            return Err(format!("Invalid hex color for '{}': {}", key, hex));
+        }
+
+        let config_key = match key.to_ascii_lowercase().as_str() {
+            "foreground" | "fg" => "foreground",
+            "background" | "bg" => "background",
+            "cursor" => "cursor",
+            "black" | "color0" => "black",
+            "red" | "color1" => "red",
+            "green" | "color2" => "green",
+            "yellow" | "color3" => "yellow",
+            "blue" | "color4" => "blue",
+            "magenta" | "color5" => "magenta",
+            "cyan" | "color6" => "cyan",
+            "white" | "color7" => "white",
+            "bright_black" | "brightblack" | "color8" => "bright_black",
+            "bright_red" | "brightred" | "color9" => "bright_red",
+            "bright_green" | "brightgreen" | "color10" => "bright_green",
+            "bright_yellow" | "brightyellow" | "color11" => "bright_yellow",
+            "bright_blue" | "brightblue" | "color12" => "bright_blue",
+            "bright_magenta" | "brightmagenta" | "color13" => "bright_magenta",
+            "bright_cyan" | "brightcyan" | "color14" => "bright_cyan",
+            "bright_white" | "brightwhite" | "color15" => "bright_white",
+            _ => continue,
+        };
+
+        color_lines.push(format!("{} = {}", config_key, hex));
+    }
+
+    if color_lines.is_empty() {
+        return Err("No valid colors found in JSON".to_string());
+    }
+
+    let config_path = ensure_config_file()
+        .ok_or_else(|| "Could not locate config file".to_string())?;
+
+    let existing = fs::read_to_string(&config_path).unwrap_or_default();
+    let mut new_config = String::new();
+    let mut in_colors_section = false;
+    let mut colors_section_found = false;
+
+    for line in existing.lines() {
+        let trimmed = line.trim();
+
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            if in_colors_section {
+                in_colors_section = false;
+            }
+            if trimmed.eq_ignore_ascii_case("[colors]") {
+                colors_section_found = true;
+                in_colors_section = true;
+                new_config.push_str(line);
+                new_config.push('\n');
+                for color_line in &color_lines {
+                    new_config.push_str(color_line);
+                    new_config.push('\n');
+                }
+                continue;
+            }
+        }
+
+        if in_colors_section {
+            continue;
+        }
+
+        new_config.push_str(line);
+        new_config.push('\n');
+    }
+
+    if !colors_section_found {
+        new_config.push_str("\n[colors]\n");
+        for color_line in &color_lines {
+            new_config.push_str(color_line);
+            new_config.push('\n');
+        }
+    }
+
+    fs::write(&config_path, new_config)
+        .map_err(|e| format!("Failed to write config: {}", e))?;
+
+    Ok(format!("Imported {} colors", color_lines.len()))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkingDirFallback {
     Home,

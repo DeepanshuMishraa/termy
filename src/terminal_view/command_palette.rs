@@ -106,6 +106,9 @@ impl TerminalView {
             CommandAction::ToggleSearchRegex => {
                 self.command_palette_binding_badge(&commands::ToggleSearchRegex, window)
             }
+            CommandAction::ImportColors => {
+                self.command_palette_binding_badge(&commands::ImportColors, window)
+            }
         }
     }
 
@@ -144,6 +147,11 @@ impl TerminalView {
                 title: "Open Config",
                 keywords: "settings preferences",
                 action: CommandAction::OpenConfig,
+            },
+            CommandPaletteItem {
+                title: "Import Colors",
+                keywords: "theme palette json",
+                action: CommandAction::ImportColors,
             },
             CommandPaletteItem {
                 title: "Zoom In",
@@ -510,6 +518,7 @@ impl TerminalView {
             CommandAction::ZoomIn => termy_toast::info("Zoomed in"),
             CommandAction::ZoomOut => termy_toast::info("Zoomed out"),
             CommandAction::ZoomReset => termy_toast::info("Zoom reset"),
+            CommandAction::ImportColors => {}
             CommandAction::Quit
             | CommandAction::AppInfo
             | CommandAction::RestartApp

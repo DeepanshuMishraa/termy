@@ -38,6 +38,12 @@ anyhow = "1.0"
 log = "0.4"
 env_logger = "0.11"
 
+# File dialogs
+rfd = "0.15"
+
+# JSON parsing
+serde_json = "1.0"
+
 # Termy Workspace Crates
 termy_auto_update = { path = "crates/auto_update" }
 termy_themes = { path = "crates/themes" }
