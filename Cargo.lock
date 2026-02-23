@@ -5318,6 +5318,7 @@ dependencies = [
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
+ "windows 0.61.3",
 ]
 
 [[package]]
