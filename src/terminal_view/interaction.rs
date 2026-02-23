@@ -459,6 +459,9 @@ impl TerminalView {
                     self.open_command_palette(cx);
                 }
             }
+            CommandAction::SwitchTheme => {
+                self.open_theme_palette(cx);
+            }
             _ if shortcuts_suspended => {}
             CommandAction::Quit => cx.quit(),
             CommandAction::OpenConfig => config::open_config_file(),
@@ -574,6 +577,24 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) {
         self.execute_command_action(CommandAction::ToggleCommandPalette, true, cx);
+    }
+
+    pub(super) fn handle_import_colors_action(
+        &mut self,
+        _: &commands::ImportColors,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.execute_command_action(CommandAction::ImportColors, true, cx);
+    }
+
+    pub(super) fn handle_switch_theme_action(
+        &mut self,
+        _: &commands::SwitchTheme,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.execute_command_action(CommandAction::SwitchTheme, true, cx);
     }
 
     pub(super) fn handle_app_info_action(

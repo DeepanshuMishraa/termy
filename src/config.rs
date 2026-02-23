@@ -105,6 +105,53 @@ fn parse_theme_id(value: &str) -> Option<ThemeId> {
     }
 }
 
+fn upsert_theme_assignment(contents: &str, theme_id: &str) -> String {
+    let mut new_config = String::new();
+    let mut replaced = false;
+    let mut inserted_before_first_section = false;
+    let mut in_root_section = true;
+
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        let is_section_header = trimmed.starts_with('[') && trimmed.ends_with(']');
+
+        if is_section_header {
+            if !replaced && !inserted_before_first_section {
+                new_config.push_str(&format!("theme = {}\n", theme_id));
+                inserted_before_first_section = true;
+            }
+            in_root_section = false;
+            new_config.push_str(line);
+            new_config.push('\n');
+            continue;
+        }
+
+        if in_root_section {
+            let mut parts = trimmed.splitn(2, '=');
+            let key = parts.next().unwrap_or("").trim();
+            if key.eq_ignore_ascii_case("theme") {
+                if !replaced {
+                    new_config.push_str(&format!("theme = {}\n", theme_id));
+                    replaced = true;
+                }
+                continue;
+            }
+        }
+
+        new_config.push_str(line);
+        new_config.push('\n');
+    }
+
+    if !replaced && !inserted_before_first_section {
+        if !new_config.is_empty() && !new_config.ends_with('\n') {
+            new_config.push('\n');
+        }
+        new_config.push_str(&format!("theme = {}\n", theme_id));
+    }
+
+    new_config
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TabTitleSource {
     Manual,
@@ -722,6 +769,17 @@ pub fn import_colors_from_json(json_path: &Path) -> Result<String, String> {
     Ok(format!("Imported {} colors", color_lines.len()))
 }
 
+pub fn set_theme_in_config(theme_id: &str) -> Result<String, String> {
+    let theme = parse_theme_id(theme_id).ok_or_else(|| "Invalid theme id".to_string())?;
+    let config_path =
+        ensure_config_file().ok_or_else(|| "Could not locate config file".to_string())?;
+    let existing =
+        fs::read_to_string(&config_path).map_err(|e| format!("Failed to read config: {}", e))?;
+    let updated = upsert_theme_assignment(&existing, &theme);
+    fs::write(&config_path, updated).map_err(|e| format!("Failed to write config: {}", e))?;
+    Ok(format!("Theme set to {}", theme))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkingDirFallback {
     Home,
@@ -840,7 +898,10 @@ fn config_path() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppConfig, CursorStyle, TabTitleMode, TabTitleSource, WorkingDirFallback};
+    use super::{
+        AppConfig, CursorStyle, TabTitleMode, TabTitleSource, WorkingDirFallback,
+        upsert_theme_assignment,
+    };
 
     #[test]
     fn tab_title_mode_sets_default_priority() {
@@ -1055,5 +1116,22 @@ mod tests {
         assert!(config.colors.ansi[1].is_some());
         assert!(config.colors.ansi[10].is_some());
         assert!(config.colors.ansi[2].is_none());
+    }
+
+    #[test]
+    fn upsert_theme_assignment_replaces_existing_root_theme() {
+        let input = "theme = termy\nfont_size = 14\n";
+        let output = upsert_theme_assignment(input, "nord");
+        assert_eq!(output, "theme = nord\nfont_size = 14\n");
+    }
+
+    #[test]
+    fn upsert_theme_assignment_inserts_before_first_section_when_missing() {
+        let input = "font_size = 14\n\n[colors]\nforeground = #ffffff\n";
+        let output = upsert_theme_assignment(input, "tokyo-night");
+        assert_eq!(
+            output,
+            "font_size = 14\n\ntheme = tokyo-night\n[colors]\nforeground = #ffffff\n"
+        );
     }
 }

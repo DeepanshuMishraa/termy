@@ -154,11 +154,23 @@ struct HoveredLink {
     target: String,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CommandPaletteMode {
+    Commands,
+    Themes,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum CommandPaletteItemKind {
+    Command(CommandAction),
+    Theme(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct CommandPaletteItem {
-    title: &'static str,
-    keywords: &'static str,
-    action: CommandAction,
+    title: String,
+    keywords: String,
+    kind: CommandPaletteItemKind,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -374,6 +386,7 @@ pub struct TerminalView {
     rename_input: InlineInputState,
     event_wakeup_tx: Sender<()>,
     focus_handle: FocusHandle,
+    theme_id: String,
     colors: TerminalColors,
     use_tabs: bool,
     max_tabs: usize,
@@ -409,6 +422,7 @@ pub struct TerminalView {
     toast_animation_scheduled: bool,
     toast_manager: ToastManager,
     command_palette_open: bool,
+    command_palette_mode: CommandPaletteMode,
     command_palette_input: InlineInputState,
     command_palette_filtered_items: Vec<CommandPaletteItem>,
     command_palette_selected: usize,
@@ -569,6 +583,7 @@ impl TerminalView {
 
         let config_path = config::ensure_config_file();
         let config_last_modified = config_path.as_ref().and_then(Self::config_last_modified);
+        let theme_id = config.theme.clone();
         let colors = TerminalColors::from_theme(&config.theme, &config.colors);
         let base_font_size = config.font_size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
         let padding_x = config.padding_x.max(0.0);
@@ -597,6 +612,7 @@ impl TerminalView {
             rename_input: InlineInputState::new(String::new()),
             event_wakeup_tx,
             focus_handle,
+            theme_id,
             colors,
             use_tabs: config.use_tabs,
             max_tabs: config.max_tabs,
@@ -632,6 +648,7 @@ impl TerminalView {
             toast_animation_scheduled: false,
             toast_manager: ToastManager::new(),
             command_palette_open: false,
+            command_palette_mode: CommandPaletteMode::Commands,
             command_palette_input: InlineInputState::new(String::new()),
             command_palette_filtered_items: Vec::new(),
             command_palette_selected: 0,
@@ -678,6 +695,7 @@ impl TerminalView {
 
     fn apply_runtime_config(&mut self, config: AppConfig, cx: &mut Context<Self>) -> bool {
         keybindings::install_keybindings(cx, &config);
+        self.theme_id = config.theme.clone();
         self.colors = TerminalColors::from_theme(&config.theme, &config.colors);
         self.use_tabs = config.use_tabs;
         self.tab_title = config.tab_title.clone();

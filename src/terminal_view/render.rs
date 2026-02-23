@@ -1042,6 +1042,8 @@ impl Render for TerminalView {
                     .track_focus(&focus_handle)
                     .key_context(key_context)
                     .on_action(cx.listener(Self::handle_toggle_command_palette_action))
+                    .on_action(cx.listener(Self::handle_import_colors_action))
+                    .on_action(cx.listener(Self::handle_switch_theme_action))
                     .on_action(cx.listener(Self::handle_app_info_action))
                     .on_action(cx.listener(Self::handle_restart_app_action))
                     .on_action(cx.listener(Self::handle_rename_tab_action))

@@ -113,6 +113,7 @@ Explicit payload examples:
 `theme`
 - Default: `termy`
 - Values: `termy`, `tokyonight`, `catppuccin`, `dracula`, `gruvbox`, `nord`, `solarized`, `onedark`, `monokai`, `material`, `palenight`, `tomorrow`, `oceanic`
+- Tip: command palette `Switch Theme` updates this value and persists it to config.
 
 `working_dir`
 - Default: unset
@@ -297,7 +298,12 @@ bright_white = #ffffff
 
 ### Importing Colors from JSON
 
-Use the command palette action "Import Colors from JSON" to import colors from a JSON file. The JSON format is:
+Use command palette actions:
+
+- `Switch Theme` to pick and persist a theme quickly
+- `Import Colors` to import a `[colors]` override from JSON
+
+JSON format for `Import Colors`:
 
 ```json
 {

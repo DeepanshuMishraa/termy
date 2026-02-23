@@ -52,6 +52,8 @@ Configurable actions:
 
 - `quit`
 - `open_config`
+- `import_colors` (unbound by default)
+- `switch_theme` (unbound by default)
 - `app_info` (unbound by default)
 - `restart_app` (unbound by default)
 - `rename_tab` (unbound by default)
@@ -64,6 +66,12 @@ Configurable actions:
 - `zoom_in`
 - `zoom_out`
 - `zoom_reset`
+- `open_search`
+- `close_search` (unbound by default)
+- `search_next` (unbound by default)
+- `search_previous` (unbound by default)
+- `toggle_search_case_sensitive` (unbound by default)
+- `toggle_search_regex` (unbound by default)
 
 ## Customization Examples
 
@@ -119,4 +127,5 @@ keybind = secondary-t=new_tab
 keybind = secondary-i=app_info
 keybind = secondary-r=restart_app
 keybind = secondary-e=rename_tab
+keybind = secondary-shift-t=switch_theme
 ```

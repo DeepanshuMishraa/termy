@@ -2,6 +2,31 @@ use super::*;
 use gpui::{point, uniform_list};
 use std::ops::Range;
 
+impl CommandPaletteItem {
+    fn command(title: &str, keywords: &str, action: CommandAction) -> Self {
+        Self {
+            title: title.to_string(),
+            keywords: keywords.to_string(),
+            kind: CommandPaletteItemKind::Command(action),
+        }
+    }
+
+    fn theme(theme_id: String, is_active: bool) -> Self {
+        let title = if is_active {
+            format!("✓ {}", theme_id)
+        } else {
+            theme_id.clone()
+        };
+        let keywords = format!("theme palette colors {}", theme_id.replace('-', " "));
+
+        Self {
+            title,
+            keywords,
+            kind: CommandPaletteItemKind::Theme(theme_id),
+        }
+    }
+}
+
 impl TerminalView {
     fn command_palette_base_scroll_handle(&self) -> gpui::ScrollHandle {
         self.command_palette_scroll_handle
@@ -27,98 +52,36 @@ impl TerminalView {
         self.inline_input_selecting = false;
     }
 
-    fn format_keybinding_label(binding: &gpui::KeyBinding) -> String {
-        binding
-            .keystrokes()
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join(" ")
-    }
-
-    fn command_palette_binding_badge<A: gpui::Action>(
-        &self,
-        action: &A,
-        window: &Window,
-    ) -> Option<String> {
-        if let Some(binding) =
-            window.highest_precedence_binding_for_action_in(action, &self.focus_handle)
-        {
-            Some(Self::format_keybinding_label(&binding))
-        } else {
-            None
-        }
-    }
-
     fn command_palette_shortcut(&self, action: CommandAction, window: &Window) -> Option<String> {
         if !self.command_palette_show_keybinds {
             return None;
         }
 
-        match action {
-            CommandAction::Quit => self.command_palette_binding_badge(&commands::Quit, window),
-            CommandAction::OpenConfig => {
-                self.command_palette_binding_badge(&commands::OpenConfig, window)
-            }
-            CommandAction::AppInfo => {
-                self.command_palette_binding_badge(&commands::AppInfo, window)
-            }
-            CommandAction::RestartApp => {
-                self.command_palette_binding_badge(&commands::RestartApp, window)
-            }
-            CommandAction::RenameTab => {
-                self.command_palette_binding_badge(&commands::RenameTab, window)
-            }
-            CommandAction::CheckForUpdates => {
-                self.command_palette_binding_badge(&commands::CheckForUpdates, window)
-            }
-            CommandAction::ToggleCommandPalette => {
-                self.command_palette_binding_badge(&commands::ToggleCommandPalette, window)
-            }
-            CommandAction::NewTab => self.command_palette_binding_badge(&commands::NewTab, window),
-            CommandAction::CloseTab => {
-                self.command_palette_binding_badge(&commands::CloseTab, window)
-            }
-            CommandAction::Copy => self.command_palette_binding_badge(&commands::Copy, window),
-            CommandAction::Paste => self.command_palette_binding_badge(&commands::Paste, window),
-            CommandAction::ZoomIn => self.command_palette_binding_badge(&commands::ZoomIn, window),
-            CommandAction::ZoomOut => {
-                self.command_palette_binding_badge(&commands::ZoomOut, window)
-            }
-            CommandAction::ZoomReset => {
-                self.command_palette_binding_badge(&commands::ZoomReset, window)
-            }
-            CommandAction::OpenSearch => {
-                self.command_palette_binding_badge(&commands::OpenSearch, window)
-            }
-            CommandAction::CloseSearch => {
-                self.command_palette_binding_badge(&commands::CloseSearch, window)
-            }
-            CommandAction::SearchNext => {
-                self.command_palette_binding_badge(&commands::SearchNext, window)
-            }
-            CommandAction::SearchPrevious => {
-                self.command_palette_binding_badge(&commands::SearchPrevious, window)
-            }
-            CommandAction::ToggleSearchCaseSensitive => {
-                self.command_palette_binding_badge(&commands::ToggleSearchCaseSensitive, window)
-            }
-            CommandAction::ToggleSearchRegex => {
-                self.command_palette_binding_badge(&commands::ToggleSearchRegex, window)
-            }
-            CommandAction::ImportColors => {
-                self.command_palette_binding_badge(&commands::ImportColors, window)
-            }
-        }
+        action.keybinding_label(window, &self.focus_handle)
+    }
+
+    fn set_command_palette_mode(
+        &mut self,
+        mode: CommandPaletteMode,
+        animate_selection: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.command_palette_mode = mode;
+        self.reset_command_palette_state();
+        self.refresh_command_palette_matches(animate_selection, cx);
+        self.reset_cursor_blink_phase();
+
+        cx.notify();
     }
 
     pub(super) fn open_command_palette(&mut self, cx: &mut Context<Self>) {
         self.command_palette_open = true;
-        self.reset_command_palette_state();
-        self.refresh_command_palette_matches(false, cx);
-        self.reset_cursor_blink_phase();
+        self.set_command_palette_mode(CommandPaletteMode::Commands, false, cx);
+    }
 
-        cx.notify();
+    pub(super) fn open_theme_palette(&mut self, cx: &mut Context<Self>) {
+        self.command_palette_open = true;
+        self.set_command_palette_mode(CommandPaletteMode::Themes, false, cx);
     }
 
     pub(super) fn close_command_palette(&mut self, cx: &mut Context<Self>) {
@@ -127,89 +90,41 @@ impl TerminalView {
         }
 
         self.command_palette_open = false;
+        self.command_palette_mode = CommandPaletteMode::Commands;
         self.reset_command_palette_state();
         cx.notify();
     }
 
     fn command_palette_items(&self) -> Vec<CommandPaletteItem> {
-        let mut items = vec![
-            CommandPaletteItem {
-                title: "App Info",
-                keywords: "information version about build",
-                action: CommandAction::AppInfo,
-            },
-            CommandPaletteItem {
-                title: "Restart App",
-                keywords: "relaunch reopen restart",
-                action: CommandAction::RestartApp,
-            },
-            CommandPaletteItem {
-                title: "Open Config",
-                keywords: "settings preferences",
-                action: CommandAction::OpenConfig,
-            },
-            CommandPaletteItem {
-                title: "Import Colors",
-                keywords: "theme palette json",
-                action: CommandAction::ImportColors,
-            },
-            CommandPaletteItem {
-                title: "Zoom In",
-                keywords: "font increase",
-                action: CommandAction::ZoomIn,
-            },
-            CommandPaletteItem {
-                title: "Zoom Out",
-                keywords: "font decrease",
-                action: CommandAction::ZoomOut,
-            },
-            CommandPaletteItem {
-                title: "Reset Zoom",
-                keywords: "font default",
-                action: CommandAction::ZoomReset,
-            },
-            CommandPaletteItem {
-                title: "Find",
-                keywords: "search lookup text",
-                action: CommandAction::OpenSearch,
-            },
-        ];
+        match self.command_palette_mode {
+            CommandPaletteMode::Commands => CommandAction::palette_entries(self.use_tabs)
+                .into_iter()
+                .map(|entry| CommandPaletteItem::command(entry.title, entry.keywords, entry.action))
+                .collect(),
+            CommandPaletteMode::Themes => self.command_palette_theme_items(),
+        }
+    }
 
-        if self.use_tabs {
-            items.insert(
-                0,
-                CommandPaletteItem {
-                    title: "Rename Tab",
-                    keywords: "title name",
-                    action: CommandAction::RenameTab,
-                },
-            );
-            items.insert(
-                0,
-                CommandPaletteItem {
-                    title: "Close Tab",
-                    keywords: "remove tab",
-                    action: CommandAction::CloseTab,
-                },
-            );
-            items.insert(
-                0,
-                CommandPaletteItem {
-                    title: "New Tab",
-                    keywords: "create tab",
-                    action: CommandAction::NewTab,
-                },
-            );
+    fn command_palette_theme_items(&self) -> Vec<CommandPaletteItem> {
+        let mut theme_ids: Vec<String> = termy_themes::available_theme_ids()
+            .into_iter()
+            .map(ToOwned::to_owned)
+            .collect();
+
+        if !theme_ids.iter().any(|theme| theme == &self.theme_id) {
+            theme_ids.push(self.theme_id.clone());
         }
 
-        #[cfg(target_os = "macos")]
-        items.push(CommandPaletteItem {
-            title: "Check for Updates",
-            keywords: "release version updater",
-            action: CommandAction::CheckForUpdates,
-        });
+        theme_ids.sort_unstable();
+        theme_ids.dedup();
 
-        items
+        theme_ids
+            .into_iter()
+            .map(|theme| {
+                let is_active = theme == self.theme_id;
+                CommandPaletteItem::theme(theme, is_active)
+            })
+            .collect()
     }
 
     pub(super) fn filtered_command_palette_items(&self) -> &[CommandPaletteItem] {
@@ -255,18 +170,18 @@ impl TerminalView {
 
         let has_title_matches = items
             .iter()
-            .any(|item| Self::command_palette_text_matches_terms(item.title, &query_terms));
+            .any(|item| Self::command_palette_text_matches_terms(&item.title, &query_terms));
 
         items
             .into_iter()
             .filter(|item| {
                 let title_match =
-                    Self::command_palette_text_matches_terms(item.title, &query_terms);
+                    Self::command_palette_text_matches_terms(&item.title, &query_terms);
                 if has_title_matches {
                     title_match
                 } else {
                     title_match
-                        || Self::command_palette_text_matches_terms(item.keywords, &query_terms)
+                        || Self::command_palette_text_matches_terms(&item.keywords, &query_terms)
                 }
             })
             .collect()
@@ -461,7 +376,11 @@ impl TerminalView {
     pub(super) fn handle_command_palette_key_down(&mut self, key: &str, cx: &mut Context<Self>) {
         match key {
             "escape" => {
-                self.close_command_palette(cx);
+                if self.command_palette_mode == CommandPaletteMode::Themes {
+                    self.set_command_palette_mode(CommandPaletteMode::Commands, false, cx);
+                } else {
+                    self.close_command_palette(cx);
+                }
                 return;
             }
             "enter" => {
@@ -497,16 +416,60 @@ impl TerminalView {
         }
 
         let index = self.command_palette_selected.min(items.len() - 1);
-        let action = items[index].action;
+        let item_kind = items[index].kind.clone();
 
-        self.execute_command_palette_action(action, cx);
+        self.execute_command_palette_item(item_kind, cx);
+    }
+
+    fn execute_command_palette_item(
+        &mut self,
+        item_kind: CommandPaletteItemKind,
+        cx: &mut Context<Self>,
+    ) {
+        match item_kind {
+            CommandPaletteItemKind::Command(action) => {
+                self.execute_command_palette_action(action, cx)
+            }
+            CommandPaletteItemKind::Theme(theme_id) => {
+                self.select_theme_from_palette(&theme_id, cx)
+            }
+        }
+    }
+
+    fn select_theme_from_palette(&mut self, theme_id: &str, cx: &mut Context<Self>) {
+        if theme_id == self.theme_id {
+            self.close_command_palette(cx);
+            termy_toast::info(format!("Theme already set to {}", theme_id));
+            return;
+        }
+
+        match config::set_theme_in_config(theme_id) {
+            Ok(message) => {
+                self.close_command_palette(cx);
+                self.reload_config(cx);
+                termy_toast::success(message);
+                cx.notify();
+            }
+            Err(error) => {
+                termy_toast::error(error);
+                cx.notify();
+            }
+        }
     }
 
     fn execute_command_palette_action(&mut self, action: CommandAction, cx: &mut Context<Self>) {
-        self.command_palette_open = false;
-        self.reset_command_palette_state();
+        let keep_open = action == CommandAction::SwitchTheme;
+        if !keep_open {
+            self.command_palette_open = false;
+            self.command_palette_mode = CommandPaletteMode::Commands;
+            self.reset_command_palette_state();
+        }
 
         self.execute_command_action(action, false, cx);
+
+        if keep_open {
+            return;
+        }
 
         match action {
             CommandAction::OpenConfig => {
@@ -520,6 +483,7 @@ impl TerminalView {
             CommandAction::ZoomReset => termy_toast::info("Zoom reset"),
             CommandAction::ImportColors => {}
             CommandAction::Quit
+            | CommandAction::SwitchTheme
             | CommandAction::AppInfo
             | CommandAction::RestartApp
             | CommandAction::RenameTab
@@ -583,13 +547,18 @@ impl TerminalView {
 
         let mut rows = Vec::with_capacity(range.len());
         for index in range {
-            let Some(item) = items.get(index).copied() else {
+            let Some(item) = items.get(index).cloned() else {
                 continue;
             };
 
             let is_selected = index == selected;
-            let action = item.action;
-            let shortcut = self.command_palette_shortcut(action, window);
+            let shortcut = match item.kind {
+                CommandPaletteItemKind::Command(action) => {
+                    self.command_palette_shortcut(action, window)
+                }
+                CommandPaletteItemKind::Theme(_) => None,
+            };
+            let item_kind = item.kind.clone();
 
             rows.push(
                 div()
@@ -620,7 +589,7 @@ impl TerminalView {
                         MouseButton::Left,
                         cx.listener(move |this, _event, _window, cx| {
                             this.command_palette_selected = index;
-                            this.execute_command_palette_action(action, cx);
+                            this.execute_command_palette_item(item_kind.clone(), cx);
                             cx.stop_propagation();
                         }),
                     )
@@ -633,7 +602,7 @@ impl TerminalView {
                             .items_center()
                             .justify_between()
                             .gap(px(8.0))
-                            .child(div().flex_1().truncate().child(item.title))
+                            .child(div().flex_1().truncate().child(item.title.clone()))
                             .children(shortcut.map(|label| {
                                 div()
                                     .flex_none()
@@ -660,6 +629,14 @@ impl TerminalView {
     pub(super) fn render_command_palette_modal(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let items = self.filtered_command_palette_items();
         let list_height = COMMAND_PALETTE_MAX_ITEMS as f32 * COMMAND_PALETTE_ROW_HEIGHT;
+        let mode_title = match self.command_palette_mode {
+            CommandPaletteMode::Commands => "Commands".to_string(),
+            CommandPaletteMode::Themes => format!("Theme: {}", self.theme_id),
+        };
+        let footer_hint = match self.command_palette_mode {
+            CommandPaletteMode::Commands => "Enter: Run  Esc: Close  Up/Down: Navigate",
+            CommandPaletteMode::Themes => "Enter: Apply Theme  Esc: Back  Up/Down: Navigate",
+        };
         let overlay_style = self.overlay_style();
         let overlay_bg = overlay_style.dim_background(COMMAND_PALETTE_DIM_ALPHA);
         let panel_bg = overlay_style.panel_background_with_floor(
@@ -690,7 +667,7 @@ impl TerminalView {
                         .py(px(8.0))
                         .text_size(px(12.0))
                         .text_color(muted_text)
-                        .child("No matching commands"),
+                        .child("No matching items"),
                 )
                 .into_any_element()
         } else {
@@ -779,6 +756,14 @@ impl TerminalView {
                             }))
                             .child(
                                 div()
+                                    .w_full()
+                                    .pb(px(6.0))
+                                    .text_size(px(11.0))
+                                    .text_color(muted_text)
+                                    .child(mode_title),
+                            )
+                            .child(
+                                div()
                                     .id("command-palette-input")
                                     .w_full()
                                     .h(px(34.0))
@@ -807,7 +792,7 @@ impl TerminalView {
                                     .pt(px(8.0))
                                     .text_size(px(11.0))
                                     .text_color(muted_text)
-                                    .child("Enter: Run  Esc: Close  Up/Down: Navigate"),
+                                    .child(footer_hint),
                             ),
                     ),
             )
@@ -819,38 +804,36 @@ impl TerminalView {
 mod tests {
     use super::*;
 
+    fn command_item(title: &str, keywords: &str, action: CommandAction) -> CommandPaletteItem {
+        CommandPaletteItem::command(title, keywords, action)
+    }
+
     #[test]
     fn query_re_prefers_title_matches_over_keywords() {
         let items = vec![
-            CommandPaletteItem {
-                title: "Close Tab",
-                keywords: "remove tab",
-                action: CommandAction::CloseTab,
-            },
-            CommandPaletteItem {
-                title: "Rename Tab",
-                keywords: "title name",
-                action: CommandAction::RenameTab,
-            },
-            CommandPaletteItem {
-                title: "Restart App",
-                keywords: "relaunch reopen restart",
-                action: CommandAction::RestartApp,
-            },
-            CommandPaletteItem {
-                title: "Reset Zoom",
-                keywords: "font default",
-                action: CommandAction::ZoomReset,
-            },
-            CommandPaletteItem {
-                title: "Check for Updates",
-                keywords: "release version updater",
-                action: CommandAction::CheckForUpdates,
-            },
+            command_item("Close Tab", "remove tab", CommandAction::CloseTab),
+            command_item("Rename Tab", "title name", CommandAction::RenameTab),
+            command_item(
+                "Restart App",
+                "relaunch reopen restart",
+                CommandAction::RestartApp,
+            ),
+            command_item("Reset Zoom", "font default", CommandAction::ZoomReset),
+            command_item(
+                "Check for Updates",
+                "release version updater",
+                CommandAction::CheckForUpdates,
+            ),
         ];
 
         let filtered = TerminalView::filter_command_palette_items_by_query(items, "re");
-        let actions: Vec<CommandAction> = filtered.into_iter().map(|item| item.action).collect();
+        let actions: Vec<CommandAction> = filtered
+            .into_iter()
+            .filter_map(|item| match item.kind {
+                CommandPaletteItemKind::Command(action) => Some(action),
+                CommandPaletteItemKind::Theme(_) => None,
+            })
+            .collect();
 
         assert_eq!(
             actions,
@@ -865,25 +848,19 @@ mod tests {
     #[test]
     fn query_uses_keywords_when_no_titles_match() {
         let items = vec![
-            CommandPaletteItem {
-                title: "Zoom In",
-                keywords: "font increase",
-                action: CommandAction::ZoomIn,
-            },
-            CommandPaletteItem {
-                title: "Zoom Out",
-                keywords: "font decrease",
-                action: CommandAction::ZoomOut,
-            },
-            CommandPaletteItem {
-                title: "Reset Zoom",
-                keywords: "font default",
-                action: CommandAction::ZoomReset,
-            },
+            command_item("Zoom In", "font increase", CommandAction::ZoomIn),
+            command_item("Zoom Out", "font decrease", CommandAction::ZoomOut),
+            command_item("Reset Zoom", "font default", CommandAction::ZoomReset),
         ];
 
         let filtered = TerminalView::filter_command_palette_items_by_query(items, "font");
-        let actions: Vec<CommandAction> = filtered.into_iter().map(|item| item.action).collect();
+        let actions: Vec<CommandAction> = filtered
+            .into_iter()
+            .filter_map(|item| match item.kind {
+                CommandPaletteItemKind::Command(action) => Some(action),
+                CommandPaletteItemKind::Theme(_) => None,
+            })
+            .collect();
 
         assert_eq!(
             actions,
