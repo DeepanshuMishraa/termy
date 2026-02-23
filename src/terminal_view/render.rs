@@ -591,34 +591,28 @@ impl Render for TerminalView {
             .hovered_link
             .as_ref()
             .map(|link| (link.row, link.start_col, link.end_col));
-        let tab_strip_scroll_offset_x: f32 = self.tab_strip_scroll_handle.offset().x.into();
-        let active_tab_baseline_gap = if show_tab_bar && self.active_tab < self.tabs.len() {
+        let active_tab_content_span = if show_tab_bar && self.active_tab < self.tabs.len() {
             let mut active_left = 0.0;
             for tab in self.tabs.iter().take(self.active_tab) {
                 active_left += tab.display_width + TAB_ITEM_GAP;
             }
-            let active_right = active_left + self.tabs[self.active_tab].display_width;
-            Some((
-                TAB_HORIZONTAL_PADDING + tab_strip_scroll_offset_x + active_left,
-                TAB_HORIZONTAL_PADDING + tab_strip_scroll_offset_x + active_right,
-            ))
+            Some((active_left, self.tabs[self.active_tab].display_width))
         } else {
             None
         };
-
         let mut tabs_scroll_content = div()
             .id("tabs-scroll-content")
             .flex_1()
             .min_w(px(0.0))
             .h(px(if show_tab_bar { TABBAR_HEIGHT } else { 0.0 }))
             .flex()
+            .relative()
             .items_end()
             .gap(px(TAB_ITEM_GAP))
             .overflow_x_scroll()
             .track_scroll(&self.tab_strip_scroll_handle)
             .on_scroll_wheel(
                 cx.listener(|_this, _event: &ScrollWheelEvent, _window, cx| {
-                    cx.notify();
                     cx.stop_propagation();
                 }),
             )
@@ -738,7 +732,7 @@ impl Render for TerminalView {
                                 cx.notify();
                             }
                             if event.dragging() {
-                                this.drag_tab_to(hover_tab_index, cx);
+                                this.drag_tab_to(hover_tab_index, event.position.x.into(), cx);
                             }
                             cx.stop_propagation();
                         }),
@@ -786,36 +780,37 @@ impl Render for TerminalView {
             }
         }
 
-        let mut tabs_row = div()
-            .w_full()
-            .h(px(if show_tab_bar { TABBAR_HEIGHT } else { 0.0 }))
-            .relative();
         if show_tab_bar {
-            let mut baseline_layer = div().absolute().left_0().right_0().bottom_0().h(px(1.0));
-
-            if let Some((gap_left, gap_right)) = active_tab_baseline_gap {
-                if gap_left > 0.0 {
-                    baseline_layer = baseline_layer.child(
-                        div()
-                            .absolute()
-                            .left_0()
-                            .bottom_0()
-                            .h(px(1.0))
-                            .w(px(gap_left))
-                            .bg(tabbar_border),
-                    );
-                }
-                baseline_layer = baseline_layer.child(
+            if let Some((active_left, active_width)) = active_tab_content_span {
+                let active_right = active_left + active_width;
+                tabs_scroll_content = tabs_scroll_content.child(
                     div()
                         .absolute()
-                        .left(px(gap_right))
+                        .left_0()
                         .right_0()
                         .bottom_0()
                         .h(px(1.0))
-                        .bg(tabbar_border),
+                        .child(
+                            div()
+                                .absolute()
+                                .left_0()
+                                .bottom_0()
+                                .h(px(1.0))
+                                .w(px(active_left.max(0.0)))
+                                .bg(tabbar_border),
+                        )
+                        .child(
+                            div()
+                                .absolute()
+                                .left(px(active_right))
+                                .right_0()
+                                .bottom_0()
+                                .h(px(1.0))
+                                .bg(tabbar_border),
+                        ),
                 );
             } else {
-                baseline_layer = baseline_layer.child(
+                tabs_scroll_content = tabs_scroll_content.child(
                     div()
                         .absolute()
                         .left_0()
@@ -825,18 +820,39 @@ impl Render for TerminalView {
                         .bg(tabbar_border),
                 );
             }
-
-            tabs_row = tabs_row.child(baseline_layer);
         }
-        tabs_row = tabs_row.child(
-            div()
-                .w_full()
-                .h_full()
-                .flex()
-                .items_end()
-                .px(px(TAB_HORIZONTAL_PADDING))
-                .child(tabs_scroll_content),
-        );
+
+        let tabs_row = div()
+            .w_full()
+            .h(px(if show_tab_bar { TABBAR_HEIGHT } else { 0.0 }))
+            .relative()
+            .children(show_tab_bar.then(|| {
+                div()
+                    .absolute()
+                    .left_0()
+                    .bottom_0()
+                    .h(px(1.0))
+                    .w(px(TAB_HORIZONTAL_PADDING))
+                    .bg(tabbar_border)
+            }))
+            .children(show_tab_bar.then(|| {
+                div()
+                    .absolute()
+                    .right_0()
+                    .bottom_0()
+                    .h(px(1.0))
+                    .w(px(TAB_HORIZONTAL_PADDING))
+                    .bg(tabbar_border)
+            }))
+            .child(
+                div()
+                    .w_full()
+                    .h_full()
+                    .flex()
+                    .items_end()
+                    .px(px(TAB_HORIZONTAL_PADDING))
+                    .child(tabs_scroll_content),
+            );
 
         // Build update banner element (macOS only)
         #[cfg(target_os = "macos")]

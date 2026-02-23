@@ -45,12 +45,59 @@ impl TerminalView {
         self.tab_drag = None;
     }
 
-    pub(super) fn drag_tab_to(&mut self, target_index: usize, cx: &mut Context<Self>) {
+    fn drag_reorder_crosses_threshold(
+        dragged_index: usize,
+        target_index: usize,
+        pointer_x: f32,
+        target_midpoint_x: f32,
+    ) -> bool {
+        if target_index > dragged_index {
+            pointer_x >= target_midpoint_x
+        } else if target_index < dragged_index {
+            pointer_x <= target_midpoint_x
+        } else {
+            false
+        }
+    }
+
+    fn tab_midpoint_x(&self, index: usize) -> Option<f32> {
+        if index >= self.tabs.len() {
+            return None;
+        }
+
+        let scroll_offset_x: f32 = self.tab_strip_scroll_handle.offset().x.into();
+        let mut left = TAB_HORIZONTAL_PADDING + scroll_offset_x;
+        for tab in self.tabs.iter().take(index) {
+            left += tab.display_width + TAB_ITEM_GAP;
+        }
+
+        Some(left + (self.tabs[index].display_width * 0.5))
+    }
+
+    pub(super) fn drag_tab_to(
+        &mut self,
+        target_index: usize,
+        pointer_x: f32,
+        cx: &mut Context<Self>,
+    ) {
         let Some(drag) = self.tab_drag else {
             return;
         };
 
         if target_index >= self.tabs.len() || drag.dragged_index == target_index {
+            return;
+        }
+
+        let Some(target_midpoint_x) = self.tab_midpoint_x(target_index) else {
+            return;
+        };
+
+        if !Self::drag_reorder_crosses_threshold(
+            drag.dragged_index,
+            target_index,
+            pointer_x,
+            target_midpoint_x,
+        ) {
             return;
         }
 
@@ -290,5 +337,21 @@ mod tests {
         assert!(TerminalView::tab_shows_close(true, None, 1));
         assert!(TerminalView::tab_shows_close(false, Some(1), 1));
         assert!(!TerminalView::tab_shows_close(false, Some(2), 1));
+    }
+
+    #[test]
+    fn drag_reorder_crosses_threshold_respects_direction() {
+        assert!(!TerminalView::drag_reorder_crosses_threshold(
+            0, 1, 49.0, 50.0
+        ));
+        assert!(TerminalView::drag_reorder_crosses_threshold(
+            0, 1, 50.0, 50.0
+        ));
+        assert!(!TerminalView::drag_reorder_crosses_threshold(
+            2, 1, 51.0, 50.0
+        ));
+        assert!(TerminalView::drag_reorder_crosses_threshold(
+            2, 1, 50.0, 50.0
+        ));
     }
 }
