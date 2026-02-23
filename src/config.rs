@@ -620,13 +620,14 @@ fn parse_color_entry(colors: &mut CustomColors, key: &str, value: &str) {
 }
 
 pub fn import_colors_from_json(json_path: &Path) -> Result<String, String> {
-    let contents = fs::read_to_string(json_path)
-        .map_err(|e| format!("Failed to read file: {}", e))?;
+    let contents =
+        fs::read_to_string(json_path).map_err(|e| format!("Failed to read file: {}", e))?;
 
-    let json: serde_json::Value = serde_json::from_str(&contents)
-        .map_err(|e| format!("Invalid JSON: {}", e))?;
+    let json: serde_json::Value =
+        serde_json::from_str(&contents).map_err(|e| format!("Invalid JSON: {}", e))?;
 
-    let colors = json.as_object()
+    let colors = json
+        .as_object()
         .ok_or_else(|| "JSON must be an object".to_string())?;
 
     let mut color_lines = Vec::new();
@@ -636,7 +637,8 @@ pub fn import_colors_from_json(json_path: &Path) -> Result<String, String> {
             continue;
         }
 
-        let hex = value.as_str()
+        let hex = value
+            .as_str()
             .ok_or_else(|| format!("Color '{}' must be a hex string", key))?;
 
         if parse_hex_color(hex).is_none() {
@@ -673,8 +675,8 @@ pub fn import_colors_from_json(json_path: &Path) -> Result<String, String> {
         return Err("No valid colors found in JSON".to_string());
     }
 
-    let config_path = ensure_config_file()
-        .ok_or_else(|| "Could not locate config file".to_string())?;
+    let config_path =
+        ensure_config_file().ok_or_else(|| "Could not locate config file".to_string())?;
 
     let existing = fs::read_to_string(&config_path).unwrap_or_default();
     let mut new_config = String::new();
@@ -715,8 +717,7 @@ pub fn import_colors_from_json(json_path: &Path) -> Result<String, String> {
         }
     }
 
-    fs::write(&config_path, new_config)
-        .map_err(|e| format!("Failed to write config: {}", e))?;
+    fs::write(&config_path, new_config).map_err(|e| format!("Failed to write config: {}", e))?;
 
     Ok(format!("Imported {} colors", color_lines.len()))
 }

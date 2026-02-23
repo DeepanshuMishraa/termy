@@ -100,7 +100,10 @@ fn main() {
                 window_background,
                 ..Default::default()
             },
-            move |window, cx| cx.new(move |cx| TerminalView::new(window, cx, startup_config)),
+            move |window, cx| {
+                let startup_config = startup_config.clone();
+                cx.new(move |cx| TerminalView::new(window, cx, startup_config))
+            },
         )
         .unwrap();
     });

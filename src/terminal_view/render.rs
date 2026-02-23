@@ -848,7 +848,8 @@ impl Render for TerminalView {
                     ),
                     termy_toast::ToastKind::Loading => {
                         // Animated spinner using braille characters
-                        const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+                        const SPINNER_FRAMES: &[&str] =
+                            &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
                         let elapsed_ms = toast.created_at.elapsed().as_millis() as usize;
                         let frame_index = (elapsed_ms / 80) % SPINNER_FRAMES.len();
                         (

@@ -313,7 +313,9 @@ pub fn update_toast(id: u64, kind: ToastKind, message: impl Into<String>) {
         kind,
         message: message.into(),
     };
-    let mut queue = pending_updates().lock().expect("toast update queue lock poisoned");
+    let mut queue = pending_updates()
+        .lock()
+        .expect("toast update queue lock poisoned");
     queue.push(update);
 }
 
@@ -349,6 +351,8 @@ pub fn drain_pending_with_id() -> Vec<ToastRequestWithId> {
 }
 
 pub fn drain_pending_updates() -> Vec<ToastUpdate> {
-    let mut queue = pending_updates().lock().expect("toast update queue lock poisoned");
+    let mut queue = pending_updates()
+        .lock()
+        .expect("toast update queue lock poisoned");
     std::mem::take(&mut *queue)
 }
