@@ -707,7 +707,7 @@ impl Render for TerminalView {
                     close_text_color.a = 0.0;
                 }
 
-                let mut close_button = div()
+                let close_button = div()
                     .w(px(TAB_CLOSE_SLOT_WIDTH))
                     .h(px(TAB_CLOSE_HITBOX))
                     .flex()
@@ -717,6 +717,21 @@ impl Render for TerminalView {
                     .text_color(close_text_color)
                     .text_size(px(12.0))
                     .child("×")
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _event: &MouseDownEvent, _window, cx| {
+                            let is_active = close_tab_index == this.active_tab;
+                            if Self::tab_shows_close(
+                                is_active,
+                                this.hovered_tab,
+                                this.hovered_tab_close,
+                                close_tab_index,
+                            ) {
+                                this.close_tab(close_tab_index, cx);
+                                cx.stop_propagation();
+                            }
+                        }),
+                    )
                     .on_mouse_move(cx.listener(
                         move |this, _event: &MouseMoveEvent, _window, cx| {
                             let mut hover_changed = false;
@@ -733,23 +748,13 @@ impl Render for TerminalView {
                             }
                             cx.stop_propagation();
                         },
-                    ));
-                if show_tab_close {
-                    close_button = close_button
-                        .hover(move |style| {
-                            style
-                                .bg(close_button_hover_bg)
-                                .text_color(close_button_hover_text)
-                        })
-                        .cursor_pointer()
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, _event: &MouseDownEvent, _window, cx| {
-                                this.close_tab(close_tab_index, cx);
-                                cx.stop_propagation();
-                            }),
-                        );
-                }
+                    ))
+                    .hover(move |style| {
+                        style
+                            .bg(close_button_hover_bg)
+                            .text_color(close_button_hover_text)
+                    })
+                    .cursor_pointer();
 
                 let tab_shell = div()
                     .flex_none()

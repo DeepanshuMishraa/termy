@@ -69,9 +69,10 @@ impl TerminalView {
     pub(super) fn tab_shows_close(
         is_active: bool,
         hovered_tab: Option<usize>,
+        hovered_tab_close: Option<usize>,
         index: usize,
     ) -> bool {
-        is_active || hovered_tab == Some(index)
+        is_active || hovered_tab == Some(index) || hovered_tab_close == Some(index)
     }
 
     fn remap_index_after_move(index: usize, from: usize, to: usize) -> usize {
@@ -295,6 +296,9 @@ impl TerminalView {
         self.hovered_tab = self
             .hovered_tab
             .map(|index| Self::remap_index_after_move(index, from, to));
+        self.hovered_tab_close = self
+            .hovered_tab_close
+            .map(|index| Self::remap_index_after_move(index, from, to));
 
         self.scroll_active_tab_into_view();
         cx.notify();
@@ -329,6 +333,7 @@ impl TerminalView {
         self.rename_input.clear();
         self.inline_input_selecting = false;
         self.hovered_tab = None;
+        self.hovered_tab_close = None;
         self.finish_tab_drag();
         self.clear_selection();
         self.scroll_active_tab_into_view();
@@ -361,6 +366,11 @@ impl TerminalView {
         }
 
         self.hovered_tab = match self.hovered_tab {
+            Some(hovered) if hovered == index => None,
+            Some(hovered) if hovered > index => Some(hovered - 1),
+            value => value,
+        };
+        self.hovered_tab_close = match self.hovered_tab_close {
             Some(hovered) if hovered == index => None,
             Some(hovered) if hovered > index => Some(hovered - 1),
             value => value,
@@ -496,9 +506,11 @@ mod tests {
 
     #[test]
     fn tab_shows_close_for_active_or_hovered() {
-        assert!(TerminalView::tab_shows_close(true, None, 1));
-        assert!(TerminalView::tab_shows_close(false, Some(1), 1));
-        assert!(!TerminalView::tab_shows_close(false, Some(2), 1));
+        assert!(TerminalView::tab_shows_close(true, None, None, 1));
+        assert!(TerminalView::tab_shows_close(false, Some(1), None, 1));
+        assert!(TerminalView::tab_shows_close(false, None, Some(1), 1));
+        assert!(!TerminalView::tab_shows_close(false, Some(2), None, 1));
+        assert!(!TerminalView::tab_shows_close(false, None, Some(2), 1));
     }
 
     #[test]
