@@ -1,50 +1,29 @@
 # Maintainer: Warre Snaet <warresnaet@icloud.com>
-pkgname=termy
+pkgname=termy-bin
 pkgver=0.1.27
 pkgrel=1
-pkgdesc="Minimal GPUI-powered terminal"
+pkgdesc="Minimal GPUI-powered terminal (pre-compiled binary)"
 arch=('x86_64')
 url="https://github.com/lassejlv/termy"
 license=('MIT')
 depends=('glibc' 'gcc-libs' 'freetype2' 'fontconfig' 'wayland' 'libxkbcommon')
-makedepends=('cargo' 'git')
-source=("termy-${pkgver}.tar.gz::https://github.com/lassejlv/termy/archive/refs/tags/v${pkgver}.tar.gz")
-sha256sums=('834c4488a91df8d12e30221016b47413b55f17b5aa950b956764bd8e0feadddc')
-
-prepare() {
-  cd "$pkgname-$pkgver"
-  export RUSTUP_TOOLCHAIN=stable
-  cargo fetch --target "$CARCH-unknown-linux-gnu"
-}
-
-build() {
-  cd "$pkgname-$pkgver"
-  export RUSTUP_TOOLCHAIN=stable
-  export CARGO_TARGET_DIR=target
-  cargo build --release --all-features
-}
-
-check() {
-  cd "$pkgname-$pkgver"
-  export RUSTUP_TOOLCHAIN=stable
-  cargo test --release --all-features
-}
+provides=('termy')
+conflicts=('termy')
+source=("termy-${pkgver}.tar.gz::https://github.com/lassejlv/termy/releases/download/v${pkgver}/Termy-v${pkgver}-linux-x86_64.tar.gz"
+        "termy.desktop"
+        "termy_icon.png::../../assets/termy_icon.png")
+sha256sums=('SKIP'
+            'SKIP'
+            'SKIP')
 
 package() {
-  cd "$pkgname-$pkgver"
-  install -Dm755 "target/release/termy" "$pkgdir/usr/bin/termy"
+  # The tarball extracts to a directory named "termy", and inside that is the "termy" binary
+  cd "$srcdir/termy"
   
-  # Install the license
-  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
-
-  # Install docs and standard README
-  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
-
-  # Install desktop file and icon if they exist in the source tree
-  if [ -f "packaging/linux/termy.desktop" ]; then
-    install -Dm644 "packaging/linux/termy.desktop" "$pkgdir/usr/share/applications/termy.desktop"
-  fi
-  if [ -f "assets/termy_icon.png" ]; then
-    install -Dm644 "assets/termy_icon.png" "$pkgdir/usr/share/pixmaps/termy.png"
-  fi
+  # Install the binary
+  install -Dm755 "termy" "$pkgdir/usr/bin/termy"
+  
+  # Install desktop file and icon
+  install -Dm644 "$srcdir/termy.desktop" "$pkgdir/usr/share/applications/termy.desktop"
+  install -Dm644 "$srcdir/termy_icon.png" "$pkgdir/usr/share/pixmaps/termy.png"
 }
