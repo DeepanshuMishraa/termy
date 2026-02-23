@@ -572,10 +572,9 @@ impl Render for TerminalView {
         active_tab_bg.a = 0.0;
         let mut hovered_tab_bg = colors.foreground;
         hovered_tab_bg.a = self.scaled_chrome_alpha(0.13);
-        let mut active_tab_border = colors.foreground;
-        active_tab_border.a = 0.22;
         let mut inactive_tab_border = colors.foreground;
         inactive_tab_border.a = 0.12;
+        let active_tab_border = inactive_tab_border;
         let mut active_tab_text = colors.foreground;
         active_tab_text.a = 0.95;
         let mut inactive_tab_text = colors.foreground;
@@ -609,6 +608,8 @@ impl Render for TerminalView {
 
         let mut tabs_scroll_content = div()
             .id("tabs-scroll-content")
+            .flex_1()
+            .min_w(px(0.0))
             .h(px(if show_tab_bar { TABBAR_HEIGHT } else { 0.0 }))
             .flex()
             .items_end()
@@ -704,6 +705,7 @@ impl Render for TerminalView {
                 }
 
                 let tab_shell = div()
+                    .flex_none()
                     .relative()
                     .bg(tab_bg)
                     .border_1()
