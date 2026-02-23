@@ -14,7 +14,7 @@ pub fn default_keybinds() -> Vec<DefaultKeybind> {
         },
         DefaultKeybind {
             trigger: "secondary-,",
-            action: CommandAction::OpenConfig,
+            action: CommandAction::OpenSettings,
         },
         DefaultKeybind {
             trigger: "secondary-p",
@@ -129,6 +129,11 @@ mod tests {
             defaults
                 .iter()
                 .all(|binding| binding.action != CommandAction::SwitchTheme)
+        );
+        assert!(
+            defaults
+                .iter()
+                .all(|binding| binding.action != CommandAction::NativeSdkExample)
         );
     }
 }

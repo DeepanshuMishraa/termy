@@ -894,6 +894,53 @@ pub fn set_theme_in_config(theme_id: &str) -> Result<String, String> {
     })
 }
 
+fn upsert_config_value(contents: &str, key: &str, value: &str) -> String {
+    let mut new_config = String::new();
+    let mut replaced = false;
+    let mut in_root_section = true;
+
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        let is_section_header = trimmed.starts_with('[') && trimmed.ends_with(']');
+
+        if is_section_header {
+            if !replaced && in_root_section {
+                new_config.push_str(&format!("{} = {}\n", key, value));
+                replaced = true;
+            }
+            in_root_section = false;
+        }
+
+        if in_root_section && !trimmed.starts_with('#') {
+            let mut parts = trimmed.splitn(2, '=');
+            let line_key = parts.next().unwrap_or("").trim();
+            if line_key.eq_ignore_ascii_case(key) {
+                if !replaced {
+                    new_config.push_str(&format!("{} = {}\n", key, value));
+                    replaced = true;
+                }
+                continue;
+            }
+        }
+
+        new_config.push_str(line);
+        new_config.push('\n');
+    }
+
+    if !replaced {
+        if !new_config.is_empty() && !new_config.ends_with('\n') {
+            new_config.push('\n');
+        }
+        new_config.push_str(&format!("{} = {}\n", key, value));
+    }
+
+    new_config
+}
+
+pub fn set_config_value(key: &str, value: &str) -> Result<(), String> {
+    update_config_contents(|existing| Ok((upsert_config_value(existing, key, value), ())))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkingDirFallback {
     Home,
