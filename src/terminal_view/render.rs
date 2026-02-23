@@ -10,36 +10,6 @@ impl Focusable for TerminalView {
 }
 
 impl TerminalView {
-    fn render_titlebar_icon_button(
-        &mut self,
-        id: &'static str,
-        icon: &'static str,
-        icon_size: f32,
-        _baseline_nudge: f32,
-        bg: gpui::Rgba,
-        text: gpui::Rgba,
-        action: impl Fn(&mut Self, &gpui::ClickEvent, &mut Window, &mut Context<Self>) + 'static,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        div()
-            .id(id)
-            .w(px(TITLEBAR_BUTTON_ICON_BOX_SIZE))
-            .h(px(TITLEBAR_BUTTON_ICON_BOX_SIZE))
-            .rounded_md()
-            .bg(bg)
-            .flex()
-            .items_center()
-            .justify_center()
-            .text_color(text)
-            .text_size(px(icon_size))
-            .cursor_pointer()
-            .on_click(cx.listener(move |this, event, window, cx| {
-                action(this, event, window, cx);
-            }))
-            .child(icon)
-            .into_any()
-    }
-
     fn refresh_terminal_scrollbar_marker_cache(
         &mut self,
         layout: terminal_scrollbar::TerminalScrollbarLayout,
