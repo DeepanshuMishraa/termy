@@ -69,10 +69,6 @@ impl SearchState {
         self.results_revision
     }
 
-    pub fn results_mut(&mut self) -> &mut SearchResults {
-        &mut self.results
-    }
-
     pub fn error(&self) -> Option<&str> {
         self.error.as_deref()
     }

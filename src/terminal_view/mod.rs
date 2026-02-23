@@ -615,6 +615,28 @@ impl TerminalView {
         )
     }
 
+    fn terminal_scrollbar_layout_for_track(
+        &self,
+        track_height: f32,
+    ) -> Option<scrollbar::TerminalScrollbarLayout> {
+        let size = self.active_terminal().size();
+        let viewport_rows = size.rows as usize;
+        if viewport_rows == 0 {
+            return None;
+        }
+
+        let line_height: f32 = size.cell_height.into();
+        let (display_offset, history_size) = self.active_terminal().scroll_state();
+        scrollbar::compute_layout(
+            display_offset,
+            history_size,
+            viewport_rows,
+            line_height,
+            track_height,
+            TERMINAL_SCROLLBAR_MIN_THUMB_HEIGHT,
+        )
+    }
+
     pub(super) fn terminal_viewport_geometry(&self) -> Option<TerminalViewportGeometry> {
         let size = self.active_terminal().size();
         if size.cols == 0 || size.rows == 0 {

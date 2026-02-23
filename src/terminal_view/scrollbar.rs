@@ -146,4 +146,27 @@ mod tests {
         assert!(tops.len() < 4);
         assert!(!tops.is_empty());
     }
+
+    #[test]
+    fn deduped_marker_tops_matches_vec_and_iterator_sources() {
+        let lines = vec![-500, -499, -498, -420, -419];
+        let from_vec = deduped_marker_tops(lines.clone(), 1000, 50, 2.0, 100.0);
+        let from_iter = deduped_marker_tops(lines.iter().copied(), 1000, 50, 2.0, 100.0);
+
+        assert_eq!(from_vec, from_iter);
+        assert!(from_iter.len() < lines.len());
+    }
+
+    #[test]
+    fn marker_top_limit_bucket_quantizes_stably_around_boundary() {
+        let boundary = MARKER_TOP_LIMIT_BUCKET_STEP * 2.5;
+        let below = marker_top_limit_bucket(boundary - 0.001);
+        let at_boundary = marker_top_limit_bucket(boundary);
+        let above = marker_top_limit_bucket(boundary + 0.001);
+
+        assert_eq!(below, 2);
+        assert_eq!(at_boundary, 3);
+        assert_eq!(above, 3);
+        assert_eq!(marker_top_limit_bucket(-10.0), 0);
+    }
 }
