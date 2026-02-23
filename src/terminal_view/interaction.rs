@@ -1,7 +1,7 @@
 use super::scrollbar as terminal_scrollbar;
 use super::*;
 use crate::ui::scrollbar as ui_scrollbar;
-use gpui::PromptLevel;
+use gpui::{AppContext, PromptLevel};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum QuitRequestTarget {
