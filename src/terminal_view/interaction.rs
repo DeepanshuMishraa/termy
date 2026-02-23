@@ -1,5 +1,6 @@
+use super::scrollbar as terminal_scrollbar;
 use super::*;
-use crate::ui::scrollbar::{self, ScrollbarRange};
+use crate::ui::scrollbar as ui_scrollbar;
 
 impl TerminalView {
     fn command_palette_mode_for_action(action: CommandAction) -> Option<CommandPaletteMode> {
@@ -447,33 +448,25 @@ impl TerminalView {
         }
     }
 
-    fn terminal_scrollbar_range(&self, track_height: f32) -> Option<ScrollbarRange> {
+    fn terminal_scrollbar_layout_for_track(
+        &self,
+        track_height: f32,
+    ) -> Option<terminal_scrollbar::TerminalScrollbarLayout> {
         let size = self.active_terminal().size();
-        if size.rows == 0 {
+        let viewport_rows = size.rows as usize;
+        if viewport_rows == 0 {
             return None;
         }
         let line_height: f32 = size.cell_height.into();
-        if line_height <= f32::EPSILON || track_height <= f32::EPSILON {
-            return None;
-        }
-
         let (display_offset, history_size) = self.active_terminal().scroll_state();
-        let max_offset = history_size as f32 * line_height;
-        Some(ScrollbarRange {
-            offset: scrollbar::invert_offset_axis(display_offset as f32 * line_height, max_offset),
-            max_offset,
-            viewport_extent: f32::from(size.rows) * line_height,
-            track_extent: track_height,
-        })
-    }
-
-    pub(super) fn terminal_scrollbar_range_and_metrics(
-        &self,
-        track_height: f32,
-    ) -> Option<(ScrollbarRange, scrollbar::ScrollbarMetrics)> {
-        let range = self.terminal_scrollbar_range(track_height)?;
-        let metrics = scrollbar::compute_metrics(range, TERMINAL_SCROLLBAR_MIN_THUMB_HEIGHT)?;
-        Some((range, metrics))
+        terminal_scrollbar::compute_layout(
+            display_offset,
+            history_size,
+            viewport_rows,
+            line_height,
+            track_height,
+            TERMINAL_SCROLLBAR_MIN_THUMB_HEIGHT,
+        )
     }
 
     fn terminal_scrollbar_hit_test(
@@ -505,7 +498,8 @@ impl TerminalView {
             return None;
         }
 
-        let (_range, metrics) = self.terminal_scrollbar_range_and_metrics(surface.height)?;
+        let layout = self.terminal_scrollbar_layout_for_track(surface.height)?;
+        let metrics = layout.metrics;
         let local_y = y - surface.origin_y;
         let thumb_hit =
             local_y >= metrics.thumb_top && local_y <= metrics.thumb_top + metrics.thumb_height;
@@ -517,19 +511,23 @@ impl TerminalView {
         })
     }
 
-    fn apply_terminal_scroll_offset(&mut self, target_offset: f32) -> bool {
-        let (display_offset, history_size) = self.active_terminal().scroll_state();
-        let line_height: f32 = self.active_terminal().size().cell_height.into();
+    fn apply_terminal_scroll_offset(
+        &mut self,
+        target_offset: f32,
+        layout: terminal_scrollbar::TerminalScrollbarLayout,
+    ) -> bool {
+        let (display_offset, _) = self.active_terminal().scroll_state();
+        let line_height = layout.range.viewport_extent / layout.viewport_rows as f32;
         if line_height <= f32::EPSILON {
             return false;
         }
 
-        let max_offset = history_size as f32 * line_height;
-        let target_display_offset = (scrollbar::invert_offset_axis(target_offset, max_offset)
-            / line_height)
+        let target_display_offset = (ui_scrollbar::invert_offset_axis(
+            target_offset,
+            layout.range.max_offset,
+        ) / line_height)
             .round()
-            .clamp(0.0, history_size as f32)
-            .round() as i32;
+            .clamp(0.0, layout.history_size as f32) as i32;
         let delta = target_display_offset - display_offset as i32;
         if delta == 0 {
             return false;
@@ -547,10 +545,11 @@ impl TerminalView {
         let Some(surface) = self.terminal_surface_geometry(window) else {
             return;
         };
-        let Some((range, metrics)) = self.terminal_scrollbar_range_and_metrics(surface.height)
-        else {
+        let Some(layout) = self.terminal_scrollbar_layout_for_track(surface.height) else {
             return;
         };
+        let range = layout.range;
+        let metrics = layout.metrics;
 
         if hit.thumb_hit {
             let thumb_grab_offset = (hit.local_y - hit.thumb_top).clamp(0.0, metrics.thumb_height);
@@ -559,11 +558,10 @@ impl TerminalView {
             return;
         }
 
-        let changed = self.apply_terminal_scroll_offset(scrollbar::offset_from_track_click(
-            hit.local_y,
-            range,
-            metrics,
-        ));
+        let changed = self.apply_terminal_scroll_offset(
+            ui_scrollbar::offset_from_track_click(hit.local_y, range, metrics),
+            layout,
+        );
         if changed {
             self.terminal_scroll_accumulator_y = 0.0;
         }
@@ -583,17 +581,19 @@ impl TerminalView {
         let Some(surface) = self.terminal_surface_geometry(window) else {
             return;
         };
-        let Some((range, metrics)) = self.terminal_scrollbar_range_and_metrics(surface.height)
-        else {
+        let Some(layout) = self.terminal_scrollbar_layout_for_track(surface.height) else {
             return;
         };
+        let range = layout.range;
+        let metrics = layout.metrics;
 
         let y: f32 = position.y.into();
         let local_y = (y - surface.origin_y).clamp(0.0, surface.height);
         let thumb_top = (local_y - drag.thumb_grab_offset).clamp(0.0, metrics.travel);
-        let changed = self.apply_terminal_scroll_offset(scrollbar::offset_from_thumb_top(
-            thumb_top, range, metrics,
-        ));
+        let changed = self.apply_terminal_scroll_offset(
+            ui_scrollbar::offset_from_thumb_top(thumb_top, range, metrics),
+            layout,
+        );
         if changed {
             self.terminal_scroll_accumulator_y = 0.0;
             cx.notify();

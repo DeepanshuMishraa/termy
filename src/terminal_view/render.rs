@@ -1,5 +1,6 @@
+use super::scrollbar as terminal_scrollbar;
 use super::*;
-use crate::ui::scrollbar::{self, ScrollbarPaintStyle};
+use crate::ui::scrollbar::{self as ui_scrollbar, ScrollbarPaintStyle};
 use alacritty_terminal::grid::Dimensions;
 
 impl Focusable for TerminalView {
@@ -9,82 +10,79 @@ impl Focusable for TerminalView {
 }
 
 impl TerminalView {
-    fn terminal_scrollbar_marker_top_for_line(
-        line: i32,
-        history_size: usize,
-        viewport_rows: usize,
-        marker_top_limit: f32,
-    ) -> f32 {
-        if marker_top_limit <= f32::EPSILON {
-            return 0.0;
-        }
-
-        let content_line_count = history_size.saturating_add(viewport_rows).max(1);
-        let max_index = (content_line_count.saturating_sub(1)) as f32;
-        if max_index <= f32::EPSILON {
-            return 0.0;
-        }
-
-        let line_index = (line as f32 + history_size as f32).clamp(0.0, max_index);
-        (line_index / max_index) * marker_top_limit
-    }
-
-    fn terminal_scrollbar_marker_tops(
-        &self,
-        metrics: scrollbar::ScrollbarMetrics,
-        history_size: usize,
-        viewport_rows: usize,
+    fn refresh_terminal_scrollbar_marker_cache(
+        &mut self,
+        layout: terminal_scrollbar::TerminalScrollbarLayout,
         marker_height: f32,
-    ) -> (Vec<f32>, Option<f32>) {
+    ) -> Option<f32> {
         if !self.search_open {
-            return (Vec::new(), None);
+            self.clear_terminal_scrollbar_marker_cache();
+            return None;
         }
 
-        let results = self.search_state.results();
         let marker_height = marker_height.max(0.0);
-        let marker_top_limit = (metrics.track_height - marker_height).max(0.0);
-        let dedupe_bucket_size = marker_height.max(1.0);
-        let mut marker_tops = Vec::with_capacity(results.count().min(256));
-        let mut last_bucket = None;
+        let marker_top_limit =
+            terminal_scrollbar::marker_top_limit(layout.metrics.track_height, marker_height);
+        let cache_key = TerminalScrollbarMarkerCacheKey {
+            results_revision: self.search_state.results_revision(),
+            history_size: layout.history_size,
+            viewport_rows: layout.viewport_rows,
+            marker_top_limit_bucket: terminal_scrollbar::marker_top_limit_bucket(marker_top_limit),
+        };
+        let rebuild_markers = self.terminal_scrollbar_marker_cache.key.as_ref() != Some(&cache_key);
 
-        for search_match in results.matches() {
-            let top = Self::terminal_scrollbar_marker_top_for_line(
-                search_match.line,
-                history_size,
-                viewport_rows,
-                marker_top_limit,
-            );
-            let bucket = (top / dedupe_bucket_size).round() as i32;
-            if last_bucket == Some(bucket) {
-                continue;
+        let (is_empty, current_line, marker_lines) = {
+            let results = self.search_state.results();
+            if results.is_empty() {
+                (true, None, Vec::new())
+            } else {
+                let current_line = results.current().map(|current| current.line);
+                let marker_lines = if rebuild_markers {
+                    results
+                        .matches()
+                        .iter()
+                        .map(|search_match| search_match.line)
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                (false, current_line, marker_lines)
             }
+        };
 
-            last_bucket = Some(bucket);
-            marker_tops.push(top);
+        if is_empty {
+            self.clear_terminal_scrollbar_marker_cache();
+            return None;
         }
 
-        let current_marker_top = results.current().map(|current| {
-            Self::terminal_scrollbar_marker_top_for_line(
-                current.line,
-                history_size,
-                viewport_rows,
+        if rebuild_markers {
+            self.terminal_scrollbar_marker_cache.marker_tops =
+                terminal_scrollbar::deduped_marker_tops(
+                    marker_lines,
+                    layout.history_size,
+                    layout.viewport_rows,
+                    marker_height,
+                    marker_top_limit,
+                );
+            self.terminal_scrollbar_marker_cache.key = Some(cache_key);
+        }
+
+        current_line.map(|line| {
+            terminal_scrollbar::marker_top_for_line(
+                line,
+                layout.history_size,
+                layout.viewport_rows,
                 marker_top_limit,
             )
-        });
-
-        (marker_tops, current_marker_top)
+        })
     }
 
     fn render_terminal_scrollbar_overlay(
-        &self,
-        display_offset: usize,
-        history_size: usize,
-        line_height: f32,
-        viewport_height: f32,
-        track_height: f32,
+        &mut self,
+        layout: terminal_scrollbar::TerminalScrollbarLayout,
+        force_visible: bool,
     ) -> Option<AnyElement> {
         let now = Instant::now();
-        let force_visible = display_offset > 0;
         let alpha = if force_visible {
             1.0
         } else {
@@ -93,23 +91,6 @@ impl TerminalView {
         if alpha <= f32::EPSILON && !self.terminal_scrollbar_visibility_controller.is_dragging() {
             return None;
         }
-        if line_height <= f32::EPSILON
-            || history_size == 0
-            || viewport_height <= f32::EPSILON
-            || track_height <= f32::EPSILON
-        {
-            return None;
-        }
-
-        let max_offset = history_size as f32 * line_height;
-        let viewport_rows = ((viewport_height / line_height).round().max(1.0)) as usize;
-        let range = scrollbar::ScrollbarRange {
-            offset: scrollbar::invert_offset_axis(display_offset as f32 * line_height, max_offset),
-            max_offset,
-            viewport_extent: viewport_height,
-            track_extent: track_height,
-        };
-        let metrics = scrollbar::compute_metrics(range, TERMINAL_SCROLLBAR_MIN_THUMB_HEIGHT)?;
         let overlay_style = self.overlay_style();
         let gutter_bg = overlay_style.panel_background(TERMINAL_SCROLLBAR_GUTTER_ALPHA);
         let style = ScrollbarPaintStyle {
@@ -132,12 +113,9 @@ impl TerminalView {
         }
         .scale_alpha(alpha);
 
-        let (marker_tops, current_marker_top) = self.terminal_scrollbar_marker_tops(
-            metrics,
-            history_size,
-            viewport_rows,
-            TERMINAL_SCROLLBAR_MARKER_HEIGHT,
-        );
+        let current_marker_top =
+            self.refresh_terminal_scrollbar_marker_cache(layout, TERMINAL_SCROLLBAR_MARKER_HEIGHT);
+        let marker_tops = &self.terminal_scrollbar_marker_cache.marker_tops;
 
         Some(
             div()
@@ -155,12 +133,12 @@ impl TerminalView {
                         .bottom_0()
                         .right_0()
                         .w(px(TERMINAL_SCROLLBAR_TRACK_WIDTH))
-                        .child(scrollbar::render_vertical(
+                        .child(ui_scrollbar::render_vertical(
                             "terminal-scrollbar",
-                            metrics,
+                            layout.metrics,
                             style,
                             self.terminal_scrollbar_visibility_controller.is_dragging(),
-                            &marker_tops,
+                            marker_tops,
                             current_marker_top,
                             TERMINAL_SCROLLBAR_MARKER_HEIGHT,
                         )),
@@ -782,25 +760,31 @@ impl Render for TerminalView {
             font_size,
             cursor_style: self.terminal_cursor_style(),
         };
-        if self.terminal_scrollbar_mode() == scrollbar::ScrollbarVisibilityMode::OnScroll
+        if self.terminal_scrollbar_mode() == ui_scrollbar::ScrollbarVisibilityMode::OnScroll
             && !self.terminal_scrollbar_animation_active
             && self.terminal_scrollbar_needs_animation(Instant::now())
         {
             self.start_terminal_scrollbar_animation(cx);
         }
         let terminal_line_height: f32 = terminal_size.cell_height.into();
-        let terminal_viewport_height = f32::from(terminal_size.rows) * terminal_line_height;
         let terminal_track_height = self
             .terminal_surface_geometry(window)
             .map(|geometry| geometry.height)
             .unwrap_or(0.0);
-        let terminal_scrollbar_overlay = self.render_terminal_scrollbar_overlay(
+        let terminal_scrollbar_layout = terminal_scrollbar::compute_layout(
             terminal_display_offset,
             terminal_history_size,
+            terminal_size.rows as usize,
             terminal_line_height,
-            terminal_viewport_height,
             terminal_track_height,
+            TERMINAL_SCROLLBAR_MIN_THUMB_HEIGHT,
         );
+        if terminal_scrollbar_layout.is_none() {
+            self.clear_terminal_scrollbar_marker_cache();
+        }
+        let terminal_scrollbar_overlay = terminal_scrollbar_layout.and_then(|layout| {
+            self.render_terminal_scrollbar_overlay(layout, terminal_display_offset > 0)
+        });
         let terminal_grid_layer = if let Some(viewport) = self.terminal_viewport_geometry() {
             div()
                 .relative()

@@ -18,6 +18,7 @@ impl TerminalView {
         self.search_open = true;
         self.search_state.open();
         self.search_input.clear();
+        self.clear_terminal_scrollbar_marker_cache();
         self.reset_cursor_blink_phase();
         cx.notify();
     }
@@ -30,6 +31,7 @@ impl TerminalView {
         self.search_open = false;
         self.search_state.close();
         self.search_input.clear();
+        self.clear_terminal_scrollbar_marker_cache();
         cx.notify();
     }
 
@@ -125,6 +127,9 @@ impl TerminalView {
         // Jump to nearest match to current viewport
         let viewport_center = -(display_offset as i32) + rows / 2;
         self.search_state.jump_to_nearest(viewport_center);
+        if self.search_state.results().is_empty() {
+            self.clear_terminal_scrollbar_marker_cache();
+        }
     }
 
     pub(super) fn handle_search_key_down(&mut self, key: &str, cx: &mut Context<Self>) {

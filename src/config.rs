@@ -661,17 +661,13 @@ impl AppConfig {
                 }
             }
 
-            if key.eq_ignore_ascii_case("terminal_scrollbar_visibility")
-                || key.eq_ignore_ascii_case("scrollbar_visibility")
-            {
+            if key.eq_ignore_ascii_case("scrollbar_visibility") {
                 if let Some(visibility) = TerminalScrollbarVisibility::from_str(value) {
                     config.terminal_scrollbar_visibility = visibility;
                 }
             }
 
-            if key.eq_ignore_ascii_case("terminal_scrollbar_style")
-                || key.eq_ignore_ascii_case("scrollbar_style")
-            {
+            if key.eq_ignore_ascii_case("scrollbar_style") {
                 if let Some(style) = TerminalScrollbarStyle::from_str(value) {
                     config.terminal_scrollbar_style = style;
                 }
@@ -1099,34 +1095,31 @@ mod tests {
             TerminalScrollbarVisibility::OnScroll
         );
 
-        let off = AppConfig::from_contents("terminal_scrollbar_visibility = off\n");
+        let off = AppConfig::from_contents("scrollbar_visibility = off\n");
         assert_eq!(
             off.terminal_scrollbar_visibility,
             TerminalScrollbarVisibility::Off
         );
 
-        let always = AppConfig::from_contents("terminal_scrollbar_visibility = always\n");
+        let always = AppConfig::from_contents("scrollbar_visibility = always\n");
         assert_eq!(
             always.terminal_scrollbar_visibility,
             TerminalScrollbarVisibility::Always
         );
 
-        let strict = AppConfig::from_contents(
-            "terminal_scrollbar_visibility = always\n\
-             scrollbar_visibility = auto\n",
-        );
+        let strict = AppConfig::from_contents("terminal_scrollbar_visibility = always\n");
         assert_eq!(
             strict.terminal_scrollbar_visibility,
-            TerminalScrollbarVisibility::Always
+            TerminalScrollbarVisibility::OnScroll
         );
 
-        let on_alias_removed = AppConfig::from_contents("terminal_scrollbar_visibility = on\n");
+        let on_alias_removed = AppConfig::from_contents("scrollbar_visibility = on\n");
         assert_eq!(
             on_alias_removed.terminal_scrollbar_visibility,
             TerminalScrollbarVisibility::OnScroll
         );
 
-        let invalid = AppConfig::from_contents("terminal_scrollbar_visibility = nope\n");
+        let invalid = AppConfig::from_contents("scrollbar_visibility = nope\n");
         assert_eq!(
             invalid.terminal_scrollbar_visibility,
             TerminalScrollbarVisibility::OnScroll
@@ -1153,9 +1146,15 @@ mod tests {
             TerminalScrollbarStyle::MutedTheme
         );
 
-        let neutral = AppConfig::from_contents("terminal_scrollbar_style = neutral\n");
+        let neutral = AppConfig::from_contents("scrollbar_style = neutral\n");
         assert_eq!(
             neutral.terminal_scrollbar_style,
+            TerminalScrollbarStyle::Neutral
+        );
+
+        let strict = AppConfig::from_contents("terminal_scrollbar_style = theme\n");
+        assert_eq!(
+            strict.terminal_scrollbar_style,
             TerminalScrollbarStyle::Neutral
         );
 

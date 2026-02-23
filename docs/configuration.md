@@ -218,7 +218,7 @@ Explicit payload examples:
 - Values: any finite number (clamped to `0.1..=1000`)
 - What it does: multiplies mouse wheel scroll distance. For example, `3` scrolls about three lines per wheel tick.
 
-`terminal_scrollbar_visibility`
+`scrollbar_visibility`
 - Default: `on_scroll`
 - Values: `always`, `on_scroll`, `off`
 - What it does: controls terminal viewport scrollbar visibility behavior.

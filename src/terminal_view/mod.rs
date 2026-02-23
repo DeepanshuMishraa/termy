@@ -38,6 +38,7 @@ mod command_palette;
 mod inline_input;
 mod interaction;
 mod render;
+mod scrollbar;
 mod search;
 mod tabs;
 mod titles;
@@ -152,6 +153,27 @@ struct TerminalScrollbarHit {
     local_y: f32,
     thumb_hit: bool,
     thumb_top: f32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalScrollbarMarkerCacheKey {
+    results_revision: u64,
+    history_size: usize,
+    viewport_rows: usize,
+    marker_top_limit_bucket: i32,
+}
+
+#[derive(Clone, Debug, Default)]
+struct TerminalScrollbarMarkerCache {
+    key: Option<TerminalScrollbarMarkerCacheKey>,
+    marker_tops: Vec<f32>,
+}
+
+impl TerminalScrollbarMarkerCache {
+    fn clear(&mut self) {
+        self.key = None;
+        self.marker_tops.clear();
+    }
 }
 
 struct TerminalTab {
@@ -488,6 +510,7 @@ pub struct TerminalView {
     terminal_scrollbar_visibility_controller: ScrollbarVisibilityController,
     terminal_scrollbar_animation_active: bool,
     terminal_scrollbar_drag: Option<TerminalScrollbarDragState>,
+    terminal_scrollbar_marker_cache: TerminalScrollbarMarkerCache,
     /// Cached cell dimensions
     cell_size: Option<Size<Pixels>>,
     // Search state
@@ -631,6 +654,10 @@ impl TerminalView {
             width,
             height,
         })
+    }
+
+    pub(super) fn clear_terminal_scrollbar_marker_cache(&mut self) {
+        self.terminal_scrollbar_marker_cache.clear();
     }
 
     pub(super) fn mark_terminal_scrollbar_activity(&mut self, cx: &mut Context<Self>) {
@@ -875,6 +902,7 @@ impl TerminalView {
             terminal_scrollbar_visibility_controller: ScrollbarVisibilityController::default(),
             terminal_scrollbar_animation_active: false,
             terminal_scrollbar_drag: None,
+            terminal_scrollbar_marker_cache: TerminalScrollbarMarkerCache::default(),
             cell_size: None,
             search_open: false,
             search_input: InlineInputState::new(String::new()),
@@ -937,6 +965,7 @@ impl TerminalView {
             self.terminal_scrollbar_visibility_controller.reset();
             self.terminal_scrollbar_drag = None;
             self.terminal_scrollbar_animation_active = false;
+            self.clear_terminal_scrollbar_marker_cache();
         }
         self.terminal_scrollbar_style = config.terminal_scrollbar_style;
         self.command_palette_show_keybinds = config.command_palette_show_keybinds;
