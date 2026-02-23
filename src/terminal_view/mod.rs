@@ -75,6 +75,8 @@ const TAB_ITEM_HEIGHT: f32 = 32.0;
 const TAB_ITEM_GAP: f32 = 0.0;
 const TAB_TEXT_PADDING_X: f32 = 10.0;
 const TAB_TITLE_CHAR_WIDTH: f32 = 7.0;
+const TAB_TITLE_BUDGET_CLOSE_GUARD_PX: f32 = TAB_TITLE_CHAR_WIDTH * 1.5;
+const TAB_TITLE_BUDGET_HIDDEN_CLOSE_GUARD_PX: f32 = TAB_TITLE_CHAR_WIDTH;
 // Adds a small cushion to avoid early clipping from glyph/metrics variance.
 const TAB_TITLE_LAYOUT_SLACK_PX: f32 = 18.0;
 const TAB_MIN_WIDTH: f32 = 96.0;

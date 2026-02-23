@@ -683,9 +683,14 @@ impl Render for TerminalView {
                 );
                 let is_renaming = self.renaming_tab == Some(index);
                 let tab_drop_marker_side = self.tab_drop_marker_side(index);
+                let close_slot_width = if show_tab_close {
+                    TAB_CLOSE_SLOT_WIDTH
+                } else {
+                    0.0
+                };
                 let label = Self::format_tab_label_for_render(
                     &tab.title,
-                    Self::tab_title_char_budget(tab.display_width),
+                    Self::tab_title_char_budget(tab.display_width, close_slot_width),
                 );
                 let rename_text_color = if is_active {
                     active_tab_text
@@ -714,7 +719,7 @@ impl Render for TerminalView {
                 }
 
                 let close_button = div()
-                    .w(px(TAB_CLOSE_SLOT_WIDTH))
+                    .w(px(close_slot_width))
                     .h(px(TAB_CLOSE_HITBOX))
                     .flex()
                     .items_center()

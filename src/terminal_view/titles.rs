@@ -10,9 +10,18 @@ impl TerminalView {
         normalized
     }
 
-    pub(super) fn tab_title_char_budget(display_width: f32) -> usize {
-        let text_area =
-            (display_width - (TAB_TEXT_PADDING_X * 2.0) - TAB_CLOSE_SLOT_WIDTH).max(0.0);
+    pub(super) fn tab_title_char_budget(display_width: f32, close_slot_width: f32) -> usize {
+        let hidden_close_guard = if close_slot_width <= f32::EPSILON {
+            TAB_TITLE_BUDGET_HIDDEN_CLOSE_GUARD_PX
+        } else {
+            0.0
+        };
+        let text_area = (display_width
+            - (TAB_TEXT_PADDING_X * 2.0)
+            - close_slot_width
+            - TAB_TITLE_BUDGET_CLOSE_GUARD_PX
+            - hidden_close_guard)
+            .max(0.0);
         (text_area / TAB_TITLE_CHAR_WIDTH).floor() as usize
     }
 
@@ -347,8 +356,22 @@ mod tests {
 
     #[test]
     fn tab_title_char_budget_accounts_for_padding_and_close_slot() {
-        let budget = TerminalView::tab_title_char_budget(TAB_MIN_WIDTH);
-        assert_eq!(budget, 7);
+        let budget = TerminalView::tab_title_char_budget(TAB_MIN_WIDTH, TAB_CLOSE_SLOT_WIDTH);
+        assert_eq!(budget, 5);
+    }
+
+    #[test]
+    fn tab_title_char_budget_reclaims_space_when_close_slot_is_hidden() {
+        let budget_hidden = TerminalView::tab_title_char_budget(TAB_MIN_WIDTH, 0.0);
+        let budget_with_close =
+            TerminalView::tab_title_char_budget(TAB_MIN_WIDTH, TAB_CLOSE_SLOT_WIDTH);
+        assert!(budget_hidden > budget_with_close);
+    }
+
+    #[test]
+    fn tab_title_char_budget_applies_edge_guard_without_close_slot() {
+        let budget_hidden = TerminalView::tab_title_char_budget(TAB_MIN_WIDTH, 0.0);
+        assert_eq!(budget_hidden, 8);
     }
 
     #[test]
