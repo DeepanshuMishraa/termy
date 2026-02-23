@@ -447,13 +447,13 @@ impl TerminalView {
         }
     }
 
-    fn terminal_scrollbar_range(&self) -> Option<ScrollbarRange> {
+    fn terminal_scrollbar_range(&self, track_height: f32) -> Option<ScrollbarRange> {
         let size = self.active_terminal().size();
         if size.rows == 0 {
             return None;
         }
         let line_height: f32 = size.cell_height.into();
-        if line_height <= f32::EPSILON {
+        if line_height <= f32::EPSILON || track_height <= f32::EPSILON {
             return None;
         }
 
@@ -463,13 +463,15 @@ impl TerminalView {
             offset: scrollbar::invert_offset_axis(display_offset as f32 * line_height, max_offset),
             max_offset,
             viewport_extent: f32::from(size.rows) * line_height,
+            track_extent: track_height,
         })
     }
 
     pub(super) fn terminal_scrollbar_range_and_metrics(
         &self,
+        track_height: f32,
     ) -> Option<(ScrollbarRange, scrollbar::ScrollbarMetrics)> {
-        let range = self.terminal_scrollbar_range()?;
+        let range = self.terminal_scrollbar_range(track_height)?;
         let metrics = scrollbar::compute_metrics(range, TERMINAL_SCROLLBAR_MIN_THUMB_HEIGHT)?;
         Some((range, metrics))
     }
@@ -477,15 +479,16 @@ impl TerminalView {
     fn terminal_scrollbar_hit_test(
         &self,
         position: gpui::Point<Pixels>,
+        window: &Window,
     ) -> Option<TerminalScrollbarHit> {
         let alpha = self.terminal_scrollbar_alpha(Instant::now());
         if alpha <= f32::EPSILON && !self.terminal_scrollbar_visibility_controller.is_dragging() {
             return None;
         }
 
-        let viewport = self.terminal_viewport_geometry()?;
-        let scrollbar_left = viewport.origin_x + viewport.width - TERMINAL_SCROLLBAR_GUTTER_WIDTH;
-        let scrollbar_right = viewport.origin_x + viewport.width;
+        let surface = self.terminal_surface_geometry(window)?;
+        let scrollbar_left = surface.origin_x + surface.width - TERMINAL_SCROLLBAR_GUTTER_WIDTH;
+        let scrollbar_right = surface.origin_x + surface.width;
 
         let x: f32 = position.x.into();
         if x < scrollbar_left || x > scrollbar_right {
@@ -493,12 +496,12 @@ impl TerminalView {
         }
 
         let y: f32 = position.y.into();
-        if y < viewport.origin_y || y > viewport.origin_y + viewport.height {
+        if y < surface.origin_y || y > surface.origin_y + surface.height {
             return None;
         }
 
-        let (_range, metrics) = self.terminal_scrollbar_range_and_metrics()?;
-        let local_y = y - viewport.origin_y;
+        let (_range, metrics) = self.terminal_scrollbar_range_and_metrics(surface.height)?;
+        let local_y = y - surface.origin_y;
         let thumb_hit =
             local_y >= metrics.thumb_top && local_y <= metrics.thumb_top + metrics.thumb_height;
 
@@ -533,9 +536,14 @@ impl TerminalView {
     fn handle_terminal_scrollbar_mouse_down(
         &mut self,
         hit: TerminalScrollbarHit,
+        window: &Window,
         cx: &mut Context<Self>,
     ) {
-        let Some((range, metrics)) = self.terminal_scrollbar_range_and_metrics() else {
+        let Some(surface) = self.terminal_surface_geometry(window) else {
+            return;
+        };
+        let Some((range, metrics)) = self.terminal_scrollbar_range_and_metrics(surface.height)
+        else {
             return;
         };
 
@@ -561,20 +569,22 @@ impl TerminalView {
     fn handle_terminal_scrollbar_drag(
         &mut self,
         position: gpui::Point<Pixels>,
+        window: &Window,
         cx: &mut Context<Self>,
     ) {
         let Some(drag) = self.terminal_scrollbar_drag else {
             return;
         };
-        let Some(viewport) = self.terminal_viewport_geometry() else {
+        let Some(surface) = self.terminal_surface_geometry(window) else {
             return;
         };
-        let Some((range, metrics)) = self.terminal_scrollbar_range_and_metrics() else {
+        let Some((range, metrics)) = self.terminal_scrollbar_range_and_metrics(surface.height)
+        else {
             return;
         };
 
         let y: f32 = position.y.into();
-        let local_y = (y - viewport.origin_y).clamp(0.0, viewport.height);
+        let local_y = (y - surface.origin_y).clamp(0.0, surface.height);
         let thumb_top = (local_y - drag.thumb_grab_offset).clamp(0.0, metrics.travel);
         let changed = self.apply_terminal_scroll_offset(scrollbar::offset_from_thumb_top(
             thumb_top, range, metrics,
@@ -969,8 +979,8 @@ impl TerminalView {
             return;
         }
 
-        if let Some(hit) = self.terminal_scrollbar_hit_test(event.position) {
-            self.handle_terminal_scrollbar_mouse_down(hit, cx);
+        if let Some(hit) = self.terminal_scrollbar_hit_test(event.position, window) {
+            self.handle_terminal_scrollbar_mouse_down(hit, window, cx);
             cx.stop_propagation();
             return;
         }
@@ -1007,12 +1017,12 @@ impl TerminalView {
     pub(super) fn handle_mouse_move(
         &mut self,
         event: &MouseMoveEvent,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if self.terminal_scrollbar_drag.is_some() {
             if event.dragging() {
-                self.handle_terminal_scrollbar_drag(event.position, cx);
+                self.handle_terminal_scrollbar_drag(event.position, window, cx);
             }
             cx.stop_propagation();
             return;

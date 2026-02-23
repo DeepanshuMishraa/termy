@@ -77,8 +77,8 @@ const COMMAND_PALETTE_MAX_ITEMS: usize = 8;
 const COMMAND_PALETTE_ROW_HEIGHT: f32 = 30.0;
 const COMMAND_PALETTE_SCROLLBAR_WIDTH: f32 = 8.0;
 const COMMAND_PALETTE_SCROLLBAR_MIN_THUMB_HEIGHT: f32 = 18.0;
-const TERMINAL_SCROLLBAR_GUTTER_WIDTH: f32 = 18.0;
-const TERMINAL_SCROLLBAR_TRACK_WIDTH: f32 = 10.0;
+const TERMINAL_SCROLLBAR_GUTTER_WIDTH: f32 = 12.0;
+const TERMINAL_SCROLLBAR_TRACK_WIDTH: f32 = 12.0;
 const TERMINAL_SCROLLBAR_MIN_THUMB_HEIGHT: f32 = 40.0;
 const TERMINAL_SCROLLBAR_HOLD_MS: u64 = 900;
 const TERMINAL_SCROLLBAR_FADE_MS: u64 = 140;
@@ -88,8 +88,8 @@ const TERMINAL_SCROLLBAR_THUMB_ALPHA: f32 = 0.56;
 const TERMINAL_SCROLLBAR_THUMB_ACTIVE_ALPHA: f32 = 0.78;
 const TERMINAL_SCROLLBAR_MARKER_ALPHA: f32 = 0.90;
 const TERMINAL_SCROLLBAR_MARKER_HEIGHT: f32 = 2.0;
-const TERMINAL_SCROLLBAR_TRACK_RADIUS: f32 = 3.0;
-const TERMINAL_SCROLLBAR_THUMB_RADIUS: f32 = 3.0;
+const TERMINAL_SCROLLBAR_TRACK_RADIUS: f32 = 0.0;
+const TERMINAL_SCROLLBAR_THUMB_RADIUS: f32 = 0.0;
 const TERMINAL_SCROLLBAR_THUMB_INSET: f32 = 1.0;
 const SEARCH_BAR_WIDTH: f32 = 320.0;
 const SEARCH_BAR_HEIGHT: f32 = 36.0;
@@ -580,6 +580,26 @@ impl TerminalView {
             origin_y: self.chrome_height() + padding_y,
             width: cell_width * f32::from(size.cols),
             height: cell_height * f32::from(size.rows),
+        })
+    }
+
+    pub(super) fn terminal_surface_geometry(
+        &self,
+        window: &Window,
+    ) -> Option<TerminalViewportGeometry> {
+        let viewport = window.viewport_size();
+        let width: f32 = viewport.width.into();
+        let viewport_height: f32 = viewport.height.into();
+        let height = (viewport_height - self.chrome_height()).max(0.0);
+        if width <= f32::EPSILON || height <= f32::EPSILON {
+            return None;
+        }
+
+        Some(TerminalViewportGeometry {
+            origin_x: 0.0,
+            origin_y: self.chrome_height(),
+            width,
+            height,
         })
     }
 

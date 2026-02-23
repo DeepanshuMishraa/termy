@@ -535,6 +535,7 @@ impl TerminalView {
             offset,
             max_offset,
             viewport_extent: viewport_height,
+            track_extent: viewport_height,
         };
 
         scrollbar::compute_metrics(range, COMMAND_PALETTE_SCROLLBAR_MIN_THUMB_HEIGHT)

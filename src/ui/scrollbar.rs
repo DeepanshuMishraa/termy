@@ -6,6 +6,7 @@ pub struct ScrollbarRange {
     pub offset: f32,
     pub max_offset: f32,
     pub viewport_extent: f32,
+    pub track_extent: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -145,7 +146,8 @@ impl ScrollbarVisibilityController {
 
 pub fn compute_metrics(range: ScrollbarRange, min_thumb_height: f32) -> Option<ScrollbarMetrics> {
     let viewport_extent = range.viewport_extent;
-    if viewport_extent <= f32::EPSILON {
+    let track_extent = range.track_extent;
+    if viewport_extent <= f32::EPSILON || track_extent <= f32::EPSILON {
         return None;
     }
 
@@ -156,9 +158,9 @@ pub fn compute_metrics(range: ScrollbarRange, min_thumb_height: f32) -> Option<S
 
     let offset = range.offset.clamp(0.0, max_offset);
     let content_extent = viewport_extent + max_offset;
-    let thumb_height = ((viewport_extent / content_extent) * viewport_extent)
-        .clamp(min_thumb_height.max(1.0), viewport_extent);
-    let travel = (viewport_extent - thumb_height).max(0.0);
+    let thumb_height = ((viewport_extent / content_extent) * track_extent)
+        .clamp(min_thumb_height.max(1.0), track_extent);
+    let travel = (track_extent - thumb_height).max(0.0);
     let thumb_top = if travel <= f32::EPSILON {
         0.0
     } else {
@@ -169,7 +171,7 @@ pub fn compute_metrics(range: ScrollbarRange, min_thumb_height: f32) -> Option<S
         thumb_top,
         thumb_height,
         travel,
-        track_height: viewport_extent,
+        track_height: track_extent,
     })
 }
 
@@ -279,6 +281,7 @@ mod tests {
             offset: 0.0,
             max_offset: 0.0,
             viewport_extent: 400.0,
+            track_extent: 400.0,
         };
         assert!(compute_metrics(range, 16.0).is_none());
     }
@@ -289,6 +292,7 @@ mod tests {
             offset: 100.0,
             max_offset: 1_000.0,
             viewport_extent: 200.0,
+            track_extent: 200.0,
         };
         let metrics = compute_metrics(range, 32.0).expect("expected metrics");
         assert!(metrics.thumb_height >= 32.0);
@@ -302,6 +306,7 @@ mod tests {
             offset: 0.0,
             max_offset: 300.0,
             viewport_extent: 240.0,
+            track_extent: 240.0,
         };
         let metrics = compute_metrics(range, 18.0).expect("expected metrics");
 
@@ -318,6 +323,20 @@ mod tests {
         assert_eq!(invert_offset_axis(300.0, 300.0), 0.0);
         assert_eq!(invert_offset_axis(-20.0, 300.0), 300.0);
         assert_eq!(invert_offset_axis(420.0, 300.0), 0.0);
+    }
+
+    #[test]
+    fn metrics_respect_separate_track_extent() {
+        let range = ScrollbarRange {
+            offset: 120.0,
+            max_offset: 600.0,
+            viewport_extent: 200.0,
+            track_extent: 260.0,
+        };
+        let metrics = compute_metrics(range, 18.0).expect("expected metrics");
+        assert_eq!(metrics.track_height, 260.0);
+        assert!(metrics.thumb_height <= 260.0);
+        assert!(metrics.thumb_top <= metrics.travel);
     }
 
     #[test]

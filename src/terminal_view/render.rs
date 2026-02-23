@@ -34,22 +34,28 @@ impl TerminalView {
         display_offset: usize,
         history_size: usize,
         line_height: f32,
+        viewport_height: f32,
+        track_height: f32,
     ) -> Option<AnyElement> {
         let now = Instant::now();
         let alpha = self.terminal_scrollbar_alpha(now);
         if alpha <= f32::EPSILON && !self.terminal_scrollbar_visibility_controller.is_dragging() {
             return None;
         }
-        if line_height <= f32::EPSILON || history_size == 0 {
+        if line_height <= f32::EPSILON
+            || history_size == 0
+            || viewport_height <= f32::EPSILON
+            || track_height <= f32::EPSILON
+        {
             return None;
         }
 
-        let viewport = self.terminal_viewport_geometry()?;
         let max_offset = history_size as f32 * line_height;
         let range = scrollbar::ScrollbarRange {
             offset: scrollbar::invert_offset_axis(display_offset as f32 * line_height, max_offset),
             max_offset,
-            viewport_extent: viewport.height,
+            viewport_extent: viewport_height,
+            track_extent: track_height,
         };
         let metrics = scrollbar::compute_metrics(range, TERMINAL_SCROLLBAR_MIN_THUMB_HEIGHT)?;
         let overlay_style = self.overlay_style();
@@ -72,8 +78,6 @@ impl TerminalView {
         let marker_top = self
             .terminal_scrollbar_marker_offset(range.max_offset, line_height)
             .map(|offset| scrollbar::marker_top_for_offset(offset, range, metrics));
-        let track_left =
-            ((TERMINAL_SCROLLBAR_GUTTER_WIDTH - TERMINAL_SCROLLBAR_TRACK_WIDTH) * 0.5).max(0.0);
 
         Some(
             div()
@@ -89,7 +93,7 @@ impl TerminalView {
                         .absolute()
                         .top_0()
                         .bottom_0()
-                        .left(px(track_left))
+                        .right_0()
                         .w(px(TERMINAL_SCROLLBAR_TRACK_WIDTH))
                         .child(scrollbar::render_vertical(
                             "terminal-scrollbar",
@@ -724,10 +728,17 @@ impl Render for TerminalView {
             self.start_terminal_scrollbar_animation(cx);
         }
         let terminal_line_height: f32 = terminal_size.cell_height.into();
+        let terminal_viewport_height = f32::from(terminal_size.rows) * terminal_line_height;
+        let terminal_track_height = self
+            .terminal_surface_geometry(window)
+            .map(|geometry| geometry.height)
+            .unwrap_or(0.0);
         let terminal_scrollbar_overlay = self.render_terminal_scrollbar_overlay(
             terminal_display_offset,
             terminal_history_size,
             terminal_line_height,
+            terminal_viewport_height,
+            terminal_track_height,
         );
         let terminal_grid_layer = if let Some(viewport) = self.terminal_viewport_geometry() {
             div()
@@ -735,7 +746,6 @@ impl Render for TerminalView {
                 .w(px(viewport.width))
                 .h(px(viewport.height))
                 .child(terminal_grid)
-                .children(terminal_scrollbar_overlay)
                 .into_any_element()
         } else {
             div().child(terminal_grid).into_any_element()
@@ -1206,6 +1216,7 @@ impl Render for TerminalView {
                     .on_mouse_move(cx.listener(Self::handle_mouse_move))
                     .on_mouse_up(MouseButton::Left, cx.listener(Self::handle_mouse_up))
                     .on_drop(cx.listener(Self::handle_file_drop))
+                    .relative()
                     .flex_1()
                     .w_full()
                     .px(px(effective_padding_x))
@@ -1215,6 +1226,7 @@ impl Render for TerminalView {
                     .font_family(font_family.clone())
                     .text_size(font_size)
                     .child(terminal_grid_layer)
+                    .children(terminal_scrollbar_overlay)
                     .children(command_palette_overlay)
                     .children(search_overlay),
             )
