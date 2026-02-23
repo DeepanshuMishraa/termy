@@ -564,7 +564,10 @@ pub(super) struct InlineInputElement {
     alignment: InlineInputAlignment,
 }
 
+// Retained for upcoming inline input layout variants and to keep call sites stable
+// while alignment options are wired through additional UI surfaces.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
 pub(super) enum InlineInputAlignment {
     Left,
     Center,

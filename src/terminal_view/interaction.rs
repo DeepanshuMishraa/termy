@@ -101,6 +101,41 @@ impl TerminalView {
         self.active_terminal().write(input);
     }
 
+    fn sanitize_bracketed_paste_input(input: &[u8]) -> Option<Vec<u8>> {
+        const BRACKETED_PASTE_START: &[u8] = b"\x1b[200~";
+        const BRACKETED_PASTE_END: &[u8] = b"\x1b[201~";
+
+        let mut sanitized: Option<Vec<u8>> = None;
+        let mut index = 0;
+        while index < input.len() {
+            let remaining = &input[index..];
+            let marker_len = if remaining.starts_with(BRACKETED_PASTE_END) {
+                Some(BRACKETED_PASTE_END.len())
+            } else if remaining.starts_with(BRACKETED_PASTE_START) {
+                Some(BRACKETED_PASTE_START.len())
+            } else {
+                None
+            };
+
+            if let Some(marker_len) = marker_len {
+                if sanitized.is_none() {
+                    let mut buffer = Vec::with_capacity(input.len());
+                    buffer.extend_from_slice(&input[..index]);
+                    sanitized = Some(buffer);
+                }
+                index += marker_len;
+                continue;
+            }
+
+            if let Some(buffer) = sanitized.as_mut() {
+                buffer.push(input[index]);
+            }
+            index += 1;
+        }
+
+        sanitized
+    }
+
     fn write_terminal_paste_input(&mut self, input: &[u8], cx: &mut Context<Self>) {
         if input.is_empty() {
             return;
@@ -110,7 +145,11 @@ impl TerminalView {
         let terminal = self.active_terminal();
         if terminal.bracketed_paste_mode() {
             terminal.write(b"\x1b[200~");
-            terminal.write(input);
+            if let Some(sanitized) = Self::sanitize_bracketed_paste_input(input) {
+                terminal.write(&sanitized);
+            } else {
+                terminal.write(input);
+            }
             terminal.write(b"\x1b[201~");
         } else {
             terminal.write(input);
@@ -684,13 +723,15 @@ impl TerminalView {
     }
 
     fn busy_tab_titles_for_quit(&self) -> Vec<String> {
+        let fallback_title = self.fallback_title();
         self.tabs
             .iter()
-            .filter(|tab| tab.running_process || tab.terminal.alternate_screen_mode())
-            .map(|tab| {
+            .enumerate()
+            .filter(|(_, tab)| tab.running_process || tab.terminal.alternate_screen_mode())
+            .map(|(index, tab)| {
                 let title = tab.title.trim();
                 if title.is_empty() {
-                    self.fallback_title().to_string()
+                    format!("{fallback_title} {}", index + 1)
                 } else {
                     title.to_string()
                 }
@@ -1227,6 +1268,18 @@ impl TerminalView {
         // Focus the terminal on click
         self.focus_handle.focus(window, cx);
         self.reset_cursor_blink_phase();
+        let mut changed = false;
+        if event.button == MouseButton::Left && self.tab_drag.is_some() {
+            self.commit_tab_drag(cx);
+        } else if self.finish_tab_drag() {
+            changed = true;
+        }
+        if self.hovered_tab.take().is_some() || self.hovered_tab_close.take().is_some() {
+            changed = true;
+        }
+        if changed {
+            cx.notify();
+        }
 
         if event.button != MouseButton::Left {
             return;
@@ -1273,6 +1326,14 @@ impl TerminalView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.tab_drag.is_some() && !event.dragging() {
+            self.commit_tab_drag(cx);
+        }
+
+        if self.hovered_tab.take().is_some() || self.hovered_tab_close.take().is_some() {
+            cx.notify();
+        }
+
         if self.terminal_scrollbar_drag.is_some() {
             if event.dragging() {
                 self.handle_terminal_scrollbar_drag(event.position, window, cx);
@@ -1426,14 +1487,7 @@ impl TerminalView {
     }
 
     pub(super) fn titlebar_height(&self) -> f32 {
-        #[cfg(target_os = "windows")]
-        {
-            0.0
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            TITLEBAR_HEIGHT
-        }
+        TITLEBAR_HEIGHT
     }
 
     pub(super) fn update_banner_height(&self) -> f32 {

@@ -26,7 +26,6 @@ enum EditableField {
     Colorterm,
     ScrollbackHistory,
     ScrollMultiplier,
-    MaxTabs,
     TabFallbackTitle,
     WorkingDirectory,
     WindowWidth,
@@ -258,7 +257,6 @@ impl SettingsWindow {
             EditableField::Colorterm => self.config.colorterm.clone().unwrap_or_default(),
             EditableField::ScrollbackHistory => self.config.scrollback_history.to_string(),
             EditableField::ScrollMultiplier => format!("{}", self.config.mouse_scroll_multiplier),
-            EditableField::MaxTabs => self.config.max_tabs.to_string(),
             EditableField::TabFallbackTitle => self.config.tab_title.fallback.clone(),
             EditableField::WorkingDirectory => self.config.working_dir.clone().unwrap_or_default(),
             EditableField::WindowWidth => format!("{}", self.config.window_width.round() as i32),
@@ -371,16 +369,6 @@ impl SettingsWindow {
                 self.config.mouse_scroll_multiplier = parsed;
                 set_config_value("mouse_scroll_multiplier", &parsed.to_string())
             }
-            EditableField::MaxTabs => {
-                let parsed = value
-                    .parse::<usize>()
-                    .map_err(|_| "Maximum tabs must be a positive integer".to_string())?;
-                if parsed == 0 {
-                    return Err("Maximum tabs must be greater than 0".to_string());
-                }
-                self.config.max_tabs = parsed;
-                set_config_value("max_tabs", &parsed.to_string())
-            }
             EditableField::TabFallbackTitle => {
                 if value.is_empty() {
                     return Err("Fallback title cannot be empty".to_string());
@@ -443,7 +431,6 @@ impl SettingsWindow {
                 | EditableField::PaddingY
                 | EditableField::ScrollbackHistory
                 | EditableField::ScrollMultiplier
-                | EditableField::MaxTabs
                 | EditableField::WindowWidth
                 | EditableField::WindowHeight
         )
@@ -482,11 +469,6 @@ impl SettingsWindow {
                     (self.config.mouse_scroll_multiplier + (delta as f32 * 0.1)).clamp(0.1, 1000.0);
                 self.config.mouse_scroll_multiplier = next;
                 set_config_value("mouse_scroll_multiplier", &next.to_string())
-            }
-            EditableField::MaxTabs => {
-                let next = (self.config.max_tabs as i64 + delta as i64).max(1) as usize;
-                self.config.max_tabs = next;
-                set_config_value("max_tabs", &next.to_string())
             }
             EditableField::WindowWidth => {
                 let next = (self.config.window_width + (delta as f32 * 20.0)).max(1.0);
@@ -1519,7 +1501,6 @@ impl SettingsWindow {
 
     fn render_tabs_section(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let use_tabs = self.config.use_tabs;
-        let max_tabs = self.config.max_tabs;
         let shell_integration = self.config.tab_title.shell_integration;
         let fallback = self.config.tab_title.fallback.clone();
 
@@ -1532,20 +1513,13 @@ impl SettingsWindow {
             .child(self.render_setting_row(
                 "use-tabs-toggle",
                 "Enable Tabs",
-                "Show tab bar when multiple tabs are open",
+                "Show compact tab strip",
                 use_tabs,
                 cx,
                 |view, _cx| {
                     view.config.use_tabs = !view.config.use_tabs;
                     let _ = set_config_value("use_tabs", &view.config.use_tabs.to_string());
                 },
-            ))
-            .child(self.render_editable_row(
-                EditableField::MaxTabs,
-                "Maximum Tabs",
-                "Memory optimization limit",
-                format!("{}", max_tabs),
-                cx,
             ))
             .child(self.render_group_header("TAB TITLES"))
             .child(self.render_tab_title_mode_row(cx))

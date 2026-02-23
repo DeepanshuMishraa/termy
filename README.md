@@ -145,6 +145,8 @@ padding_y = 8
 keybind = cmd-p=toggle_command_palette
 ```
 
+With `use_tabs = true`, Termy uses a compact tab strip that stays visible even with one tab and scrolls horizontally when tabs overflow.
+
 Full configuration reference:
 - `docs/configuration.md`
 - `docs/keybindings.md`
