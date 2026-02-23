@@ -624,6 +624,10 @@ pub fn import_colors_from_json(json_path: &Path) -> Result<String, String> {
     let mut color_lines = Vec::new();
 
     for (key, value) in colors {
+        if key.starts_with('$') {
+            continue;
+        }
+
         let hex = value.as_str()
             .ok_or_else(|| format!("Color '{}' must be a hex string", key))?;
 
