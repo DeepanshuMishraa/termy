@@ -82,6 +82,28 @@ const TOAST_COPY_FEEDBACK_MS: u64 = 1200;
 const CHROME_ALPHA_FLOOR_RATIO: f32 = 0.55;
 const OVERLAY_PANEL_ALPHA_FLOOR_RATIO: f32 = 0.72;
 const OVERLAY_DIM_MIN_SCALE: f32 = 0.25;
+const OVERLAY_PANEL_BORDER_ALPHA: f32 = 0.24;
+const OVERLAY_PRIMARY_TEXT_ALPHA: f32 = 0.95;
+const OVERLAY_MUTED_TEXT_ALPHA: f32 = 0.62;
+const COMMAND_PALETTE_PANEL_SOLID_ALPHA: f32 = 0.90;
+const COMMAND_PALETTE_INPUT_SOLID_ALPHA: f32 = 0.76;
+const COMMAND_PALETTE_ROW_SELECTED_BG_ALPHA: f32 = 0.20;
+const COMMAND_PALETTE_ROW_SELECTED_BORDER_ALPHA: f32 = 0.35;
+const COMMAND_PALETTE_SHORTCUT_BG_ALPHA: f32 = 0.10;
+const COMMAND_PALETTE_SHORTCUT_BORDER_ALPHA: f32 = 0.22;
+const COMMAND_PALETTE_SHORTCUT_TEXT_ALPHA: f32 = 0.80;
+const COMMAND_PALETTE_DIM_ALPHA: f32 = 0.78;
+const COMMAND_PALETTE_PANEL_BG_ALPHA: f32 = 0.98;
+const COMMAND_PALETTE_INPUT_BG_ALPHA: f32 = 0.64;
+const COMMAND_PALETTE_INPUT_SELECTION_ALPHA: f32 = 0.28;
+const COMMAND_PALETTE_SCROLLBAR_TRACK_ALPHA: f32 = 0.10;
+const COMMAND_PALETTE_SCROLLBAR_THUMB_ALPHA: f32 = 0.42;
+const SEARCH_BAR_BG_ALPHA: f32 = 0.96;
+const SEARCH_INPUT_BG_ALPHA: f32 = 0.60;
+const SEARCH_COUNTER_TEXT_ALPHA: f32 = 0.60;
+const SEARCH_BUTTON_TEXT_ALPHA: f32 = 0.70;
+const SEARCH_BUTTON_HOVER_BG_ALPHA: f32 = 0.20;
+const SEARCH_INPUT_SELECTION_ALPHA: f32 = 0.30;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct CellPos {
@@ -267,6 +289,76 @@ fn adaptive_overlay_panel_alpha_for_opacity(base_alpha: f32, background_opacity:
         .clamp(0.0, 1.0)
 }
 
+fn adaptive_overlay_panel_alpha_with_floor_for_opacity(
+    base_alpha: f32,
+    background_opacity: f32,
+    translucent_floor_alpha: f32,
+) -> f32 {
+    let alpha = adaptive_overlay_panel_alpha_for_opacity(base_alpha, background_opacity);
+    if background_opacity_factor(background_opacity) < 1.0 {
+        alpha.max(translucent_floor_alpha).clamp(0.0, 1.0)
+    } else {
+        alpha
+    }
+}
+
+#[derive(Clone, Copy)]
+struct OverlayStyleBuilder<'a> {
+    colors: &'a TerminalColors,
+    background_opacity: f32,
+}
+
+impl<'a> OverlayStyleBuilder<'a> {
+    fn new(colors: &'a TerminalColors, background_opacity: f32) -> Self {
+        Self {
+            colors,
+            background_opacity,
+        }
+    }
+
+    fn dim_background(self, base_alpha: f32) -> gpui::Rgba {
+        let alpha = adaptive_overlay_dim_alpha_for_opacity(base_alpha, self.background_opacity);
+        self.with_alpha(self.colors.background, alpha)
+    }
+
+    fn panel_background(self, base_alpha: f32) -> gpui::Rgba {
+        let alpha = adaptive_overlay_panel_alpha_for_opacity(base_alpha, self.background_opacity);
+        self.with_alpha(self.colors.background, alpha)
+    }
+
+    fn panel_background_with_floor(
+        self,
+        base_alpha: f32,
+        translucent_floor_alpha: f32,
+    ) -> gpui::Rgba {
+        let alpha = adaptive_overlay_panel_alpha_with_floor_for_opacity(
+            base_alpha,
+            self.background_opacity,
+            translucent_floor_alpha,
+        );
+        self.with_alpha(self.colors.background, alpha)
+    }
+
+    fn panel_cursor(self, base_alpha: f32) -> gpui::Rgba {
+        let alpha = adaptive_overlay_panel_alpha_for_opacity(base_alpha, self.background_opacity);
+        self.with_alpha(self.colors.cursor, alpha)
+    }
+
+    fn panel_foreground(self, base_alpha: f32) -> gpui::Rgba {
+        let alpha = adaptive_overlay_panel_alpha_for_opacity(base_alpha, self.background_opacity);
+        self.with_alpha(self.colors.foreground, alpha)
+    }
+
+    fn transparent_background(self) -> gpui::Rgba {
+        self.with_alpha(self.colors.background, 0.0)
+    }
+
+    fn with_alpha(self, mut color: gpui::Rgba, alpha: f32) -> gpui::Rgba {
+        color.a = alpha.clamp(0.0, 1.0);
+        color
+    }
+}
+
 pub(crate) fn initial_window_background_appearance(
     config: &AppConfig,
 ) -> WindowBackgroundAppearance {
@@ -304,6 +396,7 @@ pub struct TerminalView {
     cursor_blink_visible: bool,
     background_opacity: f32,
     background_blur: bool,
+    background_support_context: BackgroundSupportContext,
     last_window_background_appearance: Option<WindowBackgroundAppearance>,
     warned_blur_unsupported_once: bool,
     padding_x: f32,
@@ -382,19 +475,15 @@ impl TerminalView {
         scaled_chrome_alpha_for_opacity(base_alpha, self.background_opacity)
     }
 
-    pub(super) fn adaptive_overlay_dim_alpha(&self, base_alpha: f32) -> f32 {
-        adaptive_overlay_dim_alpha_for_opacity(base_alpha, self.background_opacity)
-    }
-
-    pub(super) fn adaptive_overlay_panel_alpha(&self, base_alpha: f32) -> f32 {
-        adaptive_overlay_panel_alpha_for_opacity(base_alpha, self.background_opacity)
+    fn overlay_style(&self) -> OverlayStyleBuilder<'_> {
+        OverlayStyleBuilder::new(&self.colors, self.background_opacity)
     }
 
     pub(super) fn sync_window_background_appearance(&mut self, window: &mut Window) {
         let resolved = resolve_background_appearance(
             self.background_opacity,
             self.background_blur,
-            BackgroundSupportContext::current(),
+            self.background_support_context,
         );
 
         if self.last_window_background_appearance != Some(resolved.appearance) {
@@ -413,7 +502,7 @@ impl TerminalView {
         }
     }
 
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>, config: AppConfig) -> Self {
         let focus_handle = cx.focus_handle();
         let (event_wakeup_tx, event_wakeup_rx) = bounded(1);
 
@@ -474,13 +563,13 @@ impl TerminalView {
         })
         .detach();
 
-        let config = AppConfig::load_or_create();
         let config_path = config::ensure_config_file();
         let config_last_modified = config_path.as_ref().and_then(Self::config_last_modified);
         let colors = TerminalColors::from_theme(&config.theme, &config.colors);
         let base_font_size = config.font_size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
         let padding_x = config.padding_x.max(0.0);
         let padding_y = config.padding_y.max(0.0);
+        let background_support_context = BackgroundSupportContext::current();
         let configured_working_dir = config.working_dir.clone();
         let tab_title = config.tab_title.clone();
         let tab_shell_integration = TabTitleShellIntegration {
@@ -522,6 +611,7 @@ impl TerminalView {
             cursor_blink_visible: true,
             background_opacity: config.background_opacity,
             background_blur: config.background_blur,
+            background_support_context,
             last_window_background_appearance: None,
             warned_blur_unsupported_once: false,
             padding_x,
@@ -835,5 +925,15 @@ mod tests {
         let high_opacity = adaptive_overlay_dim_alpha_for_opacity(base, 1.0);
         let low_opacity = adaptive_overlay_dim_alpha_for_opacity(base, 0.2);
         assert!(low_opacity < high_opacity);
+    }
+
+    #[test]
+    fn overlay_panel_floor_applies_only_when_background_is_translucent() {
+        let base = 0.64;
+        let floor = 0.76;
+        let translucent = adaptive_overlay_panel_alpha_with_floor_for_opacity(base, 0.2, floor);
+        let opaque = adaptive_overlay_panel_alpha_with_floor_for_opacity(base, 1.0, floor);
+        assert!(translucent >= floor);
+        assert!(opaque < floor);
     }
 }

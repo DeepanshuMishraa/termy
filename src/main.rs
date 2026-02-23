@@ -58,6 +58,7 @@ fn main() {
         let app_config = config::AppConfig::load_or_create();
         keybindings::install_keybindings(cx, &app_config);
         let window_background = initial_window_background_appearance(&app_config);
+        let startup_config = app_config.clone();
         let window_width = app_config.window_width;
         let window_height = app_config.window_height;
         #[cfg(target_os = "windows")]
@@ -99,7 +100,10 @@ fn main() {
                 window_background,
                 ..Default::default()
             },
-            |window, cx| cx.new(|cx| TerminalView::new(window, cx)),
+            move |window, cx| {
+                let startup_config = startup_config.clone();
+                cx.new(move |cx| TerminalView::new(window, cx, startup_config))
+            },
         )
         .unwrap();
     });
