@@ -4,14 +4,16 @@ mod colors;
 mod commands;
 mod config;
 mod keybindings;
+mod settings_view;
 mod terminal_view;
 
-use commands::{OpenConfig, Quit};
+use commands::{OpenConfig, OpenSettings, Quit};
 #[cfg(target_os = "macos")]
 use gpui::SystemMenuType;
 use gpui::{
     App, Application, Bounds, Menu, MenuItem, WindowBounds, WindowOptions, prelude::*, px, size,
 };
+use settings_view::SettingsWindow;
 use terminal_view::{TerminalView, initial_window_background_appearance};
 
 pub(crate) const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -32,13 +34,15 @@ pub(crate) fn app_menu() -> Menu {
     let menu_items = vec![
         MenuItem::os_submenu("Services", SystemMenuType::Services),
         MenuItem::separator(),
-        MenuItem::action("Preferences...", OpenConfig),
+        MenuItem::action("Settings...", OpenSettings),
+        MenuItem::action("Open Config File...", OpenConfig),
         MenuItem::action("Quit", Quit),
     ];
     #[cfg(not(target_os = "macos"))]
     let menu_items = vec![
         MenuItem::separator(),
-        MenuItem::action("Preferences...", OpenConfig),
+        MenuItem::action("Settings...", OpenSettings),
+        MenuItem::action("Open Config File...", OpenConfig),
         MenuItem::action("Quit", Quit),
     ];
 
@@ -54,6 +58,21 @@ fn main() {
     Application::new().run(|cx: &mut App| {
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.on_action(|_: &OpenConfig, _cx| config::open_config_file());
+        cx.on_action(|_: &OpenSettings, cx| {
+            let bounds = Bounds::centered(None, size(px(800.0), px(600.0)), cx);
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    titlebar: Some(gpui::TitlebarOptions {
+                        title: Some("Settings".into()),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                |window, cx| cx.new(|cx| SettingsWindow::new(window, cx)),
+            )
+            .ok();
+        });
 
         let app_config = config::AppConfig::load_or_create();
         keybindings::install_keybindings(cx, &app_config);

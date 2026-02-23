@@ -577,6 +577,23 @@ impl TerminalView {
                 self.perform_search();
                 cx.notify();
             }
+            CommandAction::OpenSettings => {
+                use crate::settings_view::SettingsWindow;
+                use gpui::{Bounds, WindowBounds, WindowOptions, px, size};
+                let bounds = Bounds::centered(None, size(px(800.0), px(600.0)), cx);
+                cx.open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(bounds)),
+                        titlebar: Some(gpui::TitlebarOptions {
+                            title: Some("Settings".into()),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    },
+                    |window, cx| cx.new(|cx| SettingsWindow::new(window, cx)),
+                )
+                .ok();
+            }
         }
     }
 

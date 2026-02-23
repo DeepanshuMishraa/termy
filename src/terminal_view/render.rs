@@ -727,10 +727,12 @@ impl Render for TerminalView {
                                         .cursor_pointer()
                                         .on_mouse_down(
                                             MouseButton::Left,
-                                            cx.listener(|_this, _event, _window, cx| {
-                                                config::open_config_file();
-                                                termy_toast::info("Opened config file");
-                                                cx.notify();
+                                            cx.listener(|this, _event, _window, cx| {
+                                                this.execute_command_action(
+                                                    CommandAction::OpenSettings,
+                                                    false,
+                                                    cx,
+                                                );
                                                 cx.stop_propagation();
                                             }),
                                         )

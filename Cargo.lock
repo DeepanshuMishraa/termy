@@ -5232,7 +5232,7 @@ dependencies = [
 
 [[package]]
 name = "termy"
-version = "0.1.26"
+version = "0.1.27"
 dependencies = [
  "alacritty_terminal",
  "anyhow",

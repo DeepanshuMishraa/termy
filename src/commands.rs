@@ -209,8 +209,18 @@ define_commands!(
         "open_config",
         GLOBAL_CONTEXT,
         Some(palette(
-            "Open Config",
-            "settings preferences",
+            "Open Config File",
+            "config file edit",
+            CommandPaletteVisibility::Always
+        ))
+    ),
+    (
+        OpenSettings,
+        "open_settings",
+        GLOBAL_CONTEXT,
+        Some(palette(
+            "Settings",
+            "settings preferences options",
             CommandPaletteVisibility::Always
         ))
     ),
