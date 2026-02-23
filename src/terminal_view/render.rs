@@ -626,8 +626,6 @@ impl Render for TerminalView {
             .flex()
             .relative()
             .items_end()
-            .pl(px(TAB_HORIZONTAL_PADDING))
-            .pr(px(TAB_HORIZONTAL_PADDING))
             .gap(px(TAB_ITEM_GAP))
             .overflow_x_scroll()
             .track_scroll(&self.tab_strip_scroll_handle)
@@ -646,6 +644,13 @@ impl Render for TerminalView {
             let tab_chrome_layout = tab_chrome_layout
                 .as_ref()
                 .expect("tab chrome layout must exist when tab bar is visible");
+            tabs_scroll_content = tabs_scroll_content.child(
+                div()
+                    .id("tabs-left-padding-spacer")
+                    .flex_none()
+                    .w(px(TAB_HORIZONTAL_PADDING))
+                    .h(px(TABBAR_HEIGHT)),
+            );
             for (index, tab) in self.tabs.iter().enumerate() {
                 let switch_tab_index = index;
                 let hover_tab_index = index;
@@ -796,23 +801,36 @@ impl Render for TerminalView {
                         .child(close_button),
                 );
             }
+            tabs_scroll_content = tabs_scroll_content.child(
+                div()
+                    .id("tabs-right-padding-spacer")
+                    .flex_none()
+                    .w(px(TAB_HORIZONTAL_PADDING))
+                    .h(px(TABBAR_HEIGHT)),
+            );
         }
 
         if let Some(layout) = tab_chrome_layout.as_ref() {
             for segment in &layout.baseline_strokes {
                 tabs_scroll_content = tabs_scroll_content.child(render_tab_stroke(*segment));
             }
-            if let Some(start_x) = layout.open_ended_baseline_start_x {
-                tabs_scroll_content = tabs_scroll_content.child(
-                    div()
-                        .absolute()
-                        .left(px(start_x))
-                        .right_0()
-                        .top(px(layout.baseline_y))
-                        .h(px(TAB_STROKE_THICKNESS))
-                        .bg(tab_stroke_color),
-                );
-            }
+            tabs_scroll_content = tabs_scroll_content.child(
+                div()
+                    .id("tabs-baseline-tail-filler")
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .h(px(TABBAR_HEIGHT))
+                    .relative()
+                    .child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .right_0()
+                            .top(px(layout.baseline_y))
+                            .h(px(TAB_STROKE_THICKNESS))
+                            .bg(tab_stroke_color),
+                    ),
+            );
         }
 
         let tabs_row = div()

@@ -36,7 +36,6 @@ pub(super) struct TabChromeLayout {
     pub(super) top_strokes: Vec<StrokeRect>,
     pub(super) boundary_strokes: Vec<StrokeRect>,
     pub(super) baseline_strokes: Vec<StrokeRect>,
-    pub(super) open_ended_baseline_start_x: Option<f32>,
     pub(super) content_width: f32,
     pub(super) tab_top_y: f32,
     pub(super) baseline_y: f32,
@@ -253,10 +252,10 @@ pub(super) fn compute_tab_chrome_layout(
         boundary_strokes.push(right_boundary_rect);
     }
 
-    let mut baseline_strokes = Vec::with_capacity(1);
-    let open_ended_baseline_start_x = match active_span {
+    let mut baseline_strokes = Vec::with_capacity(2);
+    match active_span {
         Some(active_span) => {
-            let left_width = active_span.left.max(0.0);
+            let left_width = active_span.left.clamp(0.0, content_width);
             if left_width > 0.0 {
                 baseline_strokes.push(StrokeRect::new(
                     0.0,
@@ -265,10 +264,30 @@ pub(super) fn compute_tab_chrome_layout(
                     TAB_STROKE_THICKNESS,
                 ));
             }
-            Some(active_span.right_edge() + TAB_STROKE_THICKNESS)
+
+            let right_start_x =
+                (active_span.right_edge() + TAB_STROKE_THICKNESS).clamp(0.0, content_width);
+            let right_width = (content_width - right_start_x).max(0.0);
+            if right_width > 0.0 {
+                baseline_strokes.push(StrokeRect::new(
+                    right_start_x,
+                    baseline_y,
+                    right_width,
+                    TAB_STROKE_THICKNESS,
+                ));
+            }
         }
-        None => Some(0.0),
-    };
+        None => {
+            if content_width > 0.0 {
+                baseline_strokes.push(StrokeRect::new(
+                    0.0,
+                    baseline_y,
+                    content_width,
+                    TAB_STROKE_THICKNESS,
+                ));
+            }
+        }
+    }
 
     debug_assert_eq!(tab_strokes.len(), spans.len());
     debug_assert_eq!(top_strokes.len(), spans.len());
@@ -278,7 +297,6 @@ pub(super) fn compute_tab_chrome_layout(
         top_strokes,
         boundary_strokes,
         baseline_strokes,
-        open_ended_baseline_start_x,
         content_width,
         tab_top_y,
         baseline_y,
@@ -303,30 +321,13 @@ mod tests {
         )
     }
 
-    fn baseline_rects_within_content(layout: &TabChromeLayout) -> Vec<StrokeRect> {
-        let mut rects = layout.baseline_strokes.clone();
-        if let Some(start_x) = layout.open_ended_baseline_start_x {
-            let clamped_start_x = start_x.max(0.0);
-            let width = (layout.content_width - clamped_start_x).max(0.0);
-            if width > 0.0 {
-                rects.push(StrokeRect::new(
-                    clamped_start_x,
-                    layout.baseline_y,
-                    width,
-                    TAB_STROKE_THICKNESS,
-                ));
-            }
-        }
-        rects
-    }
-
     fn all_global_strokes(layout: &TabChromeLayout) -> impl Iterator<Item = StrokeRect> + '_ {
         layout
             .top_strokes
             .iter()
             .copied()
             .chain(layout.boundary_strokes.iter().copied())
-            .chain(baseline_rects_within_content(layout))
+            .chain(layout.baseline_strokes.iter().copied())
     }
 
     fn coverage_map(layout: &TabChromeLayout) -> HashMap<(i32, i32), usize> {
@@ -375,11 +376,6 @@ mod tests {
             .baseline_strokes
             .iter()
             .flat_map(|stroke| (stroke.x as i32)..((stroke.x + stroke.w) as i32))
-            .chain(
-                baseline_rects_within_content(&layout)
-                    .into_iter()
-                    .flat_map(|stroke| (stroke.x as i32)..((stroke.x + stroke.w) as i32)),
-            )
             .collect();
         assert!(!baseline_pixels.contains(&8));
         assert!(!baseline_pixels.contains(&107));
@@ -400,11 +396,6 @@ mod tests {
             .baseline_strokes
             .iter()
             .flat_map(|stroke| (stroke.x as i32)..((stroke.x + stroke.w) as i32))
-            .chain(
-                baseline_rects_within_content(&layout)
-                    .into_iter()
-                    .flat_map(|stroke| (stroke.x as i32)..((stroke.x + stroke.w) as i32)),
-            )
             .collect();
         assert!(baseline_pixels.contains(&107));
         assert!(!baseline_pixels.contains(&108));
@@ -417,12 +408,15 @@ mod tests {
         let layout = layout_for(&[100.0], Some(0));
         assert_eq!(layout.boundary_strokes.len(), 2);
         assert_eq!(boundary_at_x(&layout, 8).h, boundary_at_x(&layout, 107).h);
-        assert_eq!(layout.baseline_strokes.len(), 1);
+        assert_eq!(layout.baseline_strokes.len(), 2);
         assert_eq!(
             layout.baseline_strokes[0],
             StrokeRect::new(0.0, 33.0, 8.0, 1.0)
         );
-        assert_eq!(layout.open_ended_baseline_start_x, Some(108.0));
+        assert_eq!(
+            layout.baseline_strokes[1],
+            StrokeRect::new(108.0, 33.0, 8.0, 1.0)
+        );
     }
 
     #[test]
@@ -432,11 +426,6 @@ mod tests {
             .baseline_strokes
             .iter()
             .flat_map(|stroke| (stroke.x as i32)..((stroke.x + stroke.w) as i32))
-            .chain(
-                baseline_rects_within_content(&layout)
-                    .into_iter()
-                    .flat_map(|stroke| (stroke.x as i32)..((stroke.x + stroke.w) as i32)),
-            )
             .collect();
 
         let content_width = layout.content_width as i32;
@@ -475,5 +464,15 @@ mod tests {
         assert!((resolved.g - ((0.18 * 0.88) + (0.87 * 0.12))).abs() < 0.0001);
         assert!((resolved.b - ((0.24 * 0.88) + (0.83 * 0.12))).abs() < 0.0001);
         assert_eq!(resolved.a, 1.0);
+    }
+
+    #[test]
+    fn baseline_rectangles_are_bounded_by_content_width() {
+        let layout = layout_for(&[96.0, 112.0, 132.0], Some(1));
+        for stroke in &layout.baseline_strokes {
+            assert!(stroke.x >= 0.0);
+            assert!(stroke.w >= 0.0);
+            assert!(stroke.x + stroke.w <= layout.content_width);
+        }
     }
 }
