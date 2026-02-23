@@ -53,7 +53,6 @@ fn main() {
     env_logger::init();
 
     Application::new().run(|cx: &mut App| {
-        cx.on_action(|_: &Quit, cx| cx.quit());
         cx.on_action(|_: &OpenConfig, _cx| config::open_config_file());
 
         let app_config = config::AppConfig::load_or_create();
@@ -103,7 +102,16 @@ fn main() {
             },
             move |window, cx| {
                 let startup_config = startup_config.clone();
-                cx.new(|cx| TerminalView::new(window, cx, startup_config.clone()))
+                let view = cx.new(|cx| TerminalView::new(window, cx, startup_config.clone()));
+                let view_handle = view.downgrade();
+                window.on_window_should_close(cx, move |window, cx| {
+                    view_handle
+                        .update(cx, |view, cx| {
+                            view.handle_window_should_close_request(window, cx)
+                        })
+                        .unwrap_or(true)
+                });
+                view
             },
         )
         .unwrap();

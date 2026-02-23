@@ -16,8 +16,8 @@ use gpui::{
     WeakEntity, Window, WindowBackgroundAppearance, WindowControlArea, div, px,
 };
 use std::{
-    fs,
-    path::PathBuf,
+    env, fs,
+    path::{Path, PathBuf},
     process::Command,
     time::{Duration, Instant, SystemTime},
 };
@@ -53,6 +53,13 @@ const ZOOM_STEP: f32 = 1.0;
 const TITLEBAR_HEIGHT: f32 = 34.0;
 const TABBAR_HEIGHT: f32 = 40.0;
 const TITLEBAR_PLUS_SIZE: f32 = 22.0;
+const TITLEBAR_BUTTON_GAP: f32 = 4.0;
+const TITLEBAR_BUTTON_ICON_SIZE: f32 = 12.0;
+const TITLEBAR_SETTINGS_ICON_SIZE: f32 = 13.0;
+const TITLEBAR_BUTTON_ICON_BOX_SIZE: f32 = 14.0;
+const TITLEBAR_BUTTON_CORNER_RADIUS: f32 = 7.0;
+const TITLEBAR_BUTTON_ICON_BASELINE_NUDGE_Y: f32 = -0.5;
+const TITLEBAR_NEW_TAB_ICON_SIZE: f32 = 11.0;
 const WINDOWS_TITLEBAR_BUTTON_WIDTH: f32 = 46.0;
 const WINDOWS_TITLEBAR_CONTROLS_WIDTH: f32 = WINDOWS_TITLEBAR_BUTTON_WIDTH * 3.0;
 const TITLEBAR_SIDE_PADDING: f32 = 12.0;
@@ -101,6 +108,7 @@ const TERMINAL_SCROLLBAR_MUTED_THEME_BLEND: f32 = 0.38;
 const SEARCH_BAR_WIDTH: f32 = 320.0;
 const SEARCH_BAR_HEIGHT: f32 = 36.0;
 const SEARCH_DEBOUNCE_MS: u64 = 50;
+const INPUT_SCROLL_SUPPRESS_MS: u64 = 160;
 const TOAST_COPY_FEEDBACK_MS: u64 = 1200;
 const OVERLAY_PANEL_ALPHA_FLOOR_RATIO: f32 = 0.72;
 const OVERLAY_DIM_MIN_SCALE: f32 = 0.25;
@@ -188,18 +196,24 @@ struct TerminalTab {
     pending_command_title: Option<String>,
     pending_command_token: u64,
     title: String,
+    running_process: bool,
 }
 
 impl TerminalTab {
-    fn new(terminal: Terminal) -> Self {
+    fn new(terminal: Terminal, predicted_prompt_title: Option<String>) -> Self {
+        let title = predicted_prompt_title
+            .clone()
+            .unwrap_or_else(|| DEFAULT_TAB_TITLE.to_string());
+
         Self {
             terminal,
             manual_title: None,
-            explicit_title: None,
+            explicit_title: predicted_prompt_title,
             shell_title: None,
             pending_command_title: None,
             pending_command_token: 0,
-            title: DEFAULT_TAB_TITLE.to_string(),
+            title,
+            running_process: false,
         }
     }
 }
@@ -466,6 +480,8 @@ pub struct TerminalView {
     use_tabs: bool,
     max_tabs: usize,
     inactive_tab_scrollback: Option<usize>,
+    hide_titlebar_buttons: bool,
+    warn_on_quit_with_running_process: bool,
     tab_title: TabTitleConfig,
     tab_shell_integration: TabTitleShellIntegration,
     configured_working_dir: Option<String>,
@@ -509,6 +525,7 @@ pub struct TerminalView {
     command_palette_show_keybinds: bool,
     inline_input_selecting: bool,
     terminal_scroll_accumulator_y: f32,
+    input_scroll_suppress_until: Option<Instant>,
     terminal_scrollbar_visibility: TerminalScrollbarVisibility,
     terminal_scrollbar_style: TerminalScrollbarStyle,
     terminal_scrollbar_visibility_controller: ScrollbarVisibilityController,
@@ -524,6 +541,8 @@ pub struct TerminalView {
     search_debounce_token: u64,
     // Pending clipboard write from OSC 52
     pending_clipboard: Option<String>,
+    quit_prompt_in_flight: bool,
+    allow_quit_without_prompt: bool,
     #[cfg(target_os = "macos")]
     auto_updater: Option<Entity<AutoUpdater>>,
     #[cfg(target_os = "macos")]
@@ -552,6 +571,92 @@ impl TerminalView {
 
     fn config_last_modified(path: &PathBuf) -> Option<SystemTime> {
         fs::metadata(path).ok()?.modified().ok()
+    }
+
+    fn user_home_dir() -> Option<PathBuf> {
+        #[cfg(target_os = "windows")]
+        {
+            if let Ok(user_profile) = env::var("USERPROFILE")
+                && !user_profile.trim().is_empty()
+            {
+                return Some(PathBuf::from(user_profile));
+            }
+
+            if let (Ok(home_drive), Ok(home_path)) = (env::var("HOMEDRIVE"), env::var("HOMEPATH"))
+                && !home_drive.trim().is_empty()
+                && !home_path.trim().is_empty()
+            {
+                return Some(PathBuf::from(format!("{home_drive}{home_path}")));
+            }
+        }
+
+        if let Ok(home) = env::var("HOME")
+            && !home.trim().is_empty()
+        {
+            return Some(PathBuf::from(home));
+        }
+
+        None
+    }
+
+    fn resolve_configured_working_directory(configured: Option<&str>) -> Option<PathBuf> {
+        let configured = configured?.trim();
+        if configured.is_empty() {
+            return None;
+        }
+
+        let path = if configured == "~" {
+            Self::user_home_dir()?
+        } else if let Some(relative) = configured
+            .strip_prefix("~/")
+            .or_else(|| configured.strip_prefix("~\\"))
+        {
+            Self::user_home_dir()?.join(relative)
+        } else {
+            PathBuf::from(configured)
+        };
+
+        path.is_dir().then_some(path)
+    }
+
+    fn default_working_directory_with_fallback(
+        fallback: RuntimeWorkingDirFallback,
+    ) -> Option<PathBuf> {
+        if fallback == RuntimeWorkingDirFallback::Home
+            && let Some(home) = Self::user_home_dir()
+            && home.is_dir()
+        {
+            return Some(home);
+        }
+
+        env::current_dir().ok()
+    }
+
+    fn display_working_directory_for_prompt(path: &Path) -> String {
+        if let Some(home) = Self::user_home_dir() {
+            if path == home.as_path() {
+                return "~".to_string();
+            }
+
+            if let Ok(relative) = path.strip_prefix(&home) {
+                let relative = relative.to_string_lossy();
+                if relative.is_empty() {
+                    return "~".to_string();
+                }
+                return format!("~{}{}", std::path::MAIN_SEPARATOR, relative);
+            }
+        }
+
+        path.to_string_lossy().into_owned()
+    }
+
+    fn predicted_prompt_cwd(
+        configured_working_dir: Option<&str>,
+        fallback: RuntimeWorkingDirFallback,
+    ) -> Option<String> {
+        let path = Self::resolve_configured_working_directory(configured_working_dir)
+            .or_else(|| Self::default_working_directory_with_fallback(fallback))?;
+        Some(Self::display_working_directory_for_prompt(&path))
     }
 
     fn background_opacity_factor(&self) -> f32 {
@@ -851,6 +956,12 @@ impl TerminalView {
             explicit_prefix: tab_title.explicit_prefix.clone(),
         };
         let terminal_runtime = Self::runtime_config_from_app_config(&config);
+        let predicted_prompt_cwd = Self::predicted_prompt_cwd(
+            configured_working_dir.as_deref(),
+            terminal_runtime.working_dir_fallback,
+        );
+        let startup_predicted_title =
+            Self::predicted_prompt_seed_title(&tab_title, predicted_prompt_cwd.as_deref());
         let terminal = Terminal::new(
             TerminalSize::default(),
             configured_working_dir.as_deref(),
@@ -861,7 +972,7 @@ impl TerminalView {
         .expect("Failed to create terminal");
 
         let mut view = Self {
-            tabs: vec![TerminalTab::new(terminal)],
+            tabs: vec![TerminalTab::new(terminal, startup_predicted_title)],
             active_tab: 0,
             renaming_tab: None,
             rename_input: InlineInputState::new(String::new()),
@@ -872,6 +983,8 @@ impl TerminalView {
             use_tabs: config.use_tabs,
             max_tabs: config.max_tabs,
             inactive_tab_scrollback: config.inactive_tab_scrollback,
+            hide_titlebar_buttons: config.hide_titlebar_buttons,
+            warn_on_quit_with_running_process: config.warn_on_quit_with_running_process,
             tab_title,
             tab_shell_integration,
             configured_working_dir,
@@ -915,6 +1028,7 @@ impl TerminalView {
             command_palette_show_keybinds: config.command_palette_show_keybinds,
             inline_input_selecting: false,
             terminal_scroll_accumulator_y: 0.0,
+            input_scroll_suppress_until: None,
             terminal_scrollbar_visibility: config.terminal_scrollbar_visibility,
             terminal_scrollbar_style: config.terminal_scrollbar_style,
             terminal_scrollbar_visibility_controller: ScrollbarVisibilityController::default(),
@@ -927,6 +1041,8 @@ impl TerminalView {
             search_state: SearchState::new(),
             search_debounce_token: 0,
             pending_clipboard: None,
+            quit_prompt_in_flight: false,
+            allow_quit_without_prompt: false,
             #[cfg(target_os = "macos")]
             auto_updater: None,
             #[cfg(target_os = "macos")]
@@ -959,6 +1075,10 @@ impl TerminalView {
         self.theme_id = config.theme.clone();
         self.colors = TerminalColors::from_theme(&config.theme, &config.colors);
         self.use_tabs = config.use_tabs;
+        self.max_tabs = config.max_tabs;
+        self.inactive_tab_scrollback = config.inactive_tab_scrollback;
+        self.hide_titlebar_buttons = config.hide_titlebar_buttons;
+        self.warn_on_quit_with_running_process = config.warn_on_quit_with_running_process;
         self.tab_title = config.tab_title.clone();
         self.tab_shell_integration = TabTitleShellIntegration {
             enabled: self.tab_title.shell_integration,

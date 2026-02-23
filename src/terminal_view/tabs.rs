@@ -61,7 +61,14 @@ impl TerminalView {
         )
         .expect("Failed to create terminal tab");
 
-        self.tabs.push(TerminalTab::new(terminal));
+        let predicted_prompt_cwd = Self::predicted_prompt_cwd(
+            self.configured_working_dir.as_deref(),
+            self.terminal_runtime.working_dir_fallback,
+        );
+        let predicted_title =
+            Self::predicted_prompt_seed_title(&self.tab_title, predicted_prompt_cwd.as_deref());
+
+        self.tabs.push(TerminalTab::new(terminal, predicted_title));
         self.active_tab = self.tabs.len() - 1;
         self.refresh_tab_title(self.active_tab);
         self.renaming_tab = None;

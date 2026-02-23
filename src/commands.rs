@@ -284,7 +284,16 @@ define_commands!(
             CommandPaletteVisibility::MacOsOnly
         ))
     ),
-    (Quit, "quit", GLOBAL_CONTEXT, None),
+    (
+        Quit,
+        "quit",
+        GLOBAL_CONTEXT,
+        Some(palette(
+            "Quit Termy",
+            "quit exit close",
+            CommandPaletteVisibility::Always
+        ))
+    ),
     (
         ToggleCommandPalette,
         "toggle_command_palette",

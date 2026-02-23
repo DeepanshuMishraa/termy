@@ -61,6 +61,11 @@ impl SearchState {
         self.error = None;
     }
 
+    pub fn clear_results_preserving_query(&mut self) {
+        self.results = SearchResults::new();
+        self.results_revision = self.results_revision.wrapping_add(1);
+    }
+
     pub fn results(&self) -> &SearchResults {
         &self.results
     }
@@ -128,6 +133,14 @@ impl SearchState {
     pub fn jump_to_nearest(&mut self, line: i32) {
         self.results.jump_to_nearest(line);
     }
+
+    pub fn jump_to_first(&mut self) {
+        self.results.jump_to_first();
+    }
+
+    pub fn jump_to_last(&mut self) {
+        self.results.jump_to_last();
+    }
 }
 
 #[cfg(test)]
@@ -177,5 +190,36 @@ mod tests {
         let baseline = state.results_revision();
         state.close();
         assert_eq!(state.results_revision(), baseline.wrapping_add(1));
+    }
+
+    #[test]
+    fn clear_results_preserving_query_keeps_query_and_error() {
+        let mut state = SearchState::new();
+        state.set_query("match");
+        state.search(0, 1, |line| match line {
+            0 => Some("match".to_string()),
+            1 => Some("x".to_string()),
+            _ => None,
+        });
+        assert!(!state.results().is_empty());
+
+        let revision = state.results_revision();
+        state.clear_results_preserving_query();
+        assert_eq!(state.query(), "match");
+        assert!(state.error().is_none());
+        assert!(state.results().is_empty());
+        assert_eq!(state.results_revision(), revision.wrapping_add(1));
+
+        state.toggle_regex_mode();
+        state.set_query("[");
+        assert!(state.error().is_some());
+        let error = state.error().map(str::to_string);
+
+        let revision = state.results_revision();
+        state.clear_results_preserving_query();
+        assert_eq!(state.query(), "[");
+        assert_eq!(state.error().map(str::to_string), error);
+        assert!(state.results().is_empty());
+        assert_eq!(state.results_revision(), revision.wrapping_add(1));
     }
 }

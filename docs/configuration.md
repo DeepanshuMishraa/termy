@@ -14,6 +14,7 @@ term = xterm-256color
 use_tabs = true
 tab_title_mode = smart
 tab_title_shell_integration = true
+warn_on_quit_with_running_process = true
 ```
 
 ## Terminal Runtime
@@ -138,6 +139,16 @@ Explicit payload examples:
 `use_tabs`
 - Default: `false`
 - Values: `true`/`false`
+
+`hide_titlebar_buttons`
+- Default: `false`
+- Values: `true`/`false`
+- What it does: hides Termy custom titlebar buttons (settings, update, new-tab). Native OS window controls remain visible.
+
+`warn_on_quit_with_running_process`
+- Default: `true`
+- Values: `true`/`false`
+- What it does: before quit/close, shows a native warning prompt when any tab reports a running command (`command:*`) or is in alternate screen mode.
 
 `tab_title_mode`
 - Default: `smart`
