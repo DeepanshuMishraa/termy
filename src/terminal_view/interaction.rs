@@ -1274,7 +1274,7 @@ impl TerminalView {
         } else if self.finish_tab_drag() {
             changed = true;
         }
-        if self.hovered_tab.take().is_some() {
+        if self.hovered_tab.take().is_some() || self.hovered_tab_close.take().is_some() {
             changed = true;
         }
         if changed {
@@ -1330,7 +1330,7 @@ impl TerminalView {
             self.commit_tab_drag(cx);
         }
 
-        if self.hovered_tab.take().is_some() {
+        if self.hovered_tab.take().is_some() || self.hovered_tab_close.take().is_some() {
             cx.notify();
         }
 

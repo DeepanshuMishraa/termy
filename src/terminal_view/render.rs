@@ -638,7 +638,8 @@ impl Render for TerminalView {
                 }),
             )
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
-                let hovered_changed = this.hovered_tab.take().is_some();
+                let hovered_changed =
+                    this.hovered_tab.take().is_some() || this.hovered_tab_close.take().is_some();
                 let drag_changed = if event.dragging() {
                     let viewport_width: f32 = window.viewport_size().width.into();
                     this.update_tab_drag_preview(event.position.x.into(), viewport_width, cx)
@@ -671,7 +672,12 @@ impl Render for TerminalView {
                 let close_tab_index = index;
                 let is_active = index == self.active_tab;
                 let is_hovered = self.hovered_tab == Some(index);
-                let show_tab_close = Self::tab_shows_close(is_active, self.hovered_tab, index);
+                let show_tab_close = Self::tab_shows_close(
+                    is_active,
+                    self.hovered_tab,
+                    self.hovered_tab_close,
+                    index,
+                );
                 let is_renaming = self.renaming_tab == Some(index);
                 let tab_drop_marker_side = self.tab_drop_marker_side(index);
                 let label = tab.title.clone();
@@ -710,7 +716,24 @@ impl Render for TerminalView {
                     .rounded(px(5.0))
                     .text_color(close_text_color)
                     .text_size(px(12.0))
-                    .child("×");
+                    .child("×")
+                    .on_mouse_move(cx.listener(
+                        move |this, _event: &MouseMoveEvent, _window, cx| {
+                            let mut hover_changed = false;
+                            if this.hovered_tab != Some(hover_tab_index) {
+                                this.hovered_tab = Some(hover_tab_index);
+                                hover_changed = true;
+                            }
+                            if this.hovered_tab_close != Some(hover_tab_index) {
+                                this.hovered_tab_close = Some(hover_tab_index);
+                                hover_changed = true;
+                            }
+                            if hover_changed {
+                                cx.notify();
+                            }
+                            cx.stop_propagation();
+                        },
+                    ));
                 if show_tab_close {
                     close_button = close_button
                         .hover(move |style| {
@@ -725,16 +748,7 @@ impl Render for TerminalView {
                                 this.close_tab(close_tab_index, cx);
                                 cx.stop_propagation();
                             }),
-                        )
-                        .on_mouse_move(cx.listener(
-                            move |this, _event: &MouseMoveEvent, _window, cx| {
-                                if this.hovered_tab != Some(hover_tab_index) {
-                                    this.hovered_tab = Some(hover_tab_index);
-                                    cx.notify();
-                                }
-                                cx.stop_propagation();
-                            },
-                        ));
+                        );
                 }
 
                 let tab_shell = div()
@@ -760,12 +774,15 @@ impl Render for TerminalView {
                     )
                     .on_mouse_move(
                         cx.listener(move |this, event: &MouseMoveEvent, window, cx| {
-                            let hovered_changed = if this.hovered_tab != Some(hover_tab_index) {
+                            let mut hovered_changed = if this.hovered_tab != Some(hover_tab_index) {
                                 this.hovered_tab = Some(hover_tab_index);
                                 true
                             } else {
                                 false
                             };
+                            if this.hovered_tab_close.take().is_some() {
+                                hovered_changed = true;
+                            }
                             let drag_changed = if event.dragging() {
                                 let viewport_width: f32 = window.viewport_size().width.into();
                                 this.update_tab_drag_preview(
@@ -1045,7 +1062,8 @@ impl Render for TerminalView {
                 )
                 .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
                     let mut changed = false;
-                    if this.hovered_tab.take().is_some() {
+                    if this.hovered_tab.take().is_some() || this.hovered_tab_close.take().is_some()
+                    {
                         changed = true;
                     }
                     if event.dragging() {
