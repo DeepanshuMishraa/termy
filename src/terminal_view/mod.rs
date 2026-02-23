@@ -79,7 +79,6 @@ const SEARCH_BAR_WIDTH: f32 = 320.0;
 const SEARCH_BAR_HEIGHT: f32 = 36.0;
 const SEARCH_DEBOUNCE_MS: u64 = 50;
 const TOAST_COPY_FEEDBACK_MS: u64 = 1200;
-const CHROME_ALPHA_FLOOR_RATIO: f32 = 0.55;
 const OVERLAY_PANEL_ALPHA_FLOOR_RATIO: f32 = 0.72;
 const OVERLAY_DIM_MIN_SCALE: f32 = 0.25;
 const OVERLAY_PANEL_BORDER_ALPHA: f32 = 0.24;
@@ -270,10 +269,7 @@ fn scaled_background_alpha_for_opacity(base_alpha: f32, background_opacity: f32)
 }
 
 fn scaled_chrome_alpha_for_opacity(base_alpha: f32, background_opacity: f32) -> f32 {
-    let floor = base_alpha * CHROME_ALPHA_FLOOR_RATIO;
     scaled_background_alpha_for_opacity(base_alpha, background_opacity)
-        .max(floor)
-        .clamp(0.0, 1.0)
 }
 
 fn adaptive_overlay_dim_alpha_for_opacity(base_alpha: f32, background_opacity: f32) -> f32 {
@@ -921,10 +917,10 @@ mod tests {
     }
 
     #[test]
-    fn chrome_alpha_respects_floor() {
+    fn chrome_alpha_scales_without_floor() {
         let base = 0.92;
         let alpha = scaled_chrome_alpha_for_opacity(base, 0.1);
-        assert!(alpha >= base * CHROME_ALPHA_FLOOR_RATIO);
+        assert_eq!(alpha, base * 0.1);
     }
 
     #[test]
