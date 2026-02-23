@@ -960,6 +960,12 @@ mod tests {
         assert_eq!(configured.background_opacity, 0.9);
         assert!(configured.background_blur);
 
+        let configured_numeric_true = AppConfig::from_contents("background_blur = 1\n");
+        assert!(configured_numeric_true.background_blur);
+
+        let configured_numeric_false = AppConfig::from_contents("background_blur = 0\n");
+        assert!(!configured_numeric_false.background_blur);
+
         let clamped_low = AppConfig::from_contents("background_opacity = -0.5\n");
         assert_eq!(clamped_low.background_opacity, 0.0);
 

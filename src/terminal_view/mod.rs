@@ -463,15 +463,15 @@ impl TerminalView {
         fs::metadata(path).ok()?.modified().ok()
     }
 
-    pub(super) fn background_opacity_factor(&self) -> f32 {
+    fn background_opacity_factor(&self) -> f32 {
         background_opacity_factor(self.background_opacity)
     }
 
-    pub(super) fn scaled_background_alpha(&self, base_alpha: f32) -> f32 {
+    fn scaled_background_alpha(&self, base_alpha: f32) -> f32 {
         scaled_background_alpha_for_opacity(base_alpha, self.background_opacity)
     }
 
-    pub(super) fn scaled_chrome_alpha(&self, base_alpha: f32) -> f32 {
+    fn scaled_chrome_alpha(&self, base_alpha: f32) -> f32 {
         scaled_chrome_alpha_for_opacity(base_alpha, self.background_opacity)
     }
 
@@ -479,7 +479,7 @@ impl TerminalView {
         OverlayStyleBuilder::new(&self.colors, self.background_opacity)
     }
 
-    pub(super) fn sync_window_background_appearance(&mut self, window: &mut Window) {
+    fn sync_window_background_appearance(&mut self, window: &mut Window) {
         let resolved = resolve_background_appearance(
             self.background_opacity,
             self.background_blur,
