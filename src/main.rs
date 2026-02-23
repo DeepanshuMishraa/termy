@@ -6,6 +6,7 @@ mod config;
 mod keybindings;
 mod settings_view;
 mod terminal_view;
+mod text_input;
 
 use commands::{OpenConfig, OpenSettings, Quit};
 #[cfg(target_os = "macos")]

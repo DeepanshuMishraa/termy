@@ -1,31 +1,14 @@
 use crate::colors::TerminalColors;
 use crate::config::{AppConfig, CursorStyle, TabTitleMode, set_config_value};
+use crate::text_input::{TextInputAlignment, TextInputElement, TextInputProvider, TextInputState};
 use gpui::{
-    AnyElement, Bounds, Context, ElementInputHandler, Entity, EntityInputHandler, FocusHandle,
-    InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, PaintQuad, ParentElement, Render, ScrollWheelEvent, ShapedLine, SharedString,
-    StatefulInteractiveElement, Styled, TextAlign, TextRun, UTF16Selection, Window, canvas, div,
-    fill, point, prelude::FluentBuilder, px, rgb, rgba, size,
+    AnyElement, Context, FocusHandle, Font, InteractiveElement, IntoElement, KeyDownEvent,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Render, Rgba,
+    ScrollWheelEvent, SharedString, StatefulInteractiveElement, Styled, TextAlign, Window, div,
+    prelude::FluentBuilder, px,
 };
-use std::ops::Range;
 
 const SIDEBAR_WIDTH: f32 = 220.0;
-const SIDEBAR_BG: u32 = 0x12121a;
-const CONTENT_BG: u32 = 0x1a1a24;
-const ITEM_HOVER_BG: u32 = 0x2a2a3a;
-const ITEM_ACTIVE_BG: u32 = 0x3d3d52;
-const TEXT_PRIMARY: u32 = 0xf0f0f5;
-const TEXT_SECONDARY: u32 = 0xb0b0c0;
-const TEXT_MUTED: u32 = 0x707080;
-const SWITCH_ON_BG: u32 = 0x6366f1;
-const SWITCH_OFF_BG: u32 = 0x3a3a4a;
-const SWITCH_KNOB: u32 = 0xffffff;
-const BORDER_COLOR: u32 = 0x2a2a3a;
-const ACCENT: u32 = 0x6366f1;
-const CARD_BG: u32 = 0x15151d;
-const INPUT_BG: u32 = 0x101019;
-const INPUT_ACTIVE_BORDER: u32 = 0x6366f1;
-const SETTINGS_INLINE_INPUT_LINE_HEIGHT_MULTIPLIER: f32 = 1.35;
 const NUMERIC_INPUT_WIDTH: f32 = 220.0;
 const NUMERIC_INPUT_HEIGHT: f32 = 34.0;
 const NUMERIC_STEP_BUTTON_SIZE: f32 = 24.0;
@@ -53,240 +36,17 @@ enum EditableField {
 #[derive(Clone, Debug)]
 struct ActiveTextInput {
     field: EditableField,
-    text: String,
-    selected_range: Range<usize>,
-    selection_reversed: bool,
-    marked_range: Option<Range<usize>>,
-    last_layout: Option<ShapedLine>,
-    last_bounds: Option<Bounds<gpui::Pixels>>,
+    state: TextInputState,
     selecting: bool,
 }
 
 impl ActiveTextInput {
     fn new(field: EditableField, text: String) -> Self {
-        let len = text.len();
         Self {
             field,
-            text,
-            selected_range: len..len,
-            selection_reversed: false,
-            marked_range: None,
-            last_layout: None,
-            last_bounds: None,
+            state: TextInputState::new(text),
             selecting: false,
         }
-    }
-
-    fn cursor_offset(&self) -> usize {
-        if self.selection_reversed {
-            self.selected_range.start
-        } else {
-            self.selected_range.end
-        }
-    }
-
-    fn move_to(&mut self, offset: usize) {
-        let offset = Self::clamp_utf8_index(&self.text, offset);
-        self.selected_range = offset..offset;
-        self.selection_reversed = false;
-        self.marked_range = None;
-    }
-
-    fn select_to(&mut self, offset: usize) {
-        let offset = Self::clamp_utf8_index(&self.text, offset);
-        if self.selection_reversed {
-            self.selected_range.start = offset;
-        } else {
-            self.selected_range.end = offset;
-        }
-        if self.selected_range.end < self.selected_range.start {
-            self.selection_reversed = !self.selection_reversed;
-            self.selected_range = self.selected_range.end..self.selected_range.start;
-        }
-        self.marked_range = None;
-    }
-
-    fn move_left(&mut self) {
-        if self.selected_range.start != self.selected_range.end {
-            self.move_to(self.selected_range.start);
-            return;
-        }
-        self.move_to(self.previous_char_boundary(self.cursor_offset()));
-    }
-
-    fn move_right(&mut self) {
-        if self.selected_range.start != self.selected_range.end {
-            self.move_to(self.selected_range.end);
-            return;
-        }
-        self.move_to(self.next_char_boundary(self.cursor_offset()));
-    }
-
-    fn move_to_start(&mut self) {
-        self.move_to(0);
-    }
-
-    fn move_to_end(&mut self) {
-        self.move_to(self.text.len());
-    }
-
-    fn delete_backward(&mut self) {
-        if self.selected_range.start == self.selected_range.end {
-            let start = self.previous_char_boundary(self.cursor_offset());
-            self.selected_range = start..self.cursor_offset();
-        }
-        self.replace_text_in_range(None, "");
-    }
-
-    fn delete_forward(&mut self) {
-        if self.selected_range.start == self.selected_range.end {
-            let end = self.next_char_boundary(self.cursor_offset());
-            self.selected_range = self.cursor_offset()..end;
-        }
-        self.replace_text_in_range(None, "");
-    }
-
-    fn previous_char_boundary(&self, offset: usize) -> usize {
-        if offset == 0 {
-            return 0;
-        }
-        let mut index = offset.min(self.text.len());
-        while index > 0 {
-            index -= 1;
-            if self.text.is_char_boundary(index) {
-                return index;
-            }
-        }
-        0
-    }
-
-    fn next_char_boundary(&self, offset: usize) -> usize {
-        if offset >= self.text.len() {
-            return self.text.len();
-        }
-        let mut index = offset + 1;
-        while index < self.text.len() {
-            if self.text.is_char_boundary(index) {
-                return index;
-            }
-            index += 1;
-        }
-        self.text.len()
-    }
-
-    fn clamp_utf8_index(text: &str, offset: usize) -> usize {
-        if offset >= text.len() {
-            return text.len();
-        }
-        let mut idx = offset;
-        while idx > 0 && !text.is_char_boundary(idx) {
-            idx -= 1;
-        }
-        idx
-    }
-
-    fn offset_from_utf16(&self, offset: usize) -> usize {
-        let mut utf8_offset = 0;
-        let mut utf16_count = 0;
-        for ch in self.text.chars() {
-            if utf16_count >= offset {
-                break;
-            }
-            utf16_count += ch.len_utf16();
-            utf8_offset += ch.len_utf8();
-        }
-        utf8_offset
-    }
-
-    fn offset_to_utf16(&self, offset: usize) -> usize {
-        let mut utf16_offset = 0;
-        let mut utf8_count = 0;
-        for ch in self.text.chars() {
-            if utf8_count >= offset {
-                break;
-            }
-            utf8_count += ch.len_utf8();
-            utf16_offset += ch.len_utf16();
-        }
-        utf16_offset
-    }
-
-    fn range_to_utf16(&self, range: &Range<usize>) -> Range<usize> {
-        self.offset_to_utf16(range.start)..self.offset_to_utf16(range.end)
-    }
-
-    fn range_from_utf16(&self, range_utf16: &Range<usize>) -> Range<usize> {
-        self.offset_from_utf16(range_utf16.start)..self.offset_from_utf16(range_utf16.end)
-    }
-
-    fn replace_text_in_range(&mut self, range_utf16: Option<Range<usize>>, new_text: &str) {
-        let range = range_utf16
-            .as_ref()
-            .map(|r| self.range_from_utf16(r))
-            .or(self.marked_range.clone())
-            .unwrap_or(self.selected_range.clone());
-
-        self.text = format!(
-            "{}{}{}",
-            &self.text[..range.start],
-            new_text,
-            &self.text[range.end..]
-        );
-        let cursor = range.start + new_text.len();
-        self.selected_range = cursor..cursor;
-        self.selection_reversed = false;
-        self.marked_range = None;
-    }
-
-    fn replace_and_mark_text_in_range(
-        &mut self,
-        range_utf16: Option<Range<usize>>,
-        new_text: &str,
-        new_selected_range_utf16: Option<Range<usize>>,
-    ) {
-        let range = range_utf16
-            .as_ref()
-            .map(|r| self.range_from_utf16(r))
-            .or(self.marked_range.clone())
-            .unwrap_or(self.selected_range.clone());
-
-        self.text = format!(
-            "{}{}{}",
-            &self.text[..range.start],
-            new_text,
-            &self.text[range.end..]
-        );
-        if !new_text.is_empty() {
-            self.marked_range = Some(range.start..range.start + new_text.len());
-        } else {
-            self.marked_range = None;
-        }
-
-        if let Some(sel_utf16) = new_selected_range_utf16 {
-            let local = self.range_from_utf16(&sel_utf16);
-            self.selected_range = (range.start + local.start)..(range.start + local.end);
-        } else {
-            let cursor = range.start + new_text.len();
-            self.selected_range = cursor..cursor;
-        }
-        self.selection_reversed = false;
-    }
-
-    fn index_for_mouse_position(&self, position: gpui::Point<gpui::Pixels>) -> usize {
-        if self.text.is_empty() {
-            return 0;
-        }
-        let (Some(bounds), Some(line)) = (self.last_bounds.as_ref(), self.last_layout.as_ref())
-        else {
-            return self.text.len();
-        };
-        if position.y < bounds.top() {
-            return 0;
-        }
-        if position.y > bounds.bottom() {
-            return self.text.len();
-        }
-        line.closest_index_for_x(position.x - bounds.left())
     }
 }
 
@@ -303,7 +63,6 @@ pub struct SettingsWindow {
     config: AppConfig,
     focus_handle: FocusHandle,
     active_input: Option<ActiveTextInput>,
-    #[allow(dead_code)]
     colors: TerminalColors,
 }
 
@@ -320,13 +79,80 @@ impl SettingsWindow {
         }
     }
 
+    // Color helpers derived from terminal theme
+    fn bg_primary(&self) -> Rgba {
+        self.colors.background
+    }
+
+    fn bg_secondary(&self) -> Rgba {
+        let mut c = self.colors.background;
+        c.a = 0.7;
+        c
+    }
+
+    fn bg_card(&self) -> Rgba {
+        let mut c = self.colors.background;
+        c.a = 0.5;
+        c
+    }
+
+    fn bg_input(&self) -> Rgba {
+        let mut c = self.colors.background;
+        c.a = 0.3;
+        c
+    }
+
+    fn bg_hover(&self) -> Rgba {
+        let mut c = self.colors.foreground;
+        c.a = 0.1;
+        c
+    }
+
+    fn bg_active(&self) -> Rgba {
+        let mut c = self.colors.foreground;
+        c.a = 0.15;
+        c
+    }
+
+    fn text_primary(&self) -> Rgba {
+        self.colors.foreground
+    }
+
+    fn text_secondary(&self) -> Rgba {
+        let mut c = self.colors.foreground;
+        c.a = 0.7;
+        c
+    }
+
+    fn text_muted(&self) -> Rgba {
+        let mut c = self.colors.foreground;
+        c.a = 0.5;
+        c
+    }
+
+    fn border_color(&self) -> Rgba {
+        let mut c = self.colors.foreground;
+        c.a = 0.15;
+        c
+    }
+
+    fn accent(&self) -> Rgba {
+        self.colors.cursor
+    }
+
+    fn accent_with_alpha(&self, alpha: f32) -> Rgba {
+        let mut c = self.colors.cursor;
+        c.a = alpha;
+        c
+    }
+
     fn render_sidebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .w(px(SIDEBAR_WIDTH))
             .h_full()
-            .bg(rgb(SIDEBAR_BG))
+            .bg(self.bg_secondary())
             .border_r_1()
-            .border_color(rgb(BORDER_COLOR))
+            .border_color(self.border_color())
             .flex()
             .flex_col()
             .child(
@@ -334,7 +160,7 @@ impl SettingsWindow {
                     div()
                         .text_xs()
                         .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_color(rgb(TEXT_MUTED))
+                        .text_color(self.text_muted())
                         .child("SETTINGS"),
                 ),
             )
@@ -358,6 +184,11 @@ impl SettingsWindow {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let is_active = self.active_section == section;
+        let active_bg = self.bg_active();
+        let hover_bg = self.bg_hover();
+        let text_primary = self.text_primary();
+        let text_secondary = self.text_secondary();
+        let accent = self.accent();
 
         div()
             .id(SharedString::from(label))
@@ -369,11 +200,11 @@ impl SettingsWindow {
             .items_center()
             .gap_3()
             .bg(if is_active {
-                rgb(ITEM_ACTIVE_BG)
+                active_bg
             } else {
-                rgba(0x00000000)
+                Rgba { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }
             })
-            .hover(|s| s.bg(rgb(ITEM_HOVER_BG)))
+            .hover(|s| s.bg(hover_bg))
             .child(
                 div()
                     .text_sm()
@@ -383,9 +214,9 @@ impl SettingsWindow {
                         gpui::FontWeight::NORMAL
                     })
                     .text_color(if is_active {
-                        rgb(TEXT_PRIMARY)
+                        text_primary
                     } else {
-                        rgb(TEXT_SECONDARY)
+                        text_secondary
                     })
                     .child(label),
             )
@@ -396,7 +227,7 @@ impl SettingsWindow {
                         .w(px(3.0))
                         .h(px(16.0))
                         .rounded(px(2.0))
-                        .bg(rgb(ACCENT)),
+                        .bg(accent),
                 )
             })
             .on_click(cx.listener(move |view, _, _, cx| {
@@ -722,7 +553,7 @@ impl SettingsWindow {
             return;
         };
 
-        if let Err(error) = self.apply_editable_field(input.field, &input.text) {
+        if let Err(error) = self.apply_editable_field(input.field, input.state.text()) {
             termy_toast::error(error);
             self.active_input = Some(input);
         }
@@ -762,17 +593,22 @@ impl SettingsWindow {
                 div()
                     .text_xl()
                     .font_weight(gpui::FontWeight::BOLD)
-                    .text_color(rgb(TEXT_PRIMARY))
+                    .text_color(self.text_primary())
                     .child(title),
             )
-            .child(div().text_sm().text_color(rgb(TEXT_MUTED)).child(subtitle))
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(self.text_muted())
+                    .child(subtitle),
+            )
     }
 
     fn render_group_header(&self, title: &'static str) -> impl IntoElement {
         div()
             .text_xs()
             .font_weight(gpui::FontWeight::SEMIBOLD)
-            .text_color(rgb(TEXT_MUTED))
+            .text_color(self.text_muted())
             .mt_4()
             .mb_2()
             .child(title)
@@ -794,9 +630,9 @@ impl SettingsWindow {
             .py_3()
             .px_4()
             .rounded_lg()
-            .bg(rgb(CARD_BG))
+            .bg(self.bg_card())
             .border_1()
-            .border_color(rgb(BORDER_COLOR))
+            .border_color(self.border_color())
             .child(
                 div()
                     .flex()
@@ -806,13 +642,13 @@ impl SettingsWindow {
                         div()
                             .text_sm()
                             .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(rgb(TEXT_PRIMARY))
+                            .text_color(self.text_primary())
                             .child(title),
                     )
                     .child(
                         div()
                             .text_xs()
-                            .text_color(rgb(TEXT_MUTED))
+                            .text_color(self.text_muted())
                             .child(description),
                     ),
             )
@@ -826,16 +662,23 @@ impl SettingsWindow {
         cx: &mut Context<Self>,
         on_toggle: impl Fn(&mut Self, &mut Context<Self>) + 'static,
     ) -> impl IntoElement {
+        let accent = self.accent();
+        // Off state: use a more visible muted foreground color
+        let mut bg_off = self.colors.foreground;
+        bg_off.a = 0.25;
+        // Knob: white/light when on, slightly dimmer when off
+        let knob_color = if checked {
+            self.text_primary()
+        } else {
+            self.text_secondary()
+        };
+
         div()
             .id(SharedString::from(id))
             .w(px(44.0))
             .h(px(24.0))
             .rounded(px(12.0))
-            .bg(if checked {
-                rgb(SWITCH_ON_BG)
-            } else {
-                rgb(SWITCH_OFF_BG)
-            })
+            .bg(if checked { accent } else { bg_off })
             .cursor_pointer()
             .relative()
             .child(
@@ -846,7 +689,7 @@ impl SettingsWindow {
                     .w(px(20.0))
                     .h(px(20.0))
                     .rounded_full()
-                    .bg(rgb(SWITCH_KNOB))
+                    .bg(knob_color)
                     .shadow_sm(),
             )
             .on_click(cx.listener(move |view, _, _, cx| {
@@ -874,12 +717,23 @@ impl SettingsWindow {
             let query = self
                 .active_input
                 .as_ref()
-                .map(|input| input.text.as_str())
+                .map(|input| input.state.text())
                 .unwrap_or("");
             self.filtered_theme_suggestions(query)
         } else {
             Vec::new()
         };
+
+        // Cache colors for closures
+        let text_secondary = self.text_secondary();
+        let hover_bg = self.bg_hover();
+        let input_bg = self.bg_input();
+        let border_color = self.border_color();
+        let accent = self.accent();
+        let bg_card = self.bg_card();
+        let text_primary = self.text_primary();
+        let text_muted = self.text_muted();
+
         let mut theme_dropdown = None;
         let theme_dropdown_open = is_theme_field && is_active && !theme_suggestions.is_empty();
         if theme_dropdown_open {
@@ -892,9 +746,9 @@ impl SettingsWindow {
                         .px_3()
                         .py_1()
                         .text_sm()
-                        .text_color(rgb(TEXT_SECONDARY))
+                        .text_color(text_secondary)
                         .cursor_pointer()
-                        .hover(|this| this.bg(rgb(ITEM_HOVER_BG)))
+                        .hover(|this| this.bg(hover_bg))
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |view, _event: &MouseDownEvent, _window, cx| {
@@ -906,6 +760,8 @@ impl SettingsWindow {
                 );
             }
 
+            // Use a fully opaque background for the dropdown so it covers content below
+            let dropdown_bg = self.bg_primary();
             theme_dropdown = Some(
                 div()
                     .id("theme-suggestions-list")
@@ -918,9 +774,9 @@ impl SettingsWindow {
                     .overflow_scroll()
                     .overflow_x_hidden()
                     .rounded_md()
-                    .bg(rgb(INPUT_BG))
+                    .bg(dropdown_bg)
                     .border_1()
-                    .border_color(rgb(BORDER_COLOR))
+                    .border_color(border_color)
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|_view, _event: &MouseDownEvent, _window, cx| {
@@ -939,6 +795,7 @@ impl SettingsWindow {
 
         let value_element = if is_numeric {
             div()
+                .h_full()
                 .flex()
                 .items_center()
                 .justify_between()
@@ -953,8 +810,8 @@ impl SettingsWindow {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .bg(rgb(SWITCH_OFF_BG))
-                        .text_color(rgb(TEXT_PRIMARY))
+                        .bg(bg_card)
+                        .text_color(text_primary)
                         .text_sm()
                         .child("-")
                         .on_click(cx.listener(move |view, _, _, cx| {
@@ -965,17 +822,10 @@ impl SettingsWindow {
                 .child(
                     div()
                         .flex_1()
-                        .h_full()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(rgb(TEXT_SECONDARY))
-                                .text_align(TextAlign::Center)
-                                .child(display_value),
-                        ),
+                        .text_sm()
+                        .text_color(text_secondary)
+                        .text_align(TextAlign::Center)
+                        .child(display_value),
                 )
                 .child(
                     div()
@@ -987,8 +837,8 @@ impl SettingsWindow {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .bg(rgb(SWITCH_OFF_BG))
-                        .text_color(rgb(TEXT_PRIMARY))
+                        .bg(bg_card)
+                        .text_color(text_primary)
                         .text_sm()
                         .child("+")
                         .on_click(cx.listener(move |view, _, _, cx| {
@@ -998,11 +848,25 @@ impl SettingsWindow {
                 )
                 .into_any_element()
         } else if is_active {
-            SettingsInputElement::new(cx.entity()).into_any_element()
+            let font = Font {
+                family: self.config.font_family.clone().into(),
+                ..Font::default()
+            };
+            let selection_color = self.accent_with_alpha(0.3);
+            TextInputElement::new(
+                cx.entity(),
+                self.focus_handle.clone(),
+                font,
+                px(13.0),
+                text_secondary.into(),
+                selection_color.into(),
+                TextInputAlignment::Left,
+            )
+            .into_any_element()
         } else {
             div()
                 .text_sm()
-                .text_color(rgb(TEXT_SECONDARY))
+                .text_color(text_secondary)
                 .child(display_value)
                 .into_any_element()
         };
@@ -1015,12 +879,12 @@ impl SettingsWindow {
             .py_3()
             .px_4()
             .rounded_lg()
-            .bg(rgb(CARD_BG))
+            .bg(bg_card)
             .border_1()
             .border_color(if theme_dropdown_open {
-                rgba(0x00000000)
+                Rgba { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }
             } else {
-                rgb(BORDER_COLOR)
+                border_color
             })
             .cursor_pointer()
             .when(!is_numeric, |s| {
@@ -1037,11 +901,11 @@ impl SettingsWindow {
                         }
 
                         if let Some(input) = view.active_input.as_mut() {
-                            let index = input.index_for_mouse_position(event.position);
+                            let index = input.state.character_index_for_point(event.position);
                             if event.modifiers.shift {
-                                input.select_to(index);
+                                input.state.select_to_utf16(index);
                             } else {
-                                input.move_to(index);
+                                input.state.set_cursor_utf16(index);
                             }
                             input.selecting = true;
                         }
@@ -1058,8 +922,8 @@ impl SettingsWindow {
                         if input.field != field || !input.selecting || !event.dragging() {
                             return;
                         }
-                        let index = input.index_for_mouse_position(event.position);
-                        input.select_to(index);
+                        let index = input.state.character_index_for_point(event.position);
+                        input.state.select_to_utf16(index);
                         cx.notify();
                     }),
                 )
@@ -1096,15 +960,10 @@ impl SettingsWindow {
                         div()
                             .text_sm()
                             .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(rgb(TEXT_PRIMARY))
+                            .text_color(text_primary)
                             .child(title),
                     )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(TEXT_MUTED))
-                            .child(description),
-                    ),
+                    .child(div().text_xs().text_color(text_muted).child(description)),
             )
             .child(
                 div()
@@ -1126,12 +985,12 @@ impl SettingsWindow {
                             .h_full()
                             .px_2()
                             .rounded_md()
-                            .bg(rgb(INPUT_BG))
+                            .bg(input_bg)
                             .border_1()
                             .border_color(if is_active && accent_inner_border {
-                                rgb(INPUT_ACTIVE_BORDER)
+                                accent.into()
                             } else {
-                                rgb(BORDER_COLOR)
+                                border_color
                             })
                             .child(value_element),
                     )
@@ -1160,7 +1019,7 @@ impl SettingsWindow {
                     && let Some(first) = self
                         .active_input
                         .as_ref()
-                        .map(|input| self.filtered_theme_suggestions(&input.text))
+                        .map(|input| self.filtered_theme_suggestions(input.state.text()))
                         .and_then(|items| items.into_iter().next())
                 {
                     self.apply_theme_selection(&first, cx);
@@ -1168,37 +1027,37 @@ impl SettingsWindow {
             }
             "backspace" => {
                 if let Some(input) = self.active_input.as_mut() {
-                    input.delete_backward();
+                    input.state.delete_backward();
                 }
                 cx.notify();
             }
             "delete" => {
                 if let Some(input) = self.active_input.as_mut() {
-                    input.delete_forward();
+                    input.state.delete_forward();
                 }
                 cx.notify();
             }
             "left" => {
                 if let Some(input) = self.active_input.as_mut() {
-                    input.move_left();
+                    input.state.move_left();
                 }
                 cx.notify();
             }
             "right" => {
                 if let Some(input) = self.active_input.as_mut() {
-                    input.move_right();
+                    input.state.move_right();
                 }
                 cx.notify();
             }
             "home" => {
                 if let Some(input) = self.active_input.as_mut() {
-                    input.move_to_start();
+                    input.state.move_to_start();
                 }
                 cx.notify();
             }
             "end" => {
                 if let Some(input) = self.active_input.as_mut() {
-                    input.move_to_end();
+                    input.state.move_to_end();
                 }
                 cx.notify();
             }
@@ -1208,6 +1067,15 @@ impl SettingsWindow {
 
     fn render_cursor_style_row(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let current = self.config.cursor_style;
+        let bg_card = self.bg_card();
+        let border_color = self.border_color();
+        let text_primary = self.text_primary();
+        let text_muted = self.text_muted();
+        let text_secondary = self.text_secondary();
+        let accent = self.accent();
+        let hover_bg = self.bg_hover();
+        let switch_off_bg = self.bg_input();
+        let white = self.colors.foreground;
 
         div()
             .flex()
@@ -1216,9 +1084,9 @@ impl SettingsWindow {
             .py_3()
             .px_4()
             .rounded_lg()
-            .bg(rgb(CARD_BG))
+            .bg(bg_card)
             .border_1()
-            .border_color(rgb(BORDER_COLOR))
+            .border_color(border_color)
             .child(
                 div()
                     .flex()
@@ -1228,13 +1096,13 @@ impl SettingsWindow {
                         div()
                             .text_sm()
                             .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(rgb(TEXT_PRIMARY))
+                            .text_color(text_primary)
                             .child("Cursor Style"),
                     )
                     .child(
                         div()
                             .text_xs()
-                            .text_color(rgb(TEXT_MUTED))
+                            .text_color(text_muted)
                             .child("Shape of the terminal cursor"),
                     ),
             )
@@ -1254,22 +1122,16 @@ impl SettingsWindow {
                             .text_xs()
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .bg(if is_selected {
-                                rgb(ACCENT)
+                                accent.into()
                             } else {
-                                rgb(SWITCH_OFF_BG)
+                                switch_off_bg
                             })
                             .text_color(if is_selected {
-                                rgb(0xffffff)
+                                white
                             } else {
-                                rgb(TEXT_SECONDARY)
+                                text_secondary.into()
                             })
-                            .hover(|s| {
-                                if !is_selected {
-                                    s.bg(rgb(ITEM_HOVER_BG))
-                                } else {
-                                    s
-                                }
-                            })
+                            .hover(|s| if !is_selected { s.bg(hover_bg) } else { s })
                             .child("Block")
                             .on_click(cx.listener(|view, _, _, cx| {
                                 view.config.cursor_style = CursorStyle::Block;
@@ -1288,22 +1150,16 @@ impl SettingsWindow {
                             .text_xs()
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .bg(if is_selected {
-                                rgb(ACCENT)
+                                accent.into()
                             } else {
-                                rgb(SWITCH_OFF_BG)
+                                switch_off_bg
                             })
                             .text_color(if is_selected {
-                                rgb(0xffffff)
+                                white
                             } else {
-                                rgb(TEXT_SECONDARY)
+                                text_secondary.into()
                             })
-                            .hover(|s| {
-                                if !is_selected {
-                                    s.bg(rgb(ITEM_HOVER_BG))
-                                } else {
-                                    s
-                                }
-                            })
+                            .hover(|s| if !is_selected { s.bg(hover_bg) } else { s })
                             .child("Line")
                             .on_click(cx.listener(|view, _, _, cx| {
                                 view.config.cursor_style = CursorStyle::Line;
@@ -1316,6 +1172,15 @@ impl SettingsWindow {
 
     fn render_tab_title_mode_row(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let current = self.config.tab_title.mode;
+        let bg_card = self.bg_card();
+        let border_color = self.border_color();
+        let text_primary = self.text_primary();
+        let text_muted = self.text_muted();
+        let text_secondary = self.text_secondary();
+        let accent = self.accent();
+        let hover_bg = self.bg_hover();
+        let switch_off_bg = self.bg_input();
+        let white = self.colors.foreground;
 
         div()
             .flex()
@@ -1324,9 +1189,9 @@ impl SettingsWindow {
             .py_3()
             .px_4()
             .rounded_lg()
-            .bg(rgb(CARD_BG))
+            .bg(bg_card)
             .border_1()
-            .border_color(rgb(BORDER_COLOR))
+            .border_color(border_color)
             .child(
                 div()
                     .flex()
@@ -1336,13 +1201,13 @@ impl SettingsWindow {
                         div()
                             .text_sm()
                             .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(rgb(TEXT_PRIMARY))
+                            .text_color(text_primary)
                             .child("Title Mode"),
                     )
                     .child(
                         div()
                             .text_xs()
-                            .text_color(rgb(TEXT_MUTED))
+                            .text_color(text_muted)
                             .child("How tab titles are determined"),
                     ),
             )
@@ -1362,22 +1227,16 @@ impl SettingsWindow {
                             .text_xs()
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .bg(if is_selected {
-                                rgb(ACCENT)
+                                accent.into()
                             } else {
-                                rgb(SWITCH_OFF_BG)
+                                switch_off_bg
                             })
                             .text_color(if is_selected {
-                                rgb(0xffffff)
+                                white
                             } else {
-                                rgb(TEXT_SECONDARY)
+                                text_secondary.into()
                             })
-                            .hover(|s| {
-                                if !is_selected {
-                                    s.bg(rgb(ITEM_HOVER_BG))
-                                } else {
-                                    s
-                                }
-                            })
+                            .hover(|s| if !is_selected { s.bg(hover_bg) } else { s })
                             .child("Smart")
                             .on_click(cx.listener(|view, _, _, cx| {
                                 view.config.tab_title.mode = TabTitleMode::Smart;
@@ -1396,22 +1255,16 @@ impl SettingsWindow {
                             .text_xs()
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .bg(if is_selected {
-                                rgb(ACCENT)
+                                accent.into()
                             } else {
-                                rgb(SWITCH_OFF_BG)
+                                switch_off_bg
                             })
                             .text_color(if is_selected {
-                                rgb(0xffffff)
+                                white
                             } else {
-                                rgb(TEXT_SECONDARY)
+                                text_secondary.into()
                             })
-                            .hover(|s| {
-                                if !is_selected {
-                                    s.bg(rgb(ITEM_HOVER_BG))
-                                } else {
-                                    s
-                                }
-                            })
+                            .hover(|s| if !is_selected { s.bg(hover_bg) } else { s })
                             .child("Shell")
                             .on_click(cx.listener(|view, _, _, cx| {
                                 view.config.tab_title.mode = TabTitleMode::Shell;
@@ -1430,22 +1283,16 @@ impl SettingsWindow {
                             .text_xs()
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .bg(if is_selected {
-                                rgb(ACCENT)
+                                accent.into()
                             } else {
-                                rgb(SWITCH_OFF_BG)
+                                switch_off_bg
                             })
                             .text_color(if is_selected {
-                                rgb(0xffffff)
+                                white
                             } else {
-                                rgb(TEXT_SECONDARY)
+                                text_secondary.into()
                             })
-                            .hover(|s| {
-                                if !is_selected {
-                                    s.bg(rgb(ITEM_HOVER_BG))
-                                } else {
-                                    s
-                                }
-                            })
+                            .hover(|s| if !is_selected { s.bg(hover_bg) } else { s })
                             .child("Explicit")
                             .on_click(cx.listener(|view, _, _, cx| {
                                 view.config.tab_title.mode = TabTitleMode::Explicit;
@@ -1464,22 +1311,16 @@ impl SettingsWindow {
                             .text_xs()
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .bg(if is_selected {
-                                rgb(ACCENT)
+                                accent.into()
                             } else {
-                                rgb(SWITCH_OFF_BG)
+                                switch_off_bg
                             })
                             .text_color(if is_selected {
-                                rgb(0xffffff)
+                                white
                             } else {
-                                rgb(TEXT_SECONDARY)
+                                text_secondary.into()
                             })
-                            .hover(|s| {
-                                if !is_selected {
-                                    s.bg(rgb(ITEM_HOVER_BG))
-                                } else {
-                                    s
-                                }
-                            })
+                            .hover(|s| if !is_selected { s.bg(hover_bg) } else { s })
                             .child("Static")
                             .on_click(cx.listener(|view, _, _, cx| {
                                 view.config.tab_title.mode = TabTitleMode::Static;
@@ -1720,6 +1561,13 @@ impl SettingsWindow {
             .unwrap_or_else(|| "Not set".to_string());
         let window_width = self.config.window_width;
         let window_height = self.config.window_height;
+        let bg_card = self.bg_card();
+        let border_color = self.border_color();
+        let text_muted = self.text_muted();
+        let text_secondary = self.text_secondary();
+        let accent = self.accent();
+        let white = self.colors.foreground;
+        let accent_hover = self.accent_with_alpha(0.8);
 
         div()
             .flex()
@@ -1755,23 +1603,23 @@ impl SettingsWindow {
                     .py_4()
                     .px_4()
                     .rounded_lg()
-                    .bg(rgb(CARD_BG))
+                    .bg(bg_card)
                     .border_1()
-                    .border_color(rgb(BORDER_COLOR))
+                    .border_color(border_color)
                     .flex()
                     .flex_col()
                     .gap_2()
                     .child(
                         div()
                             .text_sm()
-                            .text_color(rgb(TEXT_MUTED))
+                            .text_color(text_muted)
                             .child("To change these settings, edit the config file:"),
                     )
                     .child(
                         div()
                             .text_xs()
                             .font_family("monospace")
-                            .text_color(rgb(TEXT_SECONDARY))
+                            .text_color(text_secondary)
                             .child("~/.config/termy/config.txt"),
                     )
                     .child(
@@ -1781,12 +1629,12 @@ impl SettingsWindow {
                             .px_4()
                             .py_2()
                             .rounded_md()
-                            .bg(rgb(ACCENT))
+                            .bg(accent)
                             .text_sm()
                             .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(rgb(0xffffff))
+                            .text_color(white)
                             .cursor_pointer()
-                            .hover(|s| s.bg(rgb(0x5558e3)))
+                            .hover(|s| s.bg(accent_hover))
                             .child("Open Config File")
                             .on_click(cx.listener(|_view, _, _, cx| {
                                 crate::config::open_config_file();
@@ -1797,311 +1645,21 @@ impl SettingsWindow {
     }
 }
 
-struct SettingsInputPrepaintState {
-    line: Option<ShapedLine>,
-    line_bounds: Bounds<gpui::Pixels>,
-    selection: Option<PaintQuad>,
-    cursor: Option<PaintQuad>,
-}
+impl TextInputProvider for SettingsWindow {
+    fn text_input_state(&self) -> Option<&TextInputState> {
+        self.active_input.as_ref().map(|input| &input.state)
+    }
 
-struct SettingsInputElement {
-    view: Entity<SettingsWindow>,
-}
-
-impl SettingsInputElement {
-    fn new(view: Entity<SettingsWindow>) -> Self {
-        Self { view }
+    fn text_input_state_mut(&mut self) -> Option<&mut TextInputState> {
+        self.active_input.as_mut().map(|input| &mut input.state)
     }
 }
 
-impl IntoElement for SettingsInputElement {
-    type Element = gpui::Canvas<SettingsInputPrepaintState>;
-
-    fn into_element(self) -> Self::Element {
-        let view = self.view;
-        let prepaint_view = view.clone();
-        canvas(
-            move |bounds, window, cx| {
-                let (text, selected_range, cursor_offset, marked_range, focused) = {
-                    let view = prepaint_view.read(cx);
-                    let focused = view.focus_handle.is_focused(window);
-                    if let Some(input) = view.active_input.as_ref() {
-                        (
-                            input.text.clone(),
-                            input.selected_range.clone(),
-                            input.cursor_offset(),
-                            input.marked_range.clone(),
-                            focused,
-                        )
-                    } else {
-                        (String::new(), 0..0, 0, None, focused)
-                    }
-                };
-
-                let style = window.text_style();
-                let font_size = style.font_size.to_pixels(window.rem_size());
-                let font_size_value: f32 = font_size.into();
-                let bounds_height: f32 = bounds.size.height.into();
-                let target_line_height = (font_size_value
-                    * SETTINGS_INLINE_INPUT_LINE_HEIGHT_MULTIPLIER)
-                    .round()
-                    .clamp(1.0, bounds_height.max(1.0));
-                let line_height = px(target_line_height);
-                let extra_height: f32 = (bounds.size.height - line_height).into();
-                let vertical_offset = px(extra_height.max(0.0) * 0.5);
-                let line_bounds = Bounds::new(
-                    point(bounds.left(), bounds.top() + vertical_offset),
-                    size(bounds.size.width, line_height),
-                );
-
-                let line = if text.is_empty() {
-                    None
-                } else {
-                    let run = TextRun {
-                        len: text.len(),
-                        font: style.font(),
-                        color: rgb(TEXT_SECONDARY).into(),
-                        background_color: None,
-                        underline: None,
-                        strikethrough: None,
-                    };
-
-                    let runs = if let Some(marked_range) = marked_range {
-                        vec![
-                            TextRun {
-                                len: marked_range.start.min(text.len()),
-                                ..run.clone()
-                            },
-                            TextRun {
-                                len: marked_range
-                                    .end
-                                    .min(text.len())
-                                    .saturating_sub(marked_range.start.min(text.len())),
-                                underline: Some(gpui::UnderlineStyle {
-                                    color: Some(rgb(TEXT_SECONDARY).into()),
-                                    thickness: px(1.0),
-                                    wavy: false,
-                                }),
-                                ..run.clone()
-                            },
-                            TextRun {
-                                len: text.len().saturating_sub(marked_range.end.min(text.len())),
-                                ..run
-                            },
-                        ]
-                        .into_iter()
-                        .filter(|r| r.len > 0)
-                        .collect::<Vec<_>>()
-                    } else {
-                        vec![run]
-                    };
-
-                    Some(window.text_system().shape_line(
-                        text.clone().into(),
-                        font_size,
-                        &runs,
-                        None,
-                    ))
-                };
-
-                let selection = if selected_range.start < selected_range.end {
-                    let start_x = line
-                        .as_ref()
-                        .map(|line| line.x_for_index(selected_range.start.min(text.len())))
-                        .unwrap_or(px(0.0));
-                    let end_x = line
-                        .as_ref()
-                        .map(|line| line.x_for_index(selected_range.end.min(text.len())))
-                        .unwrap_or(px(0.0));
-                    Some(fill(
-                        Bounds::from_corners(
-                            point(line_bounds.left() + start_x, line_bounds.top()),
-                            point(line_bounds.left() + end_x, line_bounds.bottom()),
-                        ),
-                        rgba(0x336366f1),
-                    ))
-                } else {
-                    None
-                };
-
-                let cursor = if focused && selected_range.start == selected_range.end {
-                    let x = line
-                        .as_ref()
-                        .map(|line| line.x_for_index(cursor_offset.min(text.len())))
-                        .unwrap_or(px(0.0));
-                    Some(fill(
-                        Bounds::new(
-                            point(line_bounds.left() + x, line_bounds.top()),
-                            size(px(1.0), line_bounds.size.height),
-                        ),
-                        rgb(ACCENT),
-                    ))
-                } else {
-                    None
-                };
-
-                SettingsInputPrepaintState {
-                    line,
-                    line_bounds,
-                    selection,
-                    cursor,
-                }
-            },
-            move |bounds, mut prepaint, window, cx| {
-                let focus_handle = view.read(cx).focus_handle.clone();
-                window.handle_input(
-                    &focus_handle,
-                    ElementInputHandler::new(bounds, view.clone()),
-                    cx,
-                );
-
-                if let Some(selection) = prepaint.selection.take() {
-                    window.paint_quad(selection);
-                }
-
-                if let Some(line) = prepaint.line.take() {
-                    line.paint(
-                        prepaint.line_bounds.origin,
-                        prepaint.line_bounds.size.height,
-                        TextAlign::Left,
-                        None,
-                        window,
-                        cx,
-                    )
-                    .ok();
-
-                    view.update(cx, |view, _cx| {
-                        if let Some(input) = view.active_input.as_mut() {
-                            input.last_layout = Some(line);
-                            input.last_bounds = Some(prepaint.line_bounds);
-                        }
-                    });
-                }
-
-                if let Some(cursor) = prepaint.cursor.take() {
-                    window.paint_quad(cursor);
-                }
-            },
-        )
-        .size_full()
-    }
-}
-
-impl EntityInputHandler for SettingsWindow {
-    fn text_for_range(
-        &mut self,
-        range_utf16: Range<usize>,
-        actual_range: &mut Option<Range<usize>>,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> Option<String> {
-        let input = self.active_input.as_ref()?;
-        let range = input.range_from_utf16(&range_utf16);
-        actual_range.replace(input.range_to_utf16(&range));
-        Some(input.text[range].to_string())
-    }
-
-    fn selected_text_range(
-        &mut self,
-        _ignore_disabled_input: bool,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> Option<UTF16Selection> {
-        let input = self.active_input.as_ref()?;
-        Some(UTF16Selection {
-            range: input.range_to_utf16(&input.selected_range),
-            reversed: input.selection_reversed,
-        })
-    }
-
-    fn marked_text_range(
-        &self,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> Option<Range<usize>> {
-        let input = self.active_input.as_ref()?;
-        input
-            .marked_range
-            .as_ref()
-            .map(|range| input.range_to_utf16(range))
-    }
-
-    fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
-        if let Some(input) = self.active_input.as_mut() {
-            input.marked_range = None;
-        }
-    }
-
-    fn replace_text_in_range(
-        &mut self,
-        range: Option<Range<usize>>,
-        text: &str,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if let Some(input) = self.active_input.as_mut() {
-            input.replace_text_in_range(range, text);
-            cx.notify();
-        }
-    }
-
-    fn replace_and_mark_text_in_range(
-        &mut self,
-        range: Option<Range<usize>>,
-        new_text: &str,
-        new_selected_range: Option<Range<usize>>,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if let Some(input) = self.active_input.as_mut() {
-            input.replace_and_mark_text_in_range(range, new_text, new_selected_range);
-            cx.notify();
-        }
-    }
-
-    fn bounds_for_range(
-        &mut self,
-        range_utf16: Range<usize>,
-        element_bounds: Bounds<gpui::Pixels>,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> Option<Bounds<gpui::Pixels>> {
-        let input = self.active_input.as_ref()?;
-        let line = input.last_layout.as_ref()?;
-        let range = input.range_from_utf16(&range_utf16);
-        Some(Bounds::from_corners(
-            point(
-                element_bounds.left() + line.x_for_index(range.start.min(input.text.len())),
-                element_bounds.top(),
-            ),
-            point(
-                element_bounds.left() + line.x_for_index(range.end.min(input.text.len())),
-                element_bounds.bottom(),
-            ),
-        ))
-    }
-
-    fn character_index_for_point(
-        &mut self,
-        point: gpui::Point<gpui::Pixels>,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> Option<usize> {
-        let input = self.active_input.as_ref()?;
-        let bounds = input.last_bounds?;
-        let local = bounds.localize(&point)?;
-        let line = input.last_layout.as_ref()?;
-        let utf8_index = line.index_for_x(point.x - local.x)?;
-        Some(input.offset_to_utf16(utf8_index))
-    }
-
-    fn accepts_text_input(&self, _window: &mut Window, _cx: &mut Context<Self>) -> bool {
-        self.active_input.is_some()
-    }
-}
+crate::impl_text_input_handler!(SettingsWindow);
 
 impl Render for SettingsWindow {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let bg = self.bg_primary();
         div()
             .id("settings-root")
             .track_focus(&self.focus_handle)
@@ -2113,7 +1671,7 @@ impl Render for SettingsWindow {
             }))
             .flex()
             .size_full()
-            .bg(rgb(CONTENT_BG))
+            .bg(bg)
             .child(self.render_sidebar(cx))
             .child(
                 div()
