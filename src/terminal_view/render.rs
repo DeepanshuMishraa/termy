@@ -535,10 +535,10 @@ impl Render for TerminalView {
             let button_count = custom_titlebar_button_count as f32;
             (button_count * TITLEBAR_PLUS_SIZE) + ((button_count - 1.0) * TITLEBAR_BUTTON_GAP)
         };
-        let titlebar_left_slot_width = if cfg!(target_os = "macos") {
-            TOP_STRIP_MACOS_TRAFFIC_LIGHT_SLOT
+        let titlebar_left_padding = if cfg!(target_os = "macos") {
+            TOP_STRIP_MACOS_TRAFFIC_LIGHT_PADDING
         } else {
-            0.0
+            TOP_STRIP_SIDE_PADDING
         };
         let titlebar_height = self.titlebar_height();
         let mut terminal_surface_bg = colors.background;
@@ -1014,8 +1014,8 @@ impl Render for TerminalView {
                         .flex()
                         .items_center()
                         .gap(px(8.0))
-                        .px(px(TOP_STRIP_SIDE_PADDING))
-                        .child(div().w(px(titlebar_left_slot_width)).h(px(1.0)))
+                        .pl(px(titlebar_left_padding))
+                        .pr(px(TOP_STRIP_SIDE_PADDING))
                         .child(
                             div()
                                 .flex_1()
@@ -1025,6 +1025,7 @@ impl Render for TerminalView {
                                 .overflow_x_hidden()
                                 .child(
                                     div()
+                                        .mt(px(TOP_STRIP_TEXT_BASELINE_NUDGE_Y))
                                         .text_color(titlebar_brand_text)
                                         .text_size(px(TOP_STRIP_BRAND_TEXT_SIZE))
                                         .font_weight(FontWeight::MEDIUM)
@@ -1032,6 +1033,7 @@ impl Render for TerminalView {
                                 )
                                 .child(
                                     div()
+                                        .mt(px(TOP_STRIP_TEXT_BASELINE_NUDGE_Y))
                                         .flex_1()
                                         .overflow_x_hidden()
                                         .truncate()

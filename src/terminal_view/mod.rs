@@ -52,12 +52,19 @@ use inline_input::{InlineInputAlignment, InlineInputState};
 const MIN_FONT_SIZE: f32 = 8.0;
 const MAX_FONT_SIZE: f32 = 40.0;
 const ZOOM_STEP: f32 = 1.0;
-const TITLEBAR_HEIGHT: f32 = 28.0;
+#[cfg(target_os = "windows")]
+const TITLEBAR_HEIGHT: f32 = 32.0;
+#[cfg(not(target_os = "windows"))]
+const TITLEBAR_HEIGHT: f32 = 34.0;
 const TABBAR_HEIGHT: f32 = 34.0;
 const TOP_STRIP_SIDE_PADDING: f32 = 10.0;
-const TOP_STRIP_MACOS_TRAFFIC_LIGHT_SLOT: f32 = 78.0;
-const TOP_STRIP_BRAND_TEXT_SIZE: f32 = 11.0;
-const TOP_STRIP_CONTEXT_TEXT_SIZE: f32 = 11.0;
+#[cfg(macos_sdk_26)]
+const TOP_STRIP_MACOS_TRAFFIC_LIGHT_PADDING: f32 = 78.0;
+#[cfg(not(macos_sdk_26))]
+const TOP_STRIP_MACOS_TRAFFIC_LIGHT_PADDING: f32 = 71.0;
+const TOP_STRIP_BRAND_TEXT_SIZE: f32 = 13.0;
+const TOP_STRIP_CONTEXT_TEXT_SIZE: f32 = 13.0;
+const TOP_STRIP_TEXT_BASELINE_NUDGE_Y: f32 = 0.0;
 const TITLEBAR_PLUS_SIZE: f32 = 18.0;
 const TITLEBAR_BUTTON_GAP: f32 = 4.0;
 const TITLEBAR_BUTTON_ICON_SIZE: f32 = 10.0;
