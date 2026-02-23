@@ -503,6 +503,7 @@ impl TerminalView {
             CommandAction::Quit
             | CommandAction::SwitchTheme
             | CommandAction::AppInfo
+            | CommandAction::NativeSdkExample
             | CommandAction::RestartApp
             | CommandAction::RenameTab
             | CommandAction::CheckForUpdates

@@ -202,7 +202,12 @@ impl SettingsWindow {
             .bg(if is_active {
                 active_bg
             } else {
-                Rgba { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }
+                Rgba {
+                    r: 0.0,
+                    g: 0.0,
+                    b: 0.0,
+                    a: 0.0,
+                }
             })
             .hover(|s| s.bg(hover_bg))
             .child(
@@ -882,7 +887,12 @@ impl SettingsWindow {
             .bg(bg_card)
             .border_1()
             .border_color(if theme_dropdown_open {
-                Rgba { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }
+                Rgba {
+                    r: 0.0,
+                    g: 0.0,
+                    b: 0.0,
+                    a: 0.0,
+                }
             } else {
                 border_color
             })

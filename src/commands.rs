@@ -195,6 +195,16 @@ define_commands!(
         ))
     ),
     (
+        NativeSdkExample,
+        "native_sdk_example",
+        TERMINAL_CONTEXT,
+        Some(palette(
+            "Native SDK Example",
+            "native sdk modal popup confirm dialog example",
+            CommandPaletteVisibility::Always
+        ))
+    ),
+    (
         RestartApp,
         "restart_app",
         TERMINAL_CONTEXT,

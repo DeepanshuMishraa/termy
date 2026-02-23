@@ -1047,6 +1047,7 @@ impl Render for TerminalView {
                     .on_action(cx.listener(Self::handle_import_colors_action))
                     .on_action(cx.listener(Self::handle_switch_theme_action))
                     .on_action(cx.listener(Self::handle_app_info_action))
+                    .on_action(cx.listener(Self::handle_native_sdk_example_action))
                     .on_action(cx.listener(Self::handle_restart_app_action))
                     .on_action(cx.listener(Self::handle_rename_tab_action))
                     .on_action(cx.listener(Self::handle_check_for_updates_action))

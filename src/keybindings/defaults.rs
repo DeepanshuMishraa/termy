@@ -130,5 +130,10 @@ mod tests {
                 .iter()
                 .all(|binding| binding.action != CommandAction::SwitchTheme)
         );
+        assert!(
+            defaults
+                .iter()
+                .all(|binding| binding.action != CommandAction::NativeSdkExample)
+        );
     }
 }

@@ -649,7 +649,15 @@ impl<V: TextInputProvider + gpui::Render + EntityInputHandler> IntoElement for T
                     size(bounds.size.width, line_height),
                 );
 
-                let (text, selected_range, cursor_offset, marked_range, focused, cursor_visible, cursor_width) = {
+                let (
+                    text,
+                    selected_range,
+                    cursor_offset,
+                    marked_range,
+                    focused,
+                    cursor_visible,
+                    cursor_width,
+                ) = {
                     let view = prepaint_view.read(cx);
                     let focused = prepaint_focus_handle.is_focused(window);
                     let cursor_visible = view.cursor_visible();
@@ -666,7 +674,9 @@ impl<V: TextInputProvider + gpui::Render + EntityInputHandler> IntoElement for T
                                 cursor_width,
                             )
                         })
-                        .unwrap_or_else(|| (String::new(), 0..0, 0, None, focused, false, cursor_width))
+                        .unwrap_or_else(|| {
+                            (String::new(), 0..0, 0, None, focused, false, cursor_width)
+                        })
                 };
 
                 let line = if text.is_empty() {
@@ -881,7 +891,9 @@ macro_rules! impl_text_input_handler {
             }
 
             fn unmark_text(&mut self, _window: &mut gpui::Window, _cx: &mut gpui::Context<Self>) {
-                if let Some(state) = $crate::text_input::TextInputProvider::text_input_state_mut(self) {
+                if let Some(state) =
+                    $crate::text_input::TextInputProvider::text_input_state_mut(self)
+                {
                     state.unmark_text();
                 }
             }
@@ -893,7 +905,9 @@ macro_rules! impl_text_input_handler {
                 _window: &mut gpui::Window,
                 cx: &mut gpui::Context<Self>,
             ) {
-                if let Some(state) = $crate::text_input::TextInputProvider::text_input_state_mut(self) {
+                if let Some(state) =
+                    $crate::text_input::TextInputProvider::text_input_state_mut(self)
+                {
                     state.replace_text_in_range(range, text);
                     cx.notify();
                 }
@@ -907,7 +921,9 @@ macro_rules! impl_text_input_handler {
                 _window: &mut gpui::Window,
                 cx: &mut gpui::Context<Self>,
             ) {
-                if let Some(state) = $crate::text_input::TextInputProvider::text_input_state_mut(self) {
+                if let Some(state) =
+                    $crate::text_input::TextInputProvider::text_input_state_mut(self)
+                {
                     state.replace_and_mark_text_in_range(range, new_text, new_selected_range);
                     cx.notify();
                 }
@@ -934,7 +950,11 @@ macro_rules! impl_text_input_handler {
                 Some(state.character_index_for_point(point))
             }
 
-            fn accepts_text_input(&self, _window: &mut gpui::Window, _cx: &mut gpui::Context<Self>) -> bool {
+            fn accepts_text_input(
+                &self,
+                _window: &mut gpui::Window,
+                _cx: &mut gpui::Context<Self>,
+            ) -> bool {
                 $crate::text_input::TextInputProvider::text_input_state(self).is_some()
             }
         }
