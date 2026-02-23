@@ -102,7 +102,7 @@ fn main() {
             },
             move |window, cx| {
                 let startup_config = startup_config.clone();
-                cx.new(move |cx| TerminalView::new(window, cx, startup_config))
+                cx.new(|cx| TerminalView::new(window, cx, startup_config.clone()))
             },
         )
         .unwrap();
