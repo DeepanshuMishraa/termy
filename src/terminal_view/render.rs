@@ -485,9 +485,10 @@ impl Render for TerminalView {
         let show_tab_bar = self.show_tab_bar();
         let show_windows_controls = cfg!(target_os = "windows");
         let show_custom_titlebar_buttons = !show_windows_controls && !self.hide_titlebar_buttons;
+        let show_titlebar_update_button = show_custom_titlebar_buttons && cfg!(target_os = "macos");
         let show_titlebar_new_tab_button = show_custom_titlebar_buttons && self.use_tabs;
         let custom_titlebar_button_count = if show_custom_titlebar_buttons {
-            2 + usize::from(show_titlebar_new_tab_button)
+            1 + usize::from(show_titlebar_update_button) + usize::from(show_titlebar_new_tab_button)
         } else {
             0
         };
@@ -847,24 +848,26 @@ impl Render for TerminalView {
                                     },
                                     cx,
                                 ))
-                                .child(self.render_titlebar_icon_button(
-                                    "titlebar-update",
-                                    "\u{21BB}",
-                                    TITLEBAR_BUTTON_ICON_SIZE,
-                                    TITLEBAR_BUTTON_ICON_BASELINE_NUDGE_Y,
-                                    titlebar_plus_bg,
-                                    titlebar_plus_text,
-                                    |this, _event, window, cx| {
-                                        this.execute_command_action(
-                                            CommandAction::CheckForUpdates,
-                                            false,
-                                            window,
-                                            cx,
-                                        );
-                                        cx.stop_propagation();
-                                    },
-                                    cx,
-                                ))
+                                .children(show_titlebar_update_button.then(|| {
+                                    self.render_titlebar_icon_button(
+                                        "titlebar-update",
+                                        "\u{21BB}",
+                                        TITLEBAR_BUTTON_ICON_SIZE,
+                                        TITLEBAR_BUTTON_ICON_BASELINE_NUDGE_Y,
+                                        titlebar_plus_bg,
+                                        titlebar_plus_text,
+                                        |this, _event, window, cx| {
+                                            this.execute_command_action(
+                                                CommandAction::CheckForUpdates,
+                                                false,
+                                                window,
+                                                cx,
+                                            );
+                                            cx.stop_propagation();
+                                        },
+                                        cx,
+                                    )
+                                }))
                                 .children(show_titlebar_new_tab_button.then(|| {
                                     self.render_titlebar_icon_button(
                                         "titlebar-new-tab",
