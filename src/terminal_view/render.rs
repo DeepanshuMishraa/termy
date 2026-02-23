@@ -332,14 +332,11 @@ impl Render for TerminalView {
         };
         let titlebar_side_slot_width = if show_windows_controls {
             WINDOWS_TITLEBAR_CONTROLS_WIDTH
+        } else if custom_titlebar_button_count == 0 {
+            0.0
         } else {
             let button_count = custom_titlebar_button_count as f32;
-            if button_count <= 0.0 {
-                0.0
-            } else {
-                (button_count * TITLEBAR_PLUS_SIZE)
-                    + ((button_count - 1.0).max(0.0) * TITLEBAR_BUTTON_GAP)
-            }
+            (button_count * TITLEBAR_PLUS_SIZE) + ((button_count - 1.0) * TITLEBAR_BUTTON_GAP)
         };
         let viewport = window.viewport_size();
         let tab_layout = self.tab_bar_layout(viewport.width.into());

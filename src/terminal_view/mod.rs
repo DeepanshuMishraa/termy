@@ -203,8 +203,9 @@ struct TerminalTab {
 impl TerminalTab {
     fn new(terminal: Terminal, predicted_prompt_title: Option<String>) -> Self {
         let title = predicted_prompt_title
-            .clone()
-            .unwrap_or_else(|| DEFAULT_TAB_TITLE.to_string());
+            .as_deref()
+            .unwrap_or(DEFAULT_TAB_TITLE)
+            .to_string();
 
         Self {
             terminal,
@@ -575,29 +576,7 @@ impl TerminalView {
     }
 
     fn user_home_dir() -> Option<PathBuf> {
-        #[cfg(target_os = "windows")]
-        {
-            if let Ok(user_profile) = env::var("USERPROFILE")
-                && !user_profile.trim().is_empty()
-            {
-                return Some(PathBuf::from(user_profile));
-            }
-
-            if let (Ok(home_drive), Ok(home_path)) = (env::var("HOMEDRIVE"), env::var("HOMEPATH"))
-                && !home_drive.trim().is_empty()
-                && !home_path.trim().is_empty()
-            {
-                return Some(PathBuf::from(format!("{home_drive}{home_path}")));
-            }
-        }
-
-        if let Ok(home) = env::var("HOME")
-            && !home.trim().is_empty()
-        {
-            return Some(PathBuf::from(home));
-        }
-
-        None
+        dirs::home_dir()
     }
 
     fn resolve_configured_working_directory(configured: Option<&str>) -> Option<PathBuf> {
@@ -641,9 +620,6 @@ impl TerminalView {
 
             if let Ok(relative) = path.strip_prefix(&home) {
                 let relative = relative.to_string_lossy();
-                if relative.is_empty() {
-                    return "~".to_string();
-                }
                 return format!("~{}{}", std::path::MAIN_SEPARATOR, relative);
             }
         }

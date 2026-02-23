@@ -101,8 +101,10 @@ fn main() {
                 ..Default::default()
             },
             move |window, cx| {
-                let startup_config = startup_config.clone();
-                let view = cx.new(|cx| TerminalView::new(window, cx, startup_config.clone()));
+                let view = cx.new({
+                    let startup_config = startup_config;
+                    |cx| TerminalView::new(window, cx, startup_config)
+                });
                 let view_handle = view.downgrade();
                 window.on_window_should_close(cx, move |window, cx| {
                     view_handle
