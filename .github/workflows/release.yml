@@ -245,11 +245,11 @@ jobs:
           ARM_SHA: ${{ steps.checksums.outputs.arm_sha }}
           INTEL_SHA: ${{ steps.checksums.outputs.intel_sha }}
         run: |
-          perl -i -pe 's/^  version ".*"$/  version "'"$VERSION"'"/' Casks/termy.rb
-          perl -0777 -i -pe 's/  sha256 arm:\s*"[^"]+",\n\s*intel:\s*"[^"]+"/  sha256 arm:   "'"$ARM_SHA"'",\n         intel: "'"$INTEL_SHA"'"/' Casks/termy.rb
+          perl -i -pe 's|^  version ".*"$|  version "$ENV{VERSION}"|' Casks/termy.rb
+          perl -0777 -i -pe 's|  sha256 arm:\s*"[^"]+",\n\s*intel:\s*"[^"]+"|  sha256 arm:   "$ENV{ARM_SHA}",\n         intel: "$ENV{INTEL_SHA}"|' Casks/termy.rb
 
       - name: Open cask update PR
-        uses: peter-evans/create-pull-request@v6
+        uses: peter-evans/create-pull-request@v8
         with:
           branch: automation/homebrew-cask-${{ steps.release.outputs.version }}
           delete-branch: true
