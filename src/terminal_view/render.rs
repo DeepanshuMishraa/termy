@@ -153,8 +153,10 @@ impl Render for TerminalView {
         let show_titlebar_plus = self.use_tabs && !show_windows_controls;
         let titlebar_side_slot_width = if show_windows_controls {
             WINDOWS_TITLEBAR_CONTROLS_WIDTH
+        } else if show_titlebar_plus {
+            (TITLEBAR_PLUS_SIZE * 3.0) + 8.0
         } else {
-            TITLEBAR_PLUS_SIZE
+            (TITLEBAR_PLUS_SIZE * 2.0) + 4.0
         };
         let viewport = window.viewport_size();
         let tab_layout = self.tab_bar_layout(viewport.width.into());
@@ -701,38 +703,82 @@ impl Render for TerminalView {
                                         .child("x"),
                                 )
                         } else {
-                            if show_titlebar_plus {
-                                div()
-                                    .w(px(TITLEBAR_PLUS_SIZE))
-                                    .h(px(TITLEBAR_PLUS_SIZE))
-                                    .rounded_sm()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .bg(titlebar_plus_bg)
-                                    .text_color(titlebar_plus_text)
-                                    .text_size(px(16.0))
-                                    .cursor_pointer()
-                                    .on_mouse_down(
-                                        MouseButton::Left,
-                                        cx.listener(|this, _event, _window, cx| {
-                                            this.add_tab(cx);
-                                            cx.stop_propagation();
-                                        }),
-                                    )
-                                    .child("+")
-                            } else {
-                                div()
-                                    .w(px(TITLEBAR_PLUS_SIZE))
-                                    .h(px(TITLEBAR_PLUS_SIZE))
-                                    .rounded_sm()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .bg(titlebar_plus_bg)
-                                    .text_color(titlebar_plus_text)
-                                    .text_size(px(16.0))
-                            }
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(4.0))
+                                .child(
+                                    div()
+                                        .id("titlebar-settings")
+                                        .w(px(TITLEBAR_PLUS_SIZE))
+                                        .h(px(TITLEBAR_PLUS_SIZE))
+                                        .rounded_sm()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .bg(titlebar_plus_bg)
+                                        .text_color(titlebar_plus_text)
+                                        .text_size(px(14.0))
+                                        .cursor_pointer()
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(|_this, _event, _window, cx| {
+                                                config::open_config_file();
+                                                termy_toast::info("Opened config file");
+                                                cx.notify();
+                                                cx.stop_propagation();
+                                            }),
+                                        )
+                                        .child("\u{2699}"),
+                                )
+                                .child(
+                                    div()
+                                        .id("titlebar-update")
+                                        .w(px(TITLEBAR_PLUS_SIZE))
+                                        .h(px(TITLEBAR_PLUS_SIZE))
+                                        .rounded_sm()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .bg(titlebar_plus_bg)
+                                        .text_color(titlebar_plus_text)
+                                        .text_size(px(13.0))
+                                        .cursor_pointer()
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(|this, _event, _window, cx| {
+                                                this.execute_command_action(
+                                                    CommandAction::CheckForUpdates,
+                                                    false,
+                                                    cx,
+                                                );
+                                                cx.stop_propagation();
+                                            }),
+                                        )
+                                        .child("\u{21BB}"),
+                                )
+                                .children(show_titlebar_plus.then(|| {
+                                    div()
+                                        .id("titlebar-new-tab")
+                                        .w(px(TITLEBAR_PLUS_SIZE))
+                                        .h(px(TITLEBAR_PLUS_SIZE))
+                                        .rounded_sm()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .bg(titlebar_plus_bg)
+                                        .text_color(titlebar_plus_text)
+                                        .text_size(px(16.0))
+                                        .cursor_pointer()
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(|this, _event, _window, cx| {
+                                                this.add_tab(cx);
+                                                cx.stop_propagation();
+                                            }),
+                                        )
+                                        .child("+")
+                                }))
                         }),
                 )
                 .into_any()
