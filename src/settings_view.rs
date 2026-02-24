@@ -4,8 +4,8 @@ use crate::text_input::{TextInputAlignment, TextInputElement, TextInputProvider,
 use gpui::{
     AnyElement, Context, FocusHandle, Font, InteractiveElement, IntoElement, KeyDownEvent,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Render, Rgba,
-    ScrollWheelEvent, SharedString, StatefulInteractiveElement, Styled, TextAlign, Window, div,
-    prelude::FluentBuilder, px,
+    ScrollWheelEvent, SharedString, StatefulInteractiveElement, Styled, TextAlign, Window,
+    deferred, div, prelude::FluentBuilder, px,
 };
 
 const SIDEBAR_WIDTH: f32 = 220.0;
@@ -155,7 +155,7 @@ impl SettingsWindow {
             .flex()
             .flex_col()
             .child(
-                div().px_5().pt_6().pb_4().child(
+                div().px_5().pt_10().pb_4().child(
                     div()
                         .text_xs()
                         .font_weight(gpui::FontWeight::SEMIBOLD)
@@ -750,33 +750,36 @@ impl SettingsWindow {
             // Use a fully opaque background for the dropdown so it covers content below
             let dropdown_bg = self.bg_primary();
             theme_dropdown = Some(
-                div()
-                    .id("theme-suggestions-list")
-                    .occlude()
-                    .absolute()
-                    .top(px(34.0))
-                    .left_0()
-                    .right_0()
-                    .max_h(px(180.0))
-                    .overflow_scroll()
-                    .overflow_x_hidden()
-                    .rounded_md()
-                    .bg(dropdown_bg)
-                    .border_1()
-                    .border_color(border_color)
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|_view, _event: &MouseDownEvent, _window, cx| {
-                            cx.stop_propagation();
-                        }),
-                    )
-                    .on_scroll_wheel(cx.listener(
-                        |_view, _event: &ScrollWheelEvent, _window, cx| {
-                            cx.stop_propagation();
-                        },
-                    ))
-                    .child(list)
-                    .into_any_element(),
+                deferred(
+                    div()
+                        .id("theme-suggestions-list")
+                        .occlude()
+                        .absolute()
+                        .top(px(34.0))
+                        .left_0()
+                        .right_0()
+                        .max_h(px(180.0))
+                        .overflow_scroll()
+                        .overflow_x_hidden()
+                        .rounded_md()
+                        .bg(dropdown_bg)
+                        .border_1()
+                        .border_color(border_color)
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|_view, _event: &MouseDownEvent, _window, cx| {
+                                cx.stop_propagation();
+                            }),
+                        )
+                        .on_scroll_wheel(cx.listener(
+                            |_view, _event: &ScrollWheelEvent, _window, cx| {
+                                cx.stop_propagation();
+                            },
+                        ))
+                        .child(list),
+                )
+                .with_priority(10)
+                .into_any_element(),
             );
         }
 
