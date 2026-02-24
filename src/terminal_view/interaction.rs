@@ -1005,12 +1005,32 @@ impl TerminalView {
         match Self::install_cli_binary() {
             Ok(path) => {
                 let path_str = path.display().to_string();
-                if path_str.contains(".local/bin") {
-                    termy_toast::success(format!(
-                        "CLI installed to {}. Add ~/.local/bin to PATH if needed.",
-                        path_str
-                    ));
-                } else {
+                #[cfg(any(target_os = "macos", target_os = "linux"))]
+                {
+                    if path_str.contains(".local/bin") {
+                        termy_toast::success(format!(
+                            "CLI installed to {}. Add ~/.local/bin to PATH if needed.",
+                            path_str
+                        ));
+                    } else {
+                        termy_toast::success(format!("CLI installed to {}", path_str));
+                    }
+                }
+                #[cfg(target_os = "windows")]
+                {
+                    if let Some(parent) = path.parent() {
+                        termy_toast::success(format!(
+                            "CLI installed to {}. Add {} to PATH: setx PATH \"%PATH%;{}\"",
+                            path_str,
+                            parent.display(),
+                            parent.display()
+                        ));
+                    } else {
+                        termy_toast::success(format!("CLI installed to {}", path_str));
+                    }
+                }
+                #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+                {
                     termy_toast::success(format!("CLI installed to {}", path_str));
                 }
                 cx.notify();
@@ -1034,6 +1054,7 @@ impl TerminalView {
         let home_bin = dirs::home_dir()
             .map(|h| h.join(".local").join("bin").join("termy"));
 
+        let using_fallback = home_bin.is_none();
         let target = if let Some(ref local_bin) = home_bin {
             // Try user's local bin first
             local_bin.clone()
@@ -1046,11 +1067,24 @@ impl TerminalView {
         if let Some(parent) = target.parent() {
             if !parent.exists() {
                 std::fs::create_dir_all(parent).map_err(|e| {
-                    format!(
-                        "Failed to create directory {}: {}",
-                        parent.display(),
-                        e
-                    )
+                    if using_fallback && e.kind() == std::io::ErrorKind::PermissionDenied {
+                        format!(
+                            "Failed to create {}: {}. \
+                            $HOME is not set, so fell back to system path. \
+                            Either: set $HOME and retry (to use ~/.local/bin), \
+                            run with elevated privileges (sudo), \
+                            or manually create {} with appropriate permissions.",
+                            parent.display(),
+                            e,
+                            parent.display()
+                        )
+                    } else {
+                        format!(
+                            "Failed to create directory {}: {}",
+                            parent.display(),
+                            e
+                        )
+                    }
                 })?;
             }
         }
