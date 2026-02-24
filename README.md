@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="assets/termy_icon.png" width="120" alt="Termy icon" />
+  <img src="assets/termy_icon@1024px.png" width="120" alt="Termy icon" />
   <h1>Termy</h1>
   <p>A minimal terminal emulator built with <a href="https://gpui.rs">GPUI</a> and <a href="https://alacritty.org">alacritty_terminal</a>.</p>
 </div>
