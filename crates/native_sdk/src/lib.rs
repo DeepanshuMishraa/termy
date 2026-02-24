@@ -10,7 +10,7 @@ use std::process::Command;
 
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::WindowsAndMessaging::{
-    MessageBoxW, IDYES, MB_ICONINFORMATION, MB_OK, MB_YESNO,
+    IDYES, MB_ICONINFORMATION, MB_OK, MB_YESNO, MessageBoxW,
 };
 
 #[cfg(target_os = "windows")]

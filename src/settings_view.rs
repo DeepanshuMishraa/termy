@@ -60,18 +60,23 @@ enum SettingsSection {
 pub struct SettingsWindow {
     active_section: SettingsSection,
     config: AppConfig,
+    available_font_families: Vec<String>,
     focus_handle: FocusHandle,
     active_input: Option<ActiveTextInput>,
     colors: TerminalColors,
 }
 
 impl SettingsWindow {
-    pub fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let config = AppConfig::load_or_create();
+        let mut available_font_families = window.text_system().all_font_names();
+        available_font_families.sort_unstable_by_key(|font| font.to_ascii_lowercase());
+        available_font_families.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
         let colors = TerminalColors::from_theme(&config.theme, &config.colors);
         Self {
             active_section: SettingsSection::Appearance,
             config,
+            available_font_families,
             focus_handle: cx.focus_handle(),
             active_input: None,
             colors,
@@ -436,6 +441,10 @@ impl SettingsWindow {
         )
     }
 
+    fn uses_text_input_for_field(field: EditableField) -> bool {
+        !matches!(field, EditableField::FontFamily)
+    }
+
     fn step_numeric_field(&mut self, field: EditableField, delta: i32, cx: &mut Context<Self>) {
         let result = match field {
             EditableField::BackgroundOpacity => {
@@ -505,6 +514,19 @@ impl SettingsWindow {
         theme_ids
     }
 
+    fn ordered_font_families_for_settings(&self) -> Vec<String> {
+        let mut fonts = self.available_font_families.clone();
+        if !fonts
+            .iter()
+            .any(|font| font.eq_ignore_ascii_case(&self.config.font_family))
+        {
+            fonts.push(self.config.font_family.clone());
+        }
+        fonts.sort_unstable_by_key(|font| font.to_ascii_lowercase());
+        fonts.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
+        fonts
+    }
+
     fn filtered_theme_suggestions(&self, query: &str) -> Vec<String> {
         let normalized = query.trim().to_ascii_lowercase();
         let themes = self.ordered_theme_ids_for_settings();
@@ -529,6 +551,14 @@ impl SettingsWindow {
 
     fn apply_theme_selection(&mut self, theme_id: &str, cx: &mut Context<Self>) {
         if let Err(error) = self.apply_editable_field(EditableField::Theme, theme_id) {
+            termy_toast::error(error);
+        }
+        self.active_input = None;
+        cx.notify();
+    }
+
+    fn apply_font_selection(&mut self, font_family: &str, cx: &mut Context<Self>) {
+        if let Err(error) = self.apply_editable_field(EditableField::FontFamily, font_family) {
             termy_toast::error(error);
         }
         self.active_input = None;
@@ -699,7 +729,8 @@ impl SettingsWindow {
             .as_ref()
             .is_some_and(|input| input.field == field);
         let is_theme_field = field == EditableField::Theme;
-        let accent_inner_border = is_numeric || is_theme_field;
+        let is_font_field = field == EditableField::FontFamily;
+        let accent_inner_border = is_numeric || is_theme_field || is_font_field;
         let theme_suggestions = if is_theme_field && is_active {
             let query = self
                 .active_input
@@ -707,6 +738,18 @@ impl SettingsWindow {
                 .map(|input| input.state.text())
                 .unwrap_or("");
             self.filtered_theme_suggestions(query)
+        } else {
+            Vec::new()
+        };
+        let font_suggestions = if is_font_field && is_active {
+            self.ordered_font_families_for_settings()
+        } else {
+            Vec::new()
+        };
+        let dropdown_options = if is_theme_field {
+            theme_suggestions
+        } else if is_font_field {
+            font_suggestions
         } else {
             Vec::new()
         };
@@ -721,44 +764,59 @@ impl SettingsWindow {
         let text_primary = self.text_primary();
         let text_muted = self.text_muted();
 
-        let mut theme_dropdown = None;
-        let theme_dropdown_open = is_theme_field && is_active && !theme_suggestions.is_empty();
-        if theme_dropdown_open {
+        let mut dropdown = None;
+        let dropdown_open =
+            is_active && (is_theme_field || is_font_field) && !dropdown_options.is_empty();
+        if dropdown_open {
             let mut list = div().flex().flex_col().py_1();
-            for theme_id in theme_suggestions {
-                let theme_label = theme_id.clone();
+            for (index, option) in dropdown_options.into_iter().enumerate() {
+                let option_label = option.clone();
+                let option_value = option.clone();
                 list = list.child(
                     div()
-                        .id(SharedString::from(format!("theme-option-{theme_label}")))
+                        .id(SharedString::from(if is_theme_field {
+                            format!("theme-option-{index}")
+                        } else {
+                            format!("font-option-{index}")
+                        }))
                         .px_3()
                         .py_1()
                         .text_sm()
                         .text_color(text_secondary)
                         .cursor_pointer()
+                        .when(is_font_field, |s| s.font_family(option_value.clone()))
                         .hover(|this| this.bg(hover_bg))
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |view, _event: &MouseDownEvent, _window, cx| {
                                 cx.stop_propagation();
-                                view.apply_theme_selection(&theme_id, cx);
+                                if is_theme_field {
+                                    view.apply_theme_selection(&option_value, cx);
+                                } else {
+                                    view.apply_font_selection(&option_value, cx);
+                                }
                             }),
                         )
-                        .child(theme_label),
+                        .child(option_label),
                 );
             }
 
             // Use a fully opaque background for the dropdown so it covers content below
             let dropdown_bg = self.bg_primary();
-            theme_dropdown = Some(
+            dropdown = Some(
                 deferred(
                     div()
-                        .id("theme-suggestions-list")
+                        .id(if is_theme_field {
+                            "theme-suggestions-list"
+                        } else {
+                            "font-suggestions-list"
+                        })
                         .occlude()
                         .absolute()
                         .top(px(34.0))
                         .left_0()
                         .right_0()
-                        .max_h(px(180.0))
+                        .max_h(if is_theme_field { px(180.0) } else { px(240.0) })
                         .overflow_scroll()
                         .overflow_x_hidden()
                         .rounded_md()
@@ -837,7 +895,7 @@ impl SettingsWindow {
                         })),
                 )
                 .into_any_element()
-        } else if is_active {
+        } else if is_active && !is_font_field {
             let font = Font {
                 family: self.config.font_family.clone().into(),
                 ..Font::default()
@@ -871,7 +929,7 @@ impl SettingsWindow {
             .rounded_lg()
             .bg(bg_card)
             .border_1()
-            .border_color(if theme_dropdown_open {
+            .border_color(if dropdown_open {
                 Rgba {
                     r: 0.0,
                     g: 0.0,
@@ -887,6 +945,21 @@ impl SettingsWindow {
                     MouseButton::Left,
                     cx.listener(move |view, event: &MouseDownEvent, window, cx| {
                         cx.stop_propagation();
+                        if field == EditableField::FontFamily {
+                            let is_already_active = view
+                                .active_input
+                                .as_ref()
+                                .is_some_and(|input| input.field == field);
+                            if is_already_active {
+                                view.active_input = None;
+                            } else {
+                                view.begin_editing_field(field, window, cx);
+                            }
+                            view.focus_handle.focus(window, cx);
+                            cx.notify();
+                            return;
+                        }
+
                         if !view
                             .active_input
                             .as_ref()
@@ -989,7 +1062,7 @@ impl SettingsWindow {
                             })
                             .child(value_element),
                     )
-                    .when_some(theme_dropdown, |s, dropdown| s.child(dropdown)),
+                    .when_some(dropdown, |s, dropdown| s.child(dropdown)),
             )
     }
 
@@ -1013,8 +1086,17 @@ impl SettingsWindow {
             return;
         }
 
+        let active_field = self.active_input.as_ref().map(|input| input.field);
+        let allow_text_editing = active_field.is_some_and(Self::uses_text_input_for_field);
+
         match event.keystroke.key.as_str() {
-            "enter" => self.commit_active_input(cx),
+            "enter" => {
+                if active_field == Some(EditableField::FontFamily) {
+                    self.cancel_active_input(cx);
+                } else {
+                    self.commit_active_input(cx);
+                }
+            }
             "escape" => self.cancel_active_input(cx),
             "tab" => {
                 if self
@@ -1031,37 +1113,37 @@ impl SettingsWindow {
                 }
             }
             "backspace" => {
-                if let Some(input) = self.active_input.as_mut() {
+                if allow_text_editing && let Some(input) = self.active_input.as_mut() {
                     input.state.delete_backward();
                 }
                 cx.notify();
             }
             "delete" => {
-                if let Some(input) = self.active_input.as_mut() {
+                if allow_text_editing && let Some(input) = self.active_input.as_mut() {
                     input.state.delete_forward();
                 }
                 cx.notify();
             }
             "left" => {
-                if let Some(input) = self.active_input.as_mut() {
+                if allow_text_editing && let Some(input) = self.active_input.as_mut() {
                     input.state.move_left();
                 }
                 cx.notify();
             }
             "right" => {
-                if let Some(input) = self.active_input.as_mut() {
+                if allow_text_editing && let Some(input) = self.active_input.as_mut() {
                     input.state.move_right();
                 }
                 cx.notify();
             }
             "home" => {
-                if let Some(input) = self.active_input.as_mut() {
+                if allow_text_editing && let Some(input) = self.active_input.as_mut() {
                     input.state.move_to_start();
                 }
                 cx.notify();
             }
             "end" => {
-                if let Some(input) = self.active_input.as_mut() {
+                if allow_text_editing && let Some(input) = self.active_input.as_mut() {
                     input.state.move_to_end();
                 }
                 cx.notify();
@@ -1644,11 +1726,15 @@ impl SettingsWindow {
 
 impl TextInputProvider for SettingsWindow {
     fn text_input_state(&self) -> Option<&TextInputState> {
-        self.active_input.as_ref().map(|input| &input.state)
+        self.active_input
+            .as_ref()
+            .and_then(|input| Self::uses_text_input_for_field(input.field).then_some(&input.state))
     }
 
     fn text_input_state_mut(&mut self) -> Option<&mut TextInputState> {
-        self.active_input.as_mut().map(|input| &mut input.state)
+        self.active_input.as_mut().and_then(|input| {
+            Self::uses_text_input_for_field(input.field).then_some(&mut input.state)
+        })
     }
 }
 
@@ -1669,6 +1755,7 @@ impl Render for SettingsWindow {
             .flex()
             .size_full()
             .bg(bg)
+            .font_family(self.config.font_family.clone())
             .child(self.render_sidebar(cx))
             .child(
                 div()
