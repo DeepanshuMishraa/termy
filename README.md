@@ -8,16 +8,50 @@
 
 ## Installation
 
-### Homebrew (macOS, recommended)
+### macOS — Homebrew (recommended)
 
 ```sh
 brew tap lassejlv/termy https://github.com/lassejlv/termy
 brew install --cask termy
 ```
 
+### macOS — Direct download
+
+Download the latest `.dmg` from the [Releases](https://github.com/lassejlv/termy/releases/latest) page:
+
+- **Apple Silicon (arm64):** `Termy-<version>-macos-arm64.dmg`
+- **Intel (x86_64):** `Termy-<version>-macos-x86_64.dmg`
+
+### Linux
+
+Download the latest tarball from the [Releases](https://github.com/lassejlv/termy/releases/latest) page:
+
+- `Termy-<version>-linux-x86_64.tar.gz`
+
+Extract and run the binary:
+
+```sh
+tar -xzf Termy-*-linux-x86_64.tar.gz
+./termy
+```
+
+### Arch Linux
+
+```sh
+paru -S termy-bin
+```
+
+### Windows
+
+Download the latest installer from the [Releases](https://github.com/lassejlv/termy/releases/latest) page:
+
+- `Termy-<version>-x64-Setup.exe`
+
+Run the installer and follow the setup wizard.
+
 ### Build from source
 
-> Requires Rust (stable). macOS is the primary supported platform; Windows support is experimental.
+> Requires Rust (stable).
 
 ```sh
 cargo run --release
