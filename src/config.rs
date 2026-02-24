@@ -94,7 +94,7 @@ padding_y = 8\n\
 pub type ThemeId = String;
 
 const DEFAULT_THEME_ID: &str = "termy";
-const SHELL_DECIDE_THEME_ID: &str = "shell-decide";
+pub(crate) const SHELL_DECIDE_THEME_ID: &str = "shell-decide";
 
 fn parse_theme_id(value: &str) -> Option<ThemeId> {
     let value = value.trim();
