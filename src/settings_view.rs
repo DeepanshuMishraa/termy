@@ -150,6 +150,41 @@ impl SettingsWindow {
         c
     }
 
+    fn srgb_to_linear(channel: f32) -> f32 {
+        if channel <= 0.04045 {
+            channel / 12.92
+        } else {
+            ((channel + 0.055) / 1.055).powf(2.4)
+        }
+    }
+
+    fn relative_luminance(color: Rgba) -> f32 {
+        let r = Self::srgb_to_linear(color.r.clamp(0.0, 1.0));
+        let g = Self::srgb_to_linear(color.g.clamp(0.0, 1.0));
+        let b = Self::srgb_to_linear(color.b.clamp(0.0, 1.0));
+        0.2126 * r + 0.7152 * g + 0.0722 * b
+    }
+
+    fn contrast_ratio(a: Rgba, b: Rgba) -> f32 {
+        let l1 = Self::relative_luminance(a);
+        let l2 = Self::relative_luminance(b);
+        let (lighter, darker) = if l1 >= l2 { (l1, l2) } else { (l2, l1) };
+        (lighter + 0.05) / (darker + 0.05)
+    }
+
+    fn contrasting_text_for_fill(&self, fill: Rgba) -> Rgba {
+        let mut primary = self.text_primary();
+        primary.a = 1.0;
+        let mut background = self.bg_primary();
+        background.a = 1.0;
+
+        if Self::contrast_ratio(primary, fill) >= Self::contrast_ratio(background, fill) {
+            primary
+        } else {
+            background
+        }
+    }
+
     fn render_sidebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .w(px(SIDEBAR_WIDTH))
@@ -683,19 +718,15 @@ impl SettingsWindow {
         // Off state: use a more visible muted foreground color
         let mut bg_off = self.colors.foreground;
         bg_off.a = 0.25;
-        // Knob: white/light when on, slightly dimmer when off
-        let knob_color = if checked {
-            self.text_primary()
-        } else {
-            self.text_secondary()
-        };
+        let track_color = if checked { accent } else { bg_off };
+        let knob_color = self.contrasting_text_for_fill(track_color);
 
         div()
             .id(SharedString::from(id))
             .w(px(44.0))
             .h(px(24.0))
             .rounded(px(12.0))
-            .bg(if checked { accent } else { bg_off })
+            .bg(track_color)
             .cursor_pointer()
             .relative()
             .child(
@@ -1162,7 +1193,7 @@ impl SettingsWindow {
         let accent = self.accent();
         let hover_bg = self.bg_hover();
         let switch_off_bg = self.bg_input();
-        let white = self.colors.foreground;
+        let selected_text = self.contrasting_text_for_fill(accent);
 
         div()
             .flex()
@@ -1214,9 +1245,9 @@ impl SettingsWindow {
                                 switch_off_bg
                             })
                             .text_color(if is_selected {
-                                white
+                                selected_text
                             } else {
-                                text_secondary.into()
+                                text_secondary
                             })
                             .hover(|s| if !is_selected { s.bg(hover_bg) } else { s })
                             .child("Block")
@@ -1242,9 +1273,9 @@ impl SettingsWindow {
                                 switch_off_bg
                             })
                             .text_color(if is_selected {
-                                white
+                                selected_text
                             } else {
-                                text_secondary.into()
+                                text_secondary
                             })
                             .hover(|s| if !is_selected { s.bg(hover_bg) } else { s })
                             .child("Line")
@@ -1267,7 +1298,7 @@ impl SettingsWindow {
         let accent = self.accent();
         let hover_bg = self.bg_hover();
         let switch_off_bg = self.bg_input();
-        let white = self.colors.foreground;
+        let selected_text = self.contrasting_text_for_fill(accent);
 
         div()
             .flex()
@@ -1319,9 +1350,9 @@ impl SettingsWindow {
                                 switch_off_bg
                             })
                             .text_color(if is_selected {
-                                white
+                                selected_text
                             } else {
-                                text_secondary.into()
+                                text_secondary
                             })
                             .hover(|s| if !is_selected { s.bg(hover_bg) } else { s })
                             .child("Smart")
@@ -1347,9 +1378,9 @@ impl SettingsWindow {
                                 switch_off_bg
                             })
                             .text_color(if is_selected {
-                                white
+                                selected_text
                             } else {
-                                text_secondary.into()
+                                text_secondary
                             })
                             .hover(|s| if !is_selected { s.bg(hover_bg) } else { s })
                             .child("Shell")
@@ -1375,9 +1406,9 @@ impl SettingsWindow {
                                 switch_off_bg
                             })
                             .text_color(if is_selected {
-                                white
+                                selected_text
                             } else {
-                                text_secondary.into()
+                                text_secondary
                             })
                             .hover(|s| if !is_selected { s.bg(hover_bg) } else { s })
                             .child("Explicit")
@@ -1403,9 +1434,9 @@ impl SettingsWindow {
                                 switch_off_bg
                             })
                             .text_color(if is_selected {
-                                white
+                                selected_text
                             } else {
-                                text_secondary.into()
+                                text_secondary
                             })
                             .hover(|s| if !is_selected { s.bg(hover_bg) } else { s })
                             .child("Static")
@@ -1645,8 +1676,9 @@ impl SettingsWindow {
         let text_muted = self.text_muted();
         let text_secondary = self.text_secondary();
         let accent = self.accent();
-        let white = self.colors.foreground;
         let accent_hover = self.accent_with_alpha(0.8);
+        let button_text = self.contrasting_text_for_fill(accent);
+        let button_hover_text = self.contrasting_text_for_fill(accent_hover);
 
         div()
             .flex()
@@ -1711,9 +1743,9 @@ impl SettingsWindow {
                             .bg(accent)
                             .text_sm()
                             .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(white)
+                            .text_color(button_text)
                             .cursor_pointer()
-                            .hover(|s| s.bg(accent_hover))
+                            .hover(move |s| s.bg(accent_hover).text_color(button_hover_text))
                             .child("Open Config File")
                             .on_click(cx.listener(|_view, _, _, cx| {
                                 crate::config::open_config_file();
