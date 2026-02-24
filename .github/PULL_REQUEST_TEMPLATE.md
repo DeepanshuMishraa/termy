@@ -20,7 +20,7 @@
 
 <!-- If this PR closes any issues, use the keyword 'closes' followed by the issue number -->
 
-Closes # Fixes #
+Closes #
 
 ## Checklist
 
