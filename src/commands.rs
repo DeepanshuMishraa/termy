@@ -338,6 +338,16 @@ define_commands!(
         TERMINAL_CONTEXT,
         None
     ),
+    (
+        InstallCli,
+        "install_cli",
+        TERMINAL_CONTEXT,
+        Some(palette(
+            "Install CLI",
+            "install command line interface terminal shell path",
+            CommandPaletteVisibility::Always
+        ))
+    ),
 );
 
 actions!(

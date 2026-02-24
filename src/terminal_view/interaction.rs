@@ -995,7 +995,166 @@ impl TerminalView {
                 )
                 .ok();
             }
+            CommandAction::InstallCli => {
+                self.install_cli_action(cx);
+            }
         }
+    }
+
+    fn install_cli_action(&mut self, cx: &mut Context<Self>) {
+        match Self::install_cli_binary() {
+            Ok(path) => {
+                let path_str = path.display().to_string();
+                if path_str.contains(".local/bin") {
+                    termy_toast::success(format!(
+                        "CLI installed to {}. Add ~/.local/bin to PATH if needed.",
+                        path_str
+                    ));
+                } else {
+                    termy_toast::success(format!("CLI installed to {}", path_str));
+                }
+                cx.notify();
+            }
+            Err(e) => {
+                termy_toast::error(format!("Failed to install CLI: {}", e));
+                cx.notify();
+            }
+        }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn install_cli_binary() -> Result<std::path::PathBuf, String> {
+        use std::os::unix::fs::symlink;
+        use std::path::PathBuf;
+
+        // Get the CLI binary path from the app bundle or build directory
+        let cli_source = Self::find_cli_binary()?;
+
+        // Try ~/.local/bin first (user-writable), fall back to /usr/local/bin
+        let home_bin = dirs::home_dir()
+            .map(|h| h.join(".local").join("bin").join("termy"));
+
+        let target = if let Some(ref local_bin) = home_bin {
+            // Try user's local bin first
+            local_bin.clone()
+        } else {
+            // Fall back to system-wide location
+            PathBuf::from("/usr/local/bin/termy")
+        };
+
+        // Create parent directory if needed
+        if let Some(parent) = target.parent() {
+            if !parent.exists() {
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    format!(
+                        "Failed to create directory {}: {}",
+                        parent.display(),
+                        e
+                    )
+                })?;
+            }
+        }
+
+        // Check if target already exists
+        if target.exists() || target.symlink_metadata().is_ok() {
+            // Remove existing symlink or file
+            std::fs::remove_file(&target).map_err(|e| {
+                format!(
+                    "Failed to remove existing file at {}: {}",
+                    target.display(),
+                    e
+                )
+            })?;
+        }
+
+        // Create symlink
+        symlink(&cli_source, &target).map_err(|e| {
+            format!(
+                "Failed to create symlink at {}: {}",
+                target.display(),
+                e
+            )
+        })?;
+
+        Ok(target)
+    }
+
+    #[cfg(target_os = "windows")]
+    fn install_cli_binary() -> Result<std::path::PathBuf, String> {
+        use std::path::PathBuf;
+
+        let cli_source = Self::find_cli_binary()?;
+
+        // On Windows, copy to a location in PATH or next to the app
+        let target = if let Some(local_app_data) = dirs::data_local_dir() {
+            local_app_data.join("Termy").join("bin").join("termy.exe")
+        } else {
+            return Err("Could not determine local app data directory".to_string());
+        };
+
+        // Create parent directory if needed
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create directory: {}", e))?;
+        }
+
+        // Copy the binary
+        std::fs::copy(&cli_source, &target)
+            .map_err(|e| format!("Failed to copy CLI binary: {}", e))?;
+
+        Ok(target)
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    fn install_cli_binary() -> Result<std::path::PathBuf, String> {
+        Err("CLI installation is not supported on this platform".to_string())
+    }
+
+    fn find_cli_binary() -> Result<std::path::PathBuf, String> {
+        use std::path::PathBuf;
+
+        // First, try to find CLI next to the current executable
+        if let Ok(exe_path) = std::env::current_exe() {
+            let exe_dir = exe_path
+                .parent()
+                .ok_or("Failed to get executable directory")?;
+
+            // Check for CLI binary in same directory (named termy-cli)
+            #[cfg(target_os = "windows")]
+            let cli_name = "termy-cli.exe";
+            #[cfg(not(target_os = "windows"))]
+            let cli_name = "termy-cli";
+
+            let cli_path = exe_dir.join(cli_name);
+            if cli_path.exists() {
+                return Ok(cli_path);
+            }
+
+            // On macOS, check inside the app bundle
+            #[cfg(target_os = "macos")]
+            {
+                if exe_dir.ends_with("Contents/MacOS") {
+                    let bundle_cli = exe_dir.join("termy-cli");
+                    if bundle_cli.exists() {
+                        return Ok(bundle_cli);
+                    }
+                }
+            }
+        }
+
+        // Check common build output locations
+        let possible_paths = [
+            PathBuf::from("./target/release/termy-cli"),
+            PathBuf::from("./target/debug/termy-cli"),
+        ];
+
+        for path in &possible_paths {
+            if path.exists() {
+                return Ok(path.clone());
+            }
+        }
+
+        Err("CLI binary not found. Make sure to build it with: cargo build -p termy_cli".to_string())
     }
 
     pub(super) fn handle_toggle_command_palette_action(
@@ -1203,6 +1362,15 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) {
         self.execute_command_action(CommandAction::ToggleSearchRegex, true, window, cx);
+    }
+
+    pub(super) fn handle_install_cli_action(
+        &mut self,
+        _: &commands::InstallCli,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.execute_command_action(CommandAction::InstallCli, true, window, cx);
     }
 
     pub(super) fn handle_key_down(

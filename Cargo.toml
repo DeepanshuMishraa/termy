@@ -8,12 +8,13 @@ members = [
   "crates/terminal_ui",
   "crates/toast_sdk",
   "crates/search",
+  "crates/cli",
 ]
 resolver = "2"
 
 [package]
 name = "termy"
-version = "0.1.29"
+version = "0.1.30"
 edition = "2024"
 
 [package.metadata.bundle]

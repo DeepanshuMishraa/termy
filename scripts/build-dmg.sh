@@ -148,6 +148,7 @@ fi
 
 log "Building $APP_NAME v$VERSION for $ARCH ($TARGET)"
 (cd "$REPO_ROOT" && cargo build --release --target "$TARGET")
+(cd "$REPO_ROOT" && cargo build --release --target "$TARGET" -p termy_cli)
 (cd "$REPO_ROOT" && cargo bundle --release --format osx --target "$TARGET")
 
 APP_PATH=""
@@ -159,6 +160,19 @@ else
   APP_PATH="$(find "$REPO_ROOT/target" -maxdepth 5 -type d -name "$APP_NAME.app" -path "*/bundle/osx/*" | head -n1 || true)"
 fi
 [[ -n "$APP_PATH" && -d "$APP_PATH" ]] || die "Could not find built app bundle"
+
+# Copy CLI binary into app bundle
+log "Copying CLI binary into app bundle"
+CLI_BIN="$TARGET_RELEASE_DIR/termy-cli"
+if [[ ! -f "$CLI_BIN" ]]; then
+  CLI_BIN="$DEFAULT_RELEASE_DIR/termy-cli"
+fi
+if [[ -f "$CLI_BIN" ]]; then
+  cp "$CLI_BIN" "$APP_PATH/Contents/MacOS/termy-cli"
+  log "CLI binary copied to $APP_PATH/Contents/MacOS/termy-cli"
+else
+  echo "Warning: CLI binary not found, skipping CLI bundling" >&2
+fi
 
 log "Preparing DMG staging folder"
 rm -rf "$DMG_ROOT"
