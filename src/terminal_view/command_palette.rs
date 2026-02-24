@@ -529,7 +529,8 @@ impl TerminalView {
             | CommandAction::ToggleSearchCaseSensitive
             | CommandAction::ToggleSearchRegex
             | CommandAction::OpenSettings
-            | CommandAction::MinimizeWindow => {}
+            | CommandAction::MinimizeWindow
+            | CommandAction::InstallCli => {}
         }
     }
 

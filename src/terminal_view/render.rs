@@ -1419,6 +1419,7 @@ impl Render for TerminalView {
                     .on_action(cx.listener(Self::handle_search_previous_action))
                     .on_action(cx.listener(Self::handle_toggle_search_case_sensitive_action))
                     .on_action(cx.listener(Self::handle_toggle_search_regex_action))
+                    .on_action(cx.listener(Self::handle_install_cli_action))
                     .on_action(cx.listener(Self::handle_inline_backspace_action))
                     .on_action(cx.listener(Self::handle_inline_delete_action))
                     .on_action(cx.listener(Self::handle_inline_move_left_action))

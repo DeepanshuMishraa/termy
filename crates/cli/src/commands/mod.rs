@@ -1,0 +1,13 @@
+pub mod edit_config;
+pub mod help;
+pub mod list_actions;
+pub mod list_colors;
+pub mod list_fonts;
+pub mod list_keybinds;
+pub mod list_themes;
+pub mod prettify_config;
+pub mod show_config;
+pub mod tui;
+pub mod update;
+pub mod validate_config;
+pub mod version;
