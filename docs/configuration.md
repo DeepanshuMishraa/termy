@@ -113,7 +113,7 @@ Explicit payload examples:
 
 `theme`
 - Default: `termy`
-- Values: `termy`, `tokyonight`, `catppuccin`, `dracula`, `gruvbox`, `nord`, `solarized`, `onedark`, `monokai`, `material`, `palenight`, `tomorrow`, `oceanic`
+- Values: `termy`, `tokyonight`, `catppuccin`, `dracula`, `gruvbox`, `nord`, `solarized`, `onedark`, `monokai`, `material`, `palenight`, `tomorrow`, `oceanic`, `shell-decide`
 - Tip: command palette `Switch Theme` updates this value and persists it to config.
 
 `working_dir`

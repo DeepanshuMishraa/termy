@@ -1,4 +1,5 @@
 use super::*;
+use crate::config::SHELL_DECIDE_THEME_ID;
 use crate::ui::scrollbar::{self, ScrollbarPaintStyle, ScrollbarRange};
 use gpui::{point, uniform_list};
 use std::ops::Range;
@@ -126,6 +127,10 @@ impl TerminalView {
         mut theme_ids: Vec<String>,
         current_theme: &str,
     ) -> Vec<String> {
+        if !theme_ids.iter().any(|theme| theme == SHELL_DECIDE_THEME_ID) {
+            theme_ids.push(SHELL_DECIDE_THEME_ID.to_string());
+        }
+
         if !theme_ids.iter().any(|theme| theme == current_theme) {
             theme_ids.push(current_theme.to_string());
         }
@@ -967,7 +972,7 @@ mod tests {
 
         assert_eq!(
             ordered_with_missing_current,
-            vec!["tokyo-night", "dracula", "nord"]
+            vec!["tokyo-night", "dracula", "nord", "shell-decide"]
         );
     }
 

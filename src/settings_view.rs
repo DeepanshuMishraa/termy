@@ -642,6 +642,7 @@ impl SettingsWindow {
             .into_iter()
             .map(ToOwned::to_owned)
             .collect();
+        theme_ids.push("shell-decide".to_string());
 
         if !theme_ids.iter().any(|theme| theme == &self.config.theme) {
             theme_ids.push(self.config.theme.clone());
