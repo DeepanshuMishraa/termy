@@ -1,17 +1,23 @@
 use crate::colors::TerminalColors;
-use crate::config::{AppConfig, CursorStyle, TabTitleMode, set_config_value};
+use crate::config::{self, AppConfig, CursorStyle, TabTitleMode, set_config_value};
 use crate::text_input::{TextInputAlignment, TextInputElement, TextInputProvider, TextInputState};
 use gpui::{
-    AnyElement, Context, FocusHandle, Font, InteractiveElement, IntoElement, KeyDownEvent,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Render, Rgba,
-    ScrollWheelEvent, SharedString, StatefulInteractiveElement, Styled, TextAlign, Window,
-    deferred, div, prelude::FluentBuilder, px,
+    AnyElement, AsyncApp, Context, FocusHandle, Font, InteractiveElement, IntoElement,
+    KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Render,
+    Rgba, ScrollWheelEvent, SharedString, StatefulInteractiveElement, Styled, TextAlign,
+    WeakEntity, Window, deferred, div, prelude::FluentBuilder, px,
 };
+use std::collections::hash_map::DefaultHasher;
+use std::fs;
+use std::hash::{Hash, Hasher};
+use std::path::PathBuf;
+use std::time::Duration;
 
 const SIDEBAR_WIDTH: f32 = 220.0;
 const NUMERIC_INPUT_WIDTH: f32 = 220.0;
 const NUMERIC_INPUT_HEIGHT: f32 = 34.0;
 const NUMERIC_STEP_BUTTON_SIZE: f32 = 24.0;
+const SETTINGS_CONFIG_WATCH_INTERVAL_MS: u64 = 750;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum EditableField {
@@ -60,6 +66,8 @@ enum SettingsSection {
 pub struct SettingsWindow {
     active_section: SettingsSection,
     config: AppConfig,
+    config_path: Option<PathBuf>,
+    config_fingerprint: Option<u64>,
     available_font_families: Vec<String>,
     focus_handle: FocusHandle,
     active_input: Option<ActiveTextInput>,
@@ -69,18 +77,79 @@ pub struct SettingsWindow {
 impl SettingsWindow {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let config = AppConfig::load_or_create();
+        let config_path = config::ensure_config_file();
+        let config_fingerprint = config_path.as_ref().and_then(Self::config_fingerprint);
         let mut available_font_families = window.text_system().all_font_names();
         available_font_families.sort_unstable_by_key(|font| font.to_ascii_lowercase());
         available_font_families.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
         let colors = TerminalColors::from_theme(&config.theme, &config.colors);
-        Self {
+        let view = Self {
             active_section: SettingsSection::Appearance,
             config,
+            config_path,
+            config_fingerprint,
             available_font_families,
             focus_handle: cx.focus_handle(),
             active_input: None,
             colors,
+        };
+
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            loop {
+                smol::Timer::after(Duration::from_millis(SETTINGS_CONFIG_WATCH_INTERVAL_MS)).await;
+                let result = cx.update(|cx| {
+                    this.update(cx, |view, cx| {
+                        if view.reload_config_if_changed(cx) {
+                            cx.notify();
+                        }
+                    })
+                });
+                if result.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+
+        view
+    }
+
+    fn config_fingerprint(path: &PathBuf) -> Option<u64> {
+        let contents = fs::read(path).ok()?;
+        let mut hasher = DefaultHasher::new();
+        contents.hash(&mut hasher);
+        Some(hasher.finish())
+    }
+
+    fn apply_runtime_config(&mut self, config: AppConfig) -> bool {
+        self.colors = TerminalColors::from_theme(&config.theme, &config.colors);
+        self.config = config;
+        true
+    }
+
+    fn reload_config_if_changed(&mut self, _cx: &mut Context<Self>) -> bool {
+        let path = match self.config_path.clone() {
+            Some(path) => path,
+            None => {
+                self.config_path = config::ensure_config_file();
+                match self.config_path.clone() {
+                    Some(path) => path,
+                    None => return false,
+                }
+            }
+        };
+
+        let Some(fingerprint) = Self::config_fingerprint(&path) else {
+            return false;
+        };
+
+        if self.config_fingerprint == Some(fingerprint) {
+            return false;
         }
+
+        self.config_fingerprint = Some(fingerprint);
+        let config = AppConfig::load_or_create();
+        self.apply_runtime_config(config)
     }
 
     // Color helpers derived from terminal theme
