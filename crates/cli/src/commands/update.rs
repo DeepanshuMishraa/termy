@@ -41,7 +41,10 @@ enum UpdateResult {
 }
 
 fn check_for_updates() -> Result<UpdateResult, String> {
-    let url = format!("https://api.github.com/repos/{}/releases/latest", GITHUB_REPO);
+    let url = format!(
+        "https://api.github.com/repos/{}/releases/latest",
+        GITHUB_REPO
+    );
 
     let response: GithubRelease = ureq::get(&url)
         .set("User-Agent", "Termy-CLI/1.0")

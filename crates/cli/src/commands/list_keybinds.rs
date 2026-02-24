@@ -16,27 +16,95 @@ enum Platform {
 }
 
 const DEFAULT_KEYBINDS: &[DefaultKeybind] = &[
-    DefaultKeybind { trigger: "secondary-q", action: "quit", platform: Platform::All },
-    DefaultKeybind { trigger: "secondary-,", action: "open_config", platform: Platform::All },
-    DefaultKeybind { trigger: "secondary-p", action: "toggle_command_palette", platform: Platform::All },
-    DefaultKeybind { trigger: "secondary-t", action: "new_tab", platform: Platform::All },
-    DefaultKeybind { trigger: "secondary-w", action: "close_tab", platform: Platform::All },
-    DefaultKeybind { trigger: "secondary-m", action: "minimize_window", platform: Platform::MacOs },
-    DefaultKeybind { trigger: "secondary-=", action: "zoom_in", platform: Platform::All },
-    DefaultKeybind { trigger: "secondary-+", action: "zoom_in", platform: Platform::All },
-    DefaultKeybind { trigger: "secondary--", action: "zoom_out", platform: Platform::All },
-    DefaultKeybind { trigger: "secondary-0", action: "zoom_reset", platform: Platform::All },
-    DefaultKeybind { trigger: "secondary-f", action: "open_search", platform: Platform::All },
-    DefaultKeybind { trigger: "secondary-g", action: "search_next", platform: Platform::All },
-    DefaultKeybind { trigger: "secondary-shift-g", action: "search_previous", platform: Platform::All },
+    DefaultKeybind {
+        trigger: "secondary-q",
+        action: "quit",
+        platform: Platform::All,
+    },
+    DefaultKeybind {
+        trigger: "secondary-,",
+        action: "open_config",
+        platform: Platform::All,
+    },
+    DefaultKeybind {
+        trigger: "secondary-p",
+        action: "toggle_command_palette",
+        platform: Platform::All,
+    },
+    DefaultKeybind {
+        trigger: "secondary-t",
+        action: "new_tab",
+        platform: Platform::All,
+    },
+    DefaultKeybind {
+        trigger: "secondary-w",
+        action: "close_tab",
+        platform: Platform::All,
+    },
+    DefaultKeybind {
+        trigger: "secondary-m",
+        action: "minimize_window",
+        platform: Platform::MacOs,
+    },
+    DefaultKeybind {
+        trigger: "secondary-=",
+        action: "zoom_in",
+        platform: Platform::All,
+    },
+    DefaultKeybind {
+        trigger: "secondary-+",
+        action: "zoom_in",
+        platform: Platform::All,
+    },
+    DefaultKeybind {
+        trigger: "secondary--",
+        action: "zoom_out",
+        platform: Platform::All,
+    },
+    DefaultKeybind {
+        trigger: "secondary-0",
+        action: "zoom_reset",
+        platform: Platform::All,
+    },
+    DefaultKeybind {
+        trigger: "secondary-f",
+        action: "open_search",
+        platform: Platform::All,
+    },
+    DefaultKeybind {
+        trigger: "secondary-g",
+        action: "search_next",
+        platform: Platform::All,
+    },
+    DefaultKeybind {
+        trigger: "secondary-shift-g",
+        action: "search_previous",
+        platform: Platform::All,
+    },
     #[cfg(any(target_os = "macos", target_os = "windows"))]
-    DefaultKeybind { trigger: "secondary-c", action: "copy", platform: Platform::All },
+    DefaultKeybind {
+        trigger: "secondary-c",
+        action: "copy",
+        platform: Platform::All,
+    },
     #[cfg(any(target_os = "macos", target_os = "windows"))]
-    DefaultKeybind { trigger: "secondary-v", action: "paste", platform: Platform::All },
+    DefaultKeybind {
+        trigger: "secondary-v",
+        action: "paste",
+        platform: Platform::All,
+    },
     #[cfg(target_os = "linux")]
-    DefaultKeybind { trigger: "ctrl-shift-c", action: "copy", platform: Platform::Linux },
+    DefaultKeybind {
+        trigger: "ctrl-shift-c",
+        action: "copy",
+        platform: Platform::Linux,
+    },
     #[cfg(target_os = "linux")]
-    DefaultKeybind { trigger: "ctrl-shift-v", action: "paste", platform: Platform::Linux },
+    DefaultKeybind {
+        trigger: "ctrl-shift-v",
+        action: "paste",
+        platform: Platform::Linux,
+    },
 ];
 
 pub fn run() {

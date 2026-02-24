@@ -1051,8 +1051,7 @@ impl TerminalView {
         let cli_source = Self::find_cli_binary()?;
 
         // Try ~/.local/bin first (user-writable), fall back to /usr/local/bin
-        let home_bin = dirs::home_dir()
-            .map(|h| h.join(".local").join("bin").join("termy"));
+        let home_bin = dirs::home_dir().map(|h| h.join(".local").join("bin").join("termy"));
 
         let using_fallback = home_bin.is_none();
         let target = if let Some(ref local_bin) = home_bin {
@@ -1079,11 +1078,7 @@ impl TerminalView {
                             parent.display()
                         )
                     } else {
-                        format!(
-                            "Failed to create directory {}: {}",
-                            parent.display(),
-                            e
-                        )
+                        format!("Failed to create directory {}: {}", parent.display(), e)
                     }
                 })?;
             }
@@ -1102,13 +1097,8 @@ impl TerminalView {
         }
 
         // Create symlink
-        symlink(&cli_source, &target).map_err(|e| {
-            format!(
-                "Failed to create symlink at {}: {}",
-                target.display(),
-                e
-            )
-        })?;
+        symlink(&cli_source, &target)
+            .map_err(|e| format!("Failed to create symlink at {}: {}", target.display(), e))?;
 
         Ok(target)
     }
@@ -1188,7 +1178,10 @@ impl TerminalView {
             }
         }
 
-        Err("CLI binary not found. Make sure to build it with: cargo build -p termy_cli".to_string())
+        Err(
+            "CLI binary not found. Make sure to build it with: cargo build -p termy_cli"
+                .to_string(),
+        )
     }
 
     pub(super) fn handle_toggle_command_palette_action(

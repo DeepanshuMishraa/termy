@@ -1,16 +1,17 @@
-use std::io::{self, stdout};
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind},
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
+    event::{self, Event, KeyCode, KeyEventKind},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
 };
+use std::io::{self, stdout};
 
-use crate::config::{config_path, parse_keybind_lines, parse_theme_id};
 use crate::commands::list_keybinds::KeybindDirective;
+use crate::commands::validate_config;
+use crate::config::{config_path, parse_keybind_lines, parse_theme_id};
 
 #[derive(Clone, Copy, PartialEq)]
 enum MenuItem {
@@ -347,27 +348,95 @@ fn get_list_keybinds_content() -> Vec<String> {
     }
 
     let default_keybinds: &[DefaultKeybind] = &[
-        DefaultKeybind { trigger: "secondary-q", action: "quit", platform: Platform::All },
-        DefaultKeybind { trigger: "secondary-,", action: "open_config", platform: Platform::All },
-        DefaultKeybind { trigger: "secondary-p", action: "toggle_command_palette", platform: Platform::All },
-        DefaultKeybind { trigger: "secondary-t", action: "new_tab", platform: Platform::All },
-        DefaultKeybind { trigger: "secondary-w", action: "close_tab", platform: Platform::All },
-        DefaultKeybind { trigger: "secondary-m", action: "minimize_window", platform: Platform::MacOs },
-        DefaultKeybind { trigger: "secondary-=", action: "zoom_in", platform: Platform::All },
-        DefaultKeybind { trigger: "secondary-+", action: "zoom_in", platform: Platform::All },
-        DefaultKeybind { trigger: "secondary--", action: "zoom_out", platform: Platform::All },
-        DefaultKeybind { trigger: "secondary-0", action: "zoom_reset", platform: Platform::All },
-        DefaultKeybind { trigger: "secondary-f", action: "open_search", platform: Platform::All },
-        DefaultKeybind { trigger: "secondary-g", action: "search_next", platform: Platform::All },
-        DefaultKeybind { trigger: "secondary-shift-g", action: "search_previous", platform: Platform::All },
+        DefaultKeybind {
+            trigger: "secondary-q",
+            action: "quit",
+            platform: Platform::All,
+        },
+        DefaultKeybind {
+            trigger: "secondary-,",
+            action: "open_config",
+            platform: Platform::All,
+        },
+        DefaultKeybind {
+            trigger: "secondary-p",
+            action: "toggle_command_palette",
+            platform: Platform::All,
+        },
+        DefaultKeybind {
+            trigger: "secondary-t",
+            action: "new_tab",
+            platform: Platform::All,
+        },
+        DefaultKeybind {
+            trigger: "secondary-w",
+            action: "close_tab",
+            platform: Platform::All,
+        },
+        DefaultKeybind {
+            trigger: "secondary-m",
+            action: "minimize_window",
+            platform: Platform::MacOs,
+        },
+        DefaultKeybind {
+            trigger: "secondary-=",
+            action: "zoom_in",
+            platform: Platform::All,
+        },
+        DefaultKeybind {
+            trigger: "secondary-+",
+            action: "zoom_in",
+            platform: Platform::All,
+        },
+        DefaultKeybind {
+            trigger: "secondary--",
+            action: "zoom_out",
+            platform: Platform::All,
+        },
+        DefaultKeybind {
+            trigger: "secondary-0",
+            action: "zoom_reset",
+            platform: Platform::All,
+        },
+        DefaultKeybind {
+            trigger: "secondary-f",
+            action: "open_search",
+            platform: Platform::All,
+        },
+        DefaultKeybind {
+            trigger: "secondary-g",
+            action: "search_next",
+            platform: Platform::All,
+        },
+        DefaultKeybind {
+            trigger: "secondary-shift-g",
+            action: "search_previous",
+            platform: Platform::All,
+        },
         #[cfg(any(target_os = "macos", target_os = "windows"))]
-        DefaultKeybind { trigger: "secondary-c", action: "copy", platform: Platform::All },
+        DefaultKeybind {
+            trigger: "secondary-c",
+            action: "copy",
+            platform: Platform::All,
+        },
         #[cfg(any(target_os = "macos", target_os = "windows"))]
-        DefaultKeybind { trigger: "secondary-v", action: "paste", platform: Platform::All },
+        DefaultKeybind {
+            trigger: "secondary-v",
+            action: "paste",
+            platform: Platform::All,
+        },
         #[cfg(target_os = "linux")]
-        DefaultKeybind { trigger: "ctrl-shift-c", action: "copy", platform: Platform::Linux },
+        DefaultKeybind {
+            trigger: "ctrl-shift-c",
+            action: "copy",
+            platform: Platform::Linux,
+        },
         #[cfg(target_os = "linux")]
-        DefaultKeybind { trigger: "ctrl-shift-v", action: "paste", platform: Platform::Linux },
+        DefaultKeybind {
+            trigger: "ctrl-shift-v",
+            action: "paste",
+            platform: Platform::Linux,
+        },
     ];
 
     let mut keybinds: Vec<(String, String)> = Vec::new();
@@ -460,34 +529,8 @@ fn get_validate_config_content() -> Vec<String> {
 
     match std::fs::read_to_string(&path) {
         Ok(contents) => {
-            let mut errors = Vec::new();
-            let mut warnings = Vec::new();
-
-            for (line_num, line) in contents.lines().enumerate() {
-                let trimmed = line.trim();
-
-                if trimmed.is_empty() || trimmed.starts_with('#') {
-                    continue;
-                }
-
-                if !trimmed.contains('=') {
-                    errors.push(format!("Line {}: Missing '=' in '{}'", line_num + 1, trimmed));
-                    continue;
-                }
-
-                if let Some((key, _value)) = trimmed.split_once('=') {
-                    let key = key.trim();
-                    let valid_keys = [
-                        "theme", "font_family", "font_size", "term", "cursor_style",
-                        "cursor_blink", "background_opacity", "padding_x", "padding_y",
-                        "scrollback_history", "use_tabs", "keybind",
-                    ];
-
-                    if !valid_keys.contains(&key) {
-                        warnings.push(format!("Line {}: Unknown key '{}'", line_num + 1, key));
-                    }
-                }
-            }
+            let validate_config::ValidationReport { errors, warnings } =
+                validate_config::validate_contents(&contents);
 
             if errors.is_empty() && warnings.is_empty() {
                 lines.push("Configuration is valid!".to_string());
@@ -584,11 +627,7 @@ fn ui(f: &mut Frame, app: &mut App) {
         .split(f.area());
 
     // Menu
-    let items: Vec<ListItem> = app
-        .items
-        .iter()
-        .map(|i| ListItem::new(i.label()))
-        .collect();
+    let items: Vec<ListItem> = app.items.iter().map(|i| ListItem::new(i.label())).collect();
 
     let menu = List::new(items)
         .block(
@@ -616,7 +655,11 @@ fn ui(f: &mut Frame, app: &mut App) {
     };
 
     let desc_widget = Paragraph::new(description)
-        .block(Block::default().borders(Borders::ALL).title(" Description "))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Description "),
+        )
         .wrap(Wrap { trim: true });
     f.render_widget(desc_widget, content_chunks[0]);
 
@@ -630,8 +673,7 @@ fn ui(f: &mut Frame, app: &mut App) {
 
     // Help footer
     let help_text = " q/Esc: Quit | j/k or Up/Down: Navigate | PgUp/PgDn: Scroll ";
-    let help = Paragraph::new(help_text)
-        .style(Style::default().fg(Color::DarkGray));
+    let help = Paragraph::new(help_text).style(Style::default().fg(Color::DarkGray));
 
     let help_area = Rect {
         x: 0,

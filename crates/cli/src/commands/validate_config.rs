@@ -36,18 +36,50 @@ const VALID_KEYS: &[&str] = &[
 const VALID_SECTIONS: &[&str] = &["colors", "tab_title"];
 
 const VALID_ACTIONS: &[&str] = &[
-    "new_tab", "close_tab", "minimize_window", "rename_tab", "app_info",
-    "native_sdk_example", "restart_app", "open_config", "open_settings",
-    "import_colors", "switch_theme", "zoom_in", "zoom_out", "zoom_reset",
-    "open_search", "check_for_updates", "quit", "toggle_command_palette",
-    "copy", "paste", "close_search", "search_next", "search_previous",
-    "toggle_search_case_sensitive", "toggle_search_regex", "unbind", "clear",
+    "new_tab",
+    "close_tab",
+    "minimize_window",
+    "rename_tab",
+    "app_info",
+    "native_sdk_example",
+    "restart_app",
+    "open_config",
+    "open_settings",
+    "import_colors",
+    "switch_theme",
+    "zoom_in",
+    "zoom_out",
+    "zoom_reset",
+    "open_search",
+    "check_for_updates",
+    "quit",
+    "toggle_command_palette",
+    "copy",
+    "paste",
+    "close_search",
+    "search_next",
+    "search_previous",
+    "toggle_search_case_sensitive",
+    "toggle_search_regex",
+    "install_cli",
+    "unbind",
+    "clear",
 ];
 
 const VALID_THEMES: &[&str] = &[
-    "termy", "tokyo-night", "catppuccin-mocha", "dracula", "gruvbox-dark",
-    "nord", "solarized-dark", "one-dark", "monokai", "material-dark",
-    "palenight", "tomorrow-night", "oceanic-next",
+    "termy",
+    "tokyo-night",
+    "catppuccin-mocha",
+    "dracula",
+    "gruvbox-dark",
+    "nord",
+    "solarized-dark",
+    "one-dark",
+    "monokai",
+    "material-dark",
+    "palenight",
+    "tomorrow-night",
+    "oceanic-next",
 ];
 
 pub fn run() {
@@ -76,6 +108,44 @@ pub fn run() {
         }
     };
 
+    let ValidationReport { errors, warnings } = validate_contents(&contents);
+
+    // Print results
+    if errors.is_empty() && warnings.is_empty() {
+        println!("Status: Valid");
+    } else {
+        if !errors.is_empty() {
+            println!();
+            println!("Errors:");
+            for error in &errors {
+                println!("  {}", error);
+            }
+        }
+
+        if !warnings.is_empty() {
+            println!();
+            println!("Warnings:");
+            for warning in &warnings {
+                println!("  {}", warning);
+            }
+        }
+
+        println!();
+        if errors.is_empty() {
+            println!("Result: Valid (with warnings)");
+        } else {
+            println!("Result: Invalid");
+            std::process::exit(1);
+        }
+    }
+}
+
+pub struct ValidationReport {
+    pub errors: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+pub fn validate_contents(contents: &str) -> ValidationReport {
     let mut errors: Vec<String> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
     let mut in_section: Option<&str> = None;
@@ -91,11 +161,14 @@ pub fn run() {
 
         // Check for section headers
         if trimmed.starts_with('[') && trimmed.ends_with(']') {
-            let section_name = &trimmed[1..trimmed.len()-1];
+            let section_name = &trimmed[1..trimmed.len() - 1];
             if VALID_SECTIONS.contains(&section_name) {
                 in_section = Some(section_name);
             } else {
-                warnings.push(format!("Line {}: Unknown section [{}]", line_num, section_name));
+                warnings.push(format!(
+                    "Line {}: Unknown section [{}]",
+                    line_num, section_name
+                ));
                 in_section = None;
             }
             continue;
@@ -123,7 +196,9 @@ pub fn run() {
                     if !VALID_THEMES.contains(&value) {
                         warnings.push(format!(
                             "Line {}: Unknown theme '{}'. Valid themes: {}",
-                            line_num, value, VALID_THEMES.join(", ")
+                            line_num,
+                            value,
+                            VALID_THEMES.join(", ")
                         ));
                     }
                 }
@@ -154,60 +229,56 @@ pub fn run() {
                 "background_opacity" => {
                     if let Ok(v) = value.parse::<f32>() {
                         if !(0.0..=1.0).contains(&v) {
-                            errors.push(format!("Line {}: background_opacity must be between 0.0 and 1.0", line_num));
+                            errors.push(format!(
+                                "Line {}: background_opacity must be between 0.0 and 1.0",
+                                line_num
+                            ));
                         }
                     } else {
-                        errors.push(format!("Line {}: background_opacity must be a number", line_num));
+                        errors.push(format!(
+                            "Line {}: background_opacity must be a number",
+                            line_num
+                        ));
                     }
                 }
                 "cursor_style" => {
                     if !["line", "block"].contains(&value.to_lowercase().as_str()) {
-                        errors.push(format!("Line {}: cursor_style must be 'line' or 'block'", line_num));
+                        errors.push(format!(
+                            "Line {}: cursor_style must be 'line' or 'block'",
+                            line_num
+                        ));
                     }
                 }
-                "cursor_blink" | "background_blur" | "use_tabs" | "warn_on_quit_with_running_process" | "command_palette_show_keybinds" | "tab_title_shell_integration" => {
+                "cursor_blink"
+                | "background_blur"
+                | "use_tabs"
+                | "warn_on_quit_with_running_process"
+                | "command_palette_show_keybinds"
+                | "tab_title_shell_integration" => {
                     if !["true", "false"].contains(&value.to_lowercase().as_str()) {
-                        errors.push(format!("Line {}: {} must be 'true' or 'false'", line_num, key));
+                        errors.push(format!(
+                            "Line {}: {} must be 'true' or 'false'",
+                            line_num, key
+                        ));
                     }
                 }
                 "scrollback_history" | "inactive_tab_scrollback" => {
                     if value.parse::<usize>().is_err() {
-                        errors.push(format!("Line {}: {} must be a positive integer", line_num, key));
+                        errors.push(format!(
+                            "Line {}: {} must be a positive integer",
+                            line_num, key
+                        ));
                     }
                 }
                 _ => {}
             }
         } else {
-            errors.push(format!("Line {}: Invalid syntax. Expected 'key = value'", line_num));
+            errors.push(format!(
+                "Line {}: Invalid syntax. Expected 'key = value'",
+                line_num
+            ));
         }
     }
 
-    // Print results
-    if errors.is_empty() && warnings.is_empty() {
-        println!("Status: Valid");
-    } else {
-        if !errors.is_empty() {
-            println!();
-            println!("Errors:");
-            for error in &errors {
-                println!("  {}", error);
-            }
-        }
-
-        if !warnings.is_empty() {
-            println!();
-            println!("Warnings:");
-            for warning in &warnings {
-                println!("  {}", warning);
-            }
-        }
-
-        println!();
-        if errors.is_empty() {
-            println!("Result: Valid (with warnings)");
-        } else {
-            println!("Result: Invalid");
-            std::process::exit(1);
-        }
-    }
+    ValidationReport { errors, warnings }
 }

@@ -29,9 +29,7 @@ pub fn run() {
 
     // Try $EDITOR first, then platform-specific fallbacks
     if let Ok(editor) = std::env::var("EDITOR") {
-        let status = Command::new(&editor)
-            .arg(&path)
-            .status();
+        let status = Command::new(&editor).arg(&path).status();
 
         match status {
             Ok(s) if s.success() => return,
@@ -43,10 +41,7 @@ pub fn run() {
     // Platform-specific fallbacks
     #[cfg(target_os = "macos")]
     {
-        let _ = Command::new("open")
-            .arg("-t")
-            .arg(&path)
-            .status();
+        let _ = Command::new("open").arg("-t").arg(&path).status();
     }
 
     #[cfg(target_os = "linux")]
@@ -63,8 +58,6 @@ pub fn run() {
 
     #[cfg(target_os = "windows")]
     {
-        let _ = Command::new("notepad")
-            .arg(&path)
-            .status();
+        let _ = Command::new("notepad").arg(&path).status();
     }
 }
