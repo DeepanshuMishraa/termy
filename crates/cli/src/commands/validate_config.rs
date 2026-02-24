@@ -61,6 +61,7 @@ const VALID_ACTIONS: &[&str] = &[
     "search_previous",
     "toggle_search_case_sensitive",
     "toggle_search_regex",
+    "install_cli",
     "unbind",
     "clear",
 ];
@@ -107,6 +108,44 @@ pub fn run() {
         }
     };
 
+    let ValidationReport { errors, warnings } = validate_contents(&contents);
+
+    // Print results
+    if errors.is_empty() && warnings.is_empty() {
+        println!("Status: Valid");
+    } else {
+        if !errors.is_empty() {
+            println!();
+            println!("Errors:");
+            for error in &errors {
+                println!("  {}", error);
+            }
+        }
+
+        if !warnings.is_empty() {
+            println!();
+            println!("Warnings:");
+            for warning in &warnings {
+                println!("  {}", warning);
+            }
+        }
+
+        println!();
+        if errors.is_empty() {
+            println!("Result: Valid (with warnings)");
+        } else {
+            println!("Result: Invalid");
+            std::process::exit(1);
+        }
+    }
+}
+
+pub struct ValidationReport {
+    pub errors: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+pub fn validate_contents(contents: &str) -> ValidationReport {
     let mut errors: Vec<String> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
     let mut in_section: Option<&str> = None;
@@ -241,32 +280,5 @@ pub fn run() {
         }
     }
 
-    // Print results
-    if errors.is_empty() && warnings.is_empty() {
-        println!("Status: Valid");
-    } else {
-        if !errors.is_empty() {
-            println!();
-            println!("Errors:");
-            for error in &errors {
-                println!("  {}", error);
-            }
-        }
-
-        if !warnings.is_empty() {
-            println!();
-            println!("Warnings:");
-            for warning in &warnings {
-                println!("  {}", warning);
-            }
-        }
-
-        println!();
-        if errors.is_empty() {
-            println!("Result: Valid (with warnings)");
-        } else {
-            println!("Result: Invalid");
-            std::process::exit(1);
-        }
-    }
+    ValidationReport { errors, warnings }
 }

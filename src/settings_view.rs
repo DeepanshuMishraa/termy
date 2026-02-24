@@ -79,6 +79,7 @@ impl SettingsWindow {
         let config = AppConfig::load_or_create();
         let config_path = config::ensure_config_file();
         let config_fingerprint = config_path.as_ref().and_then(Self::config_fingerprint);
+        let config_change_rx = config::subscribe_config_changes();
         let mut available_font_families = window.text_system().all_font_names();
         available_font_families.sort_unstable_by_key(|font| font.to_ascii_lowercase());
         available_font_families.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
@@ -93,6 +94,23 @@ impl SettingsWindow {
             active_input: None,
             colors,
         };
+
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            while config_change_rx.recv_async().await.is_ok() {
+                while config_change_rx.try_recv().is_ok() {}
+                let result = cx.update(|cx| {
+                    this.update(cx, |view, cx| {
+                        if view.reload_config_if_changed(cx) {
+                            cx.notify();
+                        }
+                    })
+                });
+                if result.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
 
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             loop {
@@ -227,30 +245,46 @@ impl SettingsWindow {
         }
     }
 
-    fn relative_luminance(color: Rgba) -> f32 {
-        let r = Self::srgb_to_linear(color.r.clamp(0.0, 1.0));
-        let g = Self::srgb_to_linear(color.g.clamp(0.0, 1.0));
-        let b = Self::srgb_to_linear(color.b.clamp(0.0, 1.0));
+    fn composite_over(fg: Rgba, bg: Rgba) -> Rgba {
+        let fg_alpha = fg.a.clamp(0.0, 1.0);
+        Rgba {
+            r: (fg_alpha * fg.r + (1.0 - fg_alpha) * bg.r).clamp(0.0, 1.0),
+            g: (fg_alpha * fg.g + (1.0 - fg_alpha) * bg.g).clamp(0.0, 1.0),
+            b: (fg_alpha * fg.b + (1.0 - fg_alpha) * bg.b).clamp(0.0, 1.0),
+            a: 1.0,
+        }
+    }
+
+    fn relative_luminance(color: Rgba, backdrop: Rgba) -> f32 {
+        let composited = Self::composite_over(color, backdrop);
+        let r = Self::srgb_to_linear(composited.r);
+        let g = Self::srgb_to_linear(composited.g);
+        let b = Self::srgb_to_linear(composited.b);
         0.2126 * r + 0.7152 * g + 0.0722 * b
     }
 
-    fn contrast_ratio(a: Rgba, b: Rgba) -> f32 {
-        let l1 = Self::relative_luminance(a);
-        let l2 = Self::relative_luminance(b);
+    fn contrast_ratio(a: Rgba, b: Rgba, backdrop: Rgba) -> f32 {
+        let l1 = Self::relative_luminance(a, backdrop);
+        let l2 = Self::relative_luminance(b, backdrop);
         let (lighter, darker) = if l1 >= l2 { (l1, l2) } else { (l2, l1) };
         (lighter + 0.05) / (darker + 0.05)
     }
 
-    fn contrasting_text_for_fill(&self, fill: Rgba) -> Rgba {
+    fn contrasting_text_for_fill(&self, fill: Rgba, backdrop: Rgba) -> Rgba {
         let mut primary = self.text_primary();
         primary.a = 1.0;
-        let mut background = self.bg_primary();
-        background.a = 1.0;
+        let mut dark = self.bg_primary();
+        dark.a = 1.0;
+        let mut backdrop = backdrop;
+        backdrop.a = 1.0;
+        let composited_fill = Self::composite_over(fill, backdrop);
 
-        if Self::contrast_ratio(primary, fill) >= Self::contrast_ratio(background, fill) {
+        if Self::contrast_ratio(primary, composited_fill, backdrop)
+            >= Self::contrast_ratio(dark, composited_fill, backdrop)
+        {
             primary
         } else {
-            background
+            dark
         }
     }
 
@@ -546,7 +580,7 @@ impl SettingsWindow {
     }
 
     fn uses_text_input_for_field(field: EditableField) -> bool {
-        !matches!(field, EditableField::FontFamily)
+        !Self::is_numeric_field(field)
     }
 
     fn step_numeric_field(&mut self, field: EditableField, delta: i32, cx: &mut Context<Self>) {
@@ -651,6 +685,23 @@ impl SettingsWindow {
         }
         matched.extend(rest);
         matched.into_iter().take(16).collect()
+    }
+
+    fn filtered_font_suggestions(&self, query: &str) -> Vec<String> {
+        let normalized = query.trim().to_ascii_lowercase();
+        let fonts = self.ordered_font_families_for_settings();
+        let selected_font = self.config.font_family.trim().to_ascii_lowercase();
+
+        // When the dropdown first opens, the input text equals the selected font.
+        // Treat that like an empty query so users can browse the full installed list.
+        if normalized.is_empty() || normalized == selected_font {
+            return fonts;
+        }
+
+        fonts
+            .into_iter()
+            .filter(|font| font.to_ascii_lowercase().contains(&normalized))
+            .collect()
     }
 
     fn apply_theme_selection(&mut self, theme_id: &str, cx: &mut Context<Self>) {
@@ -788,7 +839,7 @@ impl SettingsWindow {
         let mut bg_off = self.colors.foreground;
         bg_off.a = 0.25;
         let track_color = if checked { accent } else { bg_off };
-        let knob_color = self.contrasting_text_for_fill(track_color);
+        let knob_color = self.contrasting_text_for_fill(track_color, self.bg_card());
 
         div()
             .id(SharedString::from(id))
@@ -842,7 +893,12 @@ impl SettingsWindow {
             Vec::new()
         };
         let font_suggestions = if is_font_field && is_active {
-            self.ordered_font_families_for_settings()
+            let query = self
+                .active_input
+                .as_ref()
+                .map(|input| input.state.text())
+                .unwrap_or("");
+            self.filtered_font_suggestions(query)
         } else {
             Vec::new()
         };
@@ -995,7 +1051,7 @@ impl SettingsWindow {
                         })),
                 )
                 .into_any_element()
-        } else if is_active && !is_font_field {
+        } else if is_active {
             let font = Font {
                 family: self.config.font_family.clone().into(),
                 ..Font::default()
@@ -1045,21 +1101,6 @@ impl SettingsWindow {
                     MouseButton::Left,
                     cx.listener(move |view, event: &MouseDownEvent, window, cx| {
                         cx.stop_propagation();
-                        if field == EditableField::FontFamily {
-                            let is_already_active = view
-                                .active_input
-                                .as_ref()
-                                .is_some_and(|input| input.field == field);
-                            if is_already_active {
-                                view.active_input = None;
-                            } else {
-                                view.begin_editing_field(field, window, cx);
-                            }
-                            view.focus_handle.focus(window, cx);
-                            cx.notify();
-                            return;
-                        }
-
                         if !view
                             .active_input
                             .as_ref()
@@ -1192,7 +1233,16 @@ impl SettingsWindow {
         match event.keystroke.key.as_str() {
             "enter" => {
                 if active_field == Some(EditableField::FontFamily) {
-                    self.cancel_active_input(cx);
+                    if let Some(first) = self
+                        .active_input
+                        .as_ref()
+                        .map(|input| self.filtered_font_suggestions(input.state.text()))
+                        .and_then(|items| items.into_iter().next())
+                    {
+                        self.apply_font_selection(&first, cx);
+                    } else {
+                        self.cancel_active_input(cx);
+                    }
                 } else {
                     self.commit_active_input(cx);
                 }
@@ -1210,6 +1260,18 @@ impl SettingsWindow {
                         .and_then(|items| items.into_iter().next())
                 {
                     self.apply_theme_selection(&first, cx);
+                }
+                if self
+                    .active_input
+                    .as_ref()
+                    .is_some_and(|input| input.field == EditableField::FontFamily)
+                    && let Some(first) = self
+                        .active_input
+                        .as_ref()
+                        .map(|input| self.filtered_font_suggestions(input.state.text()))
+                        .and_then(|items| items.into_iter().next())
+                {
+                    self.apply_font_selection(&first, cx);
                 }
             }
             "backspace" => {
@@ -1262,7 +1324,7 @@ impl SettingsWindow {
         let accent = self.accent();
         let hover_bg = self.bg_hover();
         let switch_off_bg = self.bg_input();
-        let selected_text = self.contrasting_text_for_fill(accent);
+        let selected_text = self.contrasting_text_for_fill(accent, bg_card);
 
         div()
             .flex()
@@ -1367,7 +1429,7 @@ impl SettingsWindow {
         let accent = self.accent();
         let hover_bg = self.bg_hover();
         let switch_off_bg = self.bg_input();
-        let selected_text = self.contrasting_text_for_fill(accent);
+        let selected_text = self.contrasting_text_for_fill(accent, bg_card);
 
         div()
             .flex()
@@ -1746,8 +1808,8 @@ impl SettingsWindow {
         let text_secondary = self.text_secondary();
         let accent = self.accent();
         let accent_hover = self.accent_with_alpha(0.8);
-        let button_text = self.contrasting_text_for_fill(accent);
-        let button_hover_text = self.contrasting_text_for_fill(accent_hover);
+        let button_text = self.contrasting_text_for_fill(accent, bg_card);
+        let button_hover_text = self.contrasting_text_for_fill(accent_hover, bg_card);
 
         div()
             .flex()
