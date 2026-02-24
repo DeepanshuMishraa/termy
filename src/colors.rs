@@ -41,8 +41,12 @@ impl Default for TerminalColors {
 
 impl TerminalColors {
     pub fn from_theme(theme: &str, custom: &CustomColors) -> Self {
-        let theme_colors = themes::resolve_theme(theme).unwrap_or_else(themes::termy);
-        let mut colors = Self::from_theme_colors(theme_colors);
+        let mut colors = if theme.eq_ignore_ascii_case("shell-decide") {
+            Self::default()
+        } else {
+            let theme_colors = themes::resolve_theme(theme).unwrap_or_else(themes::termy);
+            Self::from_theme_colors(theme_colors)
+        };
         colors.apply_custom(custom);
         colors
     }

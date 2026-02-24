@@ -94,6 +94,7 @@ padding_y = 8\n\
 pub type ThemeId = String;
 
 const DEFAULT_THEME_ID: &str = "termy";
+const SHELL_DECIDE_THEME_ID: &str = "shell-decide";
 
 fn parse_theme_id(value: &str) -> Option<ThemeId> {
     let value = value.trim();
@@ -106,6 +107,13 @@ fn parse_theme_id(value: &str) -> Option<ThemeId> {
     }
 
     let normalized = termy_themes::normalize_theme_id(value);
+    if matches!(
+        normalized.as_str(),
+        "shell" | "shell-decide" | "let-shell-decide"
+    ) {
+        return Some(SHELL_DECIDE_THEME_ID.to_string());
+    }
+
     if normalized.is_empty() {
         None
     } else {
@@ -1356,6 +1364,15 @@ mod tests {
         assert!(config.colors.ansi[1].is_some());
         assert!(config.colors.ansi[10].is_some());
         assert!(config.colors.ansi[2].is_none());
+    }
+
+    #[test]
+    fn shell_decide_theme_aliases_canonicalize() {
+        let config = AppConfig::from_contents("theme = shell\n");
+        assert_eq!(config.theme, "shell-decide");
+
+        let config = AppConfig::from_contents("theme = let shell decide\n");
+        assert_eq!(config.theme, "shell-decide");
     }
 
     #[test]
