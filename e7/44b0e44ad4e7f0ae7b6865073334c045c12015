@@ -1,0 +1,23 @@
+src/terminal_view/tabs/lifecycle.rs
+  s_df18b04643a3ee::t_9e8306bfb1ade6 587,594,601-613
+src/terminal_view/mod.rs
+  s_df18b04643a3ee::t_ece8378d7ef436 4557,4559-4563,4588-4596,4699,4733-4764
+  s_df18b04643a3ee::t_fc38e6f2d45a29 4794,4828-4832,4835-4856,4858-4887
+  s_df18b04643a3ee::t_cecf1b8be45e4f 4833-4834,4857
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "e744b0e44ad4e7f0ae7b6865073334c045c12015",
+  "prompts": {},
+  "sessions": {
+    "s_df18b04643a3ee": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_1ea93bf82ffeCaSaYcbm9JxGQh",
+        "model": "gpt-5.2-codex"
+      },
+      "human_author": "Deepanshu Mishra <d4deepanshu723@gmail.com>"
+    }
+  }
+}
