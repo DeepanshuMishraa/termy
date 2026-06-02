@@ -259,9 +259,9 @@ impl SettingsWindow {
         title: &'static str,
         rows: Vec<AnyElement>,
     ) -> AnyElement {
-        let divider = self.divider_color();
+        let divider = self.row_separator_color();
         let card_bg = self.bg_elevated();
-        let card_border = self.border_color();
+        let card_border = self.card_border_color();
 
         let total = rows.len();
         let mut card = div()
@@ -274,11 +274,17 @@ impl SettingsWindow {
             .border_color(card_border)
             .overflow_hidden();
         for (index, row) in rows.into_iter().enumerate() {
-            let mut wrapper = div().w_full().child(row);
+            card = card.child(div().w_full().child(row));
             if index + 1 < total {
-                wrapper = wrapper.border_b_1().border_color(divider);
+                // Inset hairline separator aligned with the row text, like the
+                // grouped lists in native macOS settings.
+                card = card.child(
+                    div()
+                        .w_full()
+                        .px(px(CARD_ROW_PADDING_X))
+                        .child(div().w_full().h(px(1.0)).bg(divider)),
+                );
             }
-            card = card.child(wrapper);
         }
 
         div()

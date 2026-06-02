@@ -115,6 +115,7 @@ pub(crate) fn open_settings_window(cx: &mut App) -> Result<(), String> {
     }
 
     let initial_window_size = size(px(1080.0), px(675.0));
+    let minimum_window_size = size(px(760.0), px(560.0));
     let bounds = Bounds::centered(None, initial_window_size, cx);
     let mut settings_config_error = None;
     let settings_load = config::load_runtime_config(
@@ -147,8 +148,8 @@ pub(crate) fn open_settings_window(cx: &mut App) -> Result<(), String> {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             titlebar,
             window_background,
-            is_resizable: false,
-            window_min_size: Some(initial_window_size),
+            is_resizable: true,
+            window_min_size: Some(minimum_window_size),
             ..Default::default()
         },
         |window, cx| cx.new(|cx| SettingsWindow::new(window, cx)),

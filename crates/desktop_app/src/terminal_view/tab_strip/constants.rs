@@ -26,6 +26,10 @@ pub(crate) const TAB_MAX_WIDTH: f32 = 180.0;
 // editor room to type. Exceeds TAB_MAX_WIDTH on purpose; clamped to the
 // available viewport width so it never overflows the strip.
 pub(crate) const TAB_RENAME_MIN_WIDTH: f32 = 260.0;
+// While renaming, the tab grows with the typed text up to this width so long
+// names stay fully visible. Bounded by the viewport so it never eats the whole
+// strip; falls back to TAB_RENAME_MIN_WIDTH growth on narrow windows.
+pub(crate) const TAB_RENAME_MAX_WIDTH: f32 = 420.0;
 pub(crate) const TAB_CLOSE_SLOT_WIDTH: f32 = 22.0;
 pub(crate) const TAB_CLOSE_HITBOX: f32 = TAB_CLOSE_SLOT_WIDTH;
 pub(crate) const TAB_CLOSE_CHIP_WIDTH: f32 = 16.0;

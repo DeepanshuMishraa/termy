@@ -73,10 +73,18 @@ impl TerminalView {
         font_family: &SharedString,
         font_family_key: &str,
     ) -> Vec<f32> {
+        let renaming_tab = self.renaming_tab;
         let mut widths = Vec::with_capacity(self.tabs.len());
         for index in 0..self.tabs.len() {
-            let title = self.tabs[index].title.clone();
-            widths.push(self.measure_tab_title_width(window, font_family, font_family_key, &title));
+            // While a tab is being renamed, measure the text in the inline
+            // editor (what's actually on screen) instead of the committed
+            // title, so the tab grows to fit as a longer name is typed.
+            let text = if renaming_tab == Some(index) {
+                self.rename_input.text().to_string()
+            } else {
+                self.tabs[index].title.clone()
+            };
+            widths.push(self.measure_tab_title_width(window, font_family, font_family_key, &text));
         }
         widths
     }

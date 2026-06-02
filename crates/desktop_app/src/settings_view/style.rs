@@ -89,6 +89,27 @@ impl SettingsWindow {
         c
     }
 
+    /// Soft outline for grouped setting cards — lighter than `border_color` so
+    /// cards read as a gentle inset surface rather than a boxed-in panel.
+    pub(super) fn card_border_color(&self) -> Rgba {
+        let mut c = self.colors.foreground;
+        c.a = self.scaled_chrome_neutral_alpha(0.14);
+        c
+    }
+
+    /// Hairline between rows inside a card. Subtler than the card outline so the
+    /// inset separators recede the way native macOS grouped lists do.
+    pub(super) fn row_separator_color(&self) -> Rgba {
+        let mut c = self.colors.foreground;
+        c.a = self.scaled_chrome_neutral_alpha(0.08);
+        c
+    }
+
+    /// Accent-tinted fill behind the selected sidebar item.
+    pub(super) fn sidebar_selection_bg(&self) -> Rgba {
+        self.accent_with_alpha(0.16)
+    }
+
     pub(super) fn bg_input(&self) -> Rgba {
         let mut c = self.colors.background;
         c.a = self.adaptive_chrome_panel_alpha(0.36);
@@ -98,12 +119,6 @@ impl SettingsWindow {
     pub(super) fn bg_hover(&self) -> Rgba {
         let mut c = self.colors.foreground;
         c.a = self.scaled_chrome_surface_alpha(0.1);
-        c
-    }
-
-    pub(super) fn bg_active(&self) -> Rgba {
-        let mut c = self.colors.foreground;
-        c.a = self.scaled_chrome_surface_alpha(0.15);
         c
     }
 

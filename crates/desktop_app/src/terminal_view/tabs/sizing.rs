@@ -395,8 +395,12 @@ impl TerminalView {
         let tab_close_visibility = self.tab_close_visibility;
         let renaming_tab = self.renaming_tab;
         // A tab being renamed expands past the normal cap so the inline editor
-        // has room, bounded by the available viewport width.
-        let rename_target_width = TAB_RENAME_MIN_WIDTH.min(viewport_width.max(TAB_MIN_WIDTH));
+        // has room. It grows with the typed text up to TAB_RENAME_MAX_WIDTH,
+        // floored at TAB_RENAME_MIN_WIDTH, and is always bounded by the viewport
+        // so it never overflows the strip.
+        let viewport_cap = viewport_width.max(TAB_MIN_WIDTH);
+        let rename_cap = TAB_RENAME_MAX_WIDTH.min(viewport_cap);
+        let rename_floor = TAB_RENAME_MIN_WIDTH.min(viewport_cap);
 
         for (index, tab) in self.tabs.iter_mut().enumerate() {
             let is_active = index == self.active_tab;
@@ -415,7 +419,17 @@ impl TerminalView {
             );
             let next_width = next_width.max(TAB_MIN_WIDTH);
             let next_width = if renaming_tab == Some(index) {
-                next_width.max(rename_target_width)
+                // Size to the editor text (no close slot is shown while
+                // renaming), then floor/cap so short names still get room and
+                // long names stay within the strip.
+                let rename_fit = Self::tab_display_width_for_text_px_without_close_with_max(
+                    tab.title_text_width,
+                    rename_cap,
+                );
+                next_width
+                    .max(rename_fit)
+                    .max(rename_floor)
+                    .min(rename_cap)
             } else {
                 next_width
             };

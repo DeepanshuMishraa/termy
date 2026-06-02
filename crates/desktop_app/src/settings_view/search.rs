@@ -959,7 +959,7 @@ impl SettingsWindow {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let is_active = self.active_section == section;
-        let active_bg = self.bg_active();
+        let active_bg = self.sidebar_selection_bg();
         let hover_bg = self.bg_hover();
         let text_primary = self.text_primary();
         let text_secondary = self.text_secondary();
@@ -970,7 +970,7 @@ impl SettingsWindow {
             .id(SharedString::from(label))
             .h(px(SIDEBAR_ITEM_HEIGHT))
             .px_2()
-            .rounded(px(SETTINGS_BUTTON_RADIUS))
+            .rounded(px(SIDEBAR_ITEM_RADIUS))
             .cursor_pointer()
             .flex()
             .items_center()

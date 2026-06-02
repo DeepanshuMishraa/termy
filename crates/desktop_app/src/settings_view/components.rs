@@ -140,10 +140,13 @@ impl SettingsWindow {
     }
 
     pub(super) fn render_group_header(&self, title: &'static str) -> impl IntoElement {
+        // Quiet, slightly inset caption above each card — mirrors the muted
+        // uppercase group labels in native macOS grouped settings.
         div()
+            .pl(px(2.0))
             .text_size(px(GROUP_TITLE_SIZE))
             .font_weight(gpui::FontWeight::SEMIBOLD)
-            .text_color(self.text_secondary())
+            .text_color(self.text_muted())
             .child(title)
     }
 
@@ -327,7 +330,7 @@ impl SettingsWindow {
     ) -> impl IntoElement {
         let accent = self.accent_with_alpha(0.95);
         let mut bg_off = self.colors.foreground;
-        bg_off.a = 0.34;
+        bg_off.a = 0.28;
         let track_color = if checked { accent } else { bg_off };
         let knob_color = self.contrasting_text_for_fill(track_color, self.bg_card());
         let knob_top = (SETTINGS_SWITCH_HEIGHT - SETTINGS_SWITCH_KNOB_SIZE) * 0.5;
