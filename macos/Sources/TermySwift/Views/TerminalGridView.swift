@@ -4,6 +4,7 @@ struct TerminalGridView: View {
     @Environment(\.displayScale) private var displayScale
 
     let frame: TerminalFrame
+    let renderPlan: TerminalRenderPlan
     let selection: TerminalSelection?
     let renderConfig: TerminalRenderConfig
     let searchMatches: [TerminalSearchMatch]
@@ -20,7 +21,6 @@ struct TerminalGridView: View {
     }
 
     private func draw(in context: inout GraphicsContext) {
-        let renderPlan = TerminalGridRenderPlan(frame: frame, renderConfig: renderConfig)
         drawBackgrounds(renderPlan.backgroundRuns, in: &context)
         drawSearch(in: &context)
         drawSelection(in: &context)
@@ -157,128 +157,4 @@ struct TerminalGridView: View {
         }
         return .custom(fontFamily, size: renderConfig.fontSize).weight(weight)
     }
-}
-
-private struct TerminalGridRenderPlan {
-    var backgroundRuns: [TerminalBackgroundRun] = []
-    var textSegments: [TerminalTextSegment] = []
-
-    init(frame: TerminalFrame, renderConfig: TerminalRenderConfig) {
-        for row in 0..<frame.rows {
-            appendRow(row, frame: frame, renderConfig: renderConfig)
-        }
-    }
-
-    private mutating func appendRow(
-        _ row: Int,
-        frame: TerminalFrame,
-        renderConfig: TerminalRenderConfig
-    ) {
-        var activeBackgroundRun: TerminalBackgroundRun?
-        var text = ""
-        var textForeground: TerminalRGBA?
-        var textBold = false
-        var textStartCol = 0
-
-        func flushBackgroundRun() {
-            guard let run = activeBackgroundRun else {
-                return
-            }
-            backgroundRuns.append(run)
-            activeBackgroundRun = nil
-        }
-
-        func flushTextSegment() {
-            guard let foreground = textForeground, !text.isEmpty else {
-                return
-            }
-            textSegments.append(TerminalTextSegment(
-                row: row,
-                startCol: textStartCol,
-                text: text,
-                foreground: foreground,
-                bold: textBold
-            ))
-            text = ""
-        }
-
-        for cell in frame.cells(inRow: row) {
-            if shouldPaintBackground(cell, renderConfig: renderConfig) {
-                let opacity = backgroundOpacity(for: cell, renderConfig: renderConfig)
-                if var run = activeBackgroundRun,
-                   run.canAppend(cell: cell, opacity: opacity) {
-                    run.cols += 1
-                    activeBackgroundRun = run
-                } else {
-                    flushBackgroundRun()
-                    activeBackgroundRun = TerminalBackgroundRun(
-                        row: row,
-                        startCol: cell.col,
-                        cols: 1,
-                        color: cell.background,
-                        opacity: opacity
-                    )
-                }
-            } else {
-                flushBackgroundRun()
-            }
-
-            guard cell.renderText else {
-                flushTextSegment()
-                textForeground = nil
-                textBold = false
-                continue
-            }
-
-            let foreground = cell.foreground
-            let bold = cell.bold
-            if textForeground != foreground || textBold != bold {
-                flushTextSegment()
-                textForeground = foreground
-                textBold = bold
-                textStartCol = cell.col
-            }
-            text.append(cell.character)
-        }
-
-        flushBackgroundRun()
-        flushTextSegment()
-    }
-
-    private func shouldPaintBackground(
-        _ cell: TerminalCell,
-        renderConfig: TerminalRenderConfig
-    ) -> Bool {
-        !cell.usesTerminalDefaultBackground || renderConfig.backgroundOpacityCells
-    }
-
-    private func backgroundOpacity(
-        for cell: TerminalCell,
-        renderConfig: TerminalRenderConfig
-    ) -> Double {
-        cell.usesTerminalDefaultBackground ? renderConfig.backgroundOpacity : 1.0
-    }
-}
-
-private struct TerminalBackgroundRun {
-    var row: Int
-    var startCol: Int
-    var cols: Int
-    var color: TerminalRGBA
-    var opacity: Double
-
-    func canAppend(cell: TerminalCell, opacity: Double) -> Bool {
-        cell.row == row
-            && cell.col == startCol + cols
-            && cell.background == color
-            && opacity == self.opacity
-    }
-}
-
-private struct TerminalTextSegment {
-    var row: Int
-    var startCol: Int
-    var text: String
-    var foreground: TerminalRGBA
-    var bold: Bool
 }

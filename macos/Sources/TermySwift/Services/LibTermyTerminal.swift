@@ -219,7 +219,11 @@ final class LibTermyTerminal {
             .compactMap(Self.event(from:))
     }
 
-    func takeDamage() throws -> Bool {
+    /// Polls the core for what changed since the last call. The FFI reports a
+    /// `kind` (0 = none, 1 = full, 2 = partial) plus a span list for partial
+    /// damage; we surface all of it so the render-plan cache can rebuild only the
+    /// rows that actually changed.
+    func takeDamage() throws -> TerminalDamage {
         let handle = try terminalHandle()
 
         var damage = TermyFfiDamage()
@@ -227,9 +231,27 @@ final class LibTermyTerminal {
             "termy_terminal_take_damage",
             termy_terminal_take_damage(handle, &damage)
         )
-        let hasDamage = damage.kind != 0 || damage.spans_len > 0
-        _ = termy_damage_free(&damage)
-        return hasDamage
+        defer { _ = termy_damage_free(&damage) }
+
+        switch damage.kind {
+        case 1:
+            return .full
+        case 2:
+            guard let spansPtr = damage.spans_ptr, damage.spans_len > 0 else {
+                return .none
+            }
+            let spans = UnsafeBufferPointer(start: spansPtr, count: damage.spans_len)
+                .map {
+                    TerminalDirtySpan(
+                        row: Int($0.row),
+                        leftCol: Int($0.left_col),
+                        rightCol: Int($0.right_col)
+                    )
+                }
+            return spans.isEmpty ? .none : .partial(spans)
+        default:
+            return .none
+        }
     }
 
     func snapshot() throws -> TerminalFrame {

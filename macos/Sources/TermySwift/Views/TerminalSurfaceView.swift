@@ -25,6 +25,7 @@ struct TerminalSurfaceView: View {
             ZStack(alignment: .topLeading) {
                 TerminalGridView(
                     frame: terminal.frame,
+                    renderPlan: terminal.renderPlan,
                     selection: terminal.selection,
                     renderConfig: terminal.renderConfig,
                     searchMatches: terminal.searchMatches,

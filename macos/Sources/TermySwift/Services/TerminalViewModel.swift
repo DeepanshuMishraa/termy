@@ -15,7 +15,16 @@ final class TerminalViewModel: ObservableObject {
     @Published private(set) var activeSearchMatchIndex = 0
     @Published private(set) var hoveredLink: TerminalFrameLink?
     @Published private(set) var debugMetrics = TerminalDebugMetrics.empty
+    /// Bumped whenever the cached render plan changes, so the grid view redraws.
+    /// The plan itself lives in `renderPlanCache` (not `@Published`) to avoid
+    /// diffing large arrays on every frame.
+    @Published private(set) var renderRevision = 0
     @Published var selection: TerminalSelection?
+
+    /// The flattened paint instructions for the current frame, rebuilt
+    /// incrementally from damage in `refresh()`.
+    var renderPlan: TerminalRenderPlan { renderPlanCache.plan }
+    private let renderPlanCache = TerminalRenderPlanCache()
 
     private var terminal: LibTermyTerminal?
     private var timer: Timer?
@@ -36,6 +45,8 @@ final class TerminalViewModel: ObservableObject {
     private var lastSearchRefreshAt: Date?
     private var lastAutoCopiedSelectionText: String?
     private var renderedFrameCount = 0
+    private var fullRebuildCount = 0
+    private var partialRebuildCount = 0
     private var lastDebugSample = ProcessUsageSample.capture()
 
     init(
@@ -384,7 +395,8 @@ final class TerminalViewModel: ObservableObject {
             let events = try terminal?.drainEvents() ?? []
             handle(events)
             let hasEvents = !events.isEmpty
-            let hasDamage = try terminal?.takeDamage() ?? false
+            let damage = try terminal?.takeDamage() ?? .none
+            let hasDamage = damage.hasChanges
             let isStartupRefresh = shouldForceStartupRefresh()
 
             if hasEvents || hasDamage {
@@ -401,6 +413,17 @@ final class TerminalViewModel: ObservableObject {
             if let nextFrame = try terminal?.snapshot() {
                 frame = nextFrame
                 errorMessage = nil
+                // Partial damage rebuilds only the changed rows; a forced refresh
+                // (resize/startup) or a snapshot driven by non-cell events rebuilds
+                // the whole plan to stay correct.
+                let effectiveDamage: TerminalDamage =
+                    (force || isStartupRefresh || !hasDamage) ? .full : damage
+                renderPlanCache.update(
+                    frame: nextFrame,
+                    renderConfig: renderConfig,
+                    damage: effectiveDamage
+                )
+                renderRevision &+= 1
                 updateDebugMetrics(renderedFrame: true)
                 refreshSearchMatches(resetActive: false, revealActive: false, force: false)
             } else {
@@ -444,6 +467,11 @@ final class TerminalViewModel: ObservableObject {
     private func updateDebugMetrics(renderedFrame: Bool) {
         if renderedFrame {
             renderedFrameCount += 1
+            if renderPlanCache.stats.wasFullRebuild {
+                fullRebuildCount += 1
+            } else {
+                partialRebuildCount += 1
+            }
         }
 
         let nextSample = ProcessUsageSample.capture()
@@ -457,9 +485,13 @@ final class TerminalViewModel: ObservableObject {
         debugMetrics = TerminalDebugMetrics(
             framesPerSecond: fps,
             cpuPercent: min(999, (cpuDelta / elapsed) * 100),
-            memoryMegabytes: nextSample.memoryMegabytes
+            memoryMegabytes: nextSample.memoryMegabytes,
+            fullRebuildsPerSecond: Double(fullRebuildCount) / elapsed,
+            partialRebuildsPerSecond: Double(partialRebuildCount) / elapsed
         )
         renderedFrameCount = 0
+        fullRebuildCount = 0
+        partialRebuildCount = 0
         lastDebugSample = nextSample
     }
 
@@ -600,11 +632,17 @@ struct TerminalDebugMetrics: Equatable {
     var framesPerSecond: Double
     var cpuPercent: Double
     var memoryMegabytes: Double
+    /// Frames in the last sample window that rebuilt the entire render plan.
+    var fullRebuildsPerSecond: Double
+    /// Frames in the last sample window that rebuilt only the damaged rows.
+    var partialRebuildsPerSecond: Double
 
     static let empty = TerminalDebugMetrics(
         framesPerSecond: 0,
         cpuPercent: 0,
-        memoryMegabytes: 0
+        memoryMegabytes: 0,
+        fullRebuildsPerSecond: 0,
+        partialRebuildsPerSecond: 0
     )
 }
 
