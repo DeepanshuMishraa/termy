@@ -35,8 +35,6 @@ rfd = "0.15"
 # Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
-toml = "0.8"
-plist = "1.7"
 bincode = "1.3"
 url = "2.5"
 

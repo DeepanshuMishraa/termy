@@ -15,7 +15,6 @@ mod macos_thermal_observer;
 #[cfg(target_os = "macos")]
 mod macos_titlebar_drag;
 mod menus;
-mod onboarding;
 mod settings_view;
 mod startup;
 mod terminal_view;
@@ -489,8 +488,6 @@ fn main() {
             }
         });
 
-        let was_first_run = !onboarding::config_file_exists();
-
         let mut startup_config_error = None;
         let startup_load =
             config::load_runtime_config(&mut startup_config_error, "Failed to load config");
@@ -499,7 +496,6 @@ fn main() {
             app_config.working_dir = Some(working_dir);
         }
         app_icon::apply_from_config(&app_config);
-        let show_onboarding = onboarding::should_show_onboarding(was_first_run, &app_config);
         if let Err(blocker) = preflight_tmux_runtime(&app_config) {
             blocker.present_and_exit();
         }
@@ -512,18 +508,7 @@ fn main() {
         keybindings::install_keybindings(cx, &app_config, tmux_runtime_active);
         let startup_config = app_config;
 
-        if show_onboarding {
-            match onboarding::open_onboarding_window(cx) {
-                Ok(()) => {}
-                Err(error) => {
-                    log::error!("Failed to open onboarding window: {error}");
-                    termy_toast::error(error);
-                    open_main_window(cx, startup_config).unwrap();
-                }
-            }
-        } else {
-            open_main_window(cx, startup_config).unwrap();
-        }
+        open_main_window(cx, startup_config).unwrap();
     });
 }
 
