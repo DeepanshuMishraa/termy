@@ -87,13 +87,37 @@ struct TerminalGridView: View {
         }
         let fill = GraphicsContext.Shading.color(Color.accentColor.opacity(0.35))
         for range in ranges {
+            // Trim the highlight to the row's actual content so the selection
+            // hugs the text instead of filling blank trailing cells and empty
+            // rows full-width (which reads as big background bars on a wide
+            // window). Copy semantics are unaffected — selectedText() trims
+            // independently.
+            let endCol = min(range.endCol, lastContentColumn(inRow: range.row))
+            guard endCol >= range.startCol else {
+                continue
+            }
             let rect = pixelAlignedCellRect(
                 col: range.startCol,
                 row: range.row,
-                cols: range.endCol - range.startCol + 1
+                cols: endCol - range.startCol + 1
             )
             context.fill(Path(rect), with: fill)
         }
+    }
+
+    /// The last column on `row` that holds a visible (non-blank) character, or
+    /// -1 if the row is blank. Used to clamp the selection highlight to real
+    /// text. Keyed on the character rather than the background flags so trailing
+    /// empty cells never highlight regardless of how the core reports them.
+    private func lastContentColumn(inRow row: Int) -> Int {
+        var last = -1
+        for cell in frame.cells(inRow: row) {
+            let scalar = cell.character.unicodeScalars.first?.value ?? 0
+            if scalar != 0, !cell.character.isWhitespace {
+                last = cell.col
+            }
+        }
+        return last
     }
 
     private func drawSearch(in context: inout GraphicsContext) {

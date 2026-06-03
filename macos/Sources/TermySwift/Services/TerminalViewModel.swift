@@ -33,6 +33,10 @@ final class TerminalViewModel: ObservableObject {
     private static let idleCadenceThreshold: TimeInterval = 0.4
     private static let liveSearchRefreshInterval: TimeInterval = 0.15
     private var lastResize: TerminalResize?
+    private var pendingResizeRefresh: Task<Void, Never>?
+    private var lastResizeRefreshAt: Date?
+    private var isSuspended = false
+    private static let resizeRefreshInterval: TimeInterval = 1.0 / 60.0
     private var settingsObserver: NSObjectProtocol?
     private var appearanceObserver: NSObjectProtocol?
     private var startupRefreshUntil: Date?
@@ -141,9 +145,38 @@ final class TerminalViewModel: ObservableObject {
         startRefreshTimer(.idle)
     }
 
+    /// Pauses refresh polling without tearing down the PTY, so the terminal core
+    /// keeps running and buffers output while the hosting tab/window is occluded.
+    /// This stops occluded background tabs from competing for the main run loop
+    /// (e.g. while a divider is being dragged in the visible window).
+    func suspendRefresh() {
+        guard terminal != nil, !isSuspended else {
+            return
+        }
+        isSuspended = true
+        timer?.invalidate()
+        timer = nil
+        pendingResizeRefresh?.cancel()
+        pendingResizeRefresh = nil
+    }
+
+    /// Resumes polling when the tab/window becomes visible again and forces one
+    /// refresh to catch up on output that accumulated while suspended.
+    func resumeRefresh() {
+        guard terminal != nil, isSuspended else {
+            return
+        }
+        isSuspended = false
+        startRefreshTimer(.active)
+        refresh(force: true)
+    }
+
     func stop() {
         timer?.invalidate()
         timer = nil
+        pendingResizeRefresh?.cancel()
+        pendingResizeRefresh = nil
+        isSuspended = false
         if let settingsObserver {
             NotificationCenter.default.removeObserver(settingsObserver)
             self.settingsObserver = nil
@@ -378,16 +411,49 @@ final class TerminalViewModel: ObservableObject {
         lastResize = resize
 
         do {
+            // The FFI resize is cheap and keeps the PTY winsize correct, so run
+            // it every step. The expensive forced refresh (full snapshot + plan
+            // rebuild + Canvas repaint) is throttled below so a continuous drag
+            // — e.g. dragging a split divider, which crosses a cell boundary
+            // every few pixels — does not block the main run loop on every step.
             try terminal?.resize(
                 cols: resize.cols,
                 rows: resize.rows,
                 cellWidth: resize.cellWidth,
                 cellHeight: resize.cellHeight
             )
-            refresh(force: true)
+            scheduleResizeRefresh()
         } catch {
             report(error)
         }
+    }
+
+    /// Coalesces the forced refresh during a continuous resize. Runs immediately
+    /// when idle, then at most once per `resizeRefreshInterval`, always with a
+    /// trailing refresh so the final drag size is rendered. `lastResize` already
+    /// captured the latest dimensions synchronously, so the trailing snapshot
+    /// reflects the end state.
+    private func scheduleResizeRefresh() {
+        let now = Date()
+        if let last = lastResizeRefreshAt,
+           now.timeIntervalSince(last) < Self.resizeRefreshInterval {
+            guard pendingResizeRefresh == nil else {
+                return
+            }
+            let delay = Self.resizeRefreshInterval - now.timeIntervalSince(last)
+            pendingResizeRefresh = Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                guard let self, !Task.isCancelled else {
+                    return
+                }
+                self.pendingResizeRefresh = nil
+                self.lastResizeRefreshAt = Date()
+                self.refresh(force: true)
+            }
+            return
+        }
+        lastResizeRefreshAt = now
+        refresh(force: true)
     }
 
     private func refresh(force: Bool = false) {

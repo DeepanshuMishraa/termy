@@ -320,6 +320,18 @@ final class TerminalWorkspaceStore: ObservableObject {
         isCommandPaletteVisible ? hideCommandPalette() : showCommandPalette()
     }
 
+    /// Pauses refresh polling for every pane in this workspace (called when the
+    /// hosting window/tab is occluded) so background tabs stop consuming the
+    /// shared main run loop.
+    func suspendRefresh() {
+        leaves().forEach { $0.terminal.suspendRefresh() }
+    }
+
+    /// Resumes polling for every pane when the window/tab becomes visible.
+    func resumeRefresh() {
+        leaves().forEach { $0.terminal.resumeRefresh() }
+    }
+
     private func pane(with id: UUID) -> TerminalPane? {
         leaves().first { $0.id == id }
     }

@@ -833,6 +833,22 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
         postTabsChanged()
     }
 
+    /// Suspend refresh polling for a window's terminals while it is fully
+    /// occluded (e.g. a background native tab), and resume when it becomes
+    /// visible again. Keeps occluded tabs from competing for the main run loop.
+    func windowDidChangeOcclusionState(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow,
+              let store = TerminalCommandRouter.shared.store(forWindow: window)
+        else {
+            return
+        }
+        if window.occlusionState.contains(.visible) {
+            store.resumeRefresh()
+        } else {
+            store.suspendRefresh()
+        }
+    }
+
     private func makeWindow(startupTask: TermyTaskConfiguration? = nil) -> NSWindow {
         let windowSize = TermyConfigurationStore.shared.configuration.windowSize
         let window = NSWindow(

@@ -44,6 +44,12 @@ final class TerminalCommandRouter {
         storesByWindow.removeValue(forKey: ObjectIdentifier(window))
     }
 
+    /// The store hosted by a specific window, with no active-store fallback.
+    /// Used to suspend/resume a window's panes on occlusion changes.
+    func store(forWindow window: NSWindow) -> TerminalWorkspaceStore? {
+        storesByWindow[ObjectIdentifier(window)]?.store
+    }
+
     func closeFocusedPaneIfSplit(for event: NSEvent? = nil) -> Bool {
         store(for: event?.window ?? NSApp.keyWindow ?? NSApp.mainWindow)?
             .closeFocusedPaneIfSplit() ?? false
