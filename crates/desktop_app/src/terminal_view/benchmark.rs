@@ -8,8 +8,7 @@ use std::{
 };
 use sysinfo::{ProcessesToUpdate, System, get_current_pid};
 use termy_terminal_ui::{
-    terminal_ui_monotonic_now_ns, terminal_ui_render_metrics_reset,
-    terminal_ui_render_metrics_snapshot,
+    monotonic_now_ns, terminal_ui_render_metrics_reset, terminal_ui_render_metrics_snapshot,
 };
 
 pub(super) const BENCHMARK_SAMPLE_INTERVAL: Duration = Duration::from_millis(500);
@@ -157,7 +156,7 @@ impl BenchmarkSession {
 
         let terminal_ui = terminal_ui_render_metrics_snapshot();
         self.frame_events.push(BenchmarkFrameEvent {
-            monotonic_ns: terminal_ui_monotonic_now_ns(),
+            monotonic_ns: monotonic_now_ns(),
             elapsed_ms: duration_millis(now.saturating_duration_since(self.start_at)),
             total_frames: self.total_frames,
             terminal_redraws: self.counters.terminal_redraws,

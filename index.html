@@ -48,13 +48,11 @@
   </head>
 
   <body class="bg-paper text-ink antialiased selection:bg-accent/20">
-    <!-- soft ambient backdrop -->
     <div
       class="pointer-events-none fixed inset-0 -z-10 bg-[radial-gradient(60rem_40rem_at_70%_-10%,#e9f6ff_0%,transparent_60%)]"
     ></div>
 
     <div class="mx-auto w-full max-w-5xl px-5 sm:px-8">
-      <!-- Header -->
       <header class="flex items-center justify-between py-5">
         <a href="#" class="flex items-center gap-2.5" aria-label="Termy home">
           <img src="./assets/termy-mascot-icon.svg" alt="" class="size-8" />
@@ -83,7 +81,6 @@
         </nav>
       </header>
 
-      <!-- Hero -->
       <section class="pt-12 pb-16 text-center sm:pt-20 sm:pb-24">
         <a
           href="https://github.com/termy-org/termy"
@@ -120,7 +117,6 @@
           </a>
         </div>
 
-        <!-- Terminal window mockup -->
         <div class="relative mx-auto mt-16 max-w-3xl text-left">
           <div
             class="absolute -inset-x-6 -top-4 bottom-0 -z-10 rounded-[2.5rem] bg-[radial-gradient(40rem_20rem_at_50%_0%,#dcefff_0%,transparent_70%)] blur-2xl"
@@ -128,14 +124,12 @@
           <div
             class="overflow-hidden rounded-xl border border-shell-line/60 bg-shell shadow-[0_30px_80px_-20px_rgba(27,56,80,0.45)] ring-1 ring-black/5"
           >
-            <!-- title bar -->
             <div class="flex items-center gap-4 border-b border-shell-line/70 bg-shell px-4 py-3">
               <div class="flex items-center gap-2">
                 <span class="size-3 rounded-full bg-[#ff5f57]"></span>
                 <span class="size-3 rounded-full bg-[#febc2e]"></span>
                 <span class="size-3 rounded-full bg-[#28c840]"></span>
               </div>
-              <!-- tabs -->
               <div class="flex items-end gap-1 text-xs font-medium">
                 <span class="rounded-md bg-shell-line/80 px-3 py-1 font-mono text-slate-100">main</span>
                 <span class="rounded-md px-3 py-1 font-mono text-slate-400">server</span>
@@ -143,9 +137,7 @@
               </div>
             </div>
 
-            <!-- terminal body -->
             <div class="grid grid-cols-1 font-mono text-[13px] leading-relaxed sm:grid-cols-[1.5fr_1fr]">
-              <!-- left pane -->
               <div class="space-y-1.5 p-5 sm:border-r sm:border-shell-line/50">
                 <p>
                   <span class="text-cyan">~/dev/termy</span>
@@ -168,7 +160,6 @@
                   <span class="cursor ml-1 inline-block h-4 w-[7px] translate-y-0.5 bg-slate-200"></span>
                 </p>
               </div>
-              <!-- right pane (split) -->
               <div class="hidden space-y-1.5 bg-shell/60 p-5 sm:block">
                 <p class="text-slate-500"># split pane · tmux</p>
                 <p><span class="text-prompt">▮</span> <span class="text-slate-300">top — 4 procs</span></p>
@@ -183,7 +174,6 @@
         </div>
       </section>
 
-      <!-- Features -->
       <section class="border-t border-line py-16 sm:py-20">
         <div class="grid gap-px overflow-hidden rounded-xl border border-line bg-line sm:grid-cols-2 lg:grid-cols-3">
           <article class="bg-paper p-6">

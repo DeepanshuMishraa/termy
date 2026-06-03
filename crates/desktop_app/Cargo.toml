@@ -20,9 +20,7 @@ gpui = { workspace = true }
 alacritty_terminal = { workspace = true }
 
 # Async/concurrency
-futures = "0.3"
 flume = { workspace = true }
-parking_lot = "0.12"
 smol = "2.0"
 anyhow = { workspace = true }
 dirs = { workspace = true }

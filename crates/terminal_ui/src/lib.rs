@@ -2,7 +2,6 @@ mod grid;
 mod keyboard;
 mod links;
 mod locale;
-mod monotonic_time;
 mod mouse_protocol;
 mod osc_intercept;
 mod pane_terminal;
@@ -21,7 +20,6 @@ pub use grid::{
 };
 pub use keyboard::{TerminalKeyEventKind, TerminalKeyboardMode, keystroke_to_input};
 pub use links::{DetectedLink, classify_link_token, find_link_in_line};
-pub use monotonic_time::terminal_ui_monotonic_now_ns;
 pub use mouse_protocol::{
     TerminalMouseButton, TerminalMouseEventKind, TerminalMouseMode, TerminalMouseModifiers,
     TerminalMousePosition, encode_mouse_report,
@@ -41,6 +39,7 @@ pub use runtime::{
     resolve_working_directory_path,
 };
 pub use shell_integration::{CommandLifecycle, CommandPhase, ProgressState};
+pub use termy_core::monotonic_now_ns;
 pub use tmux::{
     TmuxClient, TmuxLaunchTarget, TmuxNotification, TmuxPaneState, TmuxRuntimeConfig,
     TmuxSessionSummary, TmuxShutdownMode, TmuxSnapshot, TmuxSocketTarget, TmuxWindowState,

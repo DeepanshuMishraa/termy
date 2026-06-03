@@ -130,18 +130,6 @@ private extension SettingsSectionModel {
             || !(colors?.isEmpty ?? true)
             || keybinds != nil
     }
-
-    var supportedSettingCount: Int {
-        if let colors {
-            return colors.count
-        }
-        if keybinds != nil {
-            return 1
-        }
-        return groups?.reduce(0) { count, group in
-            count + group.settings.count
-        } ?? 0
-    }
 }
 
 // MARK: - Generic root setting row
@@ -177,10 +165,25 @@ private struct ChoiceSettingRow: View {
     @ObservedObject var store: SettingsStore
 
     var body: some View {
-        Picker(selection: store.enumBinding(setting.key)) {
-            ForEach(setting.choices ?? []) { choice in
-                Text(choice.label).tag(choice.value)
+        SettingLabeledContent(setting: setting) {
+            Picker(selection: store.enumBinding(setting.key)) {
+                ForEach(setting.choices ?? []) { choice in
+                    Text(choice.label).tag(choice.value)
+                }
+            } label: {
+                EmptyView()
             }
+        }
+    }
+}
+
+private struct SettingLabeledContent<Content: View>: View {
+    let setting: Setting
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        LabeledContent {
+            content
         } label: {
             SettingLabelView(setting: setting)
         }
@@ -217,7 +220,7 @@ private struct NumericSettingRow: View {
 
     var body: some View {
         if let range = Self.sliderRange(for: setting.key) {
-            LabeledContent {
+            SettingLabeledContent(setting: setting) {
                 HStack(spacing: 10) {
                     Slider(
                         value: Binding(
@@ -233,8 +236,6 @@ private struct NumericSettingRow: View {
                         .foregroundStyle(.secondary)
                         .frame(width: 48, alignment: .trailing)
                 }
-            } label: {
-                SettingLabelView(setting: setting)
             }
         } else {
             CommittingTextFieldRow(setting: setting, store: store, maxWidth: 120)
@@ -274,7 +275,7 @@ private struct CommittingTextFieldRow: View {
     @FocusState private var focused: Bool
 
     var body: some View {
-        LabeledContent {
+        SettingLabeledContent(setting: setting) {
             TextField(setting.title, text: $text)
                 .textFieldStyle(.roundedBorder)
                 .frame(maxWidth: maxWidth)
@@ -285,8 +286,6 @@ private struct CommittingTextFieldRow: View {
                         commit()
                     }
                 }
-        } label: {
-            SettingLabelView(setting: setting)
         }
         .onAppear {
             text = store.value(for: setting.key)

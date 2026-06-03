@@ -13,7 +13,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-use termy_terminal_ui::terminal_ui_monotonic_now_ns;
+use termy_terminal_ui::monotonic_now_ns;
 
 const DEFAULT_DURATION_SECS: u64 = 13;
 // Give launched apps enough room to finish the benchmark command, flush metrics,
@@ -775,7 +775,7 @@ impl BenchmarkMarkerWriter {
         let marker = MarkerEvent {
             kind: kind.to_string(),
             seq,
-            monotonic_ns: terminal_ui_monotonic_now_ns(),
+            monotonic_ns: monotonic_now_ns(),
         };
         serde_json::to_writer(&mut *writer, &marker)
             .context("failed to serialize benchmark marker")?;
@@ -1185,7 +1185,7 @@ fn create_ghostty_launch_artifacts(
     let script_path = env::temp_dir().join(format!(
         "termy-ghostty-benchmark-{}-{}.sh",
         scenario.as_str(),
-        terminal_ui_monotonic_now_ns()
+        monotonic_now_ns()
     ));
     let script_contents = format!(
         "#!/bin/sh\nexec {} benchmark-driver --scenario {} --duration-secs {}\n",

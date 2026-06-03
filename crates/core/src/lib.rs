@@ -31,7 +31,7 @@ pub use links::{DetectedLink, classify_link_token, find_link_in_line};
 pub use locale::{
     DEFAULT_UTF8_LOCALE, Utf8LocaleOverridePlan, preferred_utf8_locale, utf8_locale_override_plan,
 };
-pub use monotonic_time::terminal_ui_monotonic_now_ns;
+pub use monotonic_time::monotonic_now_ns;
 pub use mouse_protocol::{
     TerminalMouseButton, TerminalMouseEventKind, TerminalMouseMode, TerminalMouseModifiers,
     TerminalMousePosition, encode_mouse_report,

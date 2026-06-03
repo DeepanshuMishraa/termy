@@ -45,13 +45,12 @@ require_cmd() {
   command -v "$1" >/dev/null 2>&1 || fail "'$1' is required"
 }
 
-require_cmd rg
 require_cmd awk
 
 echo "==> Checking native bundle identifiers"
-if rg -n 'com\.example|PRODUCT_BUNDLE_IDENTIFIER *= *com\.example' \
+if grep -R -n -E 'com\.example|PRODUCT_BUNDLE_IDENTIFIER *= *com\.example' \
   "$MACOS_DIR/Sources" "$MACOS_DIR/script" "$MACOS_DIR/scripts" >/dev/null; then
-  rg -n 'com\.example|PRODUCT_BUNDLE_IDENTIFIER *= *com\.example' \
+  grep -R -n -E 'com\.example|PRODUCT_BUNDLE_IDENTIFIER *= *com\.example' \
     "$MACOS_DIR/Sources" "$MACOS_DIR/script" "$MACOS_DIR/scripts" >&2
   fail "placeholder bundle identifier found in native macOS sources or scripts"
 fi
@@ -70,7 +69,7 @@ require_pattern() {
   local pattern="$1"
   local path="$2"
   local message="$3"
-  if ! rg -n -- "$pattern" "$path" >/dev/null; then
+  if ! grep -n -E -- "$pattern" "$path" >/dev/null; then
     fail "$message"
   fi
 }
@@ -96,7 +95,7 @@ if [[ -n "$APP_PATH" ]]; then
   [[ "$plist_bundle_id" == "$source_bundle_id" ]] || fail "staged bundle ID ($plist_bundle_id) differs from source ($source_bundle_id)"
 
   require_cmd otool
-  if ! otool -L "$app_binary" | rg -q '@rpath/libtermy_ffi\.dylib'; then
+  if ! otool -L "$app_binary" | grep -q -E '@rpath/libtermy_ffi\.dylib'; then
     otool -L "$app_binary" >&2
     fail "app binary must link bundled libtermy_ffi via @rpath"
   fi

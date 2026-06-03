@@ -10,7 +10,6 @@ use crate::config::{
 use crate::keybindings;
 use crate::ui::scrollbar::{ScrollbarVisibilityController, ScrollbarVisibilityMode};
 use alacritty_terminal::term::cell::Flags;
-#[cfg(target_os = "macos")]
 use flume::{Sender, bounded};
 use gpui::AppContext;
 use gpui::{

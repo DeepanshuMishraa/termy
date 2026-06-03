@@ -26,6 +26,7 @@ pub enum TermyFfiStatus {
     ConfigLoadFailed = 4,
     UnknownKey = 5,
     WriteFailed = 6,
+    SerializeFailed = 7,
 }
 
 #[repr(C)]
@@ -963,7 +964,7 @@ pub unsafe extern "C" fn termy_config_tasks_json(
     }
 
     let tasks = unsafe { &(*config).loaded.app_config.tasks };
-    let json = serde_json::to_string(
+    let json = match serde_json::to_string(
         &tasks
             .iter()
             .map(|task| {
@@ -975,8 +976,10 @@ pub unsafe extern "C" fn termy_config_tasks_json(
                 })
             })
             .collect::<Vec<_>>(),
-    )
-    .unwrap_or_else(|_| "[]".to_string());
+    ) {
+        Ok(json) => json,
+        Err(_) => return TermyFfiStatus::SerializeFailed,
+    };
 
     unsafe {
         *out_json = ffi_bytes_from_string(json);
@@ -1007,7 +1010,7 @@ pub unsafe extern "C" fn termy_config_keybinds_json(
         ),
         &directives,
     );
-    let json = serde_json::to_string(
+    let json = match serde_json::to_string(
         &resolved
             .iter()
             .map(|keybind| {
@@ -1017,8 +1020,10 @@ pub unsafe extern "C" fn termy_config_keybinds_json(
                 })
             })
             .collect::<Vec<_>>(),
-    )
-    .unwrap_or_else(|_| "[]".to_string());
+    ) {
+        Ok(json) => json,
+        Err(_) => return TermyFfiStatus::SerializeFailed,
+    };
 
     unsafe {
         *out_json = ffi_bytes_from_string(json);

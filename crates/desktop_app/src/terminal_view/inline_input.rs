@@ -786,7 +786,6 @@ impl IntoElement for InlineInputElement {
                     ));
                 }
 
-                // Determine cursor row and column within that row
                 let cursor_utf8_early = cursor_offset.min(text.len());
                 let cursor_row = line_start_bytes
                     .iter()
@@ -796,7 +795,6 @@ impl IntoElement for InlineInputElement {
                     .map_or(0, |(i, _)| i);
                 let cursor_col_in_row = cursor_utf8_early - line_start_bytes[cursor_row];
 
-                // Get previous per-line offsets for scroll continuity
                 let prev_line_offset_xs: Vec<f32> = {
                     let view = prepaint_view.read(cx);
                     view.active_inline_input_state()
@@ -1574,8 +1572,7 @@ impl EntityInputHandler for TerminalView {
             self.apply_inline_input_mutation(InlineInputState::unmark_text, cx);
             return;
         }
-        // Only clear marked text; do NOT commit to PTY.
-        // Commit only happens in replace_text_in_range.
+        // Unmarking IME composition must not commit text to the PTY.
         self.ime_marked_text = None;
         self.ime_selected_range = None;
         cx.notify();

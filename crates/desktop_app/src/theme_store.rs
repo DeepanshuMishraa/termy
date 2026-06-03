@@ -30,6 +30,42 @@ struct ThemeRegistryCache {
     themes: Vec<ThemeStoreTheme>,
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyThemeStoreTheme {
+    name: String,
+    slug: String,
+    #[serde(default)]
+    description: String,
+    latest_version: Option<String>,
+    file_url: Option<String>,
+}
+
+impl LegacyThemeStoreTheme {
+    fn into_theme(self) -> Option<ThemeStoreTheme> {
+        let name = self.name.trim().to_string();
+        let slug = self.slug.trim().to_string();
+        if name.is_empty() || slug.is_empty() {
+            return None;
+        }
+
+        Some(ThemeStoreTheme {
+            name,
+            slug,
+            description: self.description,
+            latest_version: self.latest_version,
+            file_url: self.file_url,
+        })
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum ThemeStorePayload {
+    Legacy(Vec<LegacyThemeStoreTheme>),
+    Registry(ThemeRegistryIndex),
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct InstalledTheme {
     pub(crate) slug: String,
@@ -470,60 +506,19 @@ fn normalize_slug(slug: &str) -> Result<String, String> {
     Ok(slug)
 }
 
-fn parse_theme_value(theme: &serde_json::Value) -> Option<ThemeStoreTheme> {
-    let object = theme.as_object()?;
-    let name = object
-        .get("name")
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())?;
-    let slug = object
-        .get("slug")
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())?;
-
-    let description = object
-        .get("description")
-        .and_then(|value| value.as_str())
-        .unwrap_or_default()
-        .to_string();
-    let latest_version = object
-        .get("latestVersion")
-        .and_then(|value| value.as_str())
-        .map(ToString::to_string);
-    let file_url = object
-        .get("fileUrl")
-        .and_then(|value| value.as_str())
-        .map(ToString::to_string);
-
-    Some(ThemeStoreTheme {
-        name: name.to_string(),
-        slug: slug.to_string(),
-        description,
-        latest_version,
-        file_url,
-    })
-}
-
 fn parse_theme_store_payload(
     raw_json: &str,
     registry_url: &str,
 ) -> Result<Vec<ThemeStoreTheme>, String> {
-    let payload: serde_json::Value = serde_json::from_str(raw_json)
+    let payload: ThemeStorePayload = serde_json::from_str(raw_json)
         .map_err(|error| format!("Invalid theme registry response: {error}"))?;
 
-    let mut parsed: Vec<ThemeStoreTheme> = if payload.is_array() {
-        payload
-            .as_array()
+    let mut parsed: Vec<ThemeStoreTheme> = match payload {
+        ThemeStorePayload::Legacy(themes) => themes
             .into_iter()
-            .flatten()
-            .filter_map(parse_theme_value)
-            .collect()
-    } else {
-        let index: ThemeRegistryIndex = serde_json::from_value(payload)
-            .map_err(|error| format!("Invalid theme registry index: {error}"))?;
-        index
+            .filter_map(LegacyThemeStoreTheme::into_theme)
+            .collect(),
+        ThemeStorePayload::Registry(index) => index
             .themes
             .into_iter()
             .filter_map(|theme| {
@@ -537,7 +532,7 @@ fn parse_theme_store_payload(
                 })
             })
             .filter(|theme| !theme.name.is_empty())
-            .collect()
+            .collect(),
     };
 
     parsed.sort_unstable_by(|left: &ThemeStoreTheme, right: &ThemeStoreTheme| {

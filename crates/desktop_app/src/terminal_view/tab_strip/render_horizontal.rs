@@ -531,7 +531,6 @@ mod tests {
 
     #[test]
     fn gutter_divider_never_shows() {
-        // Gutter divider is disabled - should always return false
         assert!(!TerminalView::should_render_gutter_divider(
             TabStripOverflowState {
                 left: false,

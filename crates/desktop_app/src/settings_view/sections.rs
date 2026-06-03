@@ -842,15 +842,12 @@ impl SettingsWindow {
                     if event.modifiers.shift {
                         view.theme_store_search_state.select_to_utf16(index);
                     } else if event.click_count >= 3 {
-                        // Triple-click: select all
                         view.theme_store_search_state.select_all();
                     } else if event.click_count == 2 {
-                        // Double-click: select word at cursor
                         view.theme_store_search_state.select_token_at_utf16(index);
                     } else {
                         view.theme_store_search_state.set_cursor_utf16(index);
                     }
-                    // Only enable drag-selecting on single click
                     view.theme_store_search_selecting = event.click_count == 1;
                     view.focus_handle.focus(window, cx);
                     cx.notify();

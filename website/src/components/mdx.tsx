@@ -1,7 +1,7 @@
 import defaultMdxComponents from 'fumadocs-ui/mdx';
 import type { MDXComponents } from 'mdx/types';
 
-export function getMDXComponents(components?: MDXComponents) {
+function getMDXComponents(components?: MDXComponents) {
   return {
     ...defaultMdxComponents,
     ...components,
@@ -11,5 +11,5 @@ export function getMDXComponents(components?: MDXComponents) {
 export const useMDXComponents = getMDXComponents;
 
 declare global {
-  type MDXProvidedComponents = ReturnType<typeof getMDXComponents>;
+  type MDXProvidedComponents = ReturnType<typeof useMDXComponents>;
 }

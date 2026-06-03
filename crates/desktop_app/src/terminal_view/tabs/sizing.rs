@@ -426,10 +426,7 @@ impl TerminalView {
                     tab.title_text_width,
                     rename_cap,
                 );
-                next_width
-                    .max(rename_fit)
-                    .max(rename_floor)
-                    .min(rename_cap)
+                next_width.max(rename_fit).max(rename_floor).min(rename_cap)
             } else {
                 next_width
             };

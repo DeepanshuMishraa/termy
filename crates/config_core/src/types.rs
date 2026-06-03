@@ -8,32 +8,9 @@ use crate::constants::{
     DEFAULT_WARN_ON_QUIT_WITH_RUNNING_PROCESS,
 };
 
+pub use termy_theme_core::Rgb8;
+
 pub type ThemeId = String;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Rgb8 {
-    pub r: u8,
-    pub g: u8,
-    pub b: u8,
-}
-
-impl Rgb8 {
-    /// Parses a 6-digit RGB hex color, with optional leading `#`.
-    ///
-    /// Accepted examples: `"#112233"`, `"112233"`.
-    /// Rejected examples: `"#fff"` (3-digit shorthand), `"#11223344"` (RGBA).
-    pub fn from_hex(value: &str) -> Option<Self> {
-        let hex = value.trim().trim_start_matches('#');
-        if hex.len() != 6 {
-            return None;
-        }
-
-        let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
-        let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
-        let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
-        Some(Self { r, g, b })
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TabTitleSource {

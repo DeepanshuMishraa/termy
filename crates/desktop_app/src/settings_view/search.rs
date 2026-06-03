@@ -817,15 +817,12 @@ impl SettingsWindow {
                     if event.modifiers.shift {
                         view.sidebar_search_state.select_to_utf16(index);
                     } else if event.click_count >= 3 {
-                        // Triple-click: select all
                         view.sidebar_search_state.select_all();
                     } else if event.click_count == 2 {
-                        // Double-click: select word at cursor
                         view.sidebar_search_state.select_token_at_utf16(index);
                     } else {
                         view.sidebar_search_state.set_cursor_utf16(index);
                     }
-                    // Only enable drag-selecting on single click
                     view.sidebar_search_selecting = event.click_count == 1;
                     view.refresh_search_navigation(window, cx);
                     view.focus_handle.focus(window, cx);

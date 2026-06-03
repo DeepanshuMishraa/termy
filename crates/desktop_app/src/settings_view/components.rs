@@ -706,15 +706,12 @@ impl SettingsWindow {
                 if event.modifiers.shift {
                     input.state.select_to_utf16(index);
                 } else if event.click_count >= 3 {
-                    // Triple-click: select all
                     input.state.select_all();
                 } else if event.click_count == 2 {
-                    // Double-click: select word at cursor
                     input.state.select_token_at_utf16(index);
                 } else {
                     input.state.set_cursor_utf16(index);
                 }
-                // Only enable drag-selecting on single click
                 input.selecting = event.click_count == 1;
             } else {
                 input.selecting = false;

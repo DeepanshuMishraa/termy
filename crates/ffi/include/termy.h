@@ -17,6 +17,7 @@ typedef enum {
   TERMY_FFI_CONFIG_LOAD_FAILED = 4,
   TERMY_FFI_UNKNOWN_KEY = 5,
   TERMY_FFI_WRITE_FAILED = 6,
+  TERMY_FFI_SERIALIZE_FAILED = 7,
 } TermyFfiStatus;
 
 typedef enum {

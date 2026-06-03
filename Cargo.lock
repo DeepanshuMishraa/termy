@@ -5676,7 +5676,7 @@ dependencies = [
 
 [[package]]
 name = "termy"
-version = "0.3.0"
+version = "0.2.6"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -5687,12 +5687,10 @@ dependencies = [
  "env_logger",
  "flume",
  "fs4",
- "futures",
  "gpui",
  "libsqlite3-sys",
  "log",
  "objc",
- "parking_lot",
  "plist",
  "raw-window-handle",
  "rfd",
@@ -5741,14 +5739,12 @@ dependencies = [
 
 [[package]]
 name = "termy_cli"
-version = "0.3.0"
+version = "0.2.6"
 dependencies = [
- "anyhow",
  "clap",
  "core-foundation 0.10.0",
  "core-text",
  "crossterm",
- "dirs 6.0.0",
  "ratatui",
  "semver",
  "serde_json",

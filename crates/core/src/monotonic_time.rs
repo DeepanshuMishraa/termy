@@ -28,7 +28,7 @@ fn mach_timebase_info_now() -> MachTimebaseInfo {
     })
 }
 
-pub fn terminal_ui_monotonic_now_ns() -> u64 {
+pub fn monotonic_now_ns() -> u64 {
     #[cfg(target_os = "macos")]
     {
         let info = mach_timebase_info_now();
@@ -52,12 +52,12 @@ pub fn terminal_ui_monotonic_now_ns() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::terminal_ui_monotonic_now_ns;
+    use super::monotonic_now_ns;
 
     #[test]
     fn monotonic_now_ns_is_non_decreasing() {
-        let first = terminal_ui_monotonic_now_ns();
-        let second = terminal_ui_monotonic_now_ns();
+        let first = monotonic_now_ns();
+        let second = monotonic_now_ns();
         assert!(second >= first);
     }
 }
