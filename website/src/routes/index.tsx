@@ -9,6 +9,7 @@ import {
   LayoutGrid,
 } from 'lucide-react';
 import { baseOptions } from '@/lib/layout.shared';
+import { sponsors } from '@/lib/sponsors';
 
 export const Route = createFileRoute('/')({
   component: Home,
@@ -98,6 +99,49 @@ function Home() {
                 </p>
               </div>
             ))}
+          </div>
+        </section>
+
+        <section className="mx-auto w-full max-w-5xl px-6 pb-24">
+          <div className="border-t border-fd-border pt-12">
+            <div className="flex flex-col gap-2">
+              <h2 className="font-medium text-2xl tracking-tight">
+                Sponsors
+              </h2>
+              <p className="max-w-2xl text-sm leading-relaxed text-fd-muted-foreground">
+                Termy is supported by companies that care about fast, native
+                developer tools.
+              </p>
+            </div>
+
+            <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {sponsors.map((sponsor) => (
+                <a
+                  key={sponsor.name}
+                  href={sponsor.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="group flex min-h-28 flex-col justify-between rounded-lg border border-fd-border bg-fd-card p-5 transition-colors hover:bg-fd-accent"
+                >
+                  <span className="sr-only">{sponsor.name}</span>
+                  <span className="flex h-10 items-center">
+                    <img
+                      src={sponsor.logo.light}
+                      alt={`${sponsor.name} logo`}
+                      className="h-9 w-auto dark:hidden"
+                    />
+                    <img
+                      src={sponsor.logo.dark}
+                      alt={`${sponsor.name} logo`}
+                      className="hidden h-9 w-auto dark:block"
+                    />
+                  </span>
+                  <span className="mt-5 text-sm leading-relaxed text-fd-muted-foreground group-hover:text-fd-foreground">
+                    {sponsor.description}
+                  </span>
+                </a>
+              ))}
+            </div>
           </div>
         </section>
       </main>

@@ -2,7 +2,19 @@
 
 A fast, minimal terminal emulator built with [GPUI](https://gpui.rs) and [alacritty_terminal](https://alacritty.org).
 
-[Docs](https://termy.sh/docs) · [Download](https://termy.sh/#download) · [Contribute](CONTRIBUTING.md)
+[Docs](https://termy.sh/docs) · [Download](https://termy.sh/download) · [Contribute](CONTRIBUTING.md)
+
+## Sponsors
+
+Termy is supported by companies that care about fast, native developer tools.
+
+<a href="https://neon.tech">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/legends/neon-logo-dark-color.svg">
+    <source media="(prefers-color-scheme: light)" srcset="assets/legends/neon-logo-light-color.svg">
+    <img alt="Neon" src="assets/legends/neon-logo-light-color.svg" width="157">
+  </picture>
+</a>
 
 ## Features
 
@@ -14,7 +26,7 @@ A fast, minimal terminal emulator built with [GPUI](https://gpui.rs) and [alacri
 
 ## Install
 
-Prebuilt binaries: [termy.sh](https://termy.sh/#download).
+Prebuilt binaries: [termy.sh/download](https://termy.sh/download).
 
 Build from source:
 
