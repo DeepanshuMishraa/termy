@@ -2,15 +2,15 @@
   "title": "Termy",
   "pages": [
     "index",
-    "---Getting Started---",
+    "---Start---",
     "getting-started",
-    "---Use Termy---",
+    "---Use---",
     "using-termy",
-    "---Customize---",
+    "---Configure---",
     "customize",
-    "---Reference---",
+    "---Look up---",
     "reference",
-    "---Developer---",
+    "---Build Termy---",
     "developer"
   ]
 }
