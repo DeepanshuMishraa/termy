@@ -24,7 +24,9 @@ use super::launch::spawn_tmux_control_mode;
 use super::launch::{
     SessionLaunchPlan, append_working_dir_args, managed_session_window_option_override_commands,
 };
-use super::payload::{capture_full_pane_args, sanitize_tmux_payload, unescape_tmux_payload};
+use super::payload::{
+    capture_full_pane_args, capture_pane_range_args, sanitize_tmux_payload, unescape_tmux_payload,
+};
 use super::session::{self, run_tmux_command_with_socket};
 use super::shutdown::{
     is_tmux_missing_client_error, is_tmux_no_server_error, normalize_shutdown_teardown_result,
@@ -535,6 +537,25 @@ impl TmuxClient {
         // scans that can time out during reattach on large tmux histories.
         let start_row = format!("-{}", max_rows.max(1));
         let args = capture_full_pane_args(pane_id, start_row.as_str());
+        let out = self.run_control_capture_args(&args)?;
+        let payload = trim_trailing_line_terminators(out.as_bytes());
+        Ok(sanitize_tmux_payload(unescape_tmux_payload(payload)))
+    }
+
+    /// Capture a bounded scrollback range of a pane with caller-chosen end line
+    /// and wrap handling. `start_row`/`end_row` are tmux `capture-pane -S/-E`
+    /// line specifiers (negative = history, `0` = top of the visible screen,
+    /// `-` = the extreme). With `join_wraps` off, every captured line maps 1:1
+    /// to a grid row, so a caller can splice captured history against a live
+    /// grid line-exact. Unlike `capture_pane`, this does not assume `-E -`.
+    pub fn capture_pane_range(
+        &self,
+        pane_id: &str,
+        start_row: &str,
+        end_row: &str,
+        join_wraps: bool,
+    ) -> Result<Vec<u8>> {
+        let args = capture_pane_range_args(pane_id, start_row, end_row, join_wraps);
         let out = self.run_control_capture_args(&args)?;
         let payload = trim_trailing_line_terminators(out.as_bytes());
         Ok(sanitize_tmux_payload(unescape_tmux_payload(payload)))
