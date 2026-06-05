@@ -201,8 +201,8 @@ fn pane_cell_for_position(
     if size.cols == 0 || size.rows == 0 {
         return None;
     }
-    let cell_width: f32 = size.cell_width.into();
-    let cell_height: f32 = size.cell_height.into();
+    let cell_width: f32 = size.cell_width;
+    let cell_height: f32 = size.cell_height;
     if cell_width <= f32::EPSILON || cell_height <= f32::EPSILON {
         return None;
     }
@@ -655,8 +655,15 @@ impl TerminalView {
     }
 
     pub(in super::super) fn link_at_cell(&self, cell: CellPos) -> Option<HoveredLink> {
-        let line = self.row_text(cell.row)?;
-        let detected = find_link_in_line(&line, cell.col)?;
+        // OSC 8 hyperlinks carry an explicit target on the cell; prefer them
+        // over heuristic text detection so link text can differ from the URI.
+        let detected = self
+            .active_terminal()
+            .and_then(|terminal| terminal.hyperlink_at(cell.row, cell.col))
+            .or_else(|| {
+                let line = self.row_text(cell.row)?;
+                find_link_in_line(&line, cell.col)
+            })?;
 
         Some(HoveredLink {
             row: cell.row,
@@ -787,6 +794,25 @@ mod tests {
             }
         });
         lines
+    }
+
+    #[test]
+    fn hyperlink_at_reports_osc8_link_run() {
+        let size = TerminalSize {
+            cols: 24,
+            rows: 3,
+            ..TerminalSize::default()
+        };
+        let terminal = Terminal::new_tmux(size, TerminalOptions::default());
+        terminal.feed_output(b"\x1b]8;;https://example.com\x1b\\docs\x1b]8;;\x1b\\ plain");
+
+        let link = terminal
+            .hyperlink_at(0, 2)
+            .expect("hovering OSC 8 text should report the hyperlink");
+        assert_eq!((link.start_col, link.end_col), (0, 3));
+        assert_eq!(link.target, "https://example.com");
+
+        assert_eq!(terminal.hyperlink_at(0, 6), None);
     }
 
     #[test]
@@ -1148,8 +1174,8 @@ mod tests {
             },
         ];
 
-        let cell_width: f32 = panes[0].terminal.size().cell_width.into();
-        let cell_height: f32 = panes[0].terminal.size().cell_height.into();
+        let cell_width: f32 = panes[0].terminal.size().cell_width;
+        let cell_height: f32 = panes[0].terminal.size().cell_height;
         let pointer_x = (2.0 * cell_width) + 0.5;
         let pointer_y = (3.0 * cell_height) + 0.5;
 
@@ -1231,8 +1257,8 @@ mod tests {
 
         let active_pane = &panes[0];
         let size = active_pane.terminal.size();
-        let cell_width: f32 = size.cell_width.into();
-        let cell_height: f32 = size.cell_height.into();
+        let cell_width: f32 = size.cell_width;
+        let cell_height: f32 = size.cell_height;
         let padding_x = 0.0;
         let padding_y = 0.0;
         let active_origin_x = padding_x + (f32::from(active_pane.left) * cell_width);

@@ -1514,8 +1514,8 @@ impl TerminalView {
         let geometry = self.terminal_viewport_geometry()?;
         let pane = self.active_pane_ref()?;
         let size = pane.terminal.size();
-        let cell_width: f32 = size.cell_width.into();
-        let cell_height: f32 = size.cell_height.into();
+        let cell_width: f32 = size.cell_width;
+        let cell_height: f32 = size.cell_height;
         // Use cursor_position() instead of cursor_state() so that IME
         // preedit is shown even when the TUI app hides the cursor.
         let (cursor_col, cursor_row) = pane.terminal.cursor_position();
@@ -1647,7 +1647,7 @@ impl EntityInputHandler for TerminalView {
         let cursor = self.ime_cursor_bounds()?;
         let cell_width: f32 = self
             .active_pane_ref()
-            .map(|pane| pane.terminal.size().cell_width.into())
+            .map(|pane| pane.terminal.size().cell_width)
             .unwrap_or_default();
         Some(ime_candidate_bounds(
             cursor,

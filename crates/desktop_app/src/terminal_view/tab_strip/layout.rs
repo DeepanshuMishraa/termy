@@ -133,8 +133,9 @@ impl TerminalView {
         let max_tabs_viewport_width = (max_row_width - action_rail_width - gutter_width).max(0.0);
         let tabs_viewport_width = input
             .content_width
-            .map(|width| width.max(0.0).min(max_tabs_viewport_width))
-            .unwrap_or(max_tabs_viewport_width);
+            .map_or(max_tabs_viewport_width, |width| {
+                width.max(0.0).min(max_tabs_viewport_width)
+            });
         let row_width = (tabs_viewport_width + gutter_width + action_rail_width)
             .min(remaining_after_left)
             .max(0.0);

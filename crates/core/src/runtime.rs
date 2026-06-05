@@ -1471,6 +1471,12 @@ impl Terminal {
         self.with_term(|term| search_term_buffer(term, query, options))
     }
 
+    /// The OSC 8 hyperlink under the given viewport cell, if any, expanded to
+    /// the contiguous same-link run on that row.
+    pub fn hyperlink_at(&self, row: usize, col: usize) -> Option<crate::links::DetectedLink> {
+        self.with_term(|term| crate::links::hyperlink_at_viewport_cell(term, row, col))
+    }
+
     /// Access the terminal for reading cell content
     pub fn with_term<R>(&self, f: impl FnOnce(&Term<JsonEventListener>) -> R) -> R {
         let term = self.term.lock();

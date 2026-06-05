@@ -14,8 +14,8 @@ pub fn keystroke_to_input(
             platform: keystroke.modifiers.platform,
             function: keystroke.modifiers.function,
         },
-        key: keystroke.key.to_string(),
-        key_char: keystroke.key_char.as_ref().map(ToString::to_string),
+        key: keystroke.key.clone(),
+        key_char: keystroke.key_char.clone(),
     };
     termy_core::keystroke_to_input(
         &keystroke,

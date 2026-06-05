@@ -26,7 +26,7 @@ pub use keyboard::{
     Keystroke, Modifiers, TerminalKeyEventKind, TerminalKeyboardMode, TermyKeystroke,
     TermyModifiers, keystroke_to_input,
 };
-pub use links::{DetectedLink, classify_link_token, find_link_in_line};
+pub use links::{DetectedLink, classify_link_token, find_link_in_line, hyperlink_at_viewport_cell};
 #[cfg(unix)]
 pub use locale::{
     DEFAULT_UTF8_LOCALE, Utf8LocaleOverridePlan, preferred_utf8_locale, utf8_locale_override_plan,

@@ -492,7 +492,7 @@ fn main() {
         let startup_load =
             config::load_runtime_config(&mut startup_config_error, "Failed to load config");
         let mut app_config = startup_load.config;
-        if let Some(working_dir) = startup_arguments.working_dir.clone() {
+        if let Some(working_dir) = startup_arguments.working_dir {
             app_config.working_dir = Some(working_dir);
         }
         app_icon::apply_from_config(&app_config);

@@ -139,6 +139,12 @@ typedef struct {
 } TermyFfiFrameUpdate;
 
 typedef struct {
+  size_t start_col;
+  size_t end_col;
+  TermyFfiBytes uri;
+} TermyFfiHyperlink;
+
+typedef struct {
   size_t row;
   size_t start_col;
   size_t end_col;
@@ -390,6 +396,13 @@ TermyFfiStatus termy_terminal_take_frame_update(
     bool force_full,
     TermyFfiFrameUpdate *out_update);
 TermyFfiStatus termy_frame_update_free(TermyFfiFrameUpdate *update);
+TermyFfiStatus termy_terminal_hyperlink_at(
+    TermyFfiTerminal *terminal,
+    size_t row,
+    size_t col,
+    bool *out_found,
+    TermyFfiHyperlink *out_link);
+TermyFfiStatus termy_hyperlink_free(TermyFfiHyperlink *link);
 TermyFfiStatus termy_terminal_take_damage(
     TermyFfiTerminal *terminal,
     TermyFfiDamage *out_damage);

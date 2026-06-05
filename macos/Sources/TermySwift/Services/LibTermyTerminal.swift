@@ -347,6 +347,34 @@ final class LibTermyTerminal {
         )
     }
 
+    /// The OSC 8 hyperlink under a viewport cell, if any, expanded to the
+    /// contiguous link run on that row. Best-effort: returns nil on FFI errors
+    /// since hover lookups should never surface failures.
+    func hyperlink(atRow row: Int, col: Int) -> TerminalFrameLink? {
+        guard row >= 0, col >= 0, let handle else {
+            return nil
+        }
+
+        var found = false
+        var link = TermyFfiHyperlink()
+        guard termy_terminal_hyperlink_at(handle, row, col, &found, &link) == TERMY_FFI_OK,
+              found
+        else {
+            return nil
+        }
+        defer { _ = termy_hyperlink_free(&link) }
+
+        guard let target = TermyFfiBridge.string(from: link.uri), !target.isEmpty else {
+            return nil
+        }
+        return TerminalFrameLink(
+            row: row,
+            startCol: Int(link.start_col),
+            endCol: Int(link.end_col),
+            target: target
+        )
+    }
+
     func search(
         _ query: String,
         options: TerminalSearchOptions = TerminalSearchOptions()

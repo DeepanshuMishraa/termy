@@ -146,7 +146,7 @@ impl TerminalView {
                     return 0;
                 }
 
-                let line_height: f32 = size.cell_height.into();
+                let line_height: f32 = size.cell_height;
                 let viewport_height = line_height * f32::from(size.rows);
                 let raw_delta_pixels: f32 =
                     event.delta.pixel_delta(size.cell_height.into()).y.into();

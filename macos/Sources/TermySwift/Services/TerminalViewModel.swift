@@ -331,11 +331,20 @@ final class TerminalViewModel: ObservableObject {
         updateSelection(frame.lineSelection(at: position))
     }
 
+    /// The link under `position`: an OSC 8 hyperlink reported by the core when
+    /// present, otherwise heuristic text detection on the frame.
+    private func link(at position: TerminalGridPosition) -> TerminalFrameLink? {
+        if let link = terminal?.hyperlink(atRow: position.row, col: position.col) {
+            return link
+        }
+        return frame.link(at: position)
+    }
+
     /// Updates the link highlighted under the pointer. Returns true when a link
     /// is present so the view can show the pointing-hand cursor.
     @discardableResult
     func updateHoveredLink(at position: TerminalGridPosition?) -> Bool {
-        let link = position.flatMap { frame.link(at: $0) }
+        let link = position.flatMap { self.link(at: $0) }
         if link != hoveredLink {
             hoveredLink = link
         }
@@ -344,7 +353,7 @@ final class TerminalViewModel: ObservableObject {
 
     /// Opens the link under `position` (⌘-click). Returns true if one was opened.
     func openLink(at position: TerminalGridPosition) -> Bool {
-        guard let link = frame.link(at: position), let url = URL(string: link.target) else {
+        guard let link = link(at: position), let url = URL(string: link.target) else {
             return false
         }
         return NSWorkspace.shared.open(url)

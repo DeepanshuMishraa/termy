@@ -666,7 +666,7 @@ impl TerminalView {
         let Some(terminal) = self.active_terminal() else {
             return 0;
         };
-        let line_height: f32 = terminal.size().cell_height.into();
+        let line_height: f32 = terminal.size().cell_height;
         let (_, pointer_y) = self.terminal_content_position(position);
         let top = geometry.origin_y;
         let bottom = geometry.origin_y + geometry.height.max(0.0);

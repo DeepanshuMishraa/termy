@@ -5,6 +5,11 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
+use alacritty_terminal::{
+    event::EventListener,
+    term::{Term, cell::Hyperlink},
+};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DetectedLink {
     pub start_col: usize,
@@ -75,6 +80,53 @@ fn store_cached_file_url(token: &str, resolved: Option<String>) {
     if let Ok(mut cache) = file_url_cache().lock() {
         cache.insert(token.to_string(), resolved);
     }
+}
+
+/// The OSC 8 hyperlink under a viewport cell, if any.
+///
+/// Expands to the contiguous run of cells on that row carrying the same
+/// hyperlink (matched by OSC 8 id + uri), so hover underlines cover the whole
+/// link text even when it differs from the target URI. Takes priority over the
+/// heuristic [`find_link_in_line`] detection.
+pub fn hyperlink_at_viewport_cell<T: EventListener>(
+    term: &Term<T>,
+    row: usize,
+    col: usize,
+) -> Option<DetectedLink> {
+    let content = term.renderable_content();
+    let display_offset = content.display_offset;
+
+    let mut row_links: Vec<Option<Hyperlink>> = Vec::new();
+    for indexed_cell in content.display_iter {
+        let cell_row = indexed_cell.point.line.0 + display_offset as i32;
+        if cell_row < 0 || cell_row as usize != row {
+            continue;
+        }
+        let cell_col = indexed_cell.point.column.0;
+        if row_links.len() <= cell_col {
+            row_links.resize(cell_col + 1, None);
+        }
+        row_links[cell_col] = indexed_cell.cell.hyperlink();
+    }
+
+    let target = row_links.get(col).cloned().flatten()?;
+    let matches_target =
+        |link: &Option<Hyperlink>| link.as_ref().is_some_and(|other| *other == target);
+
+    let mut start_col = col;
+    while start_col > 0 && row_links.get(start_col - 1).is_some_and(matches_target) {
+        start_col -= 1;
+    }
+    let mut end_col = col;
+    while row_links.get(end_col + 1).is_some_and(matches_target) {
+        end_col += 1;
+    }
+
+    Some(DetectedLink {
+        start_col,
+        end_col,
+        target: target.uri().to_string(),
+    })
 }
 
 pub fn find_link_in_line(line: &[char], col: usize) -> Option<DetectedLink> {
@@ -448,10 +500,98 @@ fn has_path_like_structure(path: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{FileUrlLruCache, classify_link_token};
+    use super::{FileUrlLruCache, classify_link_token, hyperlink_at_viewport_cell};
+    use crate::runtime::TerminalSize;
+    use alacritty_terminal::{
+        event::VoidListener,
+        term::{Config as TermConfig, Term},
+        vte::ansi,
+    };
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn term_with_input(cols: u16, rows: u16, input: &[u8]) -> Term<VoidListener> {
+        let size = TerminalSize {
+            cols,
+            rows,
+            cell_width: 9.0,
+            cell_height: 18.0,
+        };
+        let mut term = Term::new(TermConfig::default(), &size, VoidListener);
+        let mut parser: ansi::Processor = ansi::Processor::new();
+        parser.advance(&mut term, input);
+        term
+    }
+
+    #[test]
+    fn osc8_hyperlink_detected_under_each_link_cell() {
+        let term = term_with_input(
+            20,
+            2,
+            b"\x1b]8;;https://example.com\x1b\\docs\x1b]8;;\x1b\\ after",
+        );
+
+        for col in 0..4 {
+            let link = hyperlink_at_viewport_cell(&term, 0, col)
+                .expect("hyperlinked cell should report the OSC 8 target");
+            assert_eq!(link.start_col, 0);
+            assert_eq!(link.end_col, 3);
+            assert_eq!(link.target, "https://example.com");
+        }
+    }
+
+    #[test]
+    fn osc8_hyperlink_absent_outside_link_run() {
+        let term = term_with_input(
+            20,
+            2,
+            b"\x1b]8;;https://example.com\x1b\\docs\x1b]8;;\x1b\\ after",
+        );
+
+        assert_eq!(hyperlink_at_viewport_cell(&term, 0, 4), None);
+        assert_eq!(hyperlink_at_viewport_cell(&term, 0, 6), None);
+        assert_eq!(hyperlink_at_viewport_cell(&term, 1, 0), None);
+    }
+
+    #[test]
+    fn osc8_adjacent_distinct_links_do_not_merge() {
+        let term = term_with_input(
+            20,
+            2,
+            b"\x1b]8;;https://a.example\x1b\\aa\x1b]8;;https://b.example\x1b\\bb\x1b]8;;\x1b\\",
+        );
+
+        let first = hyperlink_at_viewport_cell(&term, 0, 1).expect("first link");
+        assert_eq!((first.start_col, first.end_col), (0, 1));
+        assert_eq!(first.target, "https://a.example");
+
+        let second = hyperlink_at_viewport_cell(&term, 0, 2).expect("second link");
+        assert_eq!((second.start_col, second.end_col), (2, 3));
+        assert_eq!(second.target, "https://b.example");
+    }
+
+    #[test]
+    fn osc8_same_id_split_runs_only_cover_contiguous_cells() {
+        // Same link id interrupted by a plain cell: hover should only span the
+        // contiguous run under the cursor, not jump across the gap.
+        let term = term_with_input(
+            20,
+            2,
+            b"\x1b]8;id=x;https://example.com\x1b\\ab\x1b]8;;\x1b\\-\x1b]8;id=x;https://example.com\x1b\\cd\x1b]8;;\x1b\\",
+        );
+
+        let left = hyperlink_at_viewport_cell(&term, 0, 0).expect("left run");
+        assert_eq!((left.start_col, left.end_col), (0, 1));
+        let right = hyperlink_at_viewport_cell(&term, 0, 3).expect("right run");
+        assert_eq!((right.start_col, right.end_col), (3, 4));
+    }
+
+    #[test]
+    fn plain_text_has_no_hyperlink() {
+        let term = term_with_input(20, 2, b"https://example.com");
+        assert_eq!(hyperlink_at_viewport_cell(&term, 0, 0), None);
+    }
 
     fn unique_temp_path(file_name: &str) -> PathBuf {
         let nonce = SystemTime::now()

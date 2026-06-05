@@ -273,6 +273,18 @@ mod tests {
     }
 
     #[test]
+    fn passthrough_osc_8_hyperlinks() {
+        let mut interceptor = OscInterceptor::new();
+        // OSC 8 hyperlinks must reach the alacritty parser so cells pick up
+        // their hyperlink metadata. The interceptor re-emits passthrough OSC
+        // with a BEL terminator, which alacritty treats identically to ST.
+        let input = "\x1b]8;;https://example.com\x1b\\link\x1b]8;;\x1b\\";
+        let (output, events) = process_str(&mut interceptor, input);
+        assert_eq!(output, "\x1b]8;;https://example.com\x07link\x1b]8;;\x07");
+        assert!(events.is_empty());
+    }
+
+    #[test]
     fn parse_osc_7_working_directory() {
         let mut interceptor = OscInterceptor::new();
         let (output, events) =

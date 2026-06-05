@@ -611,8 +611,8 @@ impl TerminalView {
                     return true;
                 };
                 let size = terminal.size();
-                let cell_width: f32 = size.cell_width.into();
-                let cell_height: f32 = size.cell_height.into();
+                let cell_width: f32 = size.cell_width;
+                let cell_height: f32 = size.cell_height;
                 if cell_width <= f32::EPSILON || cell_height <= f32::EPSILON {
                     cx.stop_propagation();
                     return true;

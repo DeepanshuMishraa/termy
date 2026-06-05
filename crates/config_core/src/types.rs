@@ -99,6 +99,9 @@ pub enum AppIcon {
 }
 
 impl AppIcon {
+    // Not `FromStr`: config parsing wants Option-style lookups, matching the
+    // other config enums in this module.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
             "default" | "termy_default" | "termy-default" | "termy default" => {

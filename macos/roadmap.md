@@ -122,9 +122,14 @@ or stubbed in `macos/`.
 
 ### M2 — Expected terminal UX
 
-- [ ] **OSC-8 hyperlinks.** Native link detection is `NSDataDetector` heuristics
-  only (`Support/TerminalLinkInteraction.swift:14-39`); GPUI supports real OSC-8
-  escape-sequence hyperlinks plus hover preview (`render.rs:1703`).
+- [x] **OSC-8 hyperlinks.** ✅ Done. The core exposes the OSC 8 hyperlink under
+  a viewport cell (`crates/core/src/links.rs`, `termy_terminal_hyperlink_at` in
+  `crates/ffi`). Native hover/⌘-click prefers the OSC 8 target and falls back to
+  the `NSDataDetector` heuristics (`Services/TerminalViewModel.swift`,
+  `Services/LibTermyTerminal.swift`); GPUI gained the same OSC 8 priority in
+  `terminal_view/interaction/selection.rs` (it previously used heuristics only).
+  Covered by `Tests/TermySwiftTests/TerminalHyperlinkTests.swift` plus core/FFI
+  tests.
 - [ ] **Tab drag-to-reorder.** Missing. GPUI has drag preview, drop slots, and
   auto-scroll (`terminal_view/tab_strip/state.rs`, `tabs/drag.rs`).
 - [ ] **Scrollbar markers** (search hits / line marks) — GPUI renders marker

@@ -19,7 +19,7 @@ pub use grid::{
     TerminalGridRow, TerminalGridRows,
 };
 pub use keyboard::{TerminalKeyEventKind, TerminalKeyboardMode, keystroke_to_input};
-pub use links::{DetectedLink, classify_link_token, find_link_in_line};
+pub use links::{DetectedLink, classify_link_token, find_link_in_line, hyperlink_at_viewport_cell};
 pub use mouse_protocol::{
     TerminalMouseButton, TerminalMouseEventKind, TerminalMouseMode, TerminalMouseModifiers,
     TerminalMousePosition, encode_mouse_report,

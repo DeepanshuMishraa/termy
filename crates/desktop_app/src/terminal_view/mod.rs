@@ -49,8 +49,8 @@ use termy_terminal_ui::{
     TerminalKeyboardMode, TerminalMouseMode, TerminalOptions, TerminalQueryColors,
     TerminalReplyHost, TerminalRuntimeConfig, TerminalSize, TmuxLaunchTarget,
     WindowsShell as RuntimeWindowsShell, WorkingDirFallback as RuntimeWorkingDirFallback,
-    find_link_in_line, keystroke_to_input, normalize_working_directory_candidate,
-    resolve_launch_working_directory,
+    find_link_in_line, hyperlink_at_viewport_cell, keystroke_to_input,
+    normalize_working_directory_candidate, resolve_launch_working_directory,
 };
 use termy_terminal_ui::{TerminalUiRenderMetricsSnapshot, terminal_ui_render_metrics_snapshot};
 use termy_toast::ToastManager;
@@ -674,6 +674,19 @@ impl Terminal {
                 .map_or(TerminalDamageSnapshot::Full, |terminal| {
                     terminal.take_damage_snapshot()
                 }),
+        }
+    }
+
+    /// The OSC 8 hyperlink under the given viewport cell, if any.
+    fn hyperlink_at(&self, row: usize, col: usize) -> Option<termy_terminal_ui::DetectedLink> {
+        match self {
+            Self::Tmux(terminal) => {
+                terminal.with_term(|term| hyperlink_at_viewport_cell(term, row, col))
+            }
+            Self::Native(terminal) => terminal
+                .lock()
+                .ok()
+                .and_then(|terminal| terminal.hyperlink_at(row, col)),
         }
     }
 
@@ -3156,7 +3169,7 @@ impl TerminalView {
             return None;
         }
 
-        let line_height: f32 = size.cell_height.into();
+        let line_height: f32 = size.cell_height;
         let (display_offset, history_size) = terminal.scroll_state();
         scrollbar::compute_layout(
             display_offset,
@@ -3354,8 +3367,8 @@ impl TerminalView {
             return None;
         }
 
-        let cell_width: f32 = terminal_size.cell_width.into();
-        let cell_height: f32 = terminal_size.cell_height.into();
+        let cell_width: f32 = terminal_size.cell_width;
+        let cell_height: f32 = terminal_size.cell_height;
         if cell_width <= f32::EPSILON || cell_height <= f32::EPSILON {
             return None;
         }
@@ -3456,7 +3469,7 @@ impl TerminalView {
         }
         let (padding_x, padding_y) = self.effective_terminal_padding();
         let (content_padding_x, content_padding_y) = self.native_split_content_padding();
-        let pane_cell_height: f32 = size.cell_height.into();
+        let pane_cell_height: f32 = size.cell_height;
         Some(TerminalViewportGeometry {
             origin_x: padding_x + (f32::from(pane.left) * layout_cell_width) + content_padding_x,
             origin_y: padding_y + (f32::from(pane.top) * layout_cell_height) + content_padding_y,

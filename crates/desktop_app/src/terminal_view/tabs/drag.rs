@@ -133,7 +133,7 @@ impl TerminalView {
             TabStripOrientation::Vertical => {
                 let scroll_offset_y: f32 = self.tab_strip.vertical_scroll_handle.offset().y.into();
                 Self::tab_drop_slot_from_pointer_primary_axis_for_horizontal_widths(
-                    std::iter::repeat(SIDEBAR_TAB_ROW_HEIGHT).take(self.tabs.len()),
+                    std::iter::repeat_n(SIDEBAR_TAB_ROW_HEIGHT, self.tabs.len()),
                     pointer_primary_axis,
                     scroll_offset_y,
                 )

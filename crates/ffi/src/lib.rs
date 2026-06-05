@@ -145,6 +145,14 @@ pub struct TermyFfiDamage {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TermyFfiHyperlink {
+    pub start_col: usize,
+    pub end_col: usize,
+    pub uri: TermyFfiBytes,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TermyFfiSearchMatch {
     pub row: usize,
     pub start_col: usize,
@@ -1040,7 +1048,7 @@ pub unsafe extern "C" fn termy_config_tasks_json(
     }
 
     let tasks = unsafe { &(*config).loaded.app_config.tasks };
-    let json = match serde_json::to_string(
+    let Ok(json) = serde_json::to_string(
         &tasks
             .iter()
             .map(|task| {
@@ -1052,9 +1060,8 @@ pub unsafe extern "C" fn termy_config_tasks_json(
                 })
             })
             .collect::<Vec<_>>(),
-    ) {
-        Ok(json) => json,
-        Err(_) => return TermyFfiStatus::SerializeFailed,
+    ) else {
+        return TermyFfiStatus::SerializeFailed;
     };
 
     unsafe {
@@ -1086,7 +1093,7 @@ pub unsafe extern "C" fn termy_config_keybinds_json(
         ),
         &directives,
     );
-    let json = match serde_json::to_string(
+    let Ok(json) = serde_json::to_string(
         &resolved
             .iter()
             .map(|keybind| {
@@ -1096,9 +1103,8 @@ pub unsafe extern "C" fn termy_config_keybinds_json(
                 })
             })
             .collect::<Vec<_>>(),
-    ) {
-        Ok(json) => json,
-        Err(_) => return TermyFfiStatus::SerializeFailed,
+    ) else {
+        return TermyFfiStatus::SerializeFailed;
     };
 
     unsafe {
@@ -1386,7 +1392,7 @@ fn settings_theme_label(theme_id: &str) -> String {
     }
 
     theme_id
-        .split(|character| character == '-' || character == '_')
+        .split(['-', '_'])
         .filter(|part| !part.is_empty())
         .map(|part| {
             let mut chars = part.chars();
@@ -2007,6 +2013,52 @@ pub unsafe extern "C" fn termy_frame_update_free(
         }
     }
     *update = TermyFfiFrameUpdate::default();
+    TermyFfiStatus::Ok
+}
+
+/// Look up the OSC 8 hyperlink under a viewport cell. Sets `out_found` and,
+/// when found, fills `out_link` with the contiguous link run on that row.
+/// A found link's `uri` must be released with `termy_hyperlink_free`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_terminal_hyperlink_at(
+    terminal: *mut TermyFfiTerminal,
+    row: usize,
+    col: usize,
+    out_found: *mut bool,
+    out_link: *mut TermyFfiHyperlink,
+) -> TermyFfiStatus {
+    if terminal.is_null() || out_found.is_null() || out_link.is_null() {
+        return TermyFfiStatus::Null;
+    }
+
+    let link = unsafe { (*terminal).terminal.hyperlink_at(row, col) };
+    unsafe {
+        if let Some(link) = link {
+            *out_found = true;
+            *out_link = TermyFfiHyperlink {
+                start_col: link.start_col,
+                end_col: link.end_col,
+                uri: ffi_bytes_from_string(link.target),
+            };
+        } else {
+            *out_found = false;
+            *out_link = TermyFfiHyperlink::default();
+        }
+    }
+    TermyFfiStatus::Ok
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_hyperlink_free(link: *mut TermyFfiHyperlink) -> TermyFfiStatus {
+    if link.is_null() {
+        return TermyFfiStatus::Null;
+    }
+
+    let link = unsafe { &mut *link };
+    if !link.uri.ptr.is_null() {
+        free_bytes(link.uri);
+    }
+    *link = TermyFfiHyperlink::default();
     TermyFfiStatus::Ok
 }
 
@@ -2863,6 +2915,52 @@ mod tests {
             unsafe { termy_frame_update_free(&mut update) },
             TermyFfiStatus::Ok
         );
+
+        assert_eq!(unsafe { termy_terminal_free(terminal) }, TermyFfiStatus::Ok);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn terminal_hyperlink_at_reports_osc8_links() {
+        let size = TermyFfiSize {
+            cols: 24,
+            rows: 2,
+            cell_width: 9.0,
+            cell_height: 18.0,
+        };
+        // printf expands \033 to ESC; emits "docs" wrapped in an OSC 8 link.
+        let command: &[u8] =
+            b"printf '\\033]8;;https://example.com\\033\\\\docs\\033]8;;\\033\\\\'";
+        let mut terminal = ptr::null_mut();
+
+        assert_eq!(
+            unsafe { termy_terminal_new(size, command.as_ptr(), command.len(), &mut terminal) },
+            TermyFfiStatus::Ok
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let mut found = false;
+        let mut link = TermyFfiHyperlink::default();
+        assert_eq!(
+            unsafe { termy_terminal_hyperlink_at(terminal, 0, 1, &mut found, &mut link) },
+            TermyFfiStatus::Ok
+        );
+        assert!(found);
+        assert_eq!(link.start_col, 0);
+        assert_eq!(link.end_col, 3);
+        let uri = unsafe { slice::from_raw_parts(link.uri.ptr, link.uri.len) };
+        assert_eq!(uri, b"https://example.com");
+        assert_eq!(
+            unsafe { termy_hyperlink_free(&mut link) },
+            TermyFfiStatus::Ok
+        );
+
+        assert_eq!(
+            unsafe { termy_terminal_hyperlink_at(terminal, 0, 10, &mut found, &mut link) },
+            TermyFfiStatus::Ok
+        );
+        assert!(!found);
+        assert!(link.uri.ptr.is_null());
 
         assert_eq!(unsafe { termy_terminal_free(terminal) }, TermyFfiStatus::Ok);
     }

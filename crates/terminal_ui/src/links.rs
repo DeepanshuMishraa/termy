@@ -1,1 +1,3 @@
-pub use termy_core::{DetectedLink, classify_link_token, find_link_in_line};
+pub use termy_core::{
+    DetectedLink, classify_link_token, find_link_in_line, hyperlink_at_viewport_cell,
+};

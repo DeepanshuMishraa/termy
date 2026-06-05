@@ -88,7 +88,7 @@ Full detail: **[docs/engineering/roadmap.md](docs/engineering/roadmap.md)**
 
 | Item | Platform | Eng dep | Reference |
 |------|----------|---------|-----------|
-| Proper OSC sequence support | All | E2 tests for escapes | [#149](https://github.com/termy-org/termy/issues/149) |
+| ~~Proper OSC sequence support~~ ✅ Done — incl. OSC 8 hyperlinks in both apps | All | E2 tests for escapes | [#149](https://github.com/termy-org/termy/issues/149) (closed) |
 
 ---
 
