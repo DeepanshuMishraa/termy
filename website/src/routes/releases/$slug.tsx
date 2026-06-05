@@ -1,7 +1,6 @@
 import { createFileRoute, Link, notFound } from '@tanstack/react-router';
 import { createServerFn } from '@tanstack/react-start';
 import { HomeLayout } from 'fumadocs-ui/layouts/home';
-import { ArrowLeft } from 'lucide-react';
 import { baseOptions } from '@/lib/layout.shared';
 import { fetchReleaseBySlug } from '@/lib/notra';
 import { Markdown } from '@/components/markdown';
@@ -27,10 +26,13 @@ export const Route = createFileRoute('/releases/$slug')({
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleDateString('en-US', {
     year: 'numeric',
-    month: 'long',
+    month: 'short',
     day: 'numeric',
   });
 }
+
+const reveal =
+  'motion-safe:animate-[termy-fade-up_0.7s_cubic-bezier(0.22,1,0.36,1)_both]';
 
 function ReleaseDetail() {
   const { post } = Route.useLoaderData();
@@ -42,25 +44,30 @@ function ReleaseDetail() {
         <article className="mx-auto w-full max-w-3xl px-6 pt-20 pb-12">
           <Link
             to="/releases"
-            className="inline-flex items-center gap-1.5 text-sm text-fd-muted-foreground hover:text-fd-foreground"
+            className={`font-mono text-xs text-fd-muted-foreground transition-colors hover:text-fd-foreground ${reveal}`}
           >
-            <ArrowLeft className="size-4" strokeWidth={1.75} />
-            Releases
+            ← all releases
           </Link>
 
-          <header className="mt-8 flex flex-col gap-2 border-b border-fd-border pb-8">
+          <header
+            className={`mt-10 border-b border-fd-border pb-10 ${reveal}`}
+            style={{ animationDelay: '80ms' }}
+          >
             <time
               dateTime={post.createdAt}
-              className="text-xs uppercase tracking-wide text-fd-muted-foreground"
+              className="font-mono text-xs text-fd-muted-foreground"
             >
               {formatDate(post.createdAt)}
             </time>
-            <h1 className="font-medium text-4xl tracking-tight md:text-5xl">
+            <h1 className="mt-4 text-balance font-medium text-4xl tracking-tight md:text-5xl">
               {post.title}
             </h1>
           </header>
 
-          <div className="prose prose-sm mt-8 max-w-none text-fd-foreground">
+          <div
+            className={`prose prose-sm mt-10 max-w-none text-fd-foreground ${reveal}`}
+            style={{ animationDelay: '160ms' }}
+          >
             <Markdown text={post.markdown || post.content} />
           </div>
         </article>
