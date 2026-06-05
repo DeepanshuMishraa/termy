@@ -138,4 +138,5 @@ fi
 }
 
 echo "==> Checking performance gates"
-(cd "$REPO_ROOT" && cargo run -p xtask -- benchmark-gate --summary "$SUMMARY" "${GATE_ARGS[@]}")
+# ${arr[@]+...} guard: empty-array expansion under `set -u` errors on bash 3.2 (macOS /bin/bash).
+(cd "$REPO_ROOT" && cargo run -p xtask -- benchmark-gate --summary "$SUMMARY" ${GATE_ARGS[@]+"${GATE_ARGS[@]}"})
