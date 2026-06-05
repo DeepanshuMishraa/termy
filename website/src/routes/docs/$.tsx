@@ -55,9 +55,16 @@ const clientLoader = browserCollections.docs.createClientLoader({
   ) {
     return (
       <DocsPage toc={toc}>
-        <DocsTitle>{frontmatter.title}</DocsTitle>
-        <DocsDescription>{frontmatter.description}</DocsDescription>
-        <div className="flex flex-row gap-2 items-center border-b -mt-4 pb-6">
+        <p className="font-mono text-xs text-fd-muted-foreground">
+          <span className="select-none text-fd-primary">$ </span>man termy
+        </p>
+        <DocsTitle className="mt-1 font-medium tracking-tight">
+          {frontmatter.title}
+        </DocsTitle>
+        <DocsDescription className="mb-0 text-balance">
+          {frontmatter.description}
+        </DocsDescription>
+        <div className="flex flex-row items-center gap-2 border-b border-fd-border pb-6">
           <MarkdownCopyButton markdownUrl={markdownUrl} />
           <ViewOptionsPopover
             markdownUrl={markdownUrl}

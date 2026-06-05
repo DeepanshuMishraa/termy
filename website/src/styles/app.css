@@ -98,6 +98,19 @@
   }
 }
 
+/* Prose — hairline-ruled section headings, terminal-ledger style */
+.prose h2 {
+  border-bottom: 1px solid var(--color-fd-border);
+  padding-bottom: 0.4em;
+  letter-spacing: -0.015em;
+}
+
+.prose h1,
+.prose h3,
+.prose h4 {
+  letter-spacing: -0.015em;
+}
+
 html {
   scrollbar-gutter: stable;
 }
