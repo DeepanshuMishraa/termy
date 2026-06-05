@@ -109,8 +109,8 @@ function Home() {
                 Sponsors
               </h2>
               <p className="max-w-2xl text-sm leading-relaxed text-fd-muted-foreground">
-                Termy is supported by companies that care about fast, native
-                developer tools.
+                Termy is supported by companies and people that care about
+                fast, native developer tools.
               </p>
             </div>
 
@@ -128,16 +128,16 @@ function Home() {
                     <img
                       src={sponsor.logo.light}
                       alt={`${sponsor.name} logo`}
-                      className="h-9 w-auto dark:hidden"
+                      className={`h-9 w-auto dark:hidden ${sponsor.avatar ? 'rounded-full' : ''}`}
                     />
                     <img
                       src={sponsor.logo.dark}
                       alt={`${sponsor.name} logo`}
-                      className="hidden h-9 w-auto dark:block"
+                      className={`hidden h-9 w-auto dark:block ${sponsor.avatar ? 'rounded-full' : ''}`}
                     />
                   </span>
                   <span className="mt-5 text-sm leading-relaxed text-fd-muted-foreground group-hover:text-fd-foreground">
-                    {sponsor.description}
+                    {sponsor.description ?? sponsor.name}
                   </span>
                 </a>
               ))}
