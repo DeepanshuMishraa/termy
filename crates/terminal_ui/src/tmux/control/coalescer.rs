@@ -150,6 +150,18 @@ impl NotificationCoalescer {
                     self.queued.push_back(TmuxNotification::Warning(message));
                 }
             }
+            subscription @ TmuxNotification::SubscriptionChanged { .. } => {
+                // Subscription updates are low-volume (tmux caps each subscription
+                // at ~1/sec) and a later value cannot be reconstructed from an
+                // earlier one, so enqueue in order rather than coalescing.
+                //
+                // They are best-effort: `collapse_for_notification_backpressure`
+                // clears the whole backlog (including pending subscription
+                // updates) and forces one refresh when the UI channel overflows.
+                // Consumers must therefore treat `NeedsRefresh` as the signal to
+                // reconcile subscription-derived state from a fresh snapshot.
+                self.queued.push_back(subscription);
+            }
             TmuxNotification::Exit(reason) => {
                 // Exit is terminal for the UI client. Drop stale backlog so the
                 // consumer sees one deterministic shutdown signal.
@@ -174,6 +186,7 @@ impl NotificationCoalescer {
             TmuxNotification::Warning(_) => {
                 self.has_warning_queued = false;
             }
+            TmuxNotification::SubscriptionChanged { .. } => {}
             TmuxNotification::Exit(_) => {}
         }
         Some(notification)

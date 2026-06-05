@@ -225,6 +225,34 @@ impl TmuxClient {
         self.send_control_command_async(command)
     }
 
+    /// Register a format subscription for this control client (tmux 3.4+).
+    ///
+    /// `what` selects the scope (`%*` all panes, `@*` all windows, `$*` all
+    /// sessions, or a specific id); `format` is a tmux format string such as
+    /// `#{pane_current_path}`. tmux then emits a `%subscription-changed`
+    /// notification (surfaced as [`TmuxNotification::SubscriptionChanged`])
+    /// whenever the value changes, capped at roughly once per second.
+    ///
+    /// Like `refresh-client -C`, `-B` operates on the *current control client*,
+    /// so it is issued through the active control channel to bind it
+    /// deterministically.
+    ///
+    /// `name` must be free of spaces and colons: tmux parses the `-B` argument
+    /// as `name:what:format` on the first two colons, and the
+    /// `%subscription-changed` line is whitespace-delimited, so either character
+    /// in `name` would corrupt both the spec and the parsed notification.
+    pub fn subscribe(&self, name: &str, what: &str, format: &str) -> Result<()> {
+        debug_assert!(
+            !name.contains([':', ' ']),
+            "subscription name must not contain ':' or ' ': {name:?}"
+        );
+        let spec = format!("{name}:{what}:{format}");
+        let command = tmux_command_line(&["refresh-client", "-B", spec.as_str()]);
+        self.send_control_command_wait(command.as_str())
+            .with_context(|| format!("tmux subscribe command failed: {command}"))
+            .map(|_| ())
+    }
+
     pub fn session_name(&self) -> &str {
         self.session_name.as_str()
     }
