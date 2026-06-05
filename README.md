@@ -6,7 +6,7 @@ A fast, minimal terminal emulator built with [GPUI](https://gpui.rs) and [alacri
 
 ## Sponsors
 
-Termy is supported by companies that care about fast, native developer tools.
+Termy is supported by companies and people that care about fast, native developer tools.
 
 <a href="https://neon.tech">
   <picture>
@@ -14,6 +14,10 @@ Termy is supported by companies that care about fast, native developer tools.
     <source media="(prefers-color-scheme: light)" srcset="assets/legends/neon-logo-light-color.svg">
     <img alt="Neon" src="assets/legends/neon-logo-light-color.svg" width="157">
   </picture>
+</a>
+&nbsp;&nbsp;&nbsp;
+<a href="https://github.com/mezotv">
+  <img alt="Dominik Koch" src="https://github.com/mezotv.png" width="64">
 </a>
 
 ## Features

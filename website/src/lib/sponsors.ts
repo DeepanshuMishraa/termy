@@ -3,8 +3,11 @@ import neonLightLogo from '../../../assets/legends/neon-logo-light-color.svg?url
 
 export interface Sponsor {
   name: string;
-  description: string;
+  /** Shown under the logo; falls back to the name when omitted. */
+  description?: string;
   url: string;
+  /** Person avatars render as a circle instead of a wordmark. */
+  avatar?: boolean;
   logo: {
     light: string;
     dark: string;
@@ -19,6 +22,15 @@ export const sponsors: Sponsor[] = [
     logo: {
       light: neonLightLogo,
       dark: neonDarkLogo,
+    },
+  },
+  {
+    name: 'Dominik Koch',
+    url: 'https://github.com/mezotv',
+    avatar: true,
+    logo: {
+      light: 'https://github.com/mezotv.png',
+      dark: 'https://github.com/mezotv.png',
     },
   },
 ];
