@@ -15,7 +15,7 @@ Termy is supported by companies and people that care about fast, native develope
     <img alt="Neon" src="assets/legends/neon-logo-light-color.svg" width="157">
   </picture>
 </a>
-
+&nbsp;&nbsp;&nbsp;
 <a href="https://github.com/mezotv">
   <img alt="Dominik Koch" src="https://github.com/mezotv.png" width="64">
 </a>
