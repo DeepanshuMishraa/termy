@@ -21,7 +21,7 @@ pub use config::{
     runtime_config_from_app_config, runtime_config_from_app_config_with_query_colors,
     runtime_config_from_app_config_with_theme, terminal_query_colors_from_resolved_theme,
 };
-pub use frame::{TermyCell, TermyColor, TermyFrame};
+pub use frame::{TermyCell, TermyColor, TermyFrame, TermyFrameUpdate};
 pub use keyboard::{
     Keystroke, Modifiers, TerminalKeyEventKind, TerminalKeyboardMode, TermyKeystroke,
     TermyModifiers, keystroke_to_input,

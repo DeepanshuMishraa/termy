@@ -691,6 +691,7 @@ private struct TerminalDebugOverlay: View {
             Text("\(metrics.framesPerSecond, specifier: "%.0f") FPS")
             Text("\(metrics.cpuPercent, specifier: "%.0f")% CPU")
             Text("\(metrics.memoryMegabytes, specifier: "%.0f") MB")
+            Text("\(metrics.skippedPresentsPerSecond, specifier: "%.0f") skip")
             Text("\(metrics.fullRebuildsPerSecond, specifier: "%.0f")/\(metrics.partialRebuildsPerSecond, specifier: "%.0f") full/part")
         }
         .font(.system(size: 11, weight: .medium, design: .monospaced))

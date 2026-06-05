@@ -1,4 +1,4 @@
-use crate::frame::{TermyFrame, snapshot_from_term};
+use crate::frame::{TermyFrame, TermyFrameUpdate, snapshot_from_term, snapshot_update_from_term};
 use crate::keyboard::TerminalKeyboardMode;
 #[cfg(unix)]
 use crate::locale::{Utf8LocaleOverridePlan, preferred_utf8_locale, utf8_locale_override_plan};
@@ -1442,6 +1442,19 @@ impl Terminal {
     /// Capture a renderer-neutral snapshot of the visible terminal frame.
     pub fn snapshot(&self) -> TermyFrame {
         self.with_term(|term| snapshot_from_term(term, self.size, self.query_colors))
+    }
+
+    /// Capture a damage-scoped visible-frame update for incremental renderers.
+    pub fn frame_update(&self, force_full: bool) -> TermyFrameUpdate {
+        self.with_term_mut(|term| {
+            let damage = if force_full {
+                term.reset_damage();
+                TerminalDamageSnapshot::Full
+            } else {
+                take_term_damage_snapshot(term)
+            };
+            snapshot_update_from_term(term, self.size, self.query_colors, damage)
+        })
     }
 
     /// Search the full terminal buffer and return match ranges in scrollback-relative rows.

@@ -26,6 +26,7 @@ struct TerminalSurfaceView: View {
                 TerminalGridView(
                     frame: terminal.frame,
                     renderPlan: terminal.renderPlan,
+                    renderDamage: terminal.renderDamage,
                     selection: terminal.selection,
                     renderConfig: terminal.renderConfig,
                     searchMatches: terminal.searchMatches,

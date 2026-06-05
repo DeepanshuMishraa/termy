@@ -15,15 +15,18 @@ layer** the native app reimplements in Swift, plus rendering performance.
 
 The GPUI app renders cells on the GPU with a per-pane cell cache and dirty-span
 patching (`crates/desktop_app/src/terminal_view/render.rs`,
-`terminal_view/benchmark.rs`). The native app does **none** of that.
+`terminal_view/benchmark.rs`). The native app now has damage-scoped frame
+updates, a retained row renderer, and display-synced presentation, but still
+needs native metrics gates and a benchmark path before it can replace the GPUI
+app.
 
-How the native path works today (after P1):
+How the native path works today (after P1/P2/P4):
 
-- `TerminalGridView` draws into a **SwiftUI `Canvas`** with
-  `rendersAsynchronously: false` — CPU rasterization through `GraphicsContext`,
-  no Metal, no `CALayer` reuse (`Views/TerminalGridView.swift`). The `Canvas`
-  cannot be partially invalidated, so it still repaints the **whole** grid every
-  frame even when one cell changed. → **P2**.
+- ✅ `TerminalGridView` no longer draws through SwiftUI `Canvas`. It is backed
+  by an AppKit `NSViewRepresentable` row renderer (`Views/TerminalGridView.swift`)
+  that invalidates only dirty row rects for partial terminal damage. This is the
+  retained CPU renderer step for **P2**; a Metal/glyph-atlas renderer is still
+  open as a later optimization if the launch and render gates prove it is needed.
 - ✅ The render plan (background runs + text segments) is no longer rebuilt from
   scratch each frame. `TerminalRenderPlanCache` keeps per-row plans and rebuilds
   only the rows the core flagged as damaged (`Views/TerminalRenderPlan.swift`).
@@ -31,16 +34,19 @@ How the native path works today (after P1):
   `TerminalDamage` (`none`/`full`/`partial(spans)`) and `refresh()` rebuilds the
   plan accordingly (`Services/LibTermyTerminal.swift`,
   `Services/TerminalViewModel.swift`).
-- The frame is still re-marshaled in full across the FFI boundary on every
-  update: `snapshot()` allocates a Swift array and `.map`s **every cell**
-  (`Services/LibTermyTerminal.swift`). → **P4**.
-- Redraw is timer-driven at 60 Hz active / 15 Hz idle, not `CADisplayLink`-
-  synced (`Services/TerminalViewModel.swift`). → **P3**.
+- ✅ The frame is no longer re-marshaled in full across the FFI boundary for
+  partial damage. `termy_terminal_take_frame_update()` returns full snapshots
+  only for forced/full damage and changed cells for partial damage; Swift keeps a
+  retained `TerminalFrameStore` and patches rows in place
+  (`Services/LibTermyTerminal.swift`, `Models/TerminalFrameStore.swift`).
+- ✅ Redraw is driven from `CVDisplayLink` through
+  `DisplaySyncedRefreshDriver`, with the existing 60 Hz active / 15 Hz idle
+  cadence expressed as display-synced tick throttling.
 
-Net effect after P1: a one-cell cursor blink rebuilds only one row's layout, but
-still triggers a full-grid FFI marshal **and** a full-grid CPU repaint. Until P2
-and P4 land, this will still struggle with `yes`, `cat largefile`, `tmux`
-redraws, or a fast `tput` loop on a maximized window.
+Net effect after P1/P2/P4: a one-cell cursor blink patches a small FFI update,
+rebuilds one row's layout, and invalidates that row's rect on the next display
+tick. The remaining performance risk is instrumentation and enforcement: native
+frame-time/render counters are not yet gated in CI.
 
 ### Performance milestone — **P** (gates the whole replacement)
 
@@ -54,23 +60,35 @@ redraws, or a fast `tput` loop on a maximized window.
   publishes a render revision (`Services/TerminalViewModel.swift`); full/partial
   rebuild counts show in the debug overlay. Covered by
   `Tests/TermySwiftTests/TerminalRenderPlanCacheTests.swift` (partial rebuild ==
-  full rebuild). **Remaining for full P1:** the SwiftUI `Canvas` still repaints
-  the whole grid — partial *paint* (vs partial plan rebuild) needs P2.
-- [ ] **P2 — Move off SwiftUI `Canvas`.** Render via a Metal-backed layer
-  (`CAMetalLayer`/`MTKView`) or at minimum a retained `CALayer`/`CATextLayer`
-  grid that reuses glyph runs. Glyph atlas + per-cell cache, not per-frame
-  `GraphicsContext` paths.
-- [ ] **P3 — `CADisplayLink`-driven present** synced to the display refresh,
-  coalescing damage between vsyncs, with the existing active/idle backoff.
-- [ ] **P4 — Reduce FFI marshaling.** Avoid allocating a fresh cell array per
-  frame. Reuse buffers, or expose a damage-scoped snapshot that returns only
-  changed cells.
-- [ ] **P5 — Native render metrics + gate.** Port `TERMY_RENDER_METRICS`-style
-  `full`/`partial`/`reuse` counters into the Swift layer and wire them into
-  `scripts/check-performance-gates.sh` so regressions fail CI.
+  full rebuild).
+- [x] **P2 — Move off SwiftUI `Canvas`.** ✅ Done for the retained CPU renderer
+  step. `TerminalGridView` now hosts an AppKit `NSView` and invalidates only
+  dirty row rects on partial damage. **Remaining optional upgrade:** move to
+  `CAMetalLayer`/`MTKView` plus a glyph atlas if metrics show the retained row
+  renderer cannot hold budget under heavy redraws.
+- [x] **P3 — Display-link-driven present.** ✅ Done with macOS
+  `CVDisplayLink`, coalescing terminal updates until the next display-synced
+  poll/present and preserving the existing active/idle backoff.
+- [x] **P4 — Reduce FFI marshaling.** ✅ Done for damage-scoped updates.
+  `Terminal::frame_update(force_full)` and
+  `termy_terminal_take_frame_update()` expose full snapshots for full damage and
+  changed cells for partial damage. Swift applies them through
+  `TerminalFrameStore`, preserving the existing full snapshot API for
+  compatibility.
+- [x] **P5 — Native render metrics + gate.** ✅ Initial gate done.
+  The Swift layer records codable native render metrics for frame updates,
+  full/partial frame updates, presented/skipped display-link ticks, patched
+  cells, and full/partial render-plan rebuilds. `scripts/check-performance-gates.sh
+  --native-render-metrics` runs selected Swift gate tests for the metrics
+  contract and a live `LibTermyTerminal` workload that must stay on the partial
+  update path. **Remaining for CI-grade gating:** enforce thresholds over longer
+  app-level workloads and persist baselines over time.
 - [ ] **P6 — Validate against GPUI baseline** using
   `cargo run -p xtask -- benchmark-compare`; native must not regress
-  frame-time percentiles for the standard scenarios.
+  frame-time percentiles for the standard scenarios. The current xtask compare
+  harness drives GPUI/Ghostty through `TERMY_BENCHMARK_COMMAND`; the native Swift
+  app still needs an equivalent benchmark command entry point before it can be a
+  real compare target.
 
 **Exit:** cursor blink shows ~0 full rebuilds; `cat` of a large file and a
 tmux full-screen redraw hold frame budget on a maximized window; metrics gated
@@ -164,11 +182,14 @@ or stubbed in `macos/`.
 
 ## 3. Testing & quality gates
 
-Native coverage is config/persistence/stress only — no rendering, input, or
-interaction tests (`Tests/TermySwiftTests/`).
+Native coverage now includes render-plan and frame-store correctness, plus
+config/persistence/stress. Input and interaction coverage is still thin
+(`Tests/TermySwiftTests/`).
 
-- [ ] **Render-correctness tests** (golden frames for partial vs full redraw)
-  once P1/P2 land.
+- [x] **Render-correctness tests for retained state.** Partial-vs-full render
+  plan behavior is covered by `TerminalRenderPlanCacheTests`, and partial/full
+  frame update application is covered by `TerminalFrameStoreTests`. Full visual
+  golden tests are still open.
 - [ ] **Input/encoding tests** (keyboard, mouse, IME marked-text) — encoding is
   in Rust, but the Swift event→FFI mapping is untested.
 - [ ] **Selection/search/scrollback** interaction tests beyond the existing

@@ -124,6 +124,21 @@ typedef struct {
 } TermyFfiDamage;
 
 typedef struct {
+  uint16_t cols;
+  uint16_t rows;
+  TermyFfiCell *cells_ptr;
+  size_t cells_len;
+  size_t cells_capacity;
+  TermyFfiCursor cursor;
+  size_t display_offset;
+  size_t history_size;
+  uint32_t damage_kind;
+  TermyFfiDirtySpan *spans_ptr;
+  size_t spans_len;
+  size_t spans_capacity;
+} TermyFfiFrameUpdate;
+
+typedef struct {
   size_t row;
   size_t start_col;
   size_t end_col;
@@ -370,6 +385,11 @@ TermyFfiStatus termy_terminal_snapshot(
     TermyFfiTerminal *terminal,
     TermyFfiFrame *out_frame);
 TermyFfiStatus termy_frame_free(TermyFfiFrame *frame);
+TermyFfiStatus termy_terminal_take_frame_update(
+    TermyFfiTerminal *terminal,
+    bool force_full,
+    TermyFfiFrameUpdate *out_update);
+TermyFfiStatus termy_frame_update_free(TermyFfiFrameUpdate *update);
 TermyFfiStatus termy_terminal_take_damage(
     TermyFfiTerminal *terminal,
     TermyFfiDamage *out_damage);

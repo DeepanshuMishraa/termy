@@ -287,6 +287,66 @@ final class LibTermyTerminal {
         )
     }
 
+    func frameUpdate(forceFull: Bool) throws -> TerminalFrameUpdate {
+        let handle = try terminalHandle()
+
+        var update = TermyFfiFrameUpdate()
+        try TermyFfiBridge.requireOK(
+            "termy_terminal_take_frame_update",
+            termy_terminal_take_frame_update(handle, forceFull, &update)
+        )
+        defer {
+            _ = termy_frame_update_free(&update)
+        }
+
+        let cells: [TerminalCell]
+        if update.cells_len > 0 {
+            guard let cellsPtr = update.cells_ptr else {
+                throw LibTermyError.missingCells
+            }
+            cells = UnsafeBufferPointer(start: cellsPtr, count: Int(update.cells_len))
+                .map(Self.cell(from:))
+        } else {
+            cells = []
+        }
+
+        let damage: TerminalDamage
+        switch update.damage_kind {
+        case 1:
+            damage = .full
+        case 2:
+            if update.spans_len > 0 {
+                guard let spansPtr = update.spans_ptr else {
+                    damage = .none
+                    break
+                }
+                let spans = UnsafeBufferPointer(start: spansPtr, count: Int(update.spans_len))
+                    .map {
+                        TerminalDirtySpan(
+                            row: Int($0.row),
+                            leftCol: Int($0.left_col),
+                            rightCol: Int($0.right_col)
+                        )
+                    }
+                damage = .partial(spans)
+            } else {
+                damage = .none
+            }
+        default:
+            damage = .none
+        }
+
+        return TerminalFrameUpdate(
+            cols: Int(update.cols),
+            rows: Int(update.rows),
+            cells: cells,
+            cursor: Self.cursor(from: update.cursor),
+            displayOffset: Int(update.display_offset),
+            historySize: Int(update.history_size),
+            damage: damage
+        )
+    }
+
     func search(
         _ query: String,
         options: TerminalSearchOptions = TerminalSearchOptions()
@@ -450,6 +510,17 @@ final class LibTermyTerminal {
             usesTerminalDefaultBackground: ffiCell.uses_terminal_default_bg,
             renderText: ffiCell.render_text,
             bold: ffiCell.bold
+        )
+    }
+
+    private static func cursor(from ffiCursor: TermyFfiCursor) -> TerminalCursor? {
+        guard ffiCursor.visible else {
+            return nil
+        }
+        return TerminalCursor(
+            col: Int(ffiCursor.col),
+            row: Int(ffiCursor.row),
+            style: TerminalCursorStyle(ffiRawValue: ffiCursor.style)
         )
     }
 

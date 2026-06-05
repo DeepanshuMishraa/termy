@@ -31,4 +31,42 @@ enum TerminalDamage: Equatable {
             return !spans.isEmpty
         }
     }
+
+    var dirtyRows: [Int]? {
+        switch self {
+        case .none:
+            return []
+        case .full:
+            return nil
+        case let .partial(spans):
+            return Array(Set(spans.map(\.row))).sorted()
+        }
+    }
+
+    static func partialCoalesced(_ spans: [TerminalDirtySpan]) -> TerminalDamage {
+        guard !spans.isEmpty else {
+            return .none
+        }
+
+        var rows: [Int: (left: Int, right: Int)] = [:]
+        for span in spans {
+            guard span.row >= 0, span.leftCol <= span.rightCol else {
+                continue
+            }
+            if let existing = rows[span.row] {
+                rows[span.row] = (
+                    left: min(existing.left, span.leftCol),
+                    right: max(existing.right, span.rightCol)
+                )
+            } else {
+                rows[span.row] = (left: span.leftCol, right: span.rightCol)
+            }
+        }
+
+        let coalesced = rows.keys.sorted().map { row in
+            let range = rows[row] ?? (left: 0, right: 0)
+            return TerminalDirtySpan(row: row, leftCol: range.left, rightCol: range.right)
+        }
+        return coalesced.isEmpty ? .none : .partial(coalesced)
+    }
 }

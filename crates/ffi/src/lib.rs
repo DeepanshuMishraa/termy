@@ -11,8 +11,8 @@ use termy_core::{
     TerminalClipboardTarget, TerminalDamageSnapshot, TerminalDirtySpan, TerminalEvent,
     TerminalKeyEventKind, TerminalMouseButton, TerminalMouseEventKind, TerminalMouseModifiers,
     TerminalMousePosition, TerminalOptions, TerminalQueryColors, TerminalReplyHost,
-    TerminalRuntimeConfig, TerminalSize, TermyCell, TermyColor, TermyKeystroke, TermyModifiers,
-    TermySearchMatch, TermySearchOptions, encode_mouse_report, keystroke_to_input,
+    TerminalRuntimeConfig, TerminalSize, TermyCell, TermyColor, TermyFrameUpdate, TermyKeystroke,
+    TermyModifiers, TermySearchMatch, TermySearchOptions, encode_mouse_report, keystroke_to_input,
     load_config_from_contents, load_config_from_default_path, load_config_from_path,
 };
 
@@ -80,6 +80,23 @@ pub struct TermyFfiFrame {
     pub cursor: TermyFfiCursor,
     pub display_offset: usize,
     pub history_size: usize,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TermyFfiFrameUpdate {
+    pub cols: u16,
+    pub rows: u16,
+    pub cells_ptr: *mut TermyFfiCell,
+    pub cells_len: usize,
+    pub cells_capacity: usize,
+    pub cursor: TermyFfiCursor,
+    pub display_offset: usize,
+    pub history_size: usize,
+    pub damage_kind: u32,
+    pub spans_ptr: *mut TermyFfiDirtySpan,
+    pub spans_len: usize,
+    pub spans_capacity: usize,
 }
 
 #[repr(C)]
@@ -326,6 +343,65 @@ impl From<TermyCell> for TermyFfiCell {
             bold: cell.bold,
             render_text: cell.render_text,
         }
+    }
+}
+
+fn ffi_cursor_from_cursor(cursor: Option<termy_core::TerminalCursorState>) -> TermyFfiCursor {
+    cursor.map_or_else(TermyFfiCursor::default, |cursor| TermyFfiCursor {
+        visible: true,
+        col: cursor.col,
+        row: cursor.row,
+        style: match cursor.style {
+            termy_core::TerminalCursorStyle::Line => 1,
+            termy_core::TerminalCursorStyle::Block => 2,
+        },
+    })
+}
+
+fn ffi_frame_update_from_update(update: TermyFrameUpdate) -> TermyFfiFrameUpdate {
+    let cells = update
+        .cells
+        .into_iter()
+        .map(TermyFfiCell::from)
+        .collect::<Vec<_>>();
+    let (cells_ptr, cells_len, cells_capacity) = leak_vec(cells);
+
+    let (damage_kind, spans) = match update.damage {
+        TerminalDamageSnapshot::Full => (1, Vec::new()),
+        TerminalDamageSnapshot::Partial(spans) if spans.is_empty() => (0, Vec::new()),
+        TerminalDamageSnapshot::Partial(spans) => {
+            let spans = spans
+                .into_iter()
+                .map(
+                    |TerminalDirtySpan {
+                         row,
+                         left_col,
+                         right_col,
+                     }| TermyFfiDirtySpan {
+                        row,
+                        left_col,
+                        right_col,
+                    },
+                )
+                .collect::<Vec<_>>();
+            (2, spans)
+        }
+    };
+    let (spans_ptr, spans_len, spans_capacity) = leak_vec(spans);
+
+    TermyFfiFrameUpdate {
+        cols: update.cols,
+        rows: update.rows,
+        cells_ptr,
+        cells_len,
+        cells_capacity,
+        cursor: ffi_cursor_from_cursor(update.cursor),
+        display_offset: update.display_offset,
+        history_size: update.history_size,
+        damage_kind,
+        spans_ptr,
+        spans_len,
+        spans_capacity,
     }
 }
 
@@ -1849,17 +1925,7 @@ pub unsafe extern "C" fn termy_terminal_snapshot(
         .map(TermyFfiCell::from)
         .collect::<Vec<_>>();
     let (cells_ptr, cells_len, cells_capacity) = leak_vec(cells);
-    let cursor = frame
-        .cursor
-        .map_or_else(TermyFfiCursor::default, |cursor| TermyFfiCursor {
-            visible: true,
-            col: cursor.col,
-            row: cursor.row,
-            style: match cursor.style {
-                termy_core::TerminalCursorStyle::Line => 1,
-                termy_core::TerminalCursorStyle::Block => 2,
-            },
-        });
+    let cursor = ffi_cursor_from_cursor(frame.cursor);
 
     unsafe {
         *out_frame = TermyFfiFrame {
@@ -1893,6 +1959,54 @@ pub unsafe extern "C" fn termy_frame_free(frame: *mut TermyFfiFrame) -> TermyFfi
         }
     }
     *frame = TermyFfiFrame::default();
+    TermyFfiStatus::Ok
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_terminal_take_frame_update(
+    terminal: *mut TermyFfiTerminal,
+    force_full: bool,
+    out_update: *mut TermyFfiFrameUpdate,
+) -> TermyFfiStatus {
+    if terminal.is_null() || out_update.is_null() {
+        return TermyFfiStatus::Null;
+    }
+
+    let update = unsafe { (*terminal).terminal.frame_update(force_full) };
+    unsafe {
+        *out_update = ffi_frame_update_from_update(update);
+    }
+    TermyFfiStatus::Ok
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_frame_update_free(
+    update: *mut TermyFfiFrameUpdate,
+) -> TermyFfiStatus {
+    if update.is_null() {
+        return TermyFfiStatus::Null;
+    }
+
+    let update = unsafe { &mut *update };
+    if !update.cells_ptr.is_null() {
+        unsafe {
+            drop(Vec::from_raw_parts(
+                update.cells_ptr,
+                update.cells_len,
+                update.cells_capacity,
+            ));
+        }
+    }
+    if !update.spans_ptr.is_null() {
+        unsafe {
+            drop(Vec::from_raw_parts(
+                update.spans_ptr,
+                update.spans_len,
+                update.spans_capacity,
+            ));
+        }
+    }
+    *update = TermyFfiFrameUpdate::default();
     TermyFfiStatus::Ok
 }
 
@@ -2710,6 +2824,46 @@ mod tests {
             unsafe { termy_search_batch_free(&mut batch) },
             TermyFfiStatus::Ok
         );
+        assert_eq!(unsafe { termy_terminal_free(terminal) }, TermyFfiStatus::Ok);
+    }
+
+    #[test]
+    fn terminal_take_frame_update_supports_full_path() {
+        let size = TermyFfiSize {
+            cols: 8,
+            rows: 2,
+            cell_width: 9.0,
+            cell_height: 18.0,
+        };
+        #[cfg(target_os = "windows")]
+        let command: &[u8] = b"echo abc";
+        #[cfg(not(target_os = "windows"))]
+        let command: &[u8] = b"printf abc";
+        let mut terminal = ptr::null_mut();
+
+        assert_eq!(
+            unsafe { termy_terminal_new(size, command.as_ptr(), command.len(), &mut terminal) },
+            TermyFfiStatus::Ok
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let mut update = TermyFfiFrameUpdate::default();
+        assert_eq!(
+            unsafe { termy_terminal_take_frame_update(terminal, true, &mut update) },
+            TermyFfiStatus::Ok
+        );
+        assert_eq!(update.damage_kind, 1);
+        assert_eq!(
+            update.cells_len,
+            usize::from(size.cols) * usize::from(size.rows)
+        );
+        let cells = unsafe { slice::from_raw_parts(update.cells_ptr, update.cells_len) };
+        assert!(cells.iter().any(|cell| cell.codepoint == u32::from(b'a')));
+        assert_eq!(
+            unsafe { termy_frame_update_free(&mut update) },
+            TermyFfiStatus::Ok
+        );
+
         assert_eq!(unsafe { termy_terminal_free(terminal) }, TermyFfiStatus::Ok);
     }
 

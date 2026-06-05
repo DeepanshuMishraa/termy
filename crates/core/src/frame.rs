@@ -1,13 +1,20 @@
 use alacritty_terminal::{
     event::EventListener,
     grid::Dimensions,
-    term::{Term, cell::Flags, color::Colors},
+    term::{
+        Term,
+        cell::{Cell, Flags},
+        color::Colors,
+    },
     vte::ansi::{Color as AnsiColor, NamedColor, Rgb as AnsiRgb},
 };
 
 use crate::{
     protocol::TerminalQueryColors,
-    runtime::{TerminalCursorState, TerminalSize, cursor_state_from_term},
+    runtime::{
+        TerminalCursorState, TerminalDamageSnapshot, TerminalDirtySpan, TerminalSize,
+        cursor_state_from_term,
+    },
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -38,6 +45,17 @@ pub struct TermyFrame {
     pub cursor: Option<TerminalCursorState>,
     pub display_offset: usize,
     pub history_size: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TermyFrameUpdate {
+    pub cols: u16,
+    pub rows: u16,
+    pub cells: Vec<TermyCell>,
+    pub cursor: Option<TerminalCursorState>,
+    pub display_offset: usize,
+    pub history_size: usize,
+    pub damage: TerminalDamageSnapshot,
 }
 
 fn rgba(rgb: AnsiRgb) -> TermyColor {
@@ -106,6 +124,49 @@ fn default_cell(
     }
 }
 
+fn cell_from_renderable_cell(
+    col: usize,
+    row: usize,
+    cell: &Cell,
+    live_colors: &Colors,
+    query_colors: TerminalQueryColors,
+) -> TermyCell {
+    let mut fg = cell.fg;
+    let mut bg = cell.bg;
+    if cell.flags.contains(Flags::INVERSE) {
+        std::mem::swap(&mut fg, &mut bg);
+    }
+    // Compute default-bg *after* the inverse swap: a reverse-video cell
+    // paints with the default foreground color, so it is no longer the
+    // terminal's default background and must be drawn.
+    let uses_terminal_default_bg = matches!(bg, AnsiColor::Named(NamedColor::Background));
+    if cell.flags.contains(Flags::BOLD) {
+        fg = bold_foreground_color(fg);
+    }
+
+    let mut fg = color_to_rgba(fg, live_colors, query_colors);
+    if cell.flags.contains(Flags::DIM) {
+        fg.r /= 2;
+        fg.g /= 2;
+        fg.b /= 2;
+    }
+
+    TermyCell {
+        col,
+        row,
+        char: cell.c,
+        fg,
+        bg: color_to_rgba(bg, live_colors, query_colors),
+        uses_terminal_default_bg,
+        bold: cell.flags.contains(Flags::BOLD),
+        render_text: !cell
+            .flags
+            .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER | Flags::HIDDEN)
+            && cell.c != '\0'
+            && !cell.c.is_control(),
+    }
+}
+
 pub(crate) fn snapshot_from_term<T: EventListener>(
     term: &Term<T>,
     size: TerminalSize,
@@ -133,45 +194,12 @@ pub(crate) fn snapshot_from_term<T: EventListener>(
             continue;
         }
 
-        let cell = indexed_cell.cell;
-        let mut fg = cell.fg;
-        let mut bg = cell.bg;
-        if cell.flags.contains(Flags::INVERSE) {
-            std::mem::swap(&mut fg, &mut bg);
-        }
-        // Compute default-bg *after* the inverse swap: a reverse-video cell
-        // (e.g. Ink/Claude Code's cursor) paints with the default *foreground*
-        // color, so it is no longer the terminal's default background and must
-        // be drawn rather than skipped/made transparent.
-        let uses_terminal_default_bg = matches!(bg, AnsiColor::Named(NamedColor::Background));
-        if cell.flags.contains(Flags::BOLD) {
-            fg = bold_foreground_color(fg);
-        }
-
-        let mut fg = color_to_rgba(fg, live_colors, query_colors);
-        if cell.flags.contains(Flags::DIM) {
-            fg.r /= 2;
-            fg.g /= 2;
-            fg.b /= 2;
-        }
-
         let idx = row
             .checked_mul(cols)
             .and_then(|base| base.checked_add(col))
             .expect("frame cell index must fit usize");
-        cells[idx] = TermyCell {
-            col,
-            row,
-            char: cell.c,
-            fg,
-            bg: color_to_rgba(bg, live_colors, query_colors),
-            uses_terminal_default_bg,
-            bold: cell.flags.contains(Flags::BOLD),
-            render_text: !cell.flags.intersects(
-                Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER | Flags::HIDDEN,
-            ) && cell.c != '\0'
-                && !cell.c.is_control(),
-        };
+        cells[idx] =
+            cell_from_renderable_cell(col, row, indexed_cell.cell, live_colors, query_colors);
     }
 
     let grid = term.grid();
@@ -182,6 +210,105 @@ pub(crate) fn snapshot_from_term<T: EventListener>(
         cursor: cursor_state_from_term(term),
         display_offset: grid.display_offset(),
         history_size: grid.history_size(),
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct UpdateSpan {
+    row: usize,
+    left_col: usize,
+    right_col: usize,
+    base_index: usize,
+}
+
+pub(crate) fn snapshot_update_from_term<T: EventListener>(
+    term: &Term<T>,
+    size: TerminalSize,
+    query_colors: TerminalQueryColors,
+    damage: TerminalDamageSnapshot,
+) -> TermyFrameUpdate {
+    let cols = usize::from(size.cols);
+    let rows = usize::from(size.rows);
+    let live_colors = term.colors();
+    let grid = term.grid();
+
+    let (cells, damage) = match damage {
+        TerminalDamageSnapshot::Full => (
+            snapshot_from_term(term, size, query_colors).cells,
+            TerminalDamageSnapshot::Full,
+        ),
+        TerminalDamageSnapshot::Partial(spans) => {
+            let mut update_spans = Vec::new();
+            let mut cells = Vec::new();
+
+            for span in spans {
+                if span.row >= rows || cols == 0 {
+                    continue;
+                }
+                let left_col = span.left_col.min(cols.saturating_sub(1));
+                let right_col = span.right_col.min(cols.saturating_sub(1));
+                if left_col > right_col {
+                    continue;
+                }
+                let base_index = cells.len();
+                update_spans.push(UpdateSpan {
+                    row: span.row,
+                    left_col,
+                    right_col,
+                    base_index,
+                });
+                for col in left_col..=right_col {
+                    cells.push(default_cell(col, span.row, live_colors, query_colors));
+                }
+            }
+
+            let content = term.renderable_content();
+            for indexed_cell in content.display_iter {
+                let row = indexed_cell.point.line.0 + content.display_offset as i32;
+                if row < 0 {
+                    continue;
+                }
+                let row = row as usize;
+                let col = indexed_cell.point.column.0;
+                if row >= rows || col >= cols {
+                    continue;
+                }
+                let Some(span) = update_spans
+                    .iter()
+                    .find(|span| span.row == row && col >= span.left_col && col <= span.right_col)
+                else {
+                    continue;
+                };
+                let index = span.base_index + (col - span.left_col);
+                cells[index] = cell_from_renderable_cell(
+                    col,
+                    row,
+                    indexed_cell.cell,
+                    live_colors,
+                    query_colors,
+                );
+            }
+
+            let spans = update_spans
+                .iter()
+                .map(|span| TerminalDirtySpan {
+                    row: span.row,
+                    left_col: span.left_col,
+                    right_col: span.right_col,
+                })
+                .collect::<Vec<_>>();
+            (cells, TerminalDamageSnapshot::Partial(spans))
+        }
+    };
+
+    TermyFrameUpdate {
+        cols: size.cols,
+        rows: size.rows,
+        cells,
+        cursor: cursor_state_from_term(term),
+        display_offset: grid.display_offset(),
+        history_size: grid.history_size(),
+        damage,
     }
 }
 
@@ -288,6 +415,112 @@ mod tests {
                 b: 0xee,
                 a: 255,
             }
+        );
+    }
+
+    #[test]
+    fn snapshot_update_full_returns_all_visible_cells() {
+        let size = TerminalSize {
+            cols: 4,
+            rows: 2,
+            cell_width: 9.0,
+            cell_height: 18.0,
+        };
+        let mut term = Term::new(TermConfig::default(), &size, VoidListener);
+        let mut parser: ansi::Processor = ansi::Processor::new();
+        parser.advance(&mut term, b"ok");
+
+        let update = snapshot_update_from_term(
+            &term,
+            size,
+            TerminalQueryColors::default(),
+            TerminalDamageSnapshot::Full,
+        );
+
+        assert!(matches!(update.damage, TerminalDamageSnapshot::Full));
+        assert_eq!(update.cells.len(), 8);
+        assert_eq!(update.cells[0].char, 'o');
+        assert_eq!(update.cells[1].char, 'k');
+    }
+
+    #[test]
+    fn snapshot_update_partial_returns_only_dirty_span_cells() {
+        let size = TerminalSize {
+            cols: 4,
+            rows: 2,
+            cell_width: 9.0,
+            cell_height: 18.0,
+        };
+        let mut term = Term::new(TermConfig::default(), &size, VoidListener);
+        let mut parser: ansi::Processor = ansi::Processor::new();
+        parser.advance(&mut term, b"abcd");
+
+        let update = snapshot_update_from_term(
+            &term,
+            size,
+            TerminalQueryColors::default(),
+            TerminalDamageSnapshot::Partial(vec![TerminalDirtySpan {
+                row: 0,
+                left_col: 1,
+                right_col: 2,
+            }]),
+        );
+
+        assert_eq!(
+            update.damage,
+            TerminalDamageSnapshot::Partial(vec![TerminalDirtySpan {
+                row: 0,
+                left_col: 1,
+                right_col: 2,
+            }])
+        );
+        assert_eq!(update.cells.len(), 2);
+        assert_eq!(
+            (
+                update.cells[0].row,
+                update.cells[0].col,
+                update.cells[0].char
+            ),
+            (0, 1, 'b')
+        );
+        assert_eq!(
+            (
+                update.cells[1].row,
+                update.cells[1].col,
+                update.cells[1].char
+            ),
+            (0, 2, 'c')
+        );
+    }
+
+    #[test]
+    fn snapshot_update_partial_includes_default_cells_for_dirty_blanks() {
+        let size = TerminalSize {
+            cols: 4,
+            rows: 2,
+            cell_width: 9.0,
+            cell_height: 18.0,
+        };
+        let mut term = Term::new(TermConfig::default(), &size, VoidListener);
+        let mut parser: ansi::Processor = ansi::Processor::new();
+        parser.advance(&mut term, b"x");
+
+        let update = snapshot_update_from_term(
+            &term,
+            size,
+            TerminalQueryColors::default(),
+            TerminalDamageSnapshot::Partial(vec![TerminalDirtySpan {
+                row: 0,
+                left_col: 1,
+                right_col: 3,
+            }]),
+        );
+
+        assert_eq!(update.cells.len(), 3);
+        assert!(update.cells.iter().all(|cell| cell.char == ' '));
+        assert_eq!(
+            update.cells.iter().map(|cell| cell.col).collect::<Vec<_>>(),
+            vec![1, 2, 3]
         );
     }
 }

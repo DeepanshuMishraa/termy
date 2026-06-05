@@ -15,19 +15,23 @@ final class TerminalViewModel: ObservableObject {
     @Published private(set) var activeSearchMatchIndex = 0
     @Published private(set) var hoveredLink: TerminalFrameLink?
     @Published private(set) var debugMetrics = TerminalDebugMetrics.empty
+    @Published private(set) var nativeRenderMetrics = NativeRenderMetricsSnapshot()
     /// Bumped whenever the cached render plan changes, so the grid view redraws.
     /// The plan itself lives in `renderPlanCache` (not `@Published`) to avoid
     /// diffing large arrays on every frame.
     @Published private(set) var renderRevision = 0
+    @Published private(set) var renderDamage = TerminalDamage.full
     @Published var selection: TerminalSelection?
 
     /// The flattened paint instructions for the current frame, rebuilt
-    /// incrementally from damage in `refresh()`.
+    /// incrementally from damage in `pollAndPresent()`.
     var renderPlan: TerminalRenderPlan { renderPlanCache.plan }
     private let renderPlanCache = TerminalRenderPlanCache()
+    private let frameStore = TerminalFrameStore()
+    private let nativeRenderMetricsRecorder = NativeRenderMetricsRecorder()
 
     private var terminal: LibTermyTerminal?
-    private var timer: Timer?
+    private var refreshDriver: DisplaySyncedRefreshDriver?
     private var cadence: RefreshCadence = .active
     private var lastActivityAt = Date()
     private static let idleCadenceThreshold: TimeInterval = 0.4
@@ -49,6 +53,7 @@ final class TerminalViewModel: ObservableObject {
     private var lastSearchRefreshAt: Date?
     private var lastAutoCopiedSelectionText: String?
     private var renderedFrameCount = 0
+    private var skippedPresentCount = 0
     private var fullRebuildCount = 0
     private var partialRebuildCount = 0
     private var lastDebugSample = ProcessUsageSample.capture()
@@ -63,7 +68,14 @@ final class TerminalViewModel: ObservableObject {
         self.startupCommand = TerminalViewModel.normalizedStartupCommand(startupCommand)
         self.tmuxSessionHint = tmuxSessionHint
         if let restoredBufferText = Self.normalizedRestoredBufferText(restoredBufferText) {
-            frame = TerminalFrame.plainTextPreview(restoredBufferText)
+            let previewFrame = TerminalFrame.plainTextPreview(restoredBufferText)
+            frameStore.reset(to: previewFrame)
+            frame = previewFrame
+            renderPlanCache.update(
+                frame: previewFrame,
+                renderConfig: renderConfig,
+                damage: .full
+            )
         }
     }
 
@@ -86,8 +98,8 @@ final class TerminalViewModel: ObservableObject {
             currentWorkingDirectory = initialWorkingDirectory
             isExited = false
             startupRefreshUntil = Date().addingTimeInterval(2)
-            refresh(force: true)
-            startRefreshTimer(.active)
+            pollAndPresent(force: true)
+            startRefreshDriver(.active)
             settingsObserver = NotificationCenter.default.addObserver(
                 forName: .termySettingsChanged,
                 object: nil,
@@ -111,28 +123,27 @@ final class TerminalViewModel: ObservableObject {
         }
     }
 
-    /// Drives the polling cadence: 60 Hz while the terminal is actively producing
-    /// output or receiving input (snappy), backing off to 15 Hz once idle to save
-    /// CPU/battery. The expensive frame snapshot is still damage-gated in
-    /// `refresh()`, so this only changes how often we poll the FFI for activity.
-    private func startRefreshTimer(_ cadence: RefreshCadence) {
+    /// Drives polling from display refresh boundaries: up to 60 Hz while the
+    /// terminal is actively producing output or receiving input, backing off to
+    /// 15 Hz once idle to save CPU/battery. Multiple core updates between ticks
+    /// coalesce into one frame update before presentation.
+    private func startRefreshDriver(_ cadence: RefreshCadence) {
         self.cadence = cadence
-        timer?.invalidate()
-        let timer = Timer(timeInterval: cadence.interval, repeats: true) {
-            [weak self] _ in
-            Task { @MainActor in
-                self?.refresh()
-            }
+        if let refreshDriver {
+            refreshDriver.cadence = cadence
+            return
         }
-        timer.tolerance = cadence.interval * 0.2
-        RunLoop.main.add(timer, forMode: .common)
-        self.timer = timer
+        let driver = DisplaySyncedRefreshDriver { [weak self] in
+            self?.pollAndPresent()
+        }
+        refreshDriver = driver
+        driver.start(cadence: cadence)
     }
 
     private func noteActivity() {
         lastActivityAt = Date()
         if cadence != .active {
-            startRefreshTimer(.active)
+            startRefreshDriver(.active)
         }
     }
 
@@ -142,7 +153,7 @@ final class TerminalViewModel: ObservableObject {
         else {
             return
         }
-        startRefreshTimer(.idle)
+        startRefreshDriver(.idle)
     }
 
     /// Pauses refresh polling without tearing down the PTY, so the terminal core
@@ -154,8 +165,8 @@ final class TerminalViewModel: ObservableObject {
             return
         }
         isSuspended = true
-        timer?.invalidate()
-        timer = nil
+        refreshDriver?.stop()
+        refreshDriver = nil
         pendingResizeRefresh?.cancel()
         pendingResizeRefresh = nil
     }
@@ -167,13 +178,13 @@ final class TerminalViewModel: ObservableObject {
             return
         }
         isSuspended = false
-        startRefreshTimer(.active)
-        refresh(force: true)
+        startRefreshDriver(.active)
+        pollAndPresent(force: true)
     }
 
     func stop() {
-        timer?.invalidate()
-        timer = nil
+        refreshDriver?.stop()
+        refreshDriver = nil
         pendingResizeRefresh?.cancel()
         pendingResizeRefresh = nil
         isSuspended = false
@@ -198,7 +209,7 @@ final class TerminalViewModel: ObservableObject {
         do {
             renderConfig = try LibTermyTerminal.loadRenderConfig()
             try terminal?.reloadColors()
-            refresh(force: true)
+            pollAndPresent(force: true)
         } catch {
             report(error)
         }
@@ -252,7 +263,7 @@ final class TerminalViewModel: ObservableObject {
         do {
             try terminal?.write(bytes)
             noteActivity()
-            refresh(force: true)
+            pollAndPresent(force: true)
         } catch {
             report(error)
         }
@@ -412,10 +423,11 @@ final class TerminalViewModel: ObservableObject {
 
         do {
             // The FFI resize is cheap and keeps the PTY winsize correct, so run
-            // it every step. The expensive forced refresh (full snapshot + plan
-            // rebuild + Canvas repaint) is throttled below so a continuous drag
-            // — e.g. dragging a split divider, which crosses a cell boundary
-            // every few pixels — does not block the main run loop on every step.
+            // it every step. The expensive forced refresh (full frame update +
+            // plan rebuild + row renderer repaint) is throttled below so a
+            // continuous drag — e.g. dragging a split divider, which crosses a
+            // cell boundary every few pixels — does not block the main run loop
+            // on every step.
             try terminal?.resize(
                 cols: resize.cols,
                 rows: resize.rows,
@@ -448,22 +460,31 @@ final class TerminalViewModel: ObservableObject {
                 }
                 self.pendingResizeRefresh = nil
                 self.lastResizeRefreshAt = Date()
-                self.refresh(force: true)
+                self.pollAndPresent(force: true)
             }
             return
         }
         lastResizeRefreshAt = now
-        refresh(force: true)
+        pollAndPresent(force: true)
     }
 
-    private func refresh(force: Bool = false) {
+    private func pollAndPresent(force: Bool = false) {
         do {
             let events = try terminal?.drainEvents() ?? []
             handle(events)
             let hasEvents = !events.isEmpty
-            let damage = try terminal?.takeDamage() ?? .none
-            let hasDamage = damage.hasChanges
-            let isStartupRefresh = shouldForceStartupRefresh()
+            let forceFull = force || shouldForceStartupRefresh()
+            let update = try terminal?.frameUpdate(forceFull: forceFull)
+            let applyResult = update.map(frameStore.apply)
+                ?? TerminalFrameStoreApplyResult(
+                    changed: false,
+                    effectiveDamage: .none,
+                    patchedCellCount: 0
+                )
+            if let update {
+                nativeRenderMetricsRecorder.recordFrameUpdate(update, applyResult: applyResult)
+            }
+            let hasDamage = applyResult.effectiveDamage.hasChanges
 
             if hasEvents || hasDamage {
                 noteActivity()
@@ -471,30 +492,30 @@ final class TerminalViewModel: ObservableObject {
                 adaptCadenceWhenIdle()
             }
 
-            guard force || isStartupRefresh || hasEvents || hasDamage else {
+            guard forceFull || applyResult.changed else {
                 updateDebugMetrics(renderedFrame: false)
                 return
             }
 
-            if let nextFrame = try terminal?.snapshot() {
-                frame = nextFrame
-                errorMessage = nil
-                // Partial damage rebuilds only the changed rows; a forced refresh
-                // (resize/startup) or a snapshot driven by non-cell events rebuilds
-                // the whole plan to stay correct.
-                let effectiveDamage: TerminalDamage =
-                    (force || isStartupRefresh || !hasDamage) ? .full : damage
-                renderPlanCache.update(
-                    frame: nextFrame,
-                    renderConfig: renderConfig,
-                    damage: effectiveDamage
-                )
-                renderRevision &+= 1
-                updateDebugMetrics(renderedFrame: true)
-                refreshSearchMatches(resetActive: false, revealActive: false, force: false)
-            } else {
+            guard update != nil else {
                 updateDebugMetrics(renderedFrame: false)
+                return
             }
+
+            frame = frameStore.frame
+            errorMessage = nil
+            let effectiveDamage = forceFull ? .full : applyResult.effectiveDamage
+            renderDamage = effectiveDamage
+            renderPlanCache.update(
+                frame: frame,
+                renderConfig: renderConfig,
+                damage: effectiveDamage
+            )
+            nativeRenderMetricsRecorder.recordPresentedFrame(planStats: renderPlanCache.stats)
+            nativeRenderMetrics = nativeRenderMetricsRecorder.snapshot
+            renderRevision &+= 1
+            updateDebugMetrics(renderedFrame: true)
+            refreshSearchMatches(resetActive: false, revealActive: false, force: false)
         } catch {
             report(error)
         }
@@ -514,7 +535,7 @@ final class TerminalViewModel: ObservableObject {
     private func refreshIfChanged(_ operation: () throws -> Bool) {
         do {
             if try operation() {
-                refresh(force: true)
+                pollAndPresent(force: true)
             }
         } catch {
             report(error)
@@ -538,6 +559,10 @@ final class TerminalViewModel: ObservableObject {
             } else {
                 partialRebuildCount += 1
             }
+        } else {
+            skippedPresentCount += 1
+            nativeRenderMetricsRecorder.recordSkippedPresent()
+            nativeRenderMetrics = nativeRenderMetricsRecorder.snapshot
         }
 
         let nextSample = ProcessUsageSample.capture()
@@ -552,10 +577,12 @@ final class TerminalViewModel: ObservableObject {
             framesPerSecond: fps,
             cpuPercent: min(999, (cpuDelta / elapsed) * 100),
             memoryMegabytes: nextSample.memoryMegabytes,
+            skippedPresentsPerSecond: Double(skippedPresentCount) / elapsed,
             fullRebuildsPerSecond: Double(fullRebuildCount) / elapsed,
             partialRebuildsPerSecond: Double(partialRebuildCount) / elapsed
         )
         renderedFrameCount = 0
+        skippedPresentCount = 0
         fullRebuildCount = 0
         partialRebuildCount = 0
         lastDebugSample = nextSample
@@ -698,6 +725,8 @@ struct TerminalDebugMetrics: Equatable {
     var framesPerSecond: Double
     var cpuPercent: Double
     var memoryMegabytes: Double
+    /// Display-synced polls in the last sample window that had no frame to present.
+    var skippedPresentsPerSecond: Double
     /// Frames in the last sample window that rebuilt the entire render plan.
     var fullRebuildsPerSecond: Double
     /// Frames in the last sample window that rebuilt only the damaged rows.
@@ -707,6 +736,7 @@ struct TerminalDebugMetrics: Equatable {
         framesPerSecond: 0,
         cpuPercent: 0,
         memoryMegabytes: 0,
+        skippedPresentsPerSecond: 0,
         fullRebuildsPerSecond: 0,
         partialRebuildsPerSecond: 0
     )
@@ -740,7 +770,7 @@ private struct TerminalResize: Equatable {
     var cellHeight: Float
 }
 
-private enum RefreshCadence {
+enum RefreshCadence {
     case active
     case idle
 
