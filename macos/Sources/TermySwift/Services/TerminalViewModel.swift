@@ -21,6 +21,11 @@ final class TerminalViewModel: ObservableObject {
     /// diffing large arrays on every frame.
     @Published private(set) var renderRevision = 0
     @Published private(set) var renderDamage = TerminalDamage.full
+    /// Host-driven cursor blink visibility; the grid view skips the cursor
+    /// while this is `false`. Ticked from the refresh driver in
+    /// `pollAndPresent()` so blinking follows the active/idle cadence and
+    /// pauses with suspended (occluded) tabs.
+    @Published private(set) var cursorBlinkVisible = true
     @Published var selection: TerminalSelection?
 
     /// The flattened paint instructions for the current frame, rebuilt
@@ -31,6 +36,9 @@ final class TerminalViewModel: ObservableObject {
     private let nativeRenderMetricsRecorder = NativeRenderMetricsRecorder()
 
     private var terminal: LibTermyTerminal?
+    private var cursorBlinkPhase = TerminalCursorBlinkPhase()
+    private var baseRenderConfig = TerminalRenderConfig.default
+    private var fontSizeDelta: CGFloat = 0
     private var refreshDriver: DisplaySyncedRefreshDriver?
     private var cadence: RefreshCadence = .active
     private var lastActivityAt = Date()
@@ -94,7 +102,7 @@ final class TerminalViewModel: ObservableObject {
                 startupCommand: effectiveStartupCommand
             )
             self.terminal = terminal
-            renderConfig = terminal.renderConfig
+            applyBaseRenderConfig(terminal.renderConfig)
             currentWorkingDirectory = initialWorkingDirectory
             isExited = false
             startupRefreshUntil = Date().addingTimeInterval(2)
@@ -207,7 +215,7 @@ final class TerminalViewModel: ObservableObject {
     /// reloaded theme palette so existing cells recolor.
     private func reloadAppearance() {
         do {
-            renderConfig = try LibTermyTerminal.loadRenderConfig()
+            applyBaseRenderConfig(try LibTermyTerminal.loadRenderConfig())
             try terminal?.reloadColors()
             pollAndPresent(force: true)
         } catch {
@@ -263,9 +271,19 @@ final class TerminalViewModel: ObservableObject {
         do {
             try terminal?.write(bytes)
             noteActivity()
+            resetCursorBlinkPhase()
             pollAndPresent(force: true)
         } catch {
             report(error)
+        }
+    }
+
+    /// Forces the cursor solid and restarts the blink interval, e.g. on input
+    /// or when the pane gains focus.
+    func resetCursorBlinkPhase() {
+        cursorBlinkPhase.noteInput()
+        if !cursorBlinkVisible {
+            cursorBlinkVisible = true
         }
     }
 
@@ -301,6 +319,33 @@ final class TerminalViewModel: ObservableObject {
         }
     }
 
+    func increaseFontSize() {
+        adjustFontSize(by: 1)
+    }
+
+    func decreaseFontSize() {
+        adjustFontSize(by: -1)
+    }
+
+    func resetFontSize() {
+        guard fontSizeDelta != 0 else {
+            return
+        }
+        fontSizeDelta = 0
+        applyRenderConfig(baseRenderConfig, forceFullRebuild: true)
+    }
+
+    private func adjustFontSize(by delta: CGFloat) {
+        let currentFontSize = baseRenderConfig.fontSize + fontSizeDelta
+        let nextFontSize = Self.clampedFontSize(currentFontSize + delta)
+        let nextDelta = nextFontSize - baseRenderConfig.fontSize
+        guard nextDelta != fontSizeDelta else {
+            return
+        }
+        fontSizeDelta = nextDelta
+        applyRenderConfig(zoomedRenderConfig(from: baseRenderConfig), forceFullRebuild: true)
+    }
+
     func updateSelection(_ selection: TerminalSelection?) {
         self.selection = selection
         guard renderConfig.copyOnSelect,
@@ -329,6 +374,17 @@ final class TerminalViewModel: ObservableObject {
     /// Triple-click: select the whole line under the cursor.
     func selectLine(at position: TerminalGridPosition) {
         updateSelection(frame.lineSelection(at: position))
+    }
+
+    func selectAll() {
+        guard frame.cols > 0, frame.rows > 0 else {
+            updateSelection(nil)
+            return
+        }
+        updateSelection(TerminalSelection(
+            anchor: TerminalGridPosition(col: 0, row: 0),
+            active: TerminalGridPosition(col: frame.cols - 1, row: frame.rows - 1)
+        ))
     }
 
     /// The link under `position`: an OSC 8 hyperlink reported by the core when
@@ -443,6 +499,12 @@ final class TerminalViewModel: ObservableObject {
                 cellWidth: resize.cellWidth,
                 cellHeight: resize.cellHeight
             )
+            guard !isSuspended else {
+                return
+            }
+            // Resizing is user activity: keep the refresh driver at the active
+            // cadence so reflowed output arriving mid-drag presents at 60 Hz.
+            noteActivity()
             scheduleResizeRefresh()
         } catch {
             report(error)
@@ -501,12 +563,19 @@ final class TerminalViewModel: ObservableObject {
                 adaptCadenceWhenIdle()
             }
 
+            let blinkToggled = cursorBlinkPhase.tick(blinkEnabled: renderConfig.cursorBlink)
+            if blinkToggled {
+                cursorBlinkVisible = cursorBlinkPhase.isVisible
+            }
+
             guard forceFull || applyResult.changed else {
+                presentCursorBlink(toggled: blinkToggled)
                 updateDebugMetrics(renderedFrame: false)
                 return
             }
 
             guard update != nil else {
+                presentCursorBlink(toggled: blinkToggled)
                 updateDebugMetrics(renderedFrame: false)
                 return
             }
@@ -514,7 +583,17 @@ final class TerminalViewModel: ObservableObject {
             frame = frameStore.frame
             errorMessage = nil
             let effectiveDamage = forceFull ? .full : applyResult.effectiveDamage
-            renderDamage = effectiveDamage
+            // Fold the cursor cell into the published damage on a blink toggle
+            // so the grid view repaints the cursor row alongside the frame's
+            // own dirty rows. The plan cache below keeps the narrower
+            // `effectiveDamage`: a blink changes no cell content.
+            if blinkToggled, let cursor = frame.cursor {
+                renderDamage = effectiveDamage.union(
+                    TerminalDirtySpan(row: cursor.row, leftCol: cursor.col, rightCol: cursor.col)
+                )
+            } else {
+                renderDamage = effectiveDamage
+            }
             renderPlanCache.update(
                 frame: frame,
                 renderConfig: renderConfig,
@@ -528,6 +607,18 @@ final class TerminalViewModel: ObservableObject {
         } catch {
             report(error)
         }
+    }
+
+    /// Publishes a cursor-cell-only damage span when a blink toggle happens on
+    /// a tick that presented no new frame, so the grid view repaints just the
+    /// cursor row instead of re-applying stale (possibly full) damage.
+    private func presentCursorBlink(toggled: Bool) {
+        guard toggled, let cursor = frame.cursor, frame.displayOffset == 0 else {
+            return
+        }
+        renderDamage = .partial([
+            TerminalDirtySpan(row: cursor.row, leftCol: cursor.col, rightCol: cursor.col)
+        ])
     }
 
     private func shouldForceStartupRefresh() -> Bool {
@@ -553,6 +644,49 @@ final class TerminalViewModel: ObservableObject {
 
     private func report(_ error: Error) {
         errorMessage = String(describing: error)
+    }
+
+    private func applyBaseRenderConfig(_ config: TerminalRenderConfig) {
+        baseRenderConfig = config
+        fontSizeDelta = Self.clampedFontSize(config.fontSize + fontSizeDelta) - config.fontSize
+        applyRenderConfig(zoomedRenderConfig(from: config), forceFullRebuild: true)
+    }
+
+    private func zoomedRenderConfig(from config: TerminalRenderConfig) -> TerminalRenderConfig {
+        let nextFontSize = Self.clampedFontSize(config.fontSize + fontSizeDelta)
+        guard nextFontSize != config.fontSize else {
+            return config
+        }
+
+        var nextConfig = config
+        let scale = nextFontSize / config.fontSize
+        nextConfig.fontSize = nextFontSize
+        nextConfig.measuredCellWidth = max(1, config.measuredCellWidth * scale)
+        nextConfig.measuredCellHeight = max(1, nextFontSize * config.lineHeight)
+        return nextConfig
+    }
+
+    private func applyRenderConfig(_ config: TerminalRenderConfig, forceFullRebuild: Bool) {
+        guard config != renderConfig else {
+            return
+        }
+
+        renderConfig = config
+        guard forceFullRebuild else {
+            return
+        }
+
+        renderDamage = .full
+        renderPlanCache.update(
+            frame: frame,
+            renderConfig: config,
+            damage: .full
+        )
+        renderRevision &+= 1
+    }
+
+    private static func clampedFontSize(_ fontSize: CGFloat) -> CGFloat {
+        min(72, max(6, fontSize))
     }
 
     private func copy(_ text: String) {

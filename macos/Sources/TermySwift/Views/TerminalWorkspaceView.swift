@@ -115,6 +115,7 @@ struct TerminalWorkspaceView: View {
                 )
                 .padding(10)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
                 .zIndex(10)
             }
 
@@ -180,6 +181,15 @@ struct TerminalWorkspaceView: View {
                 }
             },
             togglePaneZoom: store.toggleFocusedPaneZoom,
+            increaseFontSize: {
+                store.focusedTerminal?.increaseFontSize()
+            },
+            decreaseFontSize: {
+                store.focusedTerminal?.decreaseFontSize()
+            },
+            resetFontSize: {
+                store.focusedTerminal?.resetFontSize()
+            },
             copy: {
                 store.focusedTerminal?.copySelection() ?? false
             },
@@ -416,6 +426,9 @@ private struct TerminalCommandPalette: View {
             PaletteCommand(title: "Next Pane", action: "focus_pane_next", systemImage: "arrow.right") { $0.execute(.focusPaneNext) },
             PaletteCommand(title: "Previous Pane", action: "focus_pane_previous", systemImage: "arrow.left") { $0.execute(.focusPanePrevious) },
             PaletteCommand(title: "Toggle Pane Zoom", action: "toggle_pane_zoom", systemImage: "arrow.up.left.and.arrow.down.right") { $0.execute(.togglePaneZoom) },
+            PaletteCommand(title: "Increase Font Size", action: "increase_font_size", systemImage: "textformat.size.larger") { $0.execute(.increaseFontSize) },
+            PaletteCommand(title: "Decrease Font Size", action: "decrease_font_size", systemImage: "textformat.size.smaller") { $0.execute(.decreaseFontSize) },
+            PaletteCommand(title: "Reset Font Size", action: "reset_font_size", systemImage: "textformat") { $0.execute(.resetFontSize) },
             PaletteCommand(title: "Find", action: "open_search", systemImage: "magnifyingglass") { $0.execute(.openSearch) },
             PaletteCommand(title: "Find Next", action: "search_next", systemImage: "chevron.down") { $0.execute(.searchNext) },
             PaletteCommand(title: "Find Previous", action: "search_previous", systemImage: "chevron.up") { $0.execute(.searchPrevious) },
@@ -518,7 +531,10 @@ private struct TerminalPaneNodeView: View {
         case .leaf(let pane):
             TerminalPaneLeafView(pane: pane, store: store)
         case .split(let axis, let first, let second):
-            StableSplitView(axis: axis, ratio: node.splitRatio) {
+            StableSplitView(
+                axis: axis,
+                ratio: node.splitRatio
+            ) {
                 TerminalPaneNodeView(node: first, store: store)
             } second: {
                 TerminalPaneNodeView(node: second, store: store)
@@ -546,7 +562,12 @@ private struct StableSplitView<First: View, Second: View>: NSViewControllerRepre
     }
 
     func makeNSViewController(context: Context) -> StableSplitViewController<First, Second> {
-        StableSplitViewController(axis: axis, ratio: ratio, first: first, second: second)
+        StableSplitViewController(
+            axis: axis,
+            ratio: ratio,
+            first: first,
+            second: second
+        )
     }
 
     func updateNSViewController(
@@ -564,13 +585,19 @@ private final class StableSplitViewController<First: View, Second: View>: NSSpli
     private var axis: TerminalSplitAxis
     private var ratio: Double
 
-    init(axis: TerminalSplitAxis, ratio: Double, first: First, second: Second) {
+    init(
+        axis: TerminalSplitAxis,
+        ratio: Double,
+        first: First,
+        second: Second
+    ) {
         self.axis = axis
         self.ratio = ratio
         firstHostingController = NSHostingController(rootView: first)
         secondHostingController = NSHostingController(rootView: second)
         super.init(nibName: nil, bundle: nil)
 
+        splitView = StableDividerSplitView()
         splitView.dividerStyle = .thin
         splitView.isVertical = axis == .horizontal
 
@@ -591,6 +618,7 @@ private final class StableSplitViewController<First: View, Second: View>: NSSpli
         if self.axis != axis {
             self.axis = axis
             splitView.isVertical = axis == .horizontal
+            splitView.window?.invalidateCursorRects(for: splitView)
             didApplyInitialDividerPosition = false
             updateMinimumThickness()
         }
@@ -633,6 +661,139 @@ private final class StableSplitViewController<First: View, Second: View>: NSSpli
         splitView.setPosition(length * ratio, ofDividerAt: 0)
         didApplyInitialDividerPosition = true
     }
+
+    // Panes are intentionally NOT suspended while the divider drags or the
+    // window resizes: every resize step re-grids and re-presents the affected
+    // terminals live, so content tracks the divider/window edge instead of
+    // freezing on the stale grid and snapping after the drag ends. Per-step
+    // cost is bounded — `TerminalViewModel.resize` only refreshes when the
+    // col/row count actually changes, and the refresh itself is throttled.
+    // Occluded background tabs are still suspended via the window occlusion
+    // path in TermySwiftApp.
+    override func splitViewDidResizeSubviews(_ notification: Notification) {
+        splitView.window?.invalidateCursorRects(for: splitView)
+    }
+
+    override func splitView(
+        _ splitView: NSSplitView,
+        effectiveRect proposedEffectiveRect: NSRect,
+        forDrawnRect drawnRect: NSRect,
+        ofDividerAt dividerIndex: Int
+    ) -> NSRect {
+        guard let splitView = splitView as? StableDividerSplitView else {
+            return proposedEffectiveRect
+        }
+        return splitView.expandedDividerRect(forDrawnRect: drawnRect)
+    }
+}
+
+private final class StableDividerSplitView: NSSplitView {
+    private static let dividerHitThickness: CGFloat = 12
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+
+        for dividerIndex in 0..<max(0, arrangedSubviews.count - 1) {
+            let rect = expandedDividerRect(ofDividerAt: dividerIndex)
+            addCursorRect(rect, cursor: resizeCursor)
+        }
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        for dividerIndex in 0..<max(0, arrangedSubviews.count - 1) {
+            if expandedDividerRect(ofDividerAt: dividerIndex).contains(point) {
+                return self
+            }
+        }
+        return super.hitTest(point)
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        if isEventInsideExpandedDivider(event) {
+            resizeCursor.set()
+            return
+        }
+        super.mouseMoved(with: event)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        if isEventInsideExpandedDivider(event) {
+            resizeCursor.set()
+        }
+        super.mouseDown(with: event)
+    }
+
+    override var isVertical: Bool {
+        didSet {
+            window?.invalidateCursorRects(for: self)
+        }
+    }
+
+    private var resizeCursor: NSCursor {
+        isVertical ? .resizeLeftRight : .resizeUpDown
+    }
+
+    private func isEventInsideExpandedDivider(_ event: NSEvent) -> Bool {
+        let point = convert(event.locationInWindow, from: nil)
+        for dividerIndex in 0..<max(0, arrangedSubviews.count - 1) {
+            if expandedDividerRect(ofDividerAt: dividerIndex).contains(point) {
+                return true
+            }
+        }
+        return false
+    }
+
+    func expandedDividerRect(forDrawnRect drawnRect: NSRect) -> NSRect {
+        expandedDividerRect(expanding: drawnRect)
+    }
+
+    private func expandedDividerRect(ofDividerAt dividerIndex: Int) -> NSRect {
+        guard dividerIndex >= 0, dividerIndex + 1 < arrangedSubviews.count else {
+            return .zero
+        }
+
+        let leadingFrame = arrangedSubviews[dividerIndex].frame
+        let trailingFrame = arrangedSubviews[dividerIndex + 1].frame
+        let targetThickness = Self.dividerHitThickness
+        var rect: NSRect
+
+        if isVertical {
+            let centerX = (leadingFrame.maxX + trailingFrame.minX) / 2
+            rect = NSRect(
+                x: centerX - (targetThickness / 2),
+                y: bounds.minY,
+                width: targetThickness,
+                height: bounds.height
+            )
+        } else {
+            let centerY = (leadingFrame.maxY + trailingFrame.minY) / 2
+            rect = NSRect(
+                x: bounds.minX,
+                y: centerY - (targetThickness / 2),
+                width: bounds.width,
+                height: targetThickness
+            )
+        }
+
+        return expandedDividerRect(expanding: rect)
+    }
+
+    private func expandedDividerRect(expanding rect: NSRect) -> NSRect {
+        var rect = rect
+        let targetThickness = Self.dividerHitThickness
+
+        if isVertical {
+            let delta = max(0, targetThickness - rect.width)
+            rect.origin.x -= delta / 2
+            rect.size.width += delta
+        } else {
+            let delta = max(0, targetThickness - rect.height)
+            rect.origin.y -= delta / 2
+            rect.size.height += delta
+        }
+
+        return rect.intersection(bounds)
+    }
 }
 
 private struct TerminalPaneLeafView: View {
@@ -648,6 +809,7 @@ private struct TerminalPaneLeafView: View {
                 showsFocusBorder: store.paneCount > 1,
                 isInputEnabled: !store.isSearchVisible,
                 isSearchVisible: store.isSearchVisible,
+                windowTitle: store.tabDisplayTitle,
                 onFocus: {
                     store.focus(pane)
                 },
@@ -669,7 +831,7 @@ private struct TerminalPaneLeafView: View {
                 },
                 onFocusNextPane: store.focusNextPane,
                 onShowSearch: store.showSearch,
-                onDismissSearch: store.hideSearch
+                onDismissSearch: {}
             )
 
             if configurationStore.configuration.native.showDebugOverlay {

@@ -19,6 +19,25 @@ enum TerminalSurfaceContextMenu {
             target: target,
             isEnabled: canPaste
         ))
+        menu.addItem(item(
+            title: "Select All",
+            action: #selector(KeyboardCaptureView.selectAllFromTerminalContextMenu(_:)),
+            keyEquivalent: "a",
+            target: target
+        ))
+        menu.addItem(.separator())
+        menu.addItem(item(
+            title: "Split Right",
+            action: #selector(KeyboardCaptureView.splitRightFromTerminalContextMenu(_:)),
+            keyEquivalent: "d",
+            target: target
+        ))
+        menu.addItem(item(
+            title: "Split Down",
+            action: #selector(KeyboardCaptureView.splitDownFromTerminalContextMenu(_:)),
+            keyEquivalent: "D",
+            target: target
+        ))
         menu.addItem(.separator())
         menu.addItem(item(
             title: "Clear Scrollback",

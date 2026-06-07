@@ -43,6 +43,19 @@ enum TerminalDamage: Equatable {
         }
     }
 
+    /// Adds one more dirty span (e.g. the cursor cell on a blink toggle) to the
+    /// damage without losing what is already dirty.
+    func union(_ span: TerminalDirtySpan) -> TerminalDamage {
+        switch self {
+        case .full:
+            return .full
+        case .none:
+            return .partial([span])
+        case let .partial(spans):
+            return TerminalDamage.partialCoalesced(spans + [span])
+        }
+    }
+
     static func partialCoalesced(_ spans: [TerminalDirtySpan]) -> TerminalDamage {
         guard !spans.isEmpty else {
             return .none

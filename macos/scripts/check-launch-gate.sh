@@ -15,7 +15,7 @@ Usage: $0 --app PATH [options]
 Launch a staged native Swift .app and gate basic startup, RSS, and idle CPU.
 
 Options:
-  --app PATH                 Staged TermyAlpha.app path
+  --app PATH                 Staged Termy.app path
   --max-startup-ms N         Maximum time until process appears (default: 5000)
   --max-rss-mib N            Maximum resident memory after launch (default: 512)
   --max-idle-cpu-percent N   Maximum sampled CPU after launch (default: 75)
@@ -60,7 +60,7 @@ done
 [[ -n "$APP_PATH" ]] || { echo "Error: --app PATH is required" >&2; usage >&2; exit 2; }
 [[ -d "$APP_PATH" ]] || { echo "Error: app bundle not found: $APP_PATH" >&2; exit 1; }
 
-APP_BINARY="$APP_PATH/Contents/MacOS/TermyAlpha"
+APP_BINARY="$APP_PATH/Contents/MacOS/Termy"
 [[ -x "$APP_BINARY" ]] || { echo "Error: app binary not found: $APP_BINARY" >&2; exit 1; }
 
 now_ms() {

@@ -25,11 +25,33 @@ struct TerminalTextSegment: Equatable {
     var bold: Bool
 }
 
+/// A block-element or box-drawing cell drawn as pixel-snapped rects instead of
+/// a font glyph so adjacent cells tile without seams.
+struct TerminalBlockGlyph: Equatable {
+    var row: Int
+    var col: Int
+    var rects: [TerminalBlockRect]
+    var foreground: TerminalRGBA
+}
+
+/// A box-drawing cell that can't be expressed as axis-aligned rects (rounded
+/// corners, diagonals) and is stroked as a path at draw time, matching the
+/// custom-drawn straight segments' stroke width.
+struct TerminalStrokeGlyph: Equatable {
+    var row: Int
+    var col: Int
+    var kind: TerminalBoxStrokeKind
+    var character: Character
+    var foreground: TerminalRGBA
+}
+
 /// The flattened paint instructions for a whole frame: the grid view draws these
 /// directly without re-deriving them from cells.
 struct TerminalRenderPlan: Equatable {
     var backgroundRuns: [TerminalBackgroundRun]
     var textSegments: [TerminalTextSegment]
+    var blockGlyphs: [TerminalBlockGlyph] = []
+    var strokeGlyphs: [TerminalStrokeGlyph] = []
 
     static let empty = TerminalRenderPlan(backgroundRuns: [], textSegments: [])
 }
@@ -39,6 +61,8 @@ struct TerminalRenderPlan: Equatable {
 private struct RowRenderPlan: Equatable {
     var backgroundRuns: [TerminalBackgroundRun]
     var textSegments: [TerminalTextSegment]
+    var blockGlyphs: [TerminalBlockGlyph] = []
+    var strokeGlyphs: [TerminalStrokeGlyph] = []
 }
 
 /// How the most recent `update` rebuilt the plan — surfaced to the debug overlay
@@ -120,11 +144,20 @@ final class TerminalRenderPlanCache {
     private func flatten() {
         var backgroundRuns: [TerminalBackgroundRun] = []
         var textSegments: [TerminalTextSegment] = []
+        var blockGlyphs: [TerminalBlockGlyph] = []
+        var strokeGlyphs: [TerminalStrokeGlyph] = []
         for row in rows {
             backgroundRuns.append(contentsOf: row.backgroundRuns)
             textSegments.append(contentsOf: row.textSegments)
+            blockGlyphs.append(contentsOf: row.blockGlyphs)
+            strokeGlyphs.append(contentsOf: row.strokeGlyphs)
         }
-        plan = TerminalRenderPlan(backgroundRuns: backgroundRuns, textSegments: textSegments)
+        plan = TerminalRenderPlan(
+            backgroundRuns: backgroundRuns,
+            textSegments: textSegments,
+            blockGlyphs: blockGlyphs,
+            strokeGlyphs: strokeGlyphs
+        )
     }
 
     private func buildRow(
@@ -134,6 +167,8 @@ final class TerminalRenderPlanCache {
     ) -> RowRenderPlan {
         var backgroundRuns: [TerminalBackgroundRun] = []
         var textSegments: [TerminalTextSegment] = []
+        var blockGlyphs: [TerminalBlockGlyph] = []
+        var strokeGlyphs: [TerminalStrokeGlyph] = []
 
         var activeBackgroundRun: TerminalBackgroundRun?
         var text = ""
@@ -190,6 +225,45 @@ final class TerminalRenderPlanCache {
                 continue
             }
 
+            // Block elements and box-drawing connectors bypass the font: they
+            // are drawn as pixel-snapped rects so adjacent cells tile without
+            // seams (see TerminalBlockGlyphs / TerminalBoxDrawing).
+            if let rects = TerminalBlockGlyphs.geometry(for: cell.character)
+                ?? TerminalBoxDrawing.rectGeometry(
+                    for: cell.character,
+                    cellWidth: renderConfig.cellWidth,
+                    cellHeight: renderConfig.cellHeight,
+                    fontSize: renderConfig.fontSize
+                )
+            {
+                flushTextSegment()
+                textForeground = nil
+                textBold = false
+                blockGlyphs.append(TerminalBlockGlyph(
+                    row: row,
+                    col: cell.col,
+                    rects: rects,
+                    foreground: cell.foreground
+                ))
+                continue
+            }
+
+            // Rounded corners and diagonals are stroked as paths at draw time
+            // so their stroke width matches the rect-drawn straight segments.
+            if let kind = TerminalBoxDrawing.strokeKind(for: cell.character) {
+                flushTextSegment()
+                textForeground = nil
+                textBold = false
+                strokeGlyphs.append(TerminalStrokeGlyph(
+                    row: row,
+                    col: cell.col,
+                    kind: kind,
+                    character: cell.character,
+                    foreground: cell.foreground
+                ))
+                continue
+            }
+
             let foreground = cell.foreground
             let bold = cell.bold
             if textForeground != foreground || textBold != bold {
@@ -204,7 +278,12 @@ final class TerminalRenderPlanCache {
         flushBackgroundRun()
         flushTextSegment()
 
-        return RowRenderPlan(backgroundRuns: backgroundRuns, textSegments: textSegments)
+        return RowRenderPlan(
+            backgroundRuns: backgroundRuns,
+            textSegments: textSegments,
+            blockGlyphs: blockGlyphs,
+            strokeGlyphs: strokeGlyphs
+        )
     }
 
     private func shouldPaintBackground(

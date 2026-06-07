@@ -11,6 +11,7 @@ struct TerminalSurfaceView: View {
     let showsFocusBorder: Bool
     let isInputEnabled: Bool
     let isSearchVisible: Bool
+    let windowTitle: String
     let onFocus: () -> Void
     let onSplitRight: () -> Void
     let onSplitDown: () -> Void
@@ -32,9 +33,16 @@ struct TerminalSurfaceView: View {
                     searchMatches: terminal.searchMatches,
                     activeSearchMatch: terminal.searchMatches[safe: terminal.activeSearchMatchIndex],
                     hoveredLink: terminal.hoveredLink,
-                    isFocused: isFocused
+                    isFocused: isFocused,
+                    isCursorVisible: terminal.cursorBlinkVisible
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .opacity(paneContentOpacity)
+                .onChange(of: isFocused) { _, nowFocused in
+                    if nowFocused {
+                        terminal.resetCursorBlinkPhase()
+                    }
+                }
 
                 TerminalKeyboardInputView(
                     cols: terminal.frame.cols,
@@ -82,6 +90,9 @@ struct TerminalSurfaceView: View {
                     },
                     onSelectLine: { position in
                         terminal.selectLine(at: position)
+                    },
+                    onSelectAll: {
+                        terminal.selectAll()
                     },
                     onHoverProbe: { position in
                         terminal.updateHoveredLink(at: position)
@@ -146,9 +157,7 @@ struct TerminalSurfaceView: View {
                 }
             }
             .background(TerminalWindowChromeSyncView(
-                title: terminal.title,
-                background: terminal.renderConfig.background,
-                chromeContrast: terminal.renderConfig.chromeContrast,
+                title: windowTitle,
                 isFocused: isFocused
             ))
             .onTapGesture {
@@ -252,6 +261,37 @@ struct TerminalSurfaceView: View {
         Double(terminal.renderConfig.paneFocusStrength)
     }
 
+    private var paneContentOpacity: Double {
+        Self.paneContentOpacity(
+            showsFocusBorder: showsFocusBorder,
+            isFocused: isFocused,
+            effect: terminal.renderConfig.paneFocusEffect,
+            strength: focusStrength
+        )
+    }
+
+    nonisolated static func paneContentOpacity(
+        showsFocusBorder: Bool,
+        isFocused: Bool,
+        effect: TerminalPaneFocusEffect,
+        strength: Double
+    ) -> Double {
+        guard showsFocusBorder, !isFocused else {
+            return 1.0
+        }
+
+        switch effect {
+        case .off:
+            return 1.0
+        case .minimal:
+            return max(0.82, 1.0 - (0.12 * strength))
+        case .softSpotlight:
+            return max(0.72, 1.0 - (0.34 * strength))
+        case .cinematic:
+            return max(0.62, 1.0 - (0.46 * strength))
+        }
+    }
+
     @ViewBuilder
     private var focusEffectOverlay: some View {
         if showsFocusBorder {
@@ -292,8 +332,6 @@ struct TerminalSurfaceView: View {
 
 private struct TerminalWindowChromeSyncView: NSViewRepresentable {
     let title: String
-    let background: TerminalRGBA
-    let chromeContrast: Bool
     let isFocused: Bool
 
     func makeNSView(context: Context) -> TerminalWindowChromeSyncNSView {
@@ -310,8 +348,6 @@ private struct TerminalWindowChromeSyncView: NSViewRepresentable {
         let nextTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         return TerminalWindowChromeState(
             title: nextTitle.isEmpty ? "Shell" : nextTitle,
-            background: background.nsTitlebarColor(chromeContrast: chromeContrast),
-            appearanceName: background.prefersDarkTitlebarAppearance ? .darkAqua : .aqua,
             isFocused: isFocused
         )
     }
@@ -319,8 +355,6 @@ private struct TerminalWindowChromeSyncView: NSViewRepresentable {
 
 private struct TerminalWindowChromeState: Equatable {
     var title: String
-    var background: NSColor
-    var appearanceName: NSAppearance.Name
     var isFocused: Bool
 }
 
@@ -349,39 +383,7 @@ private final class TerminalWindowChromeSyncNSView: NSView {
             window.title = state.title
             NotificationCenter.default.post(name: .termyNativeTabsChanged, object: nil)
         }
-        if !window.titlebarAppearsTransparent {
-            window.titlebarAppearsTransparent = true
-        }
-        window.backgroundColor = state.background
-        window.appearance = NSAppearance(named: state.appearanceName)
         appliedState = state
-    }
-}
-
-private extension TerminalRGBA {
-    func nsTitlebarColor(chromeContrast: Bool) -> NSColor {
-        let contrastMultiplier = chromeContrast ? 0.78 : 1.0
-        return NSColor(
-            srgbRed: red * contrastMultiplier,
-            green: green * contrastMultiplier,
-            blue: blue * contrastMultiplier,
-            alpha: 1.0
-        )
-    }
-
-    var prefersDarkTitlebarAppearance: Bool {
-        let linearRed = linearizedSRGB(red)
-        let linearGreen = linearizedSRGB(green)
-        let linearBlue = linearizedSRGB(blue)
-        let luminance = (0.2126 * linearRed) + (0.7152 * linearGreen) + (0.0722 * linearBlue)
-        return luminance < 0.5
-    }
-
-    private func linearizedSRGB(_ component: Double) -> Double {
-        if component <= 0.04045 {
-            return component / 12.92
-        }
-        return pow((component + 0.055) / 1.055, 2.4)
     }
 }
 

@@ -111,6 +111,14 @@ enum SettingsBridge {
         try TermyFfiBridge.requireOK("termy_settings_set_keybinds", status)
     }
 
+    static func installTheme(slug: String) throws {
+        let slugBytes = Array(slug.utf8)
+        let status = slugBytes.withUnsafeBufferPointer { slugBuffer in
+            termy_settings_install_theme(slugBuffer.baseAddress, slugBuffer.count)
+        }
+        try TermyFfiBridge.requireOK("termy_settings_install_theme", status)
+    }
+
     static func prettifyConfig() throws {
         try TermyFfiBridge.requireOK("termy_settings_prettify_config", termy_settings_prettify_config())
     }

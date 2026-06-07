@@ -9,19 +9,39 @@ struct NativeTabChromeView: View {
     @State private var modifierFlags: NSEvent.ModifierFlags = []
     @State private var modifierMonitor: Any?
     @State private var refreshToken = 0
+    @State private var renameRequest: NativeTabRenameRequest?
+    @State private var renameText = ""
 
     private var tabs: [NativeTabDescriptor] {
         _ = refreshToken
         return NativeTabWindowManager.shared.tabDescriptors(for: window)
     }
 
+    /// Shared spring for tab entrances, removals, and width changes —
+    /// approximates the system tab bar's feel.
+    static let chromeAnimation: Animation = .spring(response: 0.3, dampingFraction: 0.85)
+
     var body: some View {
         if shouldRender {
             switch configuration.native.tabBarPosition {
             case .top:
-                horizontalChrome
+                NativeTabEntrance(
+                    animatesEntrance: NativeTabWindowManager.shared.shouldAnimateBarEntrance(for: window),
+                    collapses: .vertical,
+                    alignment: .bottom
+                ) {
+                    horizontalChrome
+                }
+                .transition(.move(edge: .top).combined(with: .opacity))
             case .right:
-                verticalChrome
+                NativeTabEntrance(
+                    animatesEntrance: NativeTabWindowManager.shared.shouldAnimateBarEntrance(for: window),
+                    collapses: .horizontal,
+                    alignment: .trailing
+                ) {
+                    verticalChrome
+                }
+                .transition(.move(edge: .trailing).combined(with: .opacity))
             }
         }
     }
@@ -42,7 +62,14 @@ struct NativeTabChromeView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 4) {
                     ForEach(tabs) { tab in
-                        tabButton(tab, axis: .horizontal)
+                        NativeTabEntrance(
+                            animatesEntrance: NativeTabWindowManager.shared.shouldAnimateTabEntrance(for: tab.id),
+                            collapses: .horizontal,
+                            alignment: .leading
+                        ) {
+                            tabButton(tab, axis: .horizontal)
+                        }
+                        .transition(tabRemovalTransition(collapses: .horizontal))
                     }
                 }
                 .padding(.horizontal, 6)
@@ -65,7 +92,22 @@ struct NativeTabChromeView: View {
         }
         .modifierFlagsTracking($modifierFlags, monitor: $modifierMonitor)
         .onReceive(NotificationCenter.default.publisher(for: .termyNativeTabsChanged)) { _ in
-            refreshToken &+= 1
+            withAnimation(Self.chromeAnimation) {
+                refreshToken &+= 1
+            }
+        }
+        .sheet(item: $renameRequest) { request in
+            RenameNativeTabSheet(
+                title: $renameText,
+                initialTitle: request.title,
+                onCancel: {
+                    renameRequest = nil
+                },
+                onSave: {
+                    NativeTabWindowManager.shared.renameNativeTab(request.descriptor, title: renameText)
+                    renameRequest = nil
+                }
+            )
         }
     }
 
@@ -90,7 +132,14 @@ struct NativeTabChromeView: View {
             ScrollView(.vertical, showsIndicators: false) {
                 LazyVStack(spacing: 5) {
                     ForEach(tabs) { tab in
-                        tabButton(tab, axis: .vertical)
+                        NativeTabEntrance(
+                            animatesEntrance: NativeTabWindowManager.shared.shouldAnimateTabEntrance(for: tab.id),
+                            collapses: .vertical,
+                            alignment: .top
+                        ) {
+                            tabButton(tab, axis: .vertical)
+                        }
+                        .transition(tabRemovalTransition(collapses: .vertical))
                     }
                 }
                 .padding(6)
@@ -103,12 +152,34 @@ struct NativeTabChromeView: View {
         }
         .modifierFlagsTracking($modifierFlags, monitor: $modifierMonitor)
         .onReceive(NotificationCenter.default.publisher(for: .termyNativeTabsChanged)) { _ in
-            refreshToken &+= 1
+            withAnimation(Self.chromeAnimation) {
+                refreshToken &+= 1
+            }
+        }
+        .sheet(item: $renameRequest) { request in
+            RenameNativeTabSheet(
+                title: $renameText,
+                initialTitle: request.title,
+                onCancel: {
+                    renameRequest = nil
+                },
+                onSave: {
+                    NativeTabWindowManager.shared.renameNativeTab(request.descriptor, title: renameText)
+                    renameRequest = nil
+                }
+            )
         }
     }
 
     private func tabButton(_ tab: NativeTabDescriptor, axis: Axis) -> some View {
         HStack(spacing: 6) {
+            if tab.isPinned {
+                Image(systemName: "pin.fill")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(tab.isSelected ? Color.accentColor : Color.secondary)
+                    .help("Pinned")
+            }
+
             if shouldShowSwitchHint(for: tab) {
                 Text("\(tab.index + 1)")
                     .font(.system(size: 10, weight: .semibold, design: .monospaced))
@@ -144,9 +215,30 @@ struct NativeTabChromeView: View {
         .onTapGesture {
             NativeTabWindowManager.shared.selectNativeTab(tab)
         }
+        .contextMenu {
+            Button(tab.isPinned ? "Unpin Tab" : "Pin Tab") {
+                NativeTabWindowManager.shared.setNativeTabPinned(tab, pinned: !tab.isPinned)
+            }
+            Button("Rename Tab...") {
+                beginRename(tab)
+            }
+            if tab.hasManualTitle {
+                Button("Clear Custom Name") {
+                    NativeTabWindowManager.shared.renameNativeTab(tab, title: "")
+                }
+            }
+            Divider()
+            Button("Close Tab") {
+                NativeTabWindowManager.shared.closeNativeTab(tab)
+            }
+            .disabled(tab.isPinned)
+        }
     }
 
     private func shouldShowCloseButton(for tab: NativeTabDescriptor) -> Bool {
+        if tab.isPinned {
+            return false
+        }
         switch configuration.native.tabCloseVisibility {
         case .always:
             return true
@@ -182,6 +274,63 @@ struct NativeTabChromeView: View {
 
     private func uiFont(size: CGFloat, weight: Font.Weight) -> Font {
         .custom(configuration.uiFontFamily, size: size).weight(weight)
+    }
+
+    private func beginRename(_ tab: NativeTabDescriptor) {
+        renameText = tab.title
+        renameRequest = NativeTabRenameRequest(descriptor: tab)
+    }
+}
+
+private struct NativeTabRenameRequest: Identifiable {
+    var descriptor: NativeTabDescriptor
+
+    var id: ObjectIdentifier {
+        descriptor.id
+    }
+
+    var title: String {
+        descriptor.title
+    }
+}
+
+private struct RenameNativeTabSheet: View {
+    @Binding var title: String
+    let initialTitle: String
+    let onCancel: () -> Void
+    let onSave: () -> Void
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Rename Tab")
+                .font(.headline)
+
+            TextField(initialTitle, text: $title)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 280)
+                .focused($isFocused)
+                .onSubmit(onSave)
+
+            HStack {
+                Button("Clear Name") {
+                    title = ""
+                    onSave()
+                }
+                Spacer()
+                Button("Cancel", action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                Button("Save", action: onSave)
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(18)
+        .onAppear {
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 10_000_000)
+                isFocused = true
+            }
+        }
     }
 }
 

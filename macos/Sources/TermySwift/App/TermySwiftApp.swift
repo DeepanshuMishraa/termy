@@ -2,8 +2,8 @@ import AppKit
 import SwiftUI
 
 private enum AppMetadata {
-    static let displayName = "TermyAlpha"
-    static let bundleIdentifier = "com.lassevestergaard.TermyAlpha"
+    static let displayName = "Termy"
+    static let bundleIdentifier = "com.lassevestergaard.termy"
 }
 
 @MainActor
@@ -207,6 +207,26 @@ struct TermySwiftApp: App {
 
                 Divider()
 
+                Button("Increase Font Size") {
+                    terminalCommands?.execute(.increaseFontSize)
+                }
+                .keyboardShortcut("=", modifiers: [.command])
+                .disabled(terminalCommands == nil)
+
+                Button("Decrease Font Size") {
+                    terminalCommands?.execute(.decreaseFontSize)
+                }
+                .keyboardShortcut("-", modifiers: [.command])
+                .disabled(terminalCommands == nil)
+
+                Button("Reset Font Size") {
+                    terminalCommands?.execute(.resetFontSize)
+                }
+                .keyboardShortcut("0", modifiers: [.command])
+                .disabled(terminalCommands == nil)
+
+                Divider()
+
                 if !configurationStore.configuration.tasks.isEmpty {
                     Menu("Tasks") {
                         ForEach(configurationStore.configuration.tasks) { task in
@@ -323,6 +343,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return nil
             }
 
+            if Self.handleDefaultFontZoomShortcut(event) {
+                return nil
+            }
+
             guard event.modifierFlags.contains(.command),
                   !event.modifierFlags.contains(.shift),
                   event.charactersIgnoringModifiers?.lowercased() == "w"
@@ -365,6 +389,66 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func newWindowForTab(_ sender: Any?) {
         NativeTabWindowManager.shared.openNativeTab()
+    }
+
+    private static func handleDefaultFontZoomShortcut(_ event: NSEvent) -> Bool {
+        let flags = event.modifierFlags
+        guard flags.contains(.command),
+              !flags.contains(.control),
+              !flags.contains(.option)
+        else {
+            return false
+        }
+
+        guard let terminal = TerminalCommandRouter.shared.focusedStore(for: event)?.focusedTerminal else {
+            return false
+        }
+
+        switch fontZoomShortcut(for: event) {
+        case .increase:
+            terminal.increaseFontSize()
+        case .decrease:
+            terminal.decreaseFontSize()
+        case .reset:
+            terminal.resetFontSize()
+        case nil:
+            return false
+        }
+        return true
+    }
+
+    private enum FontZoomShortcut {
+        case increase
+        case decrease
+        case reset
+    }
+
+    private static func fontZoomShortcut(for event: NSEvent) -> FontZoomShortcut? {
+        let characters = [
+            event.characters,
+            event.charactersIgnoringModifiers
+        ].compactMap { $0?.lowercased() }
+
+        if characters.contains("+") || characters.contains("=") {
+            return .increase
+        }
+        if characters.contains("-") {
+            return .decrease
+        }
+        if characters.contains("0") {
+            return .reset
+        }
+
+        switch event.keyCode {
+        case 24, 69:
+            return .increase
+        case 27, 78:
+            return .decrease
+        case 29, 82:
+            return .reset
+        default:
+            return nil
+        }
     }
 }
 
@@ -487,6 +571,24 @@ private final class ConfiguredKeybindRouter {
                 return false
             }
             store.toggleFocusedPaneZoom()
+            return true
+        case "increase_font_size":
+            guard let store = TerminalCommandRouter.shared.focusedStore(for: event) else {
+                return false
+            }
+            store.focusedTerminal?.increaseFontSize()
+            return true
+        case "decrease_font_size":
+            guard let store = TerminalCommandRouter.shared.focusedStore(for: event) else {
+                return false
+            }
+            store.focusedTerminal?.decreaseFontSize()
+            return true
+        case "reset_font_size":
+            guard let store = TerminalCommandRouter.shared.focusedStore(for: event) else {
+                return false
+            }
+            store.focusedTerminal?.resetFontSize()
             return true
         case "copy":
             return TerminalCommandRouter.shared.focusedStore(for: event)?.focusedTerminal?.copySelection() ?? false
@@ -659,6 +761,8 @@ struct NativeTabDescriptor: Identifiable {
     var index: Int
     var title: String
     var isSelected: Bool
+    var isPinned: Bool
+    var hasManualTitle: Bool
     fileprivate weak var window: NSWindow?
 }
 
@@ -669,9 +773,11 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
     private var retainedWindows: [NSWindow] = []
     private var configuredWindowIDs = Set<ObjectIdentifier>()
     private let tabbingIdentifier = "\(AppMetadata.bundleIdentifier).native-tabs"
+    private var entranceTabID: ObjectIdentifier?
+    private var entranceIncludesBar = false
+    private var entranceDeadline = Date.distantPast
 
     func configure(_ window: NSWindow) {
-        window.titlebarAppearsTransparent = true
         window.tabbingMode = .preferred
         window.tabbingIdentifier = tabbingIdentifier
         window.collectionBehavior.insert(.fullScreenPrimary)
@@ -694,7 +800,9 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
         let window = makeWindow(startupTask: startupTask)
         retainedWindows.append(window)
 
-        if let currentWindow = NSApp.keyWindow ?? NSApp.mainWindow {
+        let anchorWindow = NSApp.keyWindow ?? NSApp.mainWindow
+        noteTabEntrance(for: window, anchorWindow: anchorWindow)
+        if let currentWindow = anchorWindow {
             configure(currentWindow)
             currentWindow.addTabbedWindow(window, ordered: .above)
         }
@@ -703,6 +811,35 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
         hideSystemTabBarIfNeeded(for: window)
         postTabsChanged()
+    }
+
+    /// Marks a freshly opened tab so the chrome can play its entrance
+    /// animation. Each native tab is its own window with its own chrome view,
+    /// so opening a tab swaps to a freshly mounted chrome where a plain
+    /// SwiftUI insertion transition never fires — the marker travels with the
+    /// tab instead and expires shortly after the open.
+    func noteTabEntrance(for window: NSWindow, anchorWindow: NSWindow?) {
+        entranceTabID = ObjectIdentifier(window)
+        let previousTabCount = anchorWindow.map { nativeTabWindows(for: $0).count } ?? 0
+        let autoHideTabbar = TermyConfigurationStore.shared.configuration.native.autoHideTabbar
+        entranceIncludesBar = autoHideTabbar && previousTabCount <= 1
+        entranceDeadline = Date().addingTimeInterval(0.8)
+    }
+
+    /// Whether `tabID` was just opened and its chrome should animate it in.
+    func shouldAnimateTabEntrance(for tabID: ObjectIdentifier) -> Bool {
+        tabID == entranceTabID && Date() < entranceDeadline
+    }
+
+    /// Whether the whole tab bar should slide in on `window`: only when the
+    /// just-opened tab made the auto-hidden bar visible for the first time.
+    func shouldAnimateBarEntrance(for window: NSWindow?) -> Bool {
+        guard let window else {
+            return false
+        }
+        return entranceIncludesBar
+            && ObjectIdentifier(window) == entranceTabID
+            && Date() < entranceDeadline
     }
 
     func tabDescriptors(for sourceWindow: NSWindow?) -> [NativeTabDescriptor] {
@@ -714,12 +851,15 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
 
         let selectedWindow = NSApp.keyWindow ?? NSApp.mainWindow
         return nativeTabWindows(for: sourceWindow).enumerated().map { index, window in
-            let trimmedTitle = window.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            let store = TerminalCommandRouter.shared.store(forWindow: window)
+            let trimmedTitle = (store?.tabDisplayTitle ?? window.title).trimmingCharacters(in: .whitespacesAndNewlines)
             return NativeTabDescriptor(
                 id: ObjectIdentifier(window),
                 index: index,
                 title: trimmedTitle.isEmpty ? AppMetadata.displayName : trimmedTitle,
                 isSelected: window === selectedWindow,
+                isPinned: store?.tabPinned ?? false,
+                hasManualTitle: store?.tabManualTitle != nil,
                 window: window
             )
         }
@@ -740,6 +880,27 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
 
     func closeNativeTab(_ descriptor: NativeTabDescriptor) {
         descriptor.window?.performClose(nil)
+        postTabsChanged()
+    }
+
+    func setNativeTabPinned(_ descriptor: NativeTabDescriptor, pinned: Bool) {
+        guard let window = descriptor.window,
+              let store = TerminalCommandRouter.shared.store(forWindow: window)
+        else {
+            return
+        }
+        store.setTabPinned(pinned)
+        postTabsChanged()
+    }
+
+    func renameNativeTab(_ descriptor: NativeTabDescriptor, title: String) {
+        guard let window = descriptor.window,
+              let store = TerminalCommandRouter.shared.store(forWindow: window)
+        else {
+            return
+        }
+        store.renameTab(title)
+        window.title = store.tabDisplayTitle
         postTabsChanged()
     }
 

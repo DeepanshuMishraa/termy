@@ -158,7 +158,7 @@ struct TerminalWorkspacePersistence {
 
     static func defaultFileURL(
         fileManager: FileManager = .default,
-        bundleIdentifier: String = Bundle.main.bundleIdentifier ?? "com.lassevestergaard.TermyAlpha"
+        bundleIdentifier: String = Bundle.main.bundleIdentifier ?? "com.lassevestergaard.termy"
     ) -> URL {
         let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? fileManager.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support", isDirectory: true)

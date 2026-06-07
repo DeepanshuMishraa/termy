@@ -12,3 +12,13 @@ Validation:
 cargo run -p xtask -- generate-keybindings-doc --check
 cargo run -p xtask -- generate-config-doc --check
 ```
+
+Native macOS app automation:
+
+```sh
+cargo macos run
+cargo macos verify
+cargo macos logs
+```
+
+`cargo macos` builds `termy_ffi`, builds the SwiftPM host, stages `macos/dist/Termy.app`, and then runs the requested app command.

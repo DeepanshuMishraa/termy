@@ -1,4 +1,4 @@
-# TermyAlpha (native macOS) — Roadmap to Replace `crates/desktop_app`
+# Termy (native macOS) — Roadmap to Replace `crates/desktop_app`
 
 Status: **highly experimental** (`README.md:3`). This document tracks what the
 native SwiftUI host must close to replace the GPUI app (`crates/desktop_app/`)

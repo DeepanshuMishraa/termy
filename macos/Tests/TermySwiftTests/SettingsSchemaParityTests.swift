@@ -83,6 +83,17 @@ final class SettingsSchemaParityTests: XCTestCase {
             ["default", "old"]
         )
     }
+
+    func testSwiftSettingsSchemaDoesNotSynthesizeLegacyBuiltinThemeChoices() throws {
+        let schema = try SettingsBridge.loadSchema(contents: "")
+        let settingsByKey = schema.settingsByKey
+        let choices = try XCTUnwrap(settingsByKey["theme"]?.choices)
+
+        XCTAssertTrue(choices.contains { $0.value == "termy" })
+        XCTAssertTrue(choices.contains { $0.value == "shell-decide" })
+        XCTAssertFalse(choices.contains { $0.value == "tokyo-night" })
+        XCTAssertTrue(choices.first { $0.value == "termy" }?.swatches?.isEmpty ?? true)
+    }
 }
 
 private extension SettingsSchema {

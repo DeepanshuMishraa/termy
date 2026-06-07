@@ -358,6 +358,9 @@ TermyFfiStatus termy_settings_set_color(
 TermyFfiStatus termy_settings_set_keybinds(
     const uint8_t *text_ptr,
     size_t text_len);
+TermyFfiStatus termy_settings_install_theme(
+    const uint8_t *slug_ptr,
+    size_t slug_len);
 TermyFfiStatus termy_settings_prettify_config(void);
 TermyFfiStatus termy_terminal_reload_default_config_colors(TermyFfiTerminal *terminal);
 TermyFfiStatus termy_terminal_free(TermyFfiTerminal *terminal);

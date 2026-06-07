@@ -70,6 +70,8 @@ final class TerminalWorkspaceStore: ObservableObject {
     @Published var searchOptions = TerminalSearchOptions()
     @Published private(set) var zoomedPaneID: UUID?
     @Published var isCommandPaletteVisible = false
+    @Published private(set) var tabPinned = false
+    @Published private(set) var tabManualTitle: String?
 
     init(initialTask: TermyTaskConfiguration? = nil) {
         let firstPane = TerminalPane(
@@ -96,7 +98,9 @@ final class TerminalWorkspaceStore: ObservableObject {
             },
             layoutTree: layoutSnapshot(from: root, paneIndices: paneIndices),
             activePane: activePane,
-            isSearchVisible: isSearchVisible
+            isSearchVisible: isSearchVisible,
+            pinned: tabPinned,
+            manualTitle: tabManualTitle
         )
 
         return TerminalWorkspaceSnapshot(tabs: [tab])
@@ -127,6 +131,8 @@ final class TerminalWorkspaceStore: ObservableObject {
         let activePane = max(0, min(tab.activePane, restoredPanes.count - 1))
         focusedPaneID = restoredPanes[activePane].id
         isSearchVisible = tab.isSearchVisible
+        tabPinned = tab.pinned
+        tabManualTitle = Self.normalizedManualTitle(tab.manualTitle)
         zoomedPaneID = nil
         objectWillChange.send()
         return true
@@ -146,6 +152,15 @@ final class TerminalWorkspaceStore: ObservableObject {
 
     var hasRunningTerminalProcess: Bool {
         leaves().contains { !$0.terminal.isExited }
+    }
+
+    var tabDisplayTitle: String {
+        if let tabManualTitle {
+            return tabManualTitle
+        }
+
+        let title = (focusedTerminal?.title ?? "Shell").trimmingCharacters(in: .whitespacesAndNewlines)
+        return title.isEmpty ? "Shell" : title
     }
 
     var panesInStableOrder: [TerminalPane] {
@@ -169,6 +184,27 @@ final class TerminalWorkspaceStore: ObservableObject {
 
     func focus(_ pane: TerminalPane) {
         focusedPaneID = pane.id
+    }
+
+    func setTabPinned(_ pinned: Bool) {
+        guard tabPinned != pinned else {
+            return
+        }
+        tabPinned = pinned
+        NotificationCenter.default.post(name: .termyNativeTabsChanged, object: nil)
+    }
+
+    func toggleTabPinned() {
+        setTabPinned(!tabPinned)
+    }
+
+    func renameTab(_ title: String) {
+        let normalizedTitle = Self.normalizedManualTitle(title)
+        guard tabManualTitle != normalizedTitle else {
+            return
+        }
+        tabManualTitle = normalizedTitle
+        NotificationCenter.default.post(name: .termyNativeTabsChanged, object: nil)
     }
 
     func splitFocused(_ axis: TerminalSplitAxis) {
@@ -334,6 +370,11 @@ final class TerminalWorkspaceStore: ObservableObject {
 
     private func pane(with id: UUID) -> TerminalPane? {
         leaves().first { $0.id == id }
+    }
+
+    private static func normalizedManualTitle(_ title: String?) -> String? {
+        let normalized = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return normalized.isEmpty ? nil : normalized
     }
 
     private func leaves() -> [TerminalPane] {

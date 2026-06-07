@@ -46,5 +46,5 @@ TERMY_FFI_LIBRARY_PATH="$REPO_ROOT/target/debug" \
 if [[ "$RUN_LAUNCH_SMOKE" -eq 1 ]]; then
   echo "==> Running native app launch smoke"
   "$MACOS_DIR/script/build_and_run.sh" --verify
-  pkill -x TermyAlpha >/dev/null 2>&1 || true
+  pkill -x Termy >/dev/null 2>&1 || true
 fi

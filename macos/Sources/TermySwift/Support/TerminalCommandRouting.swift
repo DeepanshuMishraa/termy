@@ -11,6 +11,9 @@ enum TerminalHostCommand {
     case focusPanePrevious
     case resizePane(TerminalPaneDirection)
     case togglePaneZoom
+    case increaseFontSize
+    case decreaseFontSize
+    case resetFontSize
     case copy
     case paste
     case openSearch
@@ -110,6 +113,9 @@ struct TerminalCommandSet {
     var focusPreviousPane: () -> Void = {}
     var resizePane: (TerminalPaneDirection) -> Void = { _ in }
     var togglePaneZoom: () -> Void = {}
+    var increaseFontSize: () -> Void = {}
+    var decreaseFontSize: () -> Void = {}
+    var resetFontSize: () -> Void = {}
     var copy: () -> Bool = { false }
     var paste: () -> Void = {}
     var clearScrollback: () -> Void = {}
@@ -144,6 +150,12 @@ struct TerminalCommandSet {
             resizePane(direction)
         case .togglePaneZoom:
             togglePaneZoom()
+        case .increaseFontSize:
+            increaseFontSize()
+        case .decreaseFontSize:
+            decreaseFontSize()
+        case .resetFontSize:
+            resetFontSize()
         case .copy:
             _ = copy()
         case .paste:

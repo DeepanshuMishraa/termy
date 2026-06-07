@@ -11,6 +11,7 @@ struct TerminalGridView: View {
     let activeSearchMatch: TerminalSearchMatch?
     var hoveredLink: TerminalFrameLink?
     let isFocused: Bool
+    let isCursorVisible: Bool
 
     var body: some View {
         TerminalGridRepresentable(
@@ -22,7 +23,8 @@ struct TerminalGridView: View {
             searchMatches: searchMatches,
             activeSearchMatch: activeSearchMatch,
             hoveredLink: hoveredLink,
-            isFocused: isFocused
+            isFocused: isFocused,
+            isCursorVisible: isCursorVisible
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .clipped()
@@ -39,6 +41,7 @@ private struct TerminalGridRepresentable: NSViewRepresentable {
     let activeSearchMatch: TerminalSearchMatch?
     var hoveredLink: TerminalFrameLink?
     let isFocused: Bool
+    let isCursorVisible: Bool
 
     func makeNSView(context: Context) -> TerminalGridNSView {
         TerminalGridNSView()
@@ -54,7 +57,8 @@ private struct TerminalGridRepresentable: NSViewRepresentable {
             searchMatches: searchMatches,
             activeSearchMatch: activeSearchMatch,
             hoveredLink: hoveredLink,
-            isFocused: isFocused
+            isFocused: isFocused,
+            isCursorVisible: isCursorVisible
         )
     }
 }
@@ -68,21 +72,30 @@ private final class TerminalGridNSView: NSView {
     private var activeSearchMatch: TerminalSearchMatch?
     private var hoveredLink: TerminalFrameLink?
     private var isTerminalFocused = false
+    private var isCursorVisible = true
 
     override var isFlipped: Bool { true }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        wantsLayer = true
-        layer?.isOpaque = false
-        canDrawSubviewsIntoLayer = true
+        configureLayer()
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
+        configureLayer()
+    }
+
+    private func configureLayer() {
         wantsLayer = true
         layer?.isOpaque = false
         canDrawSubviewsIntoLayer = true
+        // Live resize: redraw the grid on every resize step and keep stale
+        // content anchored to the top-left while the next draw is pending,
+        // instead of letting Core Animation stretch the previous frame across
+        // the new bounds (the rubber-band look).
+        layerContentsRedrawPolicy = .duringViewResize
+        layerContentsPlacement = .topLeft
     }
 
     func update(
@@ -94,7 +107,8 @@ private final class TerminalGridNSView: NSView {
         searchMatches: [TerminalSearchMatch],
         activeSearchMatch: TerminalSearchMatch?,
         hoveredLink: TerminalFrameLink?,
-        isFocused: Bool
+        isFocused: Bool,
+        isCursorVisible: Bool
     ) {
         let requiresFullRedraw = terminalFrame.cols != frame.cols
             || terminalFrame.rows != frame.rows
@@ -114,6 +128,7 @@ private final class TerminalGridNSView: NSView {
         self.activeSearchMatch = activeSearchMatch
         self.hoveredLink = hoveredLink
         self.isTerminalFocused = isFocused
+        self.isCursorVisible = isCursorVisible
 
         if requiresFullRedraw || renderDamage == .full {
             needsDisplay = true
@@ -138,8 +153,14 @@ private final class TerminalGridNSView: NSView {
         drawSearch(in: dirtyRect)
         drawSelection(in: dirtyRect)
         drawCursor(in: dirtyRect)
+        drawBlockGlyphs(in: dirtyRect)
+        drawStrokeGlyphs(in: dirtyRect)
         drawText(in: dirtyRect)
         drawHoveredLink(in: dirtyRect)
+    }
+
+    private var backingScale: CGFloat {
+        max(1, window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1)
     }
 
     private func cellRect(col: Int, row: Int, cols: Int = 1) -> CGRect {
@@ -148,7 +169,7 @@ private final class TerminalGridNSView: NSView {
             y: renderConfig.paddingY + CGFloat(row) * renderConfig.cellHeight,
             width: CGFloat(cols) * renderConfig.cellWidth,
             height: renderConfig.cellHeight
-        ).pixelAligned(scale: window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1)
+        ).pixelAligned(scale: backingScale)
     }
 
     private func rowRect(_ row: Int) -> CGRect {
@@ -187,27 +208,15 @@ private final class TerminalGridNSView: NSView {
         }
         NSColor.controlAccentColor.withAlphaComponent(0.35).setFill()
         for range in ranges where rowIntersectsDirty(range.row, dirtyRect) {
-            let endCol = min(range.endCol, lastContentColumn(inRow: range.row))
-            guard endCol >= range.startCol else {
+            guard range.endCol >= range.startCol else {
                 continue
             }
             fill(cellRect(
                 col: range.startCol,
                 row: range.row,
-                cols: endCol - range.startCol + 1
+                cols: range.endCol - range.startCol + 1
             ))
         }
-    }
-
-    private func lastContentColumn(inRow row: Int) -> Int {
-        var last = -1
-        for cell in terminalFrame.cells(inRow: row) {
-            let scalar = cell.character.unicodeScalars.first?.value ?? 0
-            if scalar != 0, !cell.character.isWhitespace {
-                last = cell.col
-            }
-        }
-        return last
     }
 
     private func drawSearch(in dirtyRect: NSRect) {
@@ -235,13 +244,14 @@ private final class TerminalGridNSView: NSView {
 
     private func searchColor(for match: TerminalSearchMatch) -> NSColor {
         if match == activeSearchMatch {
-            return NSColor.systemOrange.withAlphaComponent(0.55)
+            return NSColor.controlAccentColor.withAlphaComponent(0.42)
         }
-        return NSColor.systemYellow.withAlphaComponent(0.28)
+        return NSColor.controlAccentColor.withAlphaComponent(0.18)
     }
 
     private func drawCursor(in dirtyRect: NSRect) {
         guard isTerminalFocused,
+              isCursorVisible,
               let cursor = terminalFrame.cursor,
               terminalFrame.displayOffset == 0,
               rowIntersectsDirty(cursor.row, dirtyRect)
@@ -259,18 +269,205 @@ private final class TerminalGridNSView: NSView {
         }
     }
 
+    /// Draws block-element and box-drawing cells as solid rects with every edge
+    /// snapped to device pixels (see `TerminalBlockGlyphs.snappedRect` for the
+    /// seam-free shared-boundary guarantee). Anti-aliasing is disabled so the
+    /// axis-aligned fills keep hard edges, unlike font glyphs which only cover
+    /// the font box inside the taller line-height cell.
+    private func drawBlockGlyphs(in dirtyRect: NSRect) {
+        let glyphs = renderPlan.blockGlyphs
+        guard !glyphs.isEmpty else {
+            return
+        }
+
+        let context = NSGraphicsContext.current
+        let previousShouldAntialias = context?.shouldAntialias ?? true
+        context?.shouldAntialias = false
+        defer { context?.shouldAntialias = previousShouldAntialias }
+
+        for glyph in glyphs where rowIntersectsDirty(glyph.row, dirtyRect) {
+            for rect in glyph.rects {
+                guard let snapped = TerminalBlockGlyphs.snappedRect(
+                    rect,
+                    col: glyph.col,
+                    row: glyph.row,
+                    cellWidth: renderConfig.cellWidth,
+                    cellHeight: renderConfig.cellHeight,
+                    paddingX: renderConfig.paddingX,
+                    paddingY: renderConfig.paddingY,
+                    scale: backingScale
+                ) else {
+                    continue
+                }
+                glyph.foreground.nsColor
+                    .withAlphaComponent(glyph.foreground.alpha * rect.alpha)
+                    .setFill()
+                fill(snapped)
+            }
+        }
+    }
+
+    /// Strokes rounded-corner (U+256D–U+2570) and diagonal (U+2571–U+2573)
+    /// box-drawing glyphs as paths whose stroke width matches the rect-drawn
+    /// straight segments, mirroring `paint_rounded_corner_path` /
+    /// `paint_diagonal_path` in `crates/terminal_ui/src/grid.rs`. These stay
+    /// anti-aliased — they are curves and slopes, not axis-aligned fills.
+    private func drawStrokeGlyphs(in dirtyRect: NSRect) {
+        let glyphs = renderPlan.strokeGlyphs
+        guard !glyphs.isEmpty else {
+            return
+        }
+
+        let strokeWidth = TerminalBoxDrawing.strokeWidth(fontSize: renderConfig.fontSize)
+        for glyph in glyphs where rowIntersectsDirty(glyph.row, dirtyRect) {
+            guard let cell = TerminalBlockGlyphs.snappedRect(
+                TerminalBlockRect(left: 0, top: 0, right: 1, bottom: 1, alpha: 1),
+                col: glyph.col,
+                row: glyph.row,
+                cellWidth: renderConfig.cellWidth,
+                cellHeight: renderConfig.cellHeight,
+                paddingX: renderConfig.paddingX,
+                paddingY: renderConfig.paddingY,
+                scale: backingScale
+            ) else {
+                continue
+            }
+
+            glyph.foreground.nsColor.setStroke()
+            switch glyph.kind {
+            case .roundedCorner:
+                strokeRoundedCorner(glyph.character, in: cell, strokeWidth: strokeWidth)
+            case .diagonal:
+                strokeDiagonal(glyph.character, in: cell, strokeWidth: strokeWidth)
+            }
+        }
+    }
+
+    /// Rounded corners: a short straight stub on each cell edge (aligned with
+    /// adjacent straight box lines) connected by a quarter-circle cubic arc.
+    private func strokeRoundedCorner(_ glyph: Character, in cell: CGRect, strokeWidth: CGFloat) {
+        let radius = max(min(cell.width, cell.height) - strokeWidth, 0) / 2
+        let ctrlOffset = radius / 4
+        let centerX = snappedStrokeCenter(origin: cell.minX, size: cell.width, strokeWidth: strokeWidth)
+        let centerY = snappedStrokeCenter(origin: cell.minY, size: cell.height, strokeWidth: strokeWidth)
+        let leftCenter = CGPoint(x: cell.minX, y: centerY)
+        let rightCenter = CGPoint(x: cell.maxX, y: centerY)
+        let topCenter = CGPoint(x: centerX, y: cell.minY)
+        let bottomCenter = CGPoint(x: centerX, y: cell.maxY)
+
+        let spec: (start: CGPoint, curveStart: CGPoint, controlA: CGPoint, controlB: CGPoint, curveEnd: CGPoint, end: CGPoint)
+        switch glyph {
+        case "\u{256D}": // ╭
+            spec = (
+                bottomCenter,
+                CGPoint(x: centerX, y: centerY + radius),
+                CGPoint(x: centerX, y: centerY + ctrlOffset),
+                CGPoint(x: centerX + ctrlOffset, y: centerY),
+                CGPoint(x: centerX + radius, y: centerY),
+                rightCenter
+            )
+        case "\u{256E}": // ╮
+            spec = (
+                bottomCenter,
+                CGPoint(x: centerX, y: centerY + radius),
+                CGPoint(x: centerX, y: centerY + ctrlOffset),
+                CGPoint(x: centerX - ctrlOffset, y: centerY),
+                CGPoint(x: centerX - radius, y: centerY),
+                leftCenter
+            )
+        case "\u{256F}": // ╯
+            spec = (
+                topCenter,
+                CGPoint(x: centerX, y: centerY - radius),
+                CGPoint(x: centerX, y: centerY - ctrlOffset),
+                CGPoint(x: centerX - ctrlOffset, y: centerY),
+                CGPoint(x: centerX - radius, y: centerY),
+                leftCenter
+            )
+        case "\u{2570}": // ╰
+            spec = (
+                topCenter,
+                CGPoint(x: centerX, y: centerY - radius),
+                CGPoint(x: centerX, y: centerY - ctrlOffset),
+                CGPoint(x: centerX + ctrlOffset, y: centerY),
+                CGPoint(x: centerX + radius, y: centerY),
+                rightCenter
+            )
+        default:
+            return
+        }
+
+        let path = NSBezierPath()
+        path.move(to: spec.start)
+        path.line(to: spec.curveStart)
+        path.curve(to: spec.curveEnd, controlPoint1: spec.controlA, controlPoint2: spec.controlB)
+        path.line(to: spec.end)
+        path.lineWidth = strokeWidth
+        path.stroke()
+    }
+
+    /// Diagonals: stroked straight lines whose endpoints overshoot the cell
+    /// boundary by a slope-dependent amount so adjacent diagonal cells join
+    /// without pixel gaps.
+    private func strokeDiagonal(_ glyph: Character, in cell: CGRect, strokeWidth: CGFloat) {
+        guard cell.width > 0, cell.height > 0 else {
+            return
+        }
+        let slopeX = 0.5 * min(cell.width / cell.height, 1)
+        let slopeY = 0.5 * min(cell.height / cell.width, 1)
+
+        let upperRightToLowerLeft = (
+            CGPoint(x: cell.maxX + slopeX, y: cell.minY - slopeY),
+            CGPoint(x: cell.minX - slopeX, y: cell.maxY + slopeY)
+        )
+        let upperLeftToLowerRight = (
+            CGPoint(x: cell.minX - slopeX, y: cell.minY - slopeY),
+            CGPoint(x: cell.maxX + slopeX, y: cell.maxY + slopeY)
+        )
+
+        let lines: [(CGPoint, CGPoint)]
+        switch glyph {
+        case "\u{2571}": lines = [upperRightToLowerLeft] // ╱
+        case "\u{2572}": lines = [upperLeftToLowerRight] // ╲
+        case "\u{2573}": lines = [upperRightToLowerLeft, upperLeftToLowerRight] // ╳
+        default: return
+        }
+
+        for (start, end) in lines {
+            let path = NSBezierPath()
+            path.move(to: start)
+            path.line(to: end)
+            path.lineWidth = strokeWidth
+            path.stroke()
+        }
+    }
+
+    /// Midpoint of a stroke pixel-snapped to integer boundaries: rounds both
+    /// stroke edges independently, then averages. Prevents sub-pixel shimmer on
+    /// odd-width strokes across HiDPI scales.
+    private func snappedStrokeCenter(origin: CGFloat, size: CGFloat, strokeWidth: CGFloat) -> CGFloat {
+        let center = origin + size / 2
+        let minEdge = (center - strokeWidth / 2).rounded()
+        let maxEdge = (center + strokeWidth / 2).rounded()
+        return (minEdge + maxEdge) / 2
+    }
+
     private func drawText(in dirtyRect: NSRect) {
         let regularFont = terminalFont(weight: .regular)
         let boldFont = terminalFont(weight: .semibold)
         let baselineOffset = max(0, (renderConfig.cellHeight - regularFont.ascender + regularFont.descender) / 2)
             + regularFont.ascender
 
+        let scale = backingScale
         for segment in renderPlan.textSegments where rowIntersectsDirty(segment.row, dirtyRect) {
             let font = segment.bold ? boldFont : regularFont
+            // Snap the glyph origin to device pixels so baselines land on
+            // consistent pixel rows, matching the pixel-aligned backgrounds.
             let point = CGPoint(
-                x: renderConfig.paddingX + CGFloat(segment.startCol) * renderConfig.cellWidth,
-                y: renderConfig.paddingY + CGFloat(segment.row) * renderConfig.cellHeight
-                    + baselineOffset - font.ascender
+                x: ((renderConfig.paddingX + CGFloat(segment.startCol) * renderConfig.cellWidth)
+                    * scale).rounded() / scale,
+                y: ((renderConfig.paddingY + CGFloat(segment.row) * renderConfig.cellHeight
+                    + baselineOffset - font.ascender) * scale).rounded() / scale
             )
             (segment.text as NSString).draw(
                 at: point,
@@ -318,9 +515,12 @@ private final class TerminalGridNSView: NSView {
 }
 
 private extension TerminalRGBA {
+    /// Terminal escape-sequence colors are sRGB by convention; the calibrated
+    /// (generic) color space renders them visibly duller, and the settings UI
+    /// already builds its swatches in sRGB.
     var nsColor: NSColor {
         NSColor(
-            calibratedRed: red,
+            srgbRed: red,
             green: green,
             blue: blue,
             alpha: alpha

@@ -36,7 +36,7 @@ Environment variable defaults:
   TERMY_NOTARY_PROFILE TERMY_NOTARY_KEY TERMY_NOTARY_KEY_ID TERMY_NOTARY_ISSUER
 
 Output:
-  macos/dist/TermyAlpha-<version>-macos-<arch>[-signed].dmg
+  macos/dist/Termy-<version>-macos-<arch>[-signed].dmg
 EOF
 }
 
@@ -229,9 +229,9 @@ fi
 
 SWIFT_TRIPLE="$(target_to_swift_triple "$TARGET")" || die "Unsupported target: $TARGET"
 
-APP_NAME="TermyAlpha"
+APP_NAME="Termy"
 PRODUCT_NAME="TermySwift"
-BUNDLE_ID="com.lassevestergaard.TermyAlpha"
+BUNDLE_ID="com.lassevestergaard.termy"
 MIN_SYSTEM_VERSION="14.0"
 ICON_SOURCE="$REPO_ROOT/assets/termy_old_icon.png"
 ICON_NAME="TermyIcon"

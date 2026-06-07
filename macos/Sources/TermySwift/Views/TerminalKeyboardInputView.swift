@@ -25,6 +25,7 @@ struct TerminalKeyboardInputView: NSViewRepresentable {
     var onSelectionChanged: (TerminalSelection?) -> Void
     var onSelectWord: (TerminalGridPosition) -> Void
     var onSelectLine: (TerminalGridPosition) -> Void
+    var onSelectAll: () -> Void
     var onHoverProbe: (TerminalGridPosition?) -> Bool
     var onOpenLink: (TerminalGridPosition) -> Bool
     var onCopy: () -> Bool
@@ -70,6 +71,7 @@ final class KeyboardCaptureView: NSView {
     var onSelectionChanged: (TerminalSelection?) -> Void = { _ in }
     var onSelectWord: (TerminalGridPosition) -> Void = { _ in }
     var onSelectLine: (TerminalGridPosition) -> Void = { _ in }
+    var onSelectAll: () -> Void = {}
     var onHoverProbe: (TerminalGridPosition?) -> Bool = { _ in false }
     var onOpenLink: (TerminalGridPosition) -> Bool = { _ in false }
     var onCopy: () -> Bool = { false }
@@ -164,6 +166,14 @@ final class KeyboardCaptureView: NSView {
         focus()
         didDragSelection = false
 
+        if button == .left,
+           event.modifierFlags.contains(.control) {
+            activeMouseButton = nil
+            selectionAnchor = nil
+            showTerminalContextMenu(for: event)
+            return
+        }
+
         // ⌘-click opens a URL under the pointer.
         if button == .left,
            event.modifierFlags.contains(.command),
@@ -210,6 +220,13 @@ final class KeyboardCaptureView: NSView {
         focus()
         didDragSelection = false
 
+        if event.modifierFlags.contains(.control) {
+            activeMouseButton = nil
+            selectionAnchor = nil
+            showTerminalContextMenu(for: event)
+            return
+        }
+
         if sendMouse(kind: .press, button: .right, event: event) {
             activeMouseButton = .right
             selectionAnchor = nil
@@ -246,8 +263,11 @@ final class KeyboardCaptureView: NSView {
         guard let anchor = selectionAnchor else {
             return
         }
+        guard let selection = Self.dragSelection(anchor: anchor, active: gridPosition(for: event)) else {
+            return
+        }
         didDragSelection = true
-        onSelectionChanged(TerminalSelection(anchor: anchor, active: gridPosition(for: event)))
+        onSelectionChanged(selection)
     }
 
     override func mouseUp(with event: NSEvent) {
@@ -286,7 +306,7 @@ final class KeyboardCaptureView: NSView {
             return
         }
 
-        onSelectionChanged(TerminalSelection(anchor: anchor, active: gridPosition(for: event)))
+        onSelectionChanged(Self.dragSelection(anchor: anchor, active: gridPosition(for: event)))
     }
 
     override func mouseMoved(with event: NSEvent) {
@@ -522,6 +542,18 @@ final class KeyboardCaptureView: NSView {
         pasteFromPasteboard()
     }
 
+    @objc func selectAllFromTerminalContextMenu(_ sender: Any?) {
+        onSelectAll()
+    }
+
+    @objc func splitRightFromTerminalContextMenu(_ sender: Any?) {
+        onSplitRight()
+    }
+
+    @objc func splitDownFromTerminalContextMenu(_ sender: Any?) {
+        onSplitDown()
+    }
+
     @objc func clearBufferFromTerminalContextMenu(_ sender: Any?) {
         onClearBuffer()
     }
@@ -668,6 +700,16 @@ final class KeyboardCaptureView: NSView {
         return TerminalGridPosition(col: col, row: row)
     }
 
+    nonisolated static func dragSelection(
+        anchor: TerminalGridPosition,
+        active: TerminalGridPosition
+    ) -> TerminalSelection? {
+        guard anchor != active else {
+            return nil
+        }
+        return TerminalSelection(anchor: anchor, active: active)
+    }
+
 }
 
 private enum MacKeyCode: UInt16 {
@@ -725,6 +767,7 @@ private extension KeyboardCaptureView {
         onSelectionChanged = configuration.onSelectionChanged
         onSelectWord = configuration.onSelectWord
         onSelectLine = configuration.onSelectLine
+        onSelectAll = configuration.onSelectAll
         onHoverProbe = configuration.onHoverProbe
         onOpenLink = configuration.onOpenLink
         onCopy = configuration.onCopy

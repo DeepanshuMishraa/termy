@@ -1405,7 +1405,12 @@ impl Terminal {
     pub fn resize(&mut self, new_size: TerminalSize) {
         self.size = new_size;
         let _ = self.pty_tx.send(EventLoopMsg::Resize(new_size.into()));
-        self.term.lock().resize(new_size);
+        let mut term = self.term.lock();
+        term.resize(new_size);
+        // Keep content bottom-anchored like Ghostty/Kitty: reflow can strand
+        // the prompt mid-screen above blank rows while the start of the
+        // output sits in scrollback — pull it back in.
+        crate::resize_anchor::restore_bottom_anchor(&mut term, new_size);
     }
 
     /// Re-send the current size to the PTY without touching the term grid.

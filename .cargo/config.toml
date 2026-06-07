@@ -1,2 +1,5 @@
+[alias]
+macos = "run -p xtask -- macos"
+
 [future-incompat-report]
 frequency = "never"
