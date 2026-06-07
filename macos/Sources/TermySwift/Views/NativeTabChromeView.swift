@@ -280,6 +280,79 @@ struct NativeTabChromeView: View {
         renameText = tab.title
         renameRequest = NativeTabRenameRequest(descriptor: tab)
     }
+
+    /// Closing a tab collapses it along the bar's axis so neighbors slide
+    /// into the freed space, mirroring the entrance animation.
+    private func tabRemovalTransition(collapses: Axis) -> AnyTransition {
+        .asymmetric(
+            insertion: .identity,
+            removal: .modifier(
+                active: NativeTabCollapse(collapses: collapses, isCollapsed: true),
+                identity: NativeTabCollapse(collapses: collapses, isCollapsed: false)
+            )
+        )
+    }
+}
+
+/// Collapses a tab (or the whole bar) to zero size along one axis. Used for
+/// removal transitions and as the starting state of entrance animations.
+private struct NativeTabCollapse: ViewModifier {
+    let collapses: Axis
+    let isCollapsed: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .frame(
+                width: collapses == .horizontal && isCollapsed ? 0 : nil,
+                height: collapses == .vertical && isCollapsed ? 0 : nil,
+                alignment: .leading
+            )
+            .clipped()
+            .opacity(isCollapsed ? 0 : 1)
+    }
+}
+
+/// Plays a one-shot expand-and-fade entrance for a freshly opened tab (or the
+/// tab bar itself). Each native tab is a separate window with its own chrome,
+/// so opening a tab presents a freshly mounted chrome where ForEach insertion
+/// transitions never fire — instead `NativeTabWindowManager` marks the new
+/// tab and this container starts collapsed and springs open on first appear.
+private struct NativeTabEntrance<Content: View>: View {
+    private let collapses: Axis
+    private let alignment: Alignment
+    private let content: Content
+    @State private var isCollapsed: Bool
+
+    init(
+        animatesEntrance: Bool,
+        collapses: Axis,
+        alignment: Alignment,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.collapses = collapses
+        self.alignment = alignment
+        self.content = content()
+        _isCollapsed = State(initialValue: animatesEntrance)
+    }
+
+    var body: some View {
+        content
+            .frame(
+                width: collapses == .horizontal && isCollapsed ? 0 : nil,
+                height: collapses == .vertical && isCollapsed ? 0 : nil,
+                alignment: alignment
+            )
+            .clipped()
+            .opacity(isCollapsed ? 0 : 1)
+            .onAppear {
+                guard isCollapsed else {
+                    return
+                }
+                withAnimation(NativeTabChromeView.chromeAnimation) {
+                    isCollapsed = false
+                }
+            }
+    }
 }
 
 private struct NativeTabRenameRequest: Identifiable {

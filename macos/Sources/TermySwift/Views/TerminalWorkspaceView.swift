@@ -302,29 +302,54 @@ private struct TerminalCommandPalette: View {
     let onClose: () -> Void
 
     @State private var query = ""
+    @State private var selectedIndex = 0
     @FocusState private var isSearchFocused: Bool
 
-    private var filteredCommands: [PaletteCommand] {
-        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    /// Commands matching the query, ranked by fuzzy score (ties keep the
+    /// catalog order).
+    private var filteredCommands: [(command: PaletteCommand, match: CommandPaletteMatch)] {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let matches = paletteCommands.compactMap { command in
+            CommandPaletteFilter.match(query: needle, title: command.title, action: command.action)
+                .map { (command: command, match: $0) }
+        }
         guard !needle.isEmpty else {
-            return paletteCommands
+            return matches
         }
-        return paletteCommands.filter { command in
-            command.title.lowercased().contains(needle)
-                || command.action.lowercased().contains(needle)
-        }
+        return matches.enumerated()
+            .sorted { lhs, rhs in
+                if lhs.element.match.score != rhs.element.match.score {
+                    return lhs.element.match.score > rhs.element.match.score
+                }
+                return lhs.offset < rhs.offset
+            }
+            .map(\.element)
     }
 
     var body: some View {
+        let filtered = filteredCommands
+        let clampedSelection = min(selectedIndex, max(0, filtered.count - 1))
+
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 Image(systemName: "command")
                     .foregroundStyle(.secondary)
-                TextField("Command", text: $query)
+                TextField("Type a command…", text: $query)
                     .textFieldStyle(.plain)
                     .focused($isSearchFocused)
                     .onSubmit {
-                        execute(filteredCommands.first)
+                        execute(filtered[safe: clampedSelection]?.command)
+                    }
+                    .onExitCommand {
+                        onClose()
+                    }
+                    .onKeyPress(.downArrow) {
+                        selectedIndex = min(clampedSelection + 1, max(0, filtered.count - 1))
+                        return .handled
+                    }
+                    .onKeyPress(.upArrow) {
+                        selectedIndex = max(clampedSelection - 1, 0)
+                        return .handled
                     }
                 Button {
                     onClose()
@@ -338,38 +363,39 @@ private struct TerminalCommandPalette: View {
 
             Divider()
 
-            ScrollView {
-                LazyVStack(spacing: 0) {
-                    ForEach(filteredCommands) { command in
-                        Button {
-                            execute(command)
-                        } label: {
-                            HStack(spacing: 10) {
-                                Image(systemName: command.systemImage)
-                                    .foregroundStyle(.secondary)
-                                    .frame(width: 18)
-
-                                Text(command.title)
-                                    .lineLimit(1)
-
-                                Spacer()
-
-                                if configuration.native.commandPaletteShowKeybinds,
-                                   let shortcut = shortcutLabel(for: command.action) {
-                                    Text(shortcut)
-                                        .font(.caption.monospaced())
-                                        .foregroundStyle(.secondary)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 1) {
+                        ForEach(Array(filtered.enumerated()), id: \.element.command.id) { index, entry in
+                            paletteRow(
+                                entry.command,
+                                match: entry.match,
+                                isSelected: index == clampedSelection
+                            )
+                            .id(entry.command.id)
+                            .onHover { hovering in
+                                if hovering {
+                                    selectedIndex = index
                                 }
                             }
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
-                            .contentShape(Rectangle())
                         }
-                        .buttonStyle(.plain)
+
+                        if filtered.isEmpty {
+                            Text("No matching commands")
+                                .foregroundStyle(.secondary)
+                                .padding(.vertical, 14)
+                        }
                     }
+                    .padding(6)
+                }
+                .frame(maxHeight: 320)
+                .onChange(of: clampedSelection) { _, index in
+                    guard let id = filtered[safe: index]?.command.id else {
+                        return
+                    }
+                    proxy.scrollTo(id)
                 }
             }
-            .frame(maxHeight: 320)
         }
         .frame(width: 430)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
@@ -378,9 +404,69 @@ private struct TerminalCommandPalette: View {
                 .stroke(.separator.opacity(0.8), lineWidth: 1)
         }
         .shadow(radius: 18)
+        .onChange(of: query) { _, _ in
+            selectedIndex = 0
+        }
         .onAppear {
             isSearchFocused = true
         }
+        .task {
+            // The terminal's keyboard view may still hold first responder
+            // when the palette mounts; re-assert once the window settles
+            // (same pattern as the tab rename sheet).
+            try? await Task.sleep(nanoseconds: 10_000_000)
+            isSearchFocused = true
+        }
+    }
+
+    private func paletteRow(
+        _ command: PaletteCommand,
+        match: CommandPaletteMatch,
+        isSelected: Bool
+    ) -> some View {
+        Button {
+            execute(command)
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: command.systemImage)
+                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+                    .frame(width: 18)
+
+                Text(highlightedTitle(command.title, matchedIndices: match.matchedTitleIndices))
+                    .lineLimit(1)
+
+                Spacer()
+
+                if configuration.native.commandPaletteShowKeybinds,
+                   let shortcut = shortcutLabel(for: command.action) {
+                    Text(shortcut)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(
+            isSelected ? Color.accentColor.opacity(0.16) : Color.clear,
+            in: RoundedRectangle(cornerRadius: 6)
+        )
+    }
+
+    private func highlightedTitle(_ title: String, matchedIndices: [Int]) -> AttributedString {
+        var attributed = AttributedString(title)
+        for offset in matchedIndices {
+            guard offset < title.count else {
+                continue
+            }
+            let start = attributed.index(attributed.startIndex, offsetByCharacters: offset)
+            let end = attributed.index(start, offsetByCharacters: 1)
+            attributed[start..<end].inlinePresentationIntent = .stronglyEmphasized
+            attributed[start..<end].foregroundColor = .accentColor
+        }
+        return attributed
     }
 
     private func execute(_ command: PaletteCommand?) {
@@ -462,11 +548,26 @@ private struct TerminalCommandPalette: View {
 }
 
 private struct PaletteCommand: Identifiable {
-    let id = UUID()
     let title: String
     let action: String
     let systemImage: String
     let execute: (TerminalCommandSet) -> Void
+
+    /// Stable across renders (the command list is recomputed per body
+    /// evaluation) so ForEach identity, selection, and scroll targets hold.
+    /// Task commands share the "run_task" action, hence the title suffix.
+    var id: String {
+        "\(action):\(title)"
+    }
+}
+
+private extension Array {
+    subscript(safe index: Int) -> Element? {
+        guard index >= 0, index < count else {
+            return nil
+        }
+        return self[index]
+    }
 }
 
 private struct TerminalWorkspaceRoutingView: NSViewRepresentable {
@@ -807,7 +908,10 @@ private struct TerminalPaneLeafView: View {
                 terminal: pane.terminal,
                 isFocused: store.focusedPaneID == pane.id,
                 showsFocusBorder: store.paneCount > 1,
-                isInputEnabled: !store.isSearchVisible,
+                // While an overlay owns the keyboard, the terminal must not
+                // re-steal first responder (updateNSView refocuses on every
+                // frame tick, which makes overlay text fields untypable).
+                isInputEnabled: !store.isSearchVisible && !store.isCommandPaletteVisible,
                 isSearchVisible: store.isSearchVisible,
                 windowTitle: store.tabDisplayTitle,
                 onFocus: {
