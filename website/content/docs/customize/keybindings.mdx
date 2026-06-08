@@ -1,41 +1,20 @@
 ---
 title: Keybindings
-description: Ghostty-style keybind directives for Termy.
+description: Override shortcuts in config.txt.
 ---
 
-Termy uses repeated `keybind` lines in `~/.config/termy/config.txt` to override the built-in defaults.
-
-## Syntax
-
-Supported forms:
-
-- `keybind = clear`
-- `keybind = <trigger>=<action>`
-- `keybind = <trigger>=unbind`
-
-## Behavior
-
-- Directives apply in file order.
-- Later lines win for the same trigger.
-- `clear` removes all defaults before later lines are applied.
-- `unbind` removes the current mapping for a trigger.
-- Invalid lines are ignored with a warning.
-
-## The `secondary` modifier
-
-`secondary` resolves to `cmd` on macOS and `ctrl` on non-macOS platforms. Use it for cross-platform configs.
+Repeated `keybind` lines in `~/.config/termy/config.txt`:
 
 ```txt
+keybind = clear
 keybind = secondary-p=toggle_command_palette
 keybind = secondary-t=new_tab
+keybind = secondary-w=unbind
 ```
 
-<Callout>
-  Set `command_palette_show_keybinds = false` if you'd rather not see shortcut badges in palette rows.
-</Callout>
+- Lines apply in order; later lines win for the same trigger.
+- `clear` removes all defaults before later lines apply.
+- `unbind` removes a mapping.
+- `secondary` → `cmd` on macOS, `ctrl` elsewhere.
 
-## Related
-
-- [Default keybindings](/docs/reference/keybinding-defaults)
-- [Bindable actions](/docs/reference/actions)
-- [Examples](/docs/customize/keybinding-examples)
+Defaults: [Keybinding defaults](/docs/reference/keybinding-defaults). Actions: [Actions](/docs/reference/actions).

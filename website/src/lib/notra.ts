@@ -34,6 +34,39 @@ export function releaseSlug(post: NotraPost): string {
   return post.slug ?? post.id;
 }
 
+export interface ReleaseYearGroup {
+  year: string;
+  posts: NotraPost[];
+}
+
+export function formatReleaseDay(iso: string): string {
+  return new Date(iso).toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+  });
+}
+
+export function formatReleaseDate(iso: string): string {
+  return new Date(iso).toLocaleDateString('en-US', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+  });
+}
+
+export function groupReleasesByYear(posts: NotraPost[]): ReleaseYearGroup[] {
+  const groups: ReleaseYearGroup[] = [];
+
+  for (const post of posts) {
+    const year = String(new Date(post.createdAt).getFullYear());
+    const last = groups[groups.length - 1];
+    if (last?.year === year) last.posts.push(post);
+    else groups.push({ year, posts: [post] });
+  }
+
+  return groups;
+}
+
 export async function fetchReleases(): Promise<NotraPost[]> {
   const url = new URL(NOTRA_API_URL);
   url.searchParams.set('contentType', 'changelog');

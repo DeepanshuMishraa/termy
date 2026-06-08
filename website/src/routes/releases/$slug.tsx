@@ -2,7 +2,7 @@ import { createFileRoute, Link, notFound } from '@tanstack/react-router';
 import { createServerFn } from '@tanstack/react-start';
 import { HomeLayout } from 'fumadocs-ui/layouts/home';
 import { baseOptions } from '@/lib/layout.shared';
-import { fetchReleaseBySlug } from '@/lib/notra';
+import { fetchReleaseBySlug, formatReleaseDate } from '@/lib/notra';
 import { Markdown } from '@/components/markdown';
 import { PoweredByNotra } from '@/components/powered-by-notra';
 
@@ -23,51 +23,31 @@ export const Route = createFileRoute('/releases/$slug')({
   },
 });
 
-function formatDate(iso: string): string {
-  return new Date(iso).toLocaleDateString('en-US', {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-  });
-}
-
-const reveal =
-  'motion-safe:animate-[termy-fade-up_0.7s_cubic-bezier(0.22,1,0.36,1)_both]';
-
 function ReleaseDetail() {
   const { post } = Route.useLoaderData();
   if (!post) return null;
 
   return (
     <HomeLayout {...baseOptions()}>
-      <main className="flex flex-1 flex-col">
-        <article className="mx-auto w-full max-w-3xl px-6 pt-20 pb-12">
-          <Link
-            to="/releases"
-            className={`font-mono text-xs text-fd-muted-foreground transition-colors hover:text-fd-foreground ${reveal}`}
-          >
-            ← all releases
-          </Link>
+      <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col px-6 pb-16 pt-20">
+        <Link
+          to="/releases"
+          className="font-mono text-xs text-fd-muted-foreground hover:text-fd-foreground"
+        >
+          ← all releases
+        </Link>
 
-          <header
-            className={`mt-10 border-b border-fd-border pb-10 ${reveal}`}
-            style={{ animationDelay: '80ms' }}
+        <article className="mt-10">
+          <time
+            dateTime={post.createdAt}
+            className="font-mono text-xs text-fd-muted-foreground"
           >
-            <time
-              dateTime={post.createdAt}
-              className="font-mono text-xs text-fd-muted-foreground"
-            >
-              {formatDate(post.createdAt)}
-            </time>
-            <h1 className="mt-4 text-balance font-medium text-4xl tracking-tight md:text-5xl">
-              {post.title}
-            </h1>
-          </header>
-
-          <div
-            className={`prose prose-sm mt-10 max-w-none text-fd-foreground ${reveal}`}
-            style={{ animationDelay: '160ms' }}
-          >
+            {formatReleaseDate(post.createdAt)}
+          </time>
+          <h1 className="mt-3 text-balance font-medium text-4xl tracking-tight md:text-5xl">
+            {post.title}
+          </h1>
+          <div className="prose prose-sm mt-10 max-w-none border-t border-fd-border pt-10 text-fd-foreground">
             <Markdown text={post.markdown || post.content} />
           </div>
         </article>
