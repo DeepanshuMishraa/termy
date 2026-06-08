@@ -2042,6 +2042,221 @@ pub unsafe extern "C" fn termy_settings_install_theme(
     }
 }
 
+/// Installs the bundled `termy-cli` shim (symlink into a PATH dir + shell PATH
+/// setup), reusing `termy_cli_install_core`. `shell` may be null to use $SHELL.
+/// A human-readable summary (or error) is written to `out_message`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_cli_install(
+    shell_ptr: *const u8,
+    shell_len: usize,
+    out_message: *mut TermyFfiBytes,
+) -> TermyFfiStatus {
+    let shell = if shell_ptr.is_null() || shell_len == 0 {
+        None
+    } else {
+        match unsafe { required_utf8(shell_ptr, shell_len) } {
+            Ok(value) => Some(value),
+            Err(status) => return status,
+        }
+    };
+    match termy_cli_install_core::install_cli(shell) {
+        Ok(result) => {
+            if !out_message.is_null() {
+                let message = format!("Installed CLI to {}", result.install_path.display());
+                unsafe { *out_message = ffi_bytes_from_string(message) };
+            }
+            TermyFfiStatus::Ok
+        }
+        Err(error) => {
+            if !out_message.is_null() {
+                unsafe { *out_message = ffi_bytes_from_string(error) };
+            }
+            TermyFfiStatus::WriteFailed
+        }
+    }
+}
+
+// MARK: - tmux control mode (unix only)
+
+#[cfg(unix)]
+#[repr(C)]
+pub struct TermyFfiTmuxNotification {
+    /// 0 = output, 1 = needs-refresh, 2 = warning, 3 = exit.
+    pub kind: u32,
+    pub pane_id: TermyFfiBytes,
+    pub data: TermyFfiBytes,
+}
+
+#[cfg(unix)]
+#[repr(C)]
+pub struct TermyFfiTmuxNotificationBatch {
+    pub notifications_ptr: *mut TermyFfiTmuxNotification,
+    pub notifications_len: usize,
+    pub notifications_capacity: usize,
+}
+
+#[cfg(unix)]
+fn ffi_tmux_notification(
+    notification: tmux_control_core::types::TmuxNotification,
+) -> TermyFfiTmuxNotification {
+    use tmux_control_core::types::TmuxNotification;
+    match notification {
+        TmuxNotification::Output { pane_id, bytes } => TermyFfiTmuxNotification {
+            kind: 0,
+            pane_id: ffi_bytes_from_string(pane_id),
+            data: ffi_bytes_from_vec(bytes),
+        },
+        TmuxNotification::NeedsRefresh => TermyFfiTmuxNotification {
+            kind: 1,
+            pane_id: ffi_bytes_from_vec(Vec::new()),
+            data: ffi_bytes_from_vec(Vec::new()),
+        },
+        TmuxNotification::Warning(message) => TermyFfiTmuxNotification {
+            kind: 2,
+            pane_id: ffi_bytes_from_vec(Vec::new()),
+            data: ffi_bytes_from_string(message),
+        },
+        TmuxNotification::Exit(reason) => TermyFfiTmuxNotification {
+            kind: 3,
+            pane_id: ffi_bytes_from_vec(Vec::new()),
+            data: ffi_bytes_from_string(reason.unwrap_or_default()),
+        },
+    }
+}
+
+/// Opens a `tmux -CC` control session. On success writes a session handle to
+/// `out_session`; free it with `termy_tmux_control_close`.
+#[cfg(unix)]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_tmux_control_open(
+    binary_ptr: *const u8,
+    binary_len: usize,
+    socket_ptr: *const u8,
+    socket_len: usize,
+    session_ptr: *const u8,
+    session_len: usize,
+    out_session: *mut *mut tmux_control_core::session::ControlSession,
+) -> TermyFfiStatus {
+    if out_session.is_null() {
+        return TermyFfiStatus::Null;
+    }
+    let binary = match unsafe { required_utf8(binary_ptr, binary_len) } {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    let socket = match unsafe { required_utf8(socket_ptr, socket_len) } {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    let session_name = match unsafe { required_utf8(session_ptr, session_len) } {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    match tmux_control_core::session::ControlSession::launch(binary, socket, session_name) {
+        Ok(session) => {
+            unsafe { *out_session = Box::into_raw(Box::new(session)) };
+            TermyFfiStatus::Ok
+        }
+        Err(_) => TermyFfiStatus::SpawnFailed,
+    }
+}
+
+/// Drains pending control notifications into `out_batch`; free with
+/// `termy_tmux_control_notifications_free`.
+#[cfg(unix)]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_tmux_control_poll(
+    session: *mut tmux_control_core::session::ControlSession,
+    out_batch: *mut TermyFfiTmuxNotificationBatch,
+) -> TermyFfiStatus {
+    if session.is_null() || out_batch.is_null() {
+        return TermyFfiStatus::Null;
+    }
+    let session = unsafe { &*session };
+    let notifications: Vec<TermyFfiTmuxNotification> = session
+        .poll()
+        .into_iter()
+        .map(ffi_tmux_notification)
+        .collect();
+    let (ptr, len, capacity) = leak_vec(notifications);
+    unsafe {
+        *out_batch = TermyFfiTmuxNotificationBatch {
+            notifications_ptr: ptr,
+            notifications_len: len,
+            notifications_capacity: capacity,
+        };
+    }
+    TermyFfiStatus::Ok
+}
+
+#[cfg(unix)]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_tmux_control_notifications_free(
+    batch: *mut TermyFfiTmuxNotificationBatch,
+) -> TermyFfiStatus {
+    if batch.is_null() {
+        return TermyFfiStatus::Null;
+    }
+    let batch = unsafe { &mut *batch };
+    if !batch.notifications_ptr.is_null() {
+        let notifications = unsafe {
+            Vec::from_raw_parts(
+                batch.notifications_ptr,
+                batch.notifications_len,
+                batch.notifications_capacity,
+            )
+        };
+        for notification in notifications {
+            free_bytes(notification.pane_id);
+            free_bytes(notification.data);
+        }
+        batch.notifications_ptr = std::ptr::null_mut();
+        batch.notifications_len = 0;
+        batch.notifications_capacity = 0;
+    }
+    TermyFfiStatus::Ok
+}
+
+/// Runs a tmux command over the control channel; writes its output to
+/// `out_output` (free with `termy_buffer_free`).
+#[cfg(unix)]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_tmux_control_send(
+    session: *mut tmux_control_core::session::ControlSession,
+    command_ptr: *const u8,
+    command_len: usize,
+    out_output: *mut TermyFfiBytes,
+) -> TermyFfiStatus {
+    if session.is_null() {
+        return TermyFfiStatus::Null;
+    }
+    let command = match unsafe { required_utf8(command_ptr, command_len) } {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    let session = unsafe { &*session };
+    match session.send_command(command) {
+        Ok(output) => {
+            if !out_output.is_null() {
+                unsafe { *out_output = ffi_bytes_from_string(output) };
+            }
+            TermyFfiStatus::Ok
+        }
+        Err(_) => TermyFfiStatus::WriteFailed,
+    }
+}
+
+/// Closes and frees a control session handle from `termy_tmux_control_open`.
+#[cfg(unix)]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_tmux_control_close(
+    session: *mut tmux_control_core::session::ControlSession,
+) {
+    if !session.is_null() {
+        drop(unsafe { Box::from_raw(session) });
+    }
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn termy_settings_prettify_config() -> TermyFfiStatus {
     let contents = settings_read_contents();
