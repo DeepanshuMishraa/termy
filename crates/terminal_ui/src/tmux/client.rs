@@ -538,8 +538,7 @@ impl TmuxClient {
         let start_row = format!("-{}", max_rows.max(1));
         let args = capture_full_pane_args(pane_id, start_row.as_str());
         let out = self.run_control_capture_args(&args)?;
-        let payload = trim_trailing_line_terminators(out.as_bytes());
-        Ok(sanitize_tmux_payload(unescape_tmux_payload(payload)))
+        Ok(finalize_capture_payload(&out, true))
     }
 
     /// Capture a bounded scrollback range of a pane with caller-chosen end line
@@ -557,8 +556,7 @@ impl TmuxClient {
     ) -> Result<Vec<u8>> {
         let args = capture_pane_range_args(pane_id, start_row, end_row, join_wraps);
         let out = self.run_control_capture_args(&args)?;
-        let payload = trim_trailing_line_terminators(out.as_bytes());
-        Ok(sanitize_tmux_payload(unescape_tmux_payload(payload)))
+        Ok(finalize_capture_payload(&out, false))
     }
 
     pub fn verify_tmux_version(binary: &str, minimum_major: u8, minimum_minor: u8) -> Result<()> {
@@ -743,6 +741,20 @@ fn trim_trailing_line_terminators(mut bytes: &[u8]) -> &[u8] {
         bytes = &bytes[..bytes.len() - 1];
     }
     bytes
+}
+
+/// Decode and normalize a control-mode capture payload. When `trim_trailing_rows`
+/// is set, trailing blank captured rows are dropped (full-pane hydration wants a
+/// compact buffer); bounded range captures pass `false` to keep the promised 1:1
+/// captured-line-to-grid-row mapping intact, including trailing blank rows.
+fn finalize_capture_payload(out: &str, trim_trailing_rows: bool) -> Vec<u8> {
+    let bytes = out.as_bytes();
+    let payload = if trim_trailing_rows {
+        trim_trailing_line_terminators(bytes)
+    } else {
+        bytes
+    };
+    sanitize_tmux_payload(unescape_tmux_payload(payload))
 }
 
 impl Drop for TmuxClient {
@@ -943,6 +955,19 @@ mod tests {
         assert_eq!(
             trim_trailing_line_terminators(b"abc \t"),
             b"abc \t".as_slice()
+        );
+    }
+
+    #[test]
+    fn finalize_capture_payload_trims_trailing_blank_rows_for_full_capture() {
+        assert_eq!(finalize_capture_payload("A\nB\n\n", true), b"A\r\nB");
+    }
+
+    #[test]
+    fn finalize_capture_payload_preserves_trailing_blank_rows_for_range_capture() {
+        assert_eq!(
+            finalize_capture_payload("A\nB\n\n", false),
+            b"A\r\nB\r\n\r\n"
         );
     }
 
