@@ -89,6 +89,7 @@ struct TermySwiftApp: App {
                 .termyUIFont()
                 .frame(minWidth: 760, minHeight: 480)
                 .background(WindowConfigurator())
+                .handlesSettingsOpenRequests()
                 .onOpenURL { url in
                     TermyDeeplinkRouter.handle(url)
                 }
@@ -336,6 +337,33 @@ private struct OpenSettingsButton: View {
         }
         .termyUIFont()
         .keyboardShortcut(",", modifiers: .command)
+    }
+}
+
+private struct SettingsOpenRequestHandler: ViewModifier {
+    @Environment(\.openWindow) private var openWindow
+    @ObservedObject private var configurationStore = TermyConfigurationStore.shared
+
+    func body(content: Content) -> some View {
+        content.onReceive(NotificationCenter.default.publisher(for: .termyOpenSettingsRequested)) { _ in
+            openSettings()
+        }
+    }
+
+    private func openSettings() {
+        if configurationStore.configuration.native.simpleMode,
+           TermyNativeAppActions.openConfigFileInEditor() {
+            NSApp.activate(ignoringOtherApps: true)
+        } else {
+            openWindow(id: TermySwiftApp.settingsWindowID)
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+}
+
+private extension View {
+    func handlesSettingsOpenRequests() -> some View {
+        modifier(SettingsOpenRequestHandler())
     }
 }
 

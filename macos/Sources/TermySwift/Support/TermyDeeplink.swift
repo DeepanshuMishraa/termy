@@ -50,7 +50,7 @@ enum TermyDeeplinkRouter {
         case .newTab:
             NativeTabWindowManager.shared.openNativeTab()
         case .openSettings:
-            NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+            NotificationCenter.default.post(name: .termyOpenSettingsRequested, object: nil)
         case .openConfig:
             _ = TermyNativeAppActions.openConfigFileInEditor()
         case .installTheme(let slug):
