@@ -19,12 +19,16 @@ export default defineConfig({
     }),
     react(),
     nitro({
-      preset: 'cloudflare_module',
-      compatibilityDate: '2026-06-06',
-      cloudflare: {
-        deployConfig: true,
-        nodeCompat: true,
-      },
+      preset: process.env.VERCEL ? 'vercel' : 'cloudflare_module',
+      ...(process.env.VERCEL
+        ? {}
+        : {
+            compatibilityDate: '2026-06-06',
+            cloudflare: {
+              deployConfig: true,
+              nodeCompat: true,
+            },
+          }),
       traceDeps: ['tslib*'],
     }),
   ],
