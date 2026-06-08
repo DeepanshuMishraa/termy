@@ -69,6 +69,28 @@ final class LibTermyTerminal {
         handle = terminal
     }
 
+    /// Creates a display-only terminal (no shell/PTY) for rendering tmux
+    /// control-mode pane output. Drive it with `feedOutput`; `write` is a no-op.
+    init(displayCols cols: UInt16, rows: UInt16, loadUserConfig: Bool = true) throws {
+        var size = termy_size_default()
+        size.cols = cols
+        size.rows = rows
+        let config = try loadUserConfig ? Self.loadDefaultConfig() : nil
+        configHandle = config
+        renderConfig = try Self.renderConfig(for: config)
+
+        var terminal: OpaquePointer?
+        try TermyFfiBridge.requireOK(
+            "termy_display_terminal_new",
+            termy_display_terminal_new(size, &terminal)
+        )
+        guard let terminal else {
+            throw LibTermyError.missingTerminal
+        }
+        _ = termy_terminal_set_wakeup_enabled(terminal, false)
+        handle = terminal
+    }
+
     deinit {
         if let handle {
             _ = termy_terminal_free(handle)
@@ -76,6 +98,16 @@ final class LibTermyTerminal {
         if let configHandle {
             _ = termy_config_free(configHandle)
         }
+    }
+
+    /// Advance the grid with output bytes (e.g. tmux `%output`) on a display
+    /// terminal, without sending input to a PTY.
+    func feedOutput(_ bytes: [UInt8]) throws {
+        let handle = try terminalHandle()
+        let status = bytes.withUnsafeBufferPointer { buffer in
+            termy_terminal_feed_output(handle, buffer.baseAddress, buffer.count)
+        }
+        try TermyFfiBridge.requireOK("termy_terminal_feed_output", status)
     }
 
     func write(_ bytes: [UInt8]) throws {

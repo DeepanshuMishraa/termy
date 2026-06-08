@@ -717,6 +717,24 @@ pub unsafe extern "C" fn termy_terminal_new(
     }
 }
 
+/// Create a display-only terminal: a grid with no PTY/shell, fed via
+/// `termy_terminal_feed_output`. Used for tmux control-mode panes. All other
+/// terminal functions (render, resize, snapshot, free) work on the result.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_display_terminal_new(
+    size: TermyFfiSize,
+    out_terminal: *mut *mut TermyFfiTerminal,
+) -> TermyFfiStatus {
+    if out_terminal.is_null() {
+        return TermyFfiStatus::Null;
+    }
+    let terminal = Terminal::new_display(size.into(), None);
+    unsafe {
+        *out_terminal = Box::into_raw(Box::new(TermyFfiTerminal { terminal }));
+    }
+    TermyFfiStatus::Ok
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn termy_terminal_new_with_config(
     size: TermyFfiSize,
@@ -2316,6 +2334,25 @@ pub unsafe extern "C" fn termy_terminal_write(
     let bytes = unsafe { slice::from_raw_parts(bytes_ptr, bytes_len) };
     unsafe {
         (*terminal).terminal.write(bytes);
+    }
+    TermyFfiStatus::Ok
+}
+
+/// Advance a display-only terminal's grid with output bytes (e.g. tmux
+/// `%output`), without sending input to a PTY.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_terminal_feed_output(
+    terminal: *mut TermyFfiTerminal,
+    bytes_ptr: *const u8,
+    bytes_len: usize,
+) -> TermyFfiStatus {
+    if terminal.is_null() || bytes_ptr.is_null() {
+        return TermyFfiStatus::Null;
+    }
+
+    let bytes = unsafe { slice::from_raw_parts(bytes_ptr, bytes_len) };
+    unsafe {
+        (*terminal).terminal.feed_output(bytes);
     }
     TermyFfiStatus::Ok
 }

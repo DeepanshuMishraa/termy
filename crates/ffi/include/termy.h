@@ -286,6 +286,9 @@ TermyFfiStatus termy_terminal_new_with_options(
     TermyFfiSize size,
     const TermyFfiTerminalOptions *options,
     TermyFfiTerminal **out_terminal);
+TermyFfiStatus termy_display_terminal_new(
+    TermyFfiSize size,
+    TermyFfiTerminal **out_terminal);
 TermyFfiStatus termy_config_load_default(TermyFfiConfig **out_config);
 TermyFfiStatus termy_config_load_path(
     const uint8_t *path_ptr,
@@ -404,6 +407,10 @@ TermyFfiStatus termy_settings_prettify_config(void);
 TermyFfiStatus termy_terminal_reload_default_config_colors(TermyFfiTerminal *terminal);
 TermyFfiStatus termy_terminal_free(TermyFfiTerminal *terminal);
 TermyFfiStatus termy_terminal_write(
+    TermyFfiTerminal *terminal,
+    const uint8_t *bytes_ptr,
+    size_t bytes_len);
+TermyFfiStatus termy_terminal_feed_output(
     TermyFfiTerminal *terminal,
     const uint8_t *bytes_ptr,
     size_t bytes_len);
