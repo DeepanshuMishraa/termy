@@ -224,9 +224,15 @@ or stubbed in `macos/`.
   `TmuxControlNotification`), exercised against **real tmux** in the macOS test
   target (`LibTermyTmuxControlTests`, skips cleanly without tmux). So the full
   stack — protocol → `ControlSession` → FFI → Swift wrapper → real tmux — is
-  verified end-to-end. **Remaining (step 3 last mile):** a `TmuxControlSession`
-  that maps tmux panes/layouts ↔ `TerminalPane`s and renders pane output —
-  the pane **rendering** is the only part that needs the macOS GUI to validate.
+  verified end-to-end. ✅ **Display terminal done & verified:** a PTY-less
+  terminal mode in `termy_core` (`Terminal::new_display` + `feed_output`) exposed
+  through FFI + `LibTermyTerminal(displayCols:…)`/`feedOutput`, so tmux panes can
+  render `%output` without a shell (verified: fed bytes land in the grid; PTY
+  terminal unchanged, 161 core tests). **Remaining (step 3 last mile):** a
+  `TmuxControlSession` tying it together — reconcile `TmuxLayout` into display
+  terminals, route `%output` per pane, forward input. The orchestration is
+  headlessly testable against real tmux; only the SwiftUI **pane rendering/layout
+  in the workspace** needs the macOS GUI to validate.
 
 ### M4 — Config, onboarding, store
 

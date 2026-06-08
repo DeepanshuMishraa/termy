@@ -45,11 +45,20 @@ client (window/pane model, layout sync, transitions) — weeks of work.
    - ✅ **Layout parsing done & verified.** `Support/TmuxLayout.swift` parses tmux
      `#{window_layout}` strings into a pane tree (single/h-split/v-split/nested);
      `TmuxLayoutTests`.
-   - **Remaining (GUI-gated last mile):** a `TmuxControlSession` that maps the
-     parsed tmux layout ↔ a `TerminalPane` tree, routes `%output` into panes,
-     forwards input, and handles native↔tmux transitions, behind a config flag
-     (per-session shell exec stays the fallback). **Pane rendering is the only
-     part that needs the macOS GUI to validate.**
+   - ✅ **Display terminal done & verified.** tmux panes display `%output` rather
+     than running a shell, so `termy_core` gained a PTY-less terminal mode
+     (`Terminal::new_display` + `feed_output`; `pty_tx` is now Optional, `write` a
+     no-op). Exposed via FFI (`termy_display_terminal_new`,
+     `termy_terminal_feed_output`) and Swift (`LibTermyTerminal(displayCols:…)` +
+     `feedOutput`). Verified headlessly (fed bytes land in the grid — ffi + Swift
+     tests) with the existing PTY terminal unchanged (161 core tests).
+   - **Remaining:** a `TmuxControlSession` that ties the pieces together —
+     reconcile the parsed `TmuxLayout` into a set of display terminals, route each
+     `%output` to its pane's terminal, forward input via `send-keys`, behind a
+     config flag (per-session shell exec stays the fallback). The orchestration
+     (pane lifecycle + output routing + layout reconcile) is **headlessly testable
+     against real tmux**; only the SwiftUI **pane rendering/layout in the
+     workspace** needs the macOS GUI to validate.
 
 **Estimate:** the entire stack — protocol → `ControlSession` → FFI → Swift wrapper
 → layout parsing — is **done and verified against real tmux**. Only the GUI pane
