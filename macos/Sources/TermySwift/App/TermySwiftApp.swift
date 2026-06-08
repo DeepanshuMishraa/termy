@@ -22,6 +22,7 @@ enum TermyNativeAppActions {
             }
             return NSWorkspace.shared.open(url)
         } catch {
+            TermyErrorPresenter.present("Couldn't open the config file", error: error)
             return false
         }
     }
@@ -33,12 +34,22 @@ enum TermyNativeAppActions {
             NotificationCenter.default.post(name: .termySettingsChanged, object: nil)
             return true
         } catch {
+            TermyErrorPresenter.present("Couldn't prettify the config file", error: error)
             return false
         }
     }
 
     static func showAppInfo() {
         NSApp.orderFrontStandardAboutPanel(nil)
+    }
+
+    static func installCLI() {
+        do {
+            let message = try SettingsBridge.installCLI()
+            TermyToastCenter.shared.show(message, kind: .success)
+        } catch {
+            TermyErrorPresenter.present("Couldn't install the command line tool", error: error)
+        }
     }
 
     static func restartApp() {
@@ -66,17 +77,30 @@ struct TermySwiftApp: App {
     @FocusedValue(\.terminalCommands) private var terminalCommands
     @StateObject private var configurationStore = TermyConfigurationStore.shared
 
+    init() {
+        // Runs the headless render benchmark and exits when `--benchmark` is
+        // passed, before any window is created.
+        TermyBenchmarkRunner.runIfRequested()
+    }
+
     var body: some Scene {
         WindowGroup(AppMetadata.displayName) {
             TerminalWorkspaceView()
                 .termyUIFont()
                 .frame(minWidth: 760, minHeight: 480)
                 .background(WindowConfigurator())
+                .handlesSettingsOpenRequests()
+                .onOpenURL { url in
+                    TermyDeeplinkRouter.handle(url)
+                }
         }
         .commands {
             CommandGroup(after: .appInfo) {
                 Button("Check for Updates…") {
                     Task { await AppUpdater.shared.checkForUpdates(userInitiated: true) }
+                }
+                Button("Install Command Line Tool…") {
+                    TermyNativeAppActions.installCLI()
                 }
             }
 
@@ -316,6 +340,33 @@ private struct OpenSettingsButton: View {
     }
 }
 
+private struct SettingsOpenRequestHandler: ViewModifier {
+    @Environment(\.openWindow) private var openWindow
+    @ObservedObject private var configurationStore = TermyConfigurationStore.shared
+
+    func body(content: Content) -> some View {
+        content.onReceive(NotificationCenter.default.publisher(for: .termyOpenSettingsRequested)) { _ in
+            openSettings()
+        }
+    }
+
+    private func openSettings() {
+        if configurationStore.configuration.native.simpleMode,
+           TermyNativeAppActions.openConfigFileInEditor() {
+            NSApp.activate(ignoringOtherApps: true)
+        } else {
+            openWindow(id: TermySwiftApp.settingsWindowID)
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+}
+
+private extension View {
+    func handlesSettingsOpenRequests() -> some View {
+        modifier(SettingsOpenRequestHandler())
+    }
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var closePaneEventMonitor: LocalEventMonitor?
@@ -479,36 +530,46 @@ private final class ConfiguredKeybindRouter {
             return false
         }
 
-        return execute(action: keybind.action, event: event)
+        return execute(keybind.keybindAction, event: event)
     }
 
-    private func execute(action: String, event: NSEvent) -> Bool {
+    /// Runs `body` against the window's focused store, reporting whether a store
+    /// was present (i.e. whether the keybind was handled).
+    private func withFocusedStore(_ event: NSEvent, _ body: (TerminalWorkspaceStore) -> Void) -> Bool {
+        guard let store = TerminalCommandRouter.shared.focusedStore(for: event) else {
+            return false
+        }
+        body(store)
+        return true
+    }
+
+    private func execute(_ action: TerminalKeybindAction, event: NSEvent) -> Bool {
         switch action {
-        case "app_info":
+        case .appInfo:
             TermyNativeAppActions.showAppInfo()
             return true
-        case "restart_app":
+        case .restartApp:
             TermyNativeAppActions.restartApp()
             return true
-        case "open_config":
+        case .openConfig:
             return TermyNativeAppActions.openConfigFileInEditor()
-        case "prettify_config":
+        case .prettifyConfig:
             return TermyNativeAppActions.prettifyConfig()
-        case "toggle_tab_bar_visibility":
+        case .toggleTabBarVisibility:
             return TermyNativeAppActions.toggleNativeTabBarVisibility(for: event.window)
-        case "move_tab_left":
+        case .moveTabLeft:
             NativeTabWindowManager.shared.moveSelectedNativeTab(offset: -1)
             return true
-        case "move_tab_right":
+        case .moveTabRight:
             NativeTabWindowManager.shared.moveSelectedNativeTab(offset: 1)
             return true
-        case "switch_tab_left":
+        case .switchTabLeft:
             NativeTabWindowManager.shared.selectRelativeNativeTab(offset: -1)
             return true
-        case "switch_tab_right", "cycle_tabs":
+        case .switchTabRight:
             NativeTabWindowManager.shared.selectRelativeNativeTab(offset: 1)
             return true
-        case "toggle_command_palette":
+        case .toggleCommandPalette:
             guard let store = TerminalCommandRouter.shared.focusedStore(for: event),
                   !configuration.native.simpleMode
             else {
@@ -516,146 +577,75 @@ private final class ConfiguredKeybindRouter {
             }
             store.toggleCommandPalette()
             return true
-        case "new_tab":
+        case .newTab:
             NativeTabWindowManager.shared.openNativeTab()
             return true
-        case "close_tab":
+        case .closeTab:
             (event.window ?? NSApp.keyWindow)?.performClose(nil)
             return true
-        case "close_pane_or_tab":
+        case .closePaneOrTab:
             if TerminalCommandRouter.shared.closeFocusedPaneIfSplit(for: event) {
                 return true
             }
             (event.window ?? NSApp.keyWindow)?.performClose(nil)
             return true
-        case "close_pane":
-            guard let store = TerminalCommandRouter.shared.focusedStore(for: event) else {
-                return false
-            }
-            store.closeFocusedPane()
-            return true
-        case "split_pane_vertical":
+        case .closePane:
+            return withFocusedStore(event) { $0.closeFocusedPane() }
+        case .splitPaneVertical:
             return TerminalCommandRouter.shared.splitFocused(.horizontal, for: event.window)
-        case "split_pane_horizontal":
+        case .splitPaneHorizontal:
             return TerminalCommandRouter.shared.splitFocused(.vertical, for: event.window)
-        case "focus_pane_next":
-            guard let store = TerminalCommandRouter.shared.focusedStore(for: event) else {
-                return false
-            }
-            store.focusNextPane()
-            return true
-        case "focus_pane_previous":
-            guard let store = TerminalCommandRouter.shared.focusedStore(for: event) else {
-                return false
-            }
-            store.focusPreviousPane()
-            return true
-        case "focus_pane_left":
-            return TerminalCommandRouter.shared.focusedStore(for: event)?.focusPane(in: .left) ?? false
-        case "focus_pane_right":
-            return TerminalCommandRouter.shared.focusedStore(for: event)?.focusPane(in: .right) ?? false
-        case "focus_pane_up":
-            return TerminalCommandRouter.shared.focusedStore(for: event)?.focusPane(in: .up) ?? false
-        case "focus_pane_down":
-            return TerminalCommandRouter.shared.focusedStore(for: event)?.focusPane(in: .down) ?? false
-        case "resize_pane_left":
-            return TerminalCommandRouter.shared.focusedStore(for: event)?.resizeFocusedPane(in: .left) ?? false
-        case "resize_pane_right":
-            return TerminalCommandRouter.shared.focusedStore(for: event)?.resizeFocusedPane(in: .right) ?? false
-        case "resize_pane_up":
-            return TerminalCommandRouter.shared.focusedStore(for: event)?.resizeFocusedPane(in: .up) ?? false
-        case "resize_pane_down":
-            return TerminalCommandRouter.shared.focusedStore(for: event)?.resizeFocusedPane(in: .down) ?? false
-        case "toggle_pane_zoom":
-            guard let store = TerminalCommandRouter.shared.focusedStore(for: event) else {
-                return false
-            }
-            store.toggleFocusedPaneZoom()
-            return true
-        case "increase_font_size":
-            guard let store = TerminalCommandRouter.shared.focusedStore(for: event) else {
-                return false
-            }
-            store.focusedTerminal?.increaseFontSize()
-            return true
-        case "decrease_font_size":
-            guard let store = TerminalCommandRouter.shared.focusedStore(for: event) else {
-                return false
-            }
-            store.focusedTerminal?.decreaseFontSize()
-            return true
-        case "reset_font_size":
-            guard let store = TerminalCommandRouter.shared.focusedStore(for: event) else {
-                return false
-            }
-            store.focusedTerminal?.resetFontSize()
-            return true
-        case "copy":
+        case .focusPaneNext:
+            return withFocusedStore(event) { $0.focusNextPane() }
+        case .focusPanePrevious:
+            return withFocusedStore(event) { $0.focusPreviousPane() }
+        case .focusPane(let direction):
+            return TerminalCommandRouter.shared.focusedStore(for: event)?.focusPane(in: direction) ?? false
+        case .resizePane(let direction):
+            return TerminalCommandRouter.shared.focusedStore(for: event)?.resizeFocusedPane(in: direction) ?? false
+        case .togglePaneZoom:
+            return withFocusedStore(event) { $0.toggleFocusedPaneZoom() }
+        case .increaseFontSize:
+            return withFocusedStore(event) { $0.focusedTerminal?.increaseFontSize() }
+        case .decreaseFontSize:
+            return withFocusedStore(event) { $0.focusedTerminal?.decreaseFontSize() }
+        case .resetFontSize:
+            return withFocusedStore(event) { $0.focusedTerminal?.resetFontSize() }
+        case .copy:
             return TerminalCommandRouter.shared.focusedStore(for: event)?.focusedTerminal?.copySelection() ?? false
-        case "paste":
+        case .paste:
             guard let text = NSPasteboard.general.string(forType: .string) else {
                 return false
             }
             TerminalCommandRouter.shared.focusedStore(for: event)?.focusedTerminal?.send(bytes: Array(text.utf8))
             return true
-        case "open_search":
-            guard let store = TerminalCommandRouter.shared.focusedStore(for: event) else {
-                return false
-            }
-            store.showSearch()
-            return true
-        case "close_search":
-            guard let store = TerminalCommandRouter.shared.focusedStore(for: event) else {
-                return false
-            }
-            store.hideSearch()
-            return true
-        case "search_next":
+        case .openSearch:
+            return withFocusedStore(event) { $0.showSearch() }
+        case .closeSearch:
+            return withFocusedStore(event) { $0.hideSearch() }
+        case .searchNext:
             TerminalCommandRouter.shared.focusedStore(for: event)?.focusedTerminal?.selectNextSearchMatch()
             return true
-        case "search_previous":
+        case .searchPrevious:
             TerminalCommandRouter.shared.focusedStore(for: event)?.focusedTerminal?.selectPreviousSearchMatch()
             return true
-        case "toggle_search_case_sensitive":
+        case .toggleSearchCaseSensitive:
             TerminalCommandRouter.shared.focusedStore(for: event)?.toggleSearchCaseSensitive()
             return true
-        case "toggle_search_regex":
+        case .toggleSearchRegex:
             TerminalCommandRouter.shared.focusedStore(for: event)?.toggleSearchRegex()
             return true
-        case "switch_to_tab_1":
-            NativeTabWindowManager.shared.selectNativeTab(number: 1)
+        case .switchToTab(let number):
+            NativeTabWindowManager.shared.selectNativeTab(number: number)
             return true
-        case "switch_to_tab_2":
-            NativeTabWindowManager.shared.selectNativeTab(number: 2)
-            return true
-        case "switch_to_tab_3":
-            NativeTabWindowManager.shared.selectNativeTab(number: 3)
-            return true
-        case "switch_to_tab_4":
-            NativeTabWindowManager.shared.selectNativeTab(number: 4)
-            return true
-        case "switch_to_tab_5":
-            NativeTabWindowManager.shared.selectNativeTab(number: 5)
-            return true
-        case "switch_to_tab_6":
-            NativeTabWindowManager.shared.selectNativeTab(number: 6)
-            return true
-        case "switch_to_tab_7":
-            NativeTabWindowManager.shared.selectNativeTab(number: 7)
-            return true
-        case "switch_to_tab_8":
-            NativeTabWindowManager.shared.selectNativeTab(number: 8)
-            return true
-        case "switch_to_tab_9":
-            NativeTabWindowManager.shared.selectNativeTab(number: 9)
-            return true
-        case "minimize_window":
+        case .minimizeWindow:
             (event.window ?? NSApp.keyWindow)?.miniaturize(nil)
             return true
-        case "quit":
+        case .quit:
             NSApp.terminate(nil)
             return true
-        default:
+        case .clearScrollback, .sendInterrupt, .runTask, .unknown:
+            // Not bound as keybinds (palette-only or task payload required).
             return false
         }
     }
@@ -904,6 +894,17 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
         postTabsChanged()
     }
 
+    /// Brings a tabbed window to the front, restoring it if miniaturized.
+    private func activateTabbedWindow(_ window: NSWindow) {
+        if window.isMiniaturized {
+            window.deminiaturize(nil)
+        }
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        hideSystemTabBarIfNeeded(for: window)
+        postTabsChanged()
+    }
+
     func selectNativeTab(number: Int) {
         let index = number - 1
         guard index >= 0,
@@ -917,14 +918,7 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
             return
         }
 
-        let targetWindow = tabbedWindows[index]
-        if targetWindow.isMiniaturized {
-            targetWindow.deminiaturize(nil)
-        }
-        targetWindow.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-        hideSystemTabBarIfNeeded(for: targetWindow)
-        postTabsChanged()
+        activateTabbedWindow(tabbedWindows[index])
     }
 
     func selectRelativeNativeTab(offset: Int) {
@@ -942,14 +936,7 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
         let selectedWindow = NSApp.keyWindow ?? NSApp.mainWindow
         let currentIndex = tabbedWindows.firstIndex { $0 === selectedWindow } ?? 0
         let targetIndex = (currentIndex + offset + tabbedWindows.count) % tabbedWindows.count
-        let targetWindow = tabbedWindows[targetIndex]
-        if targetWindow.isMiniaturized {
-            targetWindow.deminiaturize(nil)
-        }
-        targetWindow.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-        hideSystemTabBarIfNeeded(for: targetWindow)
-        postTabsChanged()
+        activateTabbedWindow(tabbedWindows[targetIndex])
     }
 
     func moveSelectedNativeTab(offset: Int) {
@@ -976,6 +963,31 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
         let movingWindow = tabbedWindows[currentIndex]
         let anchorWindow = tabbedWindows[targetIndex]
         anchorWindow.addTabbedWindow(movingWindow, ordered: offset < 0 ? .below : .above)
+        movingWindow.makeKeyAndOrderFront(nil)
+        hideSystemTabBarIfNeeded(for: movingWindow)
+        postTabsChanged()
+    }
+
+    /// Moves a specific tab to `targetIndex`, used by drag-to-reorder in the
+    /// custom tab chrome.
+    func moveNativeTab(_ descriptor: NativeTabDescriptor, toIndex targetIndex: Int) {
+        guard let movingWindow = descriptor.window,
+              let sourceWindow = nativeTabSourceWindow()
+        else {
+            return
+        }
+
+        let tabbedWindows = nativeTabWindows(for: sourceWindow)
+        guard let currentIndex = tabbedWindows.firstIndex(where: { $0 === movingWindow }) else {
+            return
+        }
+        let clamped = max(0, min(tabbedWindows.count - 1, targetIndex))
+        guard clamped != currentIndex else {
+            return
+        }
+
+        let anchorWindow = tabbedWindows[clamped]
+        anchorWindow.addTabbedWindow(movingWindow, ordered: clamped < currentIndex ? .below : .above)
         movingWindow.makeKeyAndOrderFront(nil)
         hideSystemTabBarIfNeeded(for: movingWindow)
         postTabsChanged()

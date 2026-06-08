@@ -21,6 +21,20 @@ final class TerminalViewModel: ObservableObject {
     /// diffing large arrays on every frame.
     @Published private(set) var renderRevision = 0
     @Published private(set) var renderDamage = TerminalDamage.full
+    /// Bumped on each terminal bell so the surface view can flash a visual bell.
+    @Published private(set) var bellPulse = 0
+    /// In-progress IME composition text, rendered inline at the cursor.
+    @Published private(set) var markedText = ""
+    /// Absolute scrollback rows where shell prompts started (OSC 133;A), shown
+    /// as command marks in the scrollbar.
+    @Published private(set) var commandMarkRows: [Int] = []
+    /// Marks are exact only while history stays below the scrollback cap; once
+    /// the buffer fills, eviction would drift them, so tracking stops.
+    private var commandMarkTrackingActive = true
+
+    func setMarkedText(_ text: String) {
+        markedText = text
+    }
     /// Host-driven cursor blink visibility; the grid view skips the cursor
     /// while this is `false`. Ticked from the refresh driver in
     /// `pollAndPresent()` so blinking follows the active/idle cadence and
@@ -314,6 +328,8 @@ final class TerminalViewModel: ObservableObject {
     }
 
     func clearScrollback() {
+        commandMarkRows.removeAll()
+        commandMarkTrackingActive = true
         refreshIfChanged {
             try terminal?.clearScrollback() == true
         }
@@ -581,6 +597,14 @@ final class TerminalViewModel: ObservableObject {
             }
 
             frame = frameStore.frame
+            // Once the scrollback fills, eviction would drift recorded marks, so
+            // stop tracking and drop them rather than show stale positions.
+            if commandMarkTrackingActive,
+               configuration.scrollbackHistory > 0,
+               frame.historySize >= configuration.scrollbackHistory {
+                commandMarkTrackingActive = false
+                commandMarkRows.removeAll()
+            }
             errorMessage = nil
             let effectiveDamage = forceFull ? .full : applyResult.effectiveDamage
             // Fold the cursor cell into the published damage on a blink toggle
@@ -786,6 +810,45 @@ final class TerminalViewModel: ObservableObject {
         scrollDisplay(deltaLines: clampedOffset - frame.displayOffset)
     }
 
+    /// Rings the system bell and pulses the visual-bell signal.
+    private func handleBell() {
+        NSSound.beep()
+        bellPulse &+= 1
+    }
+
+    /// Records a command mark at the prompt's absolute row. Only while shell
+    /// integration is on and history is below the scrollback cap (so the
+    /// absolute row can't have been shifted by eviction).
+    /// Absolute scrollback row of a prompt at the given history/cursor position.
+    nonisolated static func commandMarkAbsoluteRow(historySize: Int, cursorRow: Int) -> Int {
+        historySize + cursorRow
+    }
+
+    /// Marks are exact only below the scrollback cap (eviction starts at the cap
+    /// and would otherwise shift their absolute rows).
+    nonisolated static func canTrackCommandMark(historySize: Int, scrollbackCap: Int) -> Bool {
+        scrollbackCap > 0 && historySize < scrollbackCap
+    }
+
+    private func recordCommandMark() {
+        guard configuration.native.shellIntegrationEnabled,
+              commandMarkTrackingActive,
+              Self.canTrackCommandMark(
+                  historySize: frame.historySize,
+                  scrollbackCap: configuration.scrollbackHistory
+              )
+        else {
+            return
+        }
+        commandMarkRows.append(Self.commandMarkAbsoluteRow(
+            historySize: frame.historySize,
+            cursorRow: frame.cursor?.row ?? 0
+        ))
+        if commandMarkRows.count > 200 {
+            commandMarkRows.removeFirst(commandMarkRows.count - 200)
+        }
+    }
+
     private func handle(_ events: [TerminalRuntimeEvent]) {
         guard !events.isEmpty else {
             return
@@ -814,9 +877,11 @@ final class TerminalViewModel: ObservableObject {
                 if !text.isEmpty {
                     copy(text)
                 }
+            case .bell:
+                handleBell()
+            case .shellPromptStart:
+                recordCommandMark()
             case .wakeup,
-                 .bell,
-                 .shellPromptStart,
                  .shellCommandStart,
                  .shellCommandExecuting,
                  .shellCommandFinished(_):

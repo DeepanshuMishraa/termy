@@ -1288,8 +1288,10 @@ pub struct Terminal {
     listener: JsonEventListener,
     /// Parser used for buffer rehydration without writing to the PTY.
     parser: FairMutex<ansi::Processor>,
-    /// Channel to send input to the PTY
-    pty_tx: EventLoopSender,
+    /// Channel to send input to the PTY. `None` for display-only terminals
+    /// (e.g. tmux control-mode panes) that are fed via `feed_output` and have
+    /// no backing shell.
+    pty_tx: Option<EventLoopSender>,
     /// Channel to receive events from the native PTY loop
     events_rx: Receiver<RuntimeEvent>,
     /// Current terminal size
@@ -1361,12 +1363,48 @@ impl Terminal {
             term,
             listener,
             parser: FairMutex::new(ansi::Processor::new()),
-            pty_tx,
+            pty_tx: Some(pty_tx),
             events_rx,
             size,
             query_colors: runtime_config.query_colors,
             child_pid,
         })
+    }
+
+    /// Create a display-only terminal: a grid + parser with no PTY/shell. Its
+    /// content is supplied with [`Terminal::feed_output`] (e.g. tmux `%output`).
+    /// All rendering, sizing, and event draining work as for a normal terminal;
+    /// input (`write`) is a no-op since there is no child process.
+    pub fn new_display(size: TerminalSize, runtime_config: Option<&TerminalRuntimeConfig>) -> Self {
+        let (events_tx, events_rx) = unbounded();
+        let runtime_config = runtime_config.cloned().unwrap_or_default();
+        let term_config = runtime_config.term_options().term_config();
+        let listener = JsonEventListener::new(events_tx, None);
+        let term = Term::new(term_config, &size, listener.clone());
+        let term = Arc::new(FairMutex::new(term));
+
+        Self {
+            term,
+            listener,
+            parser: FairMutex::new(ansi::Processor::new()),
+            pty_tx: None,
+            events_rx,
+            size,
+            query_colors: runtime_config.query_colors,
+            child_pid: None,
+        }
+    }
+
+    /// Advance the grid with output bytes without involving a PTY. Used by
+    /// display-only terminals (tmux `%output`); damage is recorded so the next
+    /// render picks up the change.
+    pub fn feed_output(&self, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
+        let mut parser = self.parser.lock();
+        let mut term = self.term.lock();
+        parser.advance(&mut *term, bytes);
     }
 
     pub fn child_pid(&self) -> Option<u32> {
@@ -1377,9 +1415,11 @@ impl Terminal {
         self.listener.set_wakeup_enabled(enabled);
     }
 
-    /// Write bytes to the PTY (user input)
+    /// Write bytes to the PTY (user input). No-op for display-only terminals.
     pub fn write(&self, input: &[u8]) {
-        let _ = self.pty_tx.send(EventLoopMsg::Input(input.to_vec().into()));
+        if let Some(pty_tx) = &self.pty_tx {
+            let _ = pty_tx.send(EventLoopMsg::Input(input.to_vec().into()));
+        }
     }
 
     /// Rehydrate saved terminal output into the in-memory grid without sending input to the PTY.
@@ -1404,7 +1444,9 @@ impl Terminal {
     /// Resize the terminal
     pub fn resize(&mut self, new_size: TerminalSize) {
         self.size = new_size;
-        let _ = self.pty_tx.send(EventLoopMsg::Resize(new_size.into()));
+        if let Some(pty_tx) = &self.pty_tx {
+            let _ = pty_tx.send(EventLoopMsg::Resize(new_size.into()));
+        }
         let mut term = self.term.lock();
         term.resize(new_size);
         // Keep content bottom-anchored like Ghostty/Kitty: reflow can strand
@@ -1418,7 +1460,9 @@ impl Terminal {
     /// (e.g. lazygit) to refresh their display after an alternate-screen
     /// transition even though the actual dimensions have not changed.
     pub fn nudge_resize(&self) {
-        let _ = self.pty_tx.send(EventLoopMsg::Resize(self.size.into()));
+        if let Some(pty_tx) = &self.pty_tx {
+            let _ = pty_tx.send(EventLoopMsg::Resize(self.size.into()));
+        }
     }
 
     /// Get the current terminal size
@@ -1696,7 +1740,9 @@ fn terminal_event_from_osc(event: OscEvent) -> TerminalEvent {
 impl Drop for Terminal {
     fn drop(&mut self) {
         // Ensure the PTY event loop exits so PTY drop can terminate/reap the child process.
-        let _ = self.pty_tx.send(EventLoopMsg::Shutdown);
+        if let Some(pty_tx) = &self.pty_tx {
+            let _ = pty_tx.send(EventLoopMsg::Shutdown);
+        }
     }
 }
 

@@ -76,6 +76,15 @@ private final class TerminalGridNSView: NSView {
 
     override var isFlipped: Bool { true }
 
+    // Expose the visible grid as a text area so VoiceOver can read terminal
+    // output; the value is recomputed live from the current frame.
+    override func isAccessibilityElement() -> Bool { true }
+    override func accessibilityRole() -> NSAccessibility.Role? { .textArea }
+    override func accessibilityLabel() -> String? { "Terminal" }
+    override func accessibilityValue() -> Any? { terminalFrame.visibleTextSnapshot() }
+    override func accessibilitySelectedText() -> String? { terminalFrame.selectedText(for: selection) }
+    override func accessibilityInsertionPointLineNumber() -> Int { terminalFrame.cursor?.row ?? 0 }
+
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         configureLayer()

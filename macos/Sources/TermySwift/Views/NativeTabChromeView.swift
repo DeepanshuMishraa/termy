@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct NativeTabChromeView: View {
     weak var window: NSWindow?
@@ -215,6 +216,12 @@ struct NativeTabChromeView: View {
         .onTapGesture {
             NativeTabWindowManager.shared.selectNativeTab(tab)
         }
+        .onDrag {
+            NSItemProvider(object: String(tab.index) as NSString)
+        }
+        .onDrop(of: [.plainText], isTargeted: nil) { providers in
+            handleTabDrop(providers, onto: tab)
+        }
         .contextMenu {
             Button(tab.isPinned ? "Unpin Tab" : "Pin Tab") {
                 NativeTabWindowManager.shared.setNativeTabPinned(tab, pinned: !tab.isPinned)
@@ -279,6 +286,27 @@ struct NativeTabChromeView: View {
     private func beginRename(_ tab: NativeTabDescriptor) {
         renameText = tab.title
         renameRequest = NativeTabRenameRequest(descriptor: tab)
+    }
+
+    /// Resolves the dragged tab (carried as its index) and reorders it to land
+    /// where `target` currently sits.
+    private func handleTabDrop(_ providers: [NSItemProvider], onto target: NativeTabDescriptor) -> Bool {
+        guard let provider = providers.first else {
+            return false
+        }
+        _ = provider.loadObject(ofClass: NSString.self) { value, _ in
+            guard let sourceIndex = (value as? String).flatMap(Int.init) else {
+                return
+            }
+            Task { @MainActor in
+                let current = NativeTabWindowManager.shared.tabDescriptors(for: window)
+                guard let source = current.first(where: { $0.index == sourceIndex }) else {
+                    return
+                }
+                NativeTabWindowManager.shared.moveNativeTab(source, toIndex: target.index)
+            }
+        }
+        return true
     }
 
     /// Closing a tab collapses it along the bar's axis so neighbors slide

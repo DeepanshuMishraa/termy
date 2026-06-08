@@ -9,9 +9,43 @@ final class DisplaySyncedRefreshDriver: @unchecked Sendable {
     private let onTick: @MainActor () -> Void
     private var lastDeliveredAt: Date?
     private var isRunning = false
+    private var thermalState = ProcessInfo.processInfo.thermalState
+    private var thermalObserver: NSObjectProtocol?
 
     init(onTick: @escaping @MainActor () -> Void) {
         self.onTick = onTick
+        thermalObserver = NotificationCenter.default.addObserver(
+            forName: ProcessInfo.thermalStateDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.thermalState = ProcessInfo.processInfo.thermalState
+        }
+    }
+
+    deinit {
+        if let thermalObserver {
+            NotificationCenter.default.removeObserver(thermalObserver)
+        }
+    }
+
+    /// The minimum gap between ticks, raised under thermal pressure so a hot
+    /// machine throttles the 60 Hz active cadence rather than fighting the fans.
+    private var effectiveInterval: TimeInterval {
+        max(cadence.interval, Self.thermalFloor(thermalState))
+    }
+
+    static func thermalFloor(_ state: ProcessInfo.ThermalState) -> TimeInterval {
+        switch state {
+        case .nominal, .fair:
+            return 0
+        case .serious:
+            return 1.0 / 30.0
+        case .critical:
+            return 1.0 / 15.0
+        @unknown default:
+            return 0
+        }
     }
 
     func start(cadence: RefreshCadence) {
@@ -76,7 +110,7 @@ final class DisplaySyncedRefreshDriver: @unchecked Sendable {
 
         let now = Date()
         if let lastDeliveredAt,
-           now.timeIntervalSince(lastDeliveredAt) < cadence.interval {
+           now.timeIntervalSince(lastDeliveredAt) < effectiveInterval {
             return
         }
 

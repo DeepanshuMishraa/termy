@@ -1,7 +1,7 @@
 import AppKit
 
 enum TerminalSurfaceContextMenu {
-    static func make(canCopy: Bool, canPaste: Bool, target: AnyObject) -> NSMenu {
+    static func make(canCopy: Bool, canPaste: Bool, target: KeyboardCaptureView) -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
 
@@ -59,7 +59,7 @@ enum TerminalSurfaceContextMenu {
         title: String,
         action: Selector,
         keyEquivalent: String,
-        target: AnyObject,
+        target: KeyboardCaptureView,
         isEnabled: Bool = true
     ) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: keyEquivalent)

@@ -70,41 +70,15 @@ struct TerminalWorkspaceView: View {
             }
 
             if let appConfigurationError {
-                HStack(spacing: 8) {
-                    Text(appConfigurationError)
-                        .font(.system(size: 12, design: .monospaced))
-                        .foregroundStyle(.red)
-                    Button {
-                        self.appConfigurationError = nil
-                    } label: {
-                        Image(systemName: "xmark")
-                    }
-                    .buttonStyle(.borderless)
+                dismissibleBanner(appConfigurationError, color: .red) {
+                    self.appConfigurationError = nil
                 }
-                .padding(8)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
-                .padding(10)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .zIndex(11)
             }
 
             if let workspacePersistenceError {
-                HStack(spacing: 8) {
-                    Text(workspacePersistenceError)
-                        .font(.system(size: 12, design: .monospaced))
-                        .foregroundStyle(.orange)
-                    Button {
-                        self.workspacePersistenceError = nil
-                    } label: {
-                        Image(systemName: "xmark")
-                    }
-                    .buttonStyle(.borderless)
+                dismissibleBanner(workspacePersistenceError, color: .orange) {
+                    self.workspacePersistenceError = nil
                 }
-                .padding(8)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
-                .padding(10)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .zIndex(11)
             }
 
             if store.isSearchVisible, let terminal = store.focusedTerminal {
@@ -123,7 +97,32 @@ struct TerminalWorkspaceView: View {
                 commandPaletteOverlay
                     .zIndex(12)
             }
+
+            TermyToastOverlay()
+                .zIndex(20)
         }
+    }
+
+    /// A top-leading error banner with a dismiss button, overlaid on the workspace.
+    private func dismissibleBanner(
+        _ message: String,
+        color: Color,
+        onDismiss: @escaping () -> Void
+    ) -> some View {
+        HStack(spacing: 8) {
+            Text(message)
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(color)
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.borderless)
+        }
+        .padding(8)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .padding(10)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .zIndex(11)
     }
 
     private var commandPaletteOverlay: some View {
@@ -310,7 +309,7 @@ private struct TerminalCommandPalette: View {
     private var filteredCommands: [(command: PaletteCommand, match: CommandPaletteMatch)] {
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let matches = paletteCommands.compactMap { command in
-            CommandPaletteFilter.match(query: needle, title: command.title, action: command.action)
+            CommandPaletteFilter.match(query: needle, title: command.title, action: command.action.identifier)
                 .map { (command: command, match: $0) }
         }
         guard !needle.isEmpty else {
@@ -477,8 +476,8 @@ private struct TerminalCommandPalette: View {
         command.execute(commandSet)
     }
 
-    private func shortcutLabel(for action: String) -> String? {
-        guard let keybind = configuration.keybinds.first(where: { $0.action == action }) else {
+    private func shortcutLabel(for action: TerminalKeybindAction) -> String? {
+        guard let keybind = configuration.keybinds.first(where: { $0.keybindAction == action }) else {
             return nil
         }
         return keybind.trigger
@@ -492,55 +491,55 @@ private struct TerminalCommandPalette: View {
 
     private var paletteCommands: [PaletteCommand] {
         [
-            PaletteCommand(title: "New Tab", action: "new_tab", systemImage: "plus") { $0.execute(.newTab) },
-            PaletteCommand(title: "Switch Tab Left", action: "switch_tab_left", systemImage: "chevron.left") { _ in
+            PaletteCommand(title: "New Tab", action: .newTab, systemImage: "plus") { $0.execute(.newTab) },
+            PaletteCommand(title: "Switch Tab Left", action: .switchTabLeft, systemImage: "chevron.left") { _ in
                 NativeTabWindowManager.shared.selectRelativeNativeTab(offset: -1)
             },
-            PaletteCommand(title: "Switch Tab Right", action: "switch_tab_right", systemImage: "chevron.right") { _ in
+            PaletteCommand(title: "Switch Tab Right", action: .switchTabRight, systemImage: "chevron.right") { _ in
                 NativeTabWindowManager.shared.selectRelativeNativeTab(offset: 1)
             },
-            PaletteCommand(title: "Move Tab Left", action: "move_tab_left", systemImage: "arrow.left.to.line") { _ in
+            PaletteCommand(title: "Move Tab Left", action: .moveTabLeft, systemImage: "arrow.left.to.line") { _ in
                 NativeTabWindowManager.shared.moveSelectedNativeTab(offset: -1)
             },
-            PaletteCommand(title: "Move Tab Right", action: "move_tab_right", systemImage: "arrow.right.to.line") { _ in
+            PaletteCommand(title: "Move Tab Right", action: .moveTabRight, systemImage: "arrow.right.to.line") { _ in
                 NativeTabWindowManager.shared.moveSelectedNativeTab(offset: 1)
             },
-            PaletteCommand(title: "Split Right", action: "split_pane_vertical", systemImage: "rectangle.split.2x1") { $0.execute(.splitPaneVertical) },
-            PaletteCommand(title: "Split Down", action: "split_pane_horizontal", systemImage: "rectangle.split.1x2") { $0.execute(.splitPaneHorizontal) },
-            PaletteCommand(title: "Close Pane or Tab", action: "close_pane_or_tab", systemImage: "xmark") { $0.execute(.closePaneOrTab) },
-            PaletteCommand(title: "Close Pane", action: "close_pane", systemImage: "rectangle.badge.xmark") { $0.execute(.closePane) },
-            PaletteCommand(title: "Next Pane", action: "focus_pane_next", systemImage: "arrow.right") { $0.execute(.focusPaneNext) },
-            PaletteCommand(title: "Previous Pane", action: "focus_pane_previous", systemImage: "arrow.left") { $0.execute(.focusPanePrevious) },
-            PaletteCommand(title: "Toggle Pane Zoom", action: "toggle_pane_zoom", systemImage: "arrow.up.left.and.arrow.down.right") { $0.execute(.togglePaneZoom) },
-            PaletteCommand(title: "Increase Font Size", action: "increase_font_size", systemImage: "textformat.size.larger") { $0.execute(.increaseFontSize) },
-            PaletteCommand(title: "Decrease Font Size", action: "decrease_font_size", systemImage: "textformat.size.smaller") { $0.execute(.decreaseFontSize) },
-            PaletteCommand(title: "Reset Font Size", action: "reset_font_size", systemImage: "textformat") { $0.execute(.resetFontSize) },
-            PaletteCommand(title: "Find", action: "open_search", systemImage: "magnifyingglass") { $0.execute(.openSearch) },
-            PaletteCommand(title: "Find Next", action: "search_next", systemImage: "chevron.down") { $0.execute(.searchNext) },
-            PaletteCommand(title: "Find Previous", action: "search_previous", systemImage: "chevron.up") { $0.execute(.searchPrevious) },
-            PaletteCommand(title: "Toggle Case Sensitive Search", action: "toggle_search_case_sensitive", systemImage: "textformat") { $0.execute(.toggleSearchCaseSensitive) },
-            PaletteCommand(title: "Toggle Regex Search", action: "toggle_search_regex", systemImage: "asterisk") { $0.execute(.toggleSearchRegex) },
-            PaletteCommand(title: "Copy", action: "copy", systemImage: "doc.on.doc") { $0.execute(.copy) },
-            PaletteCommand(title: "Paste", action: "paste", systemImage: "doc.on.clipboard") { $0.execute(.paste) },
-            PaletteCommand(title: "Clear Scrollback", action: "clear_buffer", systemImage: "trash") { $0.execute(.clearScrollback) },
-            PaletteCommand(title: "Send Interrupt", action: "send_interrupt", systemImage: "exclamationmark.octagon") { $0.execute(.sendInterrupt) },
-            PaletteCommand(title: "Open Config", action: "open_config", systemImage: "doc.text") { _ in
+            PaletteCommand(title: "Split Right", action: .splitPaneVertical, systemImage: "rectangle.split.2x1") { $0.execute(.splitPaneVertical) },
+            PaletteCommand(title: "Split Down", action: .splitPaneHorizontal, systemImage: "rectangle.split.1x2") { $0.execute(.splitPaneHorizontal) },
+            PaletteCommand(title: "Close Pane or Tab", action: .closePaneOrTab, systemImage: "xmark") { $0.execute(.closePaneOrTab) },
+            PaletteCommand(title: "Close Pane", action: .closePane, systemImage: "rectangle.badge.xmark") { $0.execute(.closePane) },
+            PaletteCommand(title: "Next Pane", action: .focusPaneNext, systemImage: "arrow.right") { $0.execute(.focusPaneNext) },
+            PaletteCommand(title: "Previous Pane", action: .focusPanePrevious, systemImage: "arrow.left") { $0.execute(.focusPanePrevious) },
+            PaletteCommand(title: "Toggle Pane Zoom", action: .togglePaneZoom, systemImage: "arrow.up.left.and.arrow.down.right") { $0.execute(.togglePaneZoom) },
+            PaletteCommand(title: "Increase Font Size", action: .increaseFontSize, systemImage: "textformat.size.larger") { $0.execute(.increaseFontSize) },
+            PaletteCommand(title: "Decrease Font Size", action: .decreaseFontSize, systemImage: "textformat.size.smaller") { $0.execute(.decreaseFontSize) },
+            PaletteCommand(title: "Reset Font Size", action: .resetFontSize, systemImage: "textformat") { $0.execute(.resetFontSize) },
+            PaletteCommand(title: "Find", action: .openSearch, systemImage: "magnifyingglass") { $0.execute(.openSearch) },
+            PaletteCommand(title: "Find Next", action: .searchNext, systemImage: "chevron.down") { $0.execute(.searchNext) },
+            PaletteCommand(title: "Find Previous", action: .searchPrevious, systemImage: "chevron.up") { $0.execute(.searchPrevious) },
+            PaletteCommand(title: "Toggle Case Sensitive Search", action: .toggleSearchCaseSensitive, systemImage: "textformat") { $0.execute(.toggleSearchCaseSensitive) },
+            PaletteCommand(title: "Toggle Regex Search", action: .toggleSearchRegex, systemImage: "asterisk") { $0.execute(.toggleSearchRegex) },
+            PaletteCommand(title: "Copy", action: .copy, systemImage: "doc.on.doc") { $0.execute(.copy) },
+            PaletteCommand(title: "Paste", action: .paste, systemImage: "doc.on.clipboard") { $0.execute(.paste) },
+            PaletteCommand(title: "Clear Scrollback", action: .clearScrollback, systemImage: "trash") { $0.execute(.clearScrollback) },
+            PaletteCommand(title: "Send Interrupt", action: .sendInterrupt, systemImage: "exclamationmark.octagon") { $0.execute(.sendInterrupt) },
+            PaletteCommand(title: "Open Config", action: .openConfig, systemImage: "doc.text") { _ in
                 _ = TermyNativeAppActions.openConfigFileInEditor()
             },
-            PaletteCommand(title: "Prettify Config", action: "prettify_config", systemImage: "wand.and.stars") { _ in
+            PaletteCommand(title: "Prettify Config", action: .prettifyConfig, systemImage: "wand.and.stars") { _ in
                 _ = TermyNativeAppActions.prettifyConfig()
             },
-            PaletteCommand(title: "Toggle Native Tab Bar", action: "toggle_tab_bar_visibility", systemImage: "sidebar.left") { _ in
+            PaletteCommand(title: "Toggle Native Tab Bar", action: .toggleTabBarVisibility, systemImage: "sidebar.left") { _ in
                 _ = TermyNativeAppActions.toggleNativeTabBarVisibility(for: NSApp.keyWindow)
             },
-            PaletteCommand(title: "App Info", action: "app_info", systemImage: "info.circle") { _ in
+            PaletteCommand(title: "App Info", action: .appInfo, systemImage: "info.circle") { _ in
                 TermyNativeAppActions.showAppInfo()
             },
-            PaletteCommand(title: "Restart App", action: "restart_app", systemImage: "arrow.clockwise") { _ in
+            PaletteCommand(title: "Restart App", action: .restartApp, systemImage: "arrow.clockwise") { _ in
                 TermyNativeAppActions.restartApp()
             },
         ] + configuration.tasks.map { task in
-            PaletteCommand(title: "Run \(task.name)", action: "run_task", systemImage: "play") { _ in
+            PaletteCommand(title: "Run \(task.name)", action: .runTask, systemImage: "play") { _ in
                 NativeTabWindowManager.shared.openNativeTab(startupTask: task)
             }
         }
@@ -549,7 +548,7 @@ private struct TerminalCommandPalette: View {
 
 private struct PaletteCommand: Identifiable {
     let title: String
-    let action: String
+    let action: TerminalKeybindAction
     let systemImage: String
     let execute: (TerminalCommandSet) -> Void
 
@@ -557,16 +556,7 @@ private struct PaletteCommand: Identifiable {
     /// evaluation) so ForEach identity, selection, and scroll targets hold.
     /// Task commands share the "run_task" action, hence the title suffix.
     var id: String {
-        "\(action):\(title)"
-    }
-}
-
-private extension Array {
-    subscript(safe index: Int) -> Element? {
-        guard index >= 0, index < count else {
-            return nil
-        }
-        return self[index]
+        "\(action.identifier):\(title)"
     }
 }
 

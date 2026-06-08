@@ -286,6 +286,9 @@ TermyFfiStatus termy_terminal_new_with_options(
     TermyFfiSize size,
     const TermyFfiTerminalOptions *options,
     TermyFfiTerminal **out_terminal);
+TermyFfiStatus termy_display_terminal_new(
+    TermyFfiSize size,
+    TermyFfiTerminal **out_terminal);
 TermyFfiStatus termy_config_load_default(TermyFfiConfig **out_config);
 TermyFfiStatus termy_config_load_path(
     const uint8_t *path_ptr,
@@ -361,10 +364,53 @@ TermyFfiStatus termy_settings_set_keybinds(
 TermyFfiStatus termy_settings_install_theme(
     const uint8_t *slug_ptr,
     size_t slug_len);
+TermyFfiStatus termy_cli_install(
+    const uint8_t *shell_ptr,
+    size_t shell_len,
+    TermyFfiBytes *out_message);
+
+typedef struct {
+  uint32_t kind;
+  TermyFfiBytes pane_id;
+  TermyFfiBytes data;
+} TermyFfiTmuxNotification;
+
+typedef struct {
+  TermyFfiTmuxNotification *notifications_ptr;
+  size_t notifications_len;
+  size_t notifications_capacity;
+} TermyFfiTmuxNotificationBatch;
+
+typedef struct TermyFfiTmuxControl TermyFfiTmuxControl;
+
+TermyFfiStatus termy_tmux_control_open(
+    const uint8_t *binary_ptr,
+    size_t binary_len,
+    const uint8_t *socket_ptr,
+    size_t socket_len,
+    const uint8_t *session_ptr,
+    size_t session_len,
+    TermyFfiTmuxControl **out_session);
+TermyFfiStatus termy_tmux_control_poll(
+    TermyFfiTmuxControl *session,
+    TermyFfiTmuxNotificationBatch *out_batch);
+TermyFfiStatus termy_tmux_control_notifications_free(
+    TermyFfiTmuxNotificationBatch *batch);
+TermyFfiStatus termy_tmux_control_send(
+    TermyFfiTmuxControl *session,
+    const uint8_t *command_ptr,
+    size_t command_len,
+    TermyFfiBytes *out_output);
+void termy_tmux_control_close(TermyFfiTmuxControl *session);
+
 TermyFfiStatus termy_settings_prettify_config(void);
 TermyFfiStatus termy_terminal_reload_default_config_colors(TermyFfiTerminal *terminal);
 TermyFfiStatus termy_terminal_free(TermyFfiTerminal *terminal);
 TermyFfiStatus termy_terminal_write(
+    TermyFfiTerminal *terminal,
+    const uint8_t *bytes_ptr,
+    size_t bytes_len);
+TermyFfiStatus termy_terminal_feed_output(
     TermyFfiTerminal *terminal,
     const uint8_t *bytes_ptr,
     size_t bytes_len);

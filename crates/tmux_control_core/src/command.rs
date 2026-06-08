@@ -2,34 +2,34 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub(crate) const SEND_INPUT_CHUNKED_HEX_BYTES: usize = 256;
-pub(crate) const SEND_INPUT_BULK_THRESHOLD_BYTES: usize = 2048;
-pub(crate) const SEND_INPUT_BULK_HEX_BYTES: usize = 2048;
+pub const SEND_INPUT_CHUNKED_HEX_BYTES: usize = 256;
+pub const SEND_INPUT_BULK_THRESHOLD_BYTES: usize = 2048;
+pub const SEND_INPUT_BULK_HEX_BYTES: usize = 2048;
 const CONTROL_COMPLETION_TOKEN_PREFIX: &str = "__termy_cmd_done_";
 
 static CONTROL_COMPLETION_TOKEN_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SendInputMode {
+pub enum SendInputMode {
     ChunkedHex,
     Bulk,
 }
 
-pub(crate) fn tmux_command_line(args: &[&str]) -> String {
+pub fn tmux_command_line(args: &[&str]) -> String {
     args.iter()
         .map(|arg| quote_tmux_arg(arg))
         .collect::<Vec<_>>()
         .join(" ")
 }
 
-pub(crate) fn tmux_control_command_line(args: &[&str]) -> Result<String, String> {
+pub fn tmux_control_command_line(args: &[&str]) -> Result<String, String> {
     for arg in args {
         validate_tmux_control_arg(arg)?;
     }
     Ok(tmux_command_line(args))
 }
 
-pub(crate) fn validate_tmux_control_arg(value: &str) -> Result<(), String> {
+pub fn validate_tmux_control_arg(value: &str) -> Result<(), String> {
     if let Some(byte) = value
         .bytes()
         .find(|byte| matches!(byte, b'\n' | b'\r' | b'\0'))
@@ -41,22 +41,19 @@ pub(crate) fn validate_tmux_control_arg(value: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub(crate) fn next_control_completion_token() -> String {
+pub fn next_control_completion_token() -> String {
     let id = CONTROL_COMPLETION_TOKEN_COUNTER.fetch_add(1, Ordering::Relaxed);
     format!("{CONTROL_COMPLETION_TOKEN_PREFIX}{id}")
 }
 
-pub(crate) fn command_with_completion_token(command: &str, completion_token: &str) -> String {
+pub fn command_with_completion_token(command: &str, completion_token: &str) -> String {
     format!(
         "{command} ; display-message -p {}",
         quote_tmux_arg(completion_token)
     )
 }
 
-pub(crate) fn split_control_completion_token(
-    output: &str,
-    completion_token: &str,
-) -> Option<String> {
+pub fn split_control_completion_token(output: &str, completion_token: &str) -> Option<String> {
     if output == completion_token {
         return Some(String::new());
     }
@@ -67,7 +64,7 @@ pub(crate) fn split_control_completion_token(
         .map(ToOwned::to_owned)
 }
 
-pub(crate) fn choose_send_input_mode(bytes_len: usize) -> (SendInputMode, usize) {
+pub fn choose_send_input_mode(bytes_len: usize) -> (SendInputMode, usize) {
     if bytes_len >= SEND_INPUT_BULK_THRESHOLD_BYTES {
         return (
             SendInputMode::Bulk,
@@ -81,7 +78,7 @@ pub(crate) fn choose_send_input_mode(bytes_len: usize) -> (SendInputMode, usize)
     )
 }
 
-pub(crate) fn send_keys_hex_command(pane_id: &str, chunk: &[u8]) -> String {
+pub fn send_keys_hex_command(pane_id: &str, chunk: &[u8]) -> String {
     use std::fmt::Write as _;
 
     let mut command = String::with_capacity(18 + pane_id.len() + (chunk.len() * 3));
@@ -94,7 +91,7 @@ pub(crate) fn send_keys_hex_command(pane_id: &str, chunk: &[u8]) -> String {
     command
 }
 
-pub(crate) fn quote_tmux_arg(value: &str) -> String {
+pub fn quote_tmux_arg(value: &str) -> String {
     if value.is_empty() {
         return "''".to_string();
     }

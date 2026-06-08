@@ -29,7 +29,7 @@ final class TermyConfigurationStore: ObservableObject {
         do {
             let configuration = try TermyAppConfiguration.loadFresh()
             self.configuration = configuration
-            loadErrorMessage = nil
+            loadErrorMessage = configuration.configIssueMessage
             return configuration
         } catch {
             loadErrorMessage = String(describing: error)

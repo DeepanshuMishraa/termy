@@ -4,10 +4,10 @@ use super::super::types::{TmuxControlError, TmuxNotification};
 use flume::{Sender, TrySendError};
 use std::collections::VecDeque;
 
-pub(crate) const NOTIFICATION_COALESCER_OUTPUT_BYTES_BOUND: usize = 512 * 1024;
+pub const NOTIFICATION_COALESCER_OUTPUT_BYTES_BOUND: usize = 512 * 1024;
 
 #[derive(Debug)]
-pub(crate) struct NotificationCoalescer {
+pub struct NotificationCoalescer {
     queued: VecDeque<TmuxNotification>,
     has_refresh_queued: bool,
     has_warning_queued: bool,
@@ -22,7 +22,7 @@ impl Default for NotificationCoalescer {
 }
 
 impl NotificationCoalescer {
-    pub(crate) fn with_output_byte_limit(max_output_bytes: usize) -> Self {
+    pub fn with_output_byte_limit(max_output_bytes: usize) -> Self {
         Self {
             queued: VecDeque::new(),
             has_refresh_queued: false,
@@ -83,7 +83,7 @@ impl NotificationCoalescer {
         self.queue_refresh_if_missing();
     }
 
-    pub(crate) fn push(&mut self, notification: TmuxNotification) {
+    pub fn push(&mut self, notification: TmuxNotification) {
         match notification {
             TmuxNotification::NeedsRefresh => {
                 self.queue_refresh_if_missing();
@@ -162,7 +162,7 @@ impl NotificationCoalescer {
         }
     }
 
-    pub(crate) fn pop_next(&mut self) -> Option<TmuxNotification> {
+    pub fn pop_next(&mut self) -> Option<TmuxNotification> {
         let notification = self.queued.pop_front()?;
         match &notification {
             TmuxNotification::NeedsRefresh => {
@@ -179,7 +179,7 @@ impl NotificationCoalescer {
         Some(notification)
     }
 
-    pub(crate) fn drain(&mut self) -> Vec<TmuxNotification> {
+    pub fn drain(&mut self) -> Vec<TmuxNotification> {
         let mut drained = Vec::with_capacity(self.queued.len());
         while let Some(notification) = self.pop_next() {
             drained.push(notification);
@@ -215,7 +215,7 @@ fn send_notification_blocking(
         .map_err(|_| TmuxControlError::channel("tmux notification channel is closed"))
 }
 
-pub(crate) fn signal_event_wakeup(event_wakeup_tx: Option<&Sender<()>>) {
+pub fn signal_event_wakeup(event_wakeup_tx: Option<&Sender<()>>) {
     let Some(event_wakeup_tx) = event_wakeup_tx else {
         return;
     };
@@ -225,7 +225,7 @@ pub(crate) fn signal_event_wakeup(event_wakeup_tx: Option<&Sender<()>>) {
     }
 }
 
-pub(crate) fn flush_notification_coalescer(
+pub fn flush_notification_coalescer(
     coalescer: &mut NotificationCoalescer,
     notifications_tx: &Sender<TmuxNotification>,
     event_wakeup_tx: Option<&Sender<()>>,
@@ -263,7 +263,7 @@ pub(crate) fn flush_notification_coalescer(
     Ok(())
 }
 
-pub(crate) fn signal_fatal_exit(fatal_exit_tx: &Sender<Option<String>>, reason: Option<String>) {
+pub fn signal_fatal_exit(fatal_exit_tx: &Sender<Option<String>>, reason: Option<String>) {
     match fatal_exit_tx.try_send(reason) {
         Ok(()) | Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => {}
     }

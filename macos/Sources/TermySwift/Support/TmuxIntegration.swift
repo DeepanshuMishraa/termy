@@ -12,14 +12,6 @@ enum TmuxIntegration {
         "/usr/bin/tmux",
     ]
 
-    static var isEnabled: Bool {
-        TermyAppConfiguration.loadFreshOrDefault().tmux.enabled
-    }
-
-    static var isAvailable: Bool {
-        tmuxBinaryPath(for: TermyAppConfiguration.loadFreshOrDefault().tmux) != nil
-    }
-
     /// Startup command that execs into a tmux session, or nil when tmux is
     /// disabled or not installed. `sessionHint` keeps each terminal in its own
     /// session so windows stay independent.

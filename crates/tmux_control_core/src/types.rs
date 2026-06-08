@@ -12,10 +12,10 @@ pub enum TmuxSocketTarget {
     Named(String),
 }
 
-pub(crate) const TERMY_TMUX_SOCKET_NAME: &str = "termy";
+pub const TERMY_TMUX_SOCKET_NAME: &str = "termy";
 
 impl TmuxSocketTarget {
-    pub(crate) fn socket_name(&self) -> Option<&str> {
+    pub fn socket_name(&self) -> Option<&str> {
         match self {
             Self::DedicatedTermy => Some(TERMY_TMUX_SOCKET_NAME),
             Self::Default => None,
@@ -103,7 +103,7 @@ pub enum TmuxNotification {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TmuxControlErrorKind {
+pub enum TmuxControlErrorKind {
     Channel,
     Protocol,
     Parse,
@@ -111,34 +111,34 @@ pub(crate) enum TmuxControlErrorKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct TmuxControlError {
+pub struct TmuxControlError {
     pub kind: TmuxControlErrorKind,
     pub message: String,
 }
 
 impl TmuxControlError {
-    pub(crate) fn channel(message: impl Into<String>) -> Self {
+    pub fn channel(message: impl Into<String>) -> Self {
         Self {
             kind: TmuxControlErrorKind::Channel,
             message: message.into(),
         }
     }
 
-    pub(crate) fn protocol(message: impl Into<String>) -> Self {
+    pub fn protocol(message: impl Into<String>) -> Self {
         Self {
             kind: TmuxControlErrorKind::Protocol,
             message: message.into(),
         }
     }
 
-    pub(crate) fn parse(message: impl Into<String>) -> Self {
+    pub fn parse(message: impl Into<String>) -> Self {
         Self {
             kind: TmuxControlErrorKind::Parse,
             message: message.into(),
         }
     }
 
-    pub(crate) fn runtime(message: impl Into<String>) -> Self {
+    pub fn runtime(message: impl Into<String>) -> Self {
         Self {
             kind: TmuxControlErrorKind::Runtime,
             message: message.into(),

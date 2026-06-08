@@ -69,6 +69,28 @@ final class LibTermyTerminal {
         handle = terminal
     }
 
+    /// Creates a display-only terminal (no shell/PTY) for rendering tmux
+    /// control-mode pane output. Drive it with `feedOutput`; `write` is a no-op.
+    init(displayCols cols: UInt16, rows: UInt16, loadUserConfig: Bool = true) throws {
+        var size = termy_size_default()
+        size.cols = cols
+        size.rows = rows
+        let config = try loadUserConfig ? Self.loadDefaultConfig() : nil
+        configHandle = config
+        renderConfig = try Self.renderConfig(for: config)
+
+        var terminal: OpaquePointer?
+        try TermyFfiBridge.requireOK(
+            "termy_display_terminal_new",
+            termy_display_terminal_new(size, &terminal)
+        )
+        guard let terminal else {
+            throw LibTermyError.missingTerminal
+        }
+        _ = termy_terminal_set_wakeup_enabled(terminal, false)
+        handle = terminal
+    }
+
     deinit {
         if let handle {
             _ = termy_terminal_free(handle)
@@ -76,6 +98,16 @@ final class LibTermyTerminal {
         if let configHandle {
             _ = termy_config_free(configHandle)
         }
+    }
+
+    /// Advance the grid with output bytes (e.g. tmux `%output`) on a display
+    /// terminal, without sending input to a PTY.
+    func feedOutput(_ bytes: [UInt8]) throws {
+        let handle = try terminalHandle()
+        let status = bytes.withUnsafeBufferPointer { buffer in
+            termy_terminal_feed_output(handle, buffer.baseAddress, buffer.count)
+        }
+        try TermyFfiBridge.requireOK("termy_terminal_feed_output", status)
     }
 
     func write(_ bytes: [UInt8]) throws {
@@ -217,41 +249,6 @@ final class LibTermyTerminal {
         }
         return UnsafeBufferPointer(start: eventsPtr, count: Int(batch.events_len))
             .compactMap(Self.event(from:))
-    }
-
-    /// Polls the core for what changed since the last call. The FFI reports a
-    /// `kind` (0 = none, 1 = full, 2 = partial) plus a span list for partial
-    /// damage; we surface all of it so the render-plan cache can rebuild only the
-    /// rows that actually changed.
-    func takeDamage() throws -> TerminalDamage {
-        let handle = try terminalHandle()
-
-        var damage = TermyFfiDamage()
-        try TermyFfiBridge.requireOK(
-            "termy_terminal_take_damage",
-            termy_terminal_take_damage(handle, &damage)
-        )
-        defer { _ = termy_damage_free(&damage) }
-
-        switch damage.kind {
-        case 1:
-            return .full
-        case 2:
-            guard let spansPtr = damage.spans_ptr, damage.spans_len > 0 else {
-                return .none
-            }
-            let spans = UnsafeBufferPointer(start: spansPtr, count: damage.spans_len)
-                .map {
-                    TerminalDirtySpan(
-                        row: Int($0.row),
-                        leftCol: Int($0.left_col),
-                        rightCol: Int($0.right_col)
-                    )
-                }
-            return spans.isEmpty ? .none : .partial(spans)
-        default:
-            return .none
-        }
     }
 
     func snapshot() throws -> TerminalFrame {

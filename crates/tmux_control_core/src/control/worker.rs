@@ -16,7 +16,7 @@ use super::{
 };
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn spawn_control_threads<W, R>(
+pub fn spawn_control_threads<W, R>(
     child: Option<std::process::Child>,
     child_stdin: W,
     child_stdout: R,

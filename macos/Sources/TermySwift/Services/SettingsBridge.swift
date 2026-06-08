@@ -122,4 +122,30 @@ enum SettingsBridge {
     static func prettifyConfig() throws {
         try TermyFfiBridge.requireOK("termy_settings_prettify_config", termy_settings_prettify_config())
     }
+
+    /// Installs the bundled `termy-cli` shim. Returns the success summary, or
+    /// throws with the failure reason. `shell == nil` uses $SHELL.
+    @discardableResult
+    static func installCLI(shell: String? = nil) throws -> String {
+        var message = TermyFfiBytes()
+        let status: TermyFfiStatus
+        if let shell {
+            let bytes = Array(shell.utf8)
+            status = bytes.withUnsafeBufferPointer { buffer in
+                termy_cli_install(buffer.baseAddress, buffer.count, &message)
+            }
+        } else {
+            status = termy_cli_install(nil, 0, &message)
+        }
+        defer {
+            if message.ptr != nil {
+                _ = termy_buffer_free(message)
+            }
+        }
+        let text = TermyFfiBridge.string(from: message) ?? ""
+        guard status == TERMY_FFI_OK else {
+            throw BridgeError.decode(text.isEmpty ? "CLI install failed" : text)
+        }
+        return text
+    }
 }
