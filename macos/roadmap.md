@@ -228,11 +228,16 @@ or stubbed in `macos/`.
   terminal mode in `termy_core` (`Terminal::new_display` + `feed_output`) exposed
   through FFI + `LibTermyTerminal(displayCols:…)`/`feedOutput`, so tmux panes can
   render `%output` without a shell (verified: fed bytes land in the grid; PTY
-  terminal unchanged, 161 core tests). **Remaining (step 3 last mile):** a
-  `TmuxControlSession` tying it together — reconcile `TmuxLayout` into display
-  terminals, route `%output` per pane, forward input. The orchestration is
-  headlessly testable against real tmux; only the SwiftUI **pane rendering/layout
-  in the workspace** needs the macOS GUI to validate.
+  terminal unchanged, 161 core tests). ✅ **Orchestration done & verified:**
+  `TmuxControlSession` reconciles the parsed `TmuxLayout` into display terminals
+  (create/resize/remove per pane), routes each `%output` to its pane, forwards
+  input via hex `send-keys` — verified end-to-end against real tmux (split →
+  two display terminals → shell `%output` lands in a pane grid,
+  `TmuxControlSessionTests`). **Remaining (step 3 last mile — GUI-gated):** render
+  `TmuxControlSession.layout` + `terminal(forPane:)` in the SwiftUI workspace
+  (place pane grids per the layout tree), behind a config flag (per-session shell
+  exec stays the fallback). Everything below the view layer is done and verified;
+  only on-screen rendering/layout needs the macOS GUI to validate.
 
 ### M4 — Config, onboarding, store
 
