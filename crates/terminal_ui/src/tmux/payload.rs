@@ -106,23 +106,27 @@ pub(crate) fn parse_subscription_changed(
 ) -> Option<(String, String, String, String, String)> {
     let rest = line.strip_prefix(b"%subscription-changed ")?;
     let text = std::str::from_utf8(rest).ok()?;
-    let mut fields = text.splitn(6, ' ');
+    let mut fields = text.split(' ');
     let name = fields.next()?;
     let session = fields.next()?;
     let window = fields.next()?;
     let _window_index = fields.next()?;
     let pane = fields.next()?;
-    let tail = fields.next()?;
-    let value = tail
-        .strip_prefix(": ")
-        .or_else(|| tail.strip_prefix(':'))
-        .unwrap_or(tail);
+    // Scan forward to the standalone `:` separator instead of assuming it is the
+    // sixth field. tmux may insert further metadata fields before `:` in newer
+    // releases; skipping to the separator keeps those out of the value. The
+    // value itself follows `:` and is preserved verbatim (it may contain spaces
+    // and colons).
+    if !fields.by_ref().any(|field| field == ":") {
+        return None;
+    }
+    let value = fields.collect::<Vec<_>>().join(" ");
     Some((
         name.to_string(),
         session.to_string(),
         window.to_string(),
         pane.to_string(),
-        value.to_string(),
+        value,
     ))
 }
 
@@ -254,6 +258,22 @@ mod tests {
         assert!(parse_subscription_changed(b"%output %0 hi").is_none());
         assert!(parse_subscription_changed(b"%subscription-changed").is_none());
         assert!(parse_subscription_changed(b"%subscription-changed only three fields").is_none());
+    }
+
+    #[test]
+    fn parse_subscription_changed_ignores_unknown_fields_before_separator() {
+        let parsed =
+            parse_subscription_changed(b"%subscription-changed p $0 @0 0 %0 future-field : /tmp")
+                .expect("value after unknown field");
+        assert_eq!(parsed.3, "%0");
+        assert_eq!(parsed.4, "/tmp");
+    }
+
+    #[test]
+    fn parse_subscription_changed_rejects_missing_separator() {
+        assert!(
+            parse_subscription_changed(b"%subscription-changed p $0 @0 0 %0 novalue").is_none()
+        );
     }
 
     fn bytes_contains(haystack: &[u8], needle: &[u8]) -> bool {

@@ -240,17 +240,19 @@ impl TmuxClient {
     /// `name` must be free of spaces and colons: tmux parses the `-B` argument
     /// as `name:what:format` on the first two colons, and the
     /// `%subscription-changed` line is whitespace-delimited, so either character
-    /// in `name` would corrupt both the spec and the parsed notification.
+    /// in `name` would corrupt both the spec and the parsed notification. A name
+    /// that violates this rule is rejected with a runtime error; the spec is
+    /// issued through the validated control-command path, which also rejects
+    /// embedded control bytes in `what`/`format`.
     pub fn subscribe(&self, name: &str, what: &str, format: &str) -> Result<()> {
-        debug_assert!(
-            !name.contains([':', ' ']),
-            "subscription name must not contain ':' or ' ': {name:?}"
-        );
+        if name.contains([':', ' ']) {
+            return Err(anyhow!(TmuxControlError::protocol(format!(
+                "tmux subscription name must not contain ':' or ' ': {name:?}"
+            ))));
+        }
         let spec = format!("{name}:{what}:{format}");
-        let command = tmux_command_line(&["refresh-client", "-B", spec.as_str()]);
-        self.send_control_command_wait(command.as_str())
-            .with_context(|| format!("tmux subscribe command failed: {command}"))
-            .map(|_| ())
+        self.run_control_status_args(&["refresh-client", "-B", spec.as_str()])
+            .with_context(|| format!("tmux subscribe command failed: refresh-client -B {spec}"))
     }
 
     pub fn session_name(&self) -> &str {
@@ -793,6 +795,35 @@ mod tests {
             notifications_rx,
             fatal_exit_rx,
         }
+    }
+
+    #[test]
+    fn subscribe_rejects_name_with_colon() {
+        let client = test_tmux_client(TmuxShutdownMode::DetachOnly);
+        let error = client
+            .subscribe("bad:name", "%*", "#{pane_current_path}")
+            .expect_err("colon in name must be rejected");
+        assert!(error.to_string().contains("must not contain"));
+    }
+
+    #[test]
+    fn subscribe_rejects_name_with_space() {
+        let client = test_tmux_client(TmuxShutdownMode::DetachOnly);
+        let error = client
+            .subscribe("bad name", "%*", "#{pane_current_path}")
+            .expect_err("space in name must be rejected");
+        assert!(error.to_string().contains("must not contain"));
+    }
+
+    #[test]
+    fn subscribe_rejects_control_bytes_in_format() {
+        let client = test_tmux_client(TmuxShutdownMode::DetachOnly);
+        let error = client
+            .subscribe("p_all", "%*", "fmt\nrun-shell")
+            .expect_err("control byte must be rejected");
+        // The validated path rejects the embedded newline; the cause is carried in
+        // the error chain, so inspect the full chain rather than the outer context.
+        assert!(format!("{error:#}").contains("refusing unsafe"));
     }
 
     #[test]
