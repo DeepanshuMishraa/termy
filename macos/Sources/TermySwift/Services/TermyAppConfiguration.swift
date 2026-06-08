@@ -13,6 +13,24 @@ enum TermyAppConfigurationError: Error, CustomStringConvertible {
     }
 }
 
+/// A config-parse diagnostic reported by the core, mirroring `ConfigDiagnosticKind`
+/// in `crates/config_core`. Surfaced to the user so config typos are visible.
+struct TermyConfigDiagnostic: Equatable {
+    enum Kind: UInt32 {
+        case unknown = 0
+        case unknownSection = 1
+        case unknownRootKey = 2
+        case unknownColorKey = 3
+        case invalidSyntax = 4
+        case invalidValue = 5
+        case duplicateRootKey = 6
+    }
+
+    var lineNumber: Int
+    var kind: Kind
+    var message: String
+}
+
 struct TermyAppConfiguration {
     var windowWidth: CGFloat
     var windowHeight: CGFloat
@@ -23,9 +41,28 @@ struct TermyAppConfiguration {
     var configPath: String?
     var tasks: [TermyTaskConfiguration]
     var keybinds: [TermyKeybindConfiguration]
+    var diagnostics: [TermyConfigDiagnostic] = []
+    /// Scrollback line cap; command marks are tracked only while history stays
+    /// below it (eviction begins at the cap and would otherwise drift marks).
+    var scrollbackHistory: Int = 0
 
     var windowSize: CGSize {
         CGSize(width: windowWidth, height: windowHeight)
+    }
+
+    /// A human-readable summary of config-parse diagnostics, or nil when the
+    /// config parsed cleanly. Feeds the config error banner.
+    var configIssueMessage: String? {
+        guard !diagnostics.isEmpty else {
+            return nil
+        }
+        let details = diagnostics.map { diagnostic -> String in
+            diagnostic.lineNumber > 0
+                ? "line \(diagnostic.lineNumber): \(diagnostic.message)"
+                : diagnostic.message
+        }
+        let heading = diagnostics.count == 1 ? "1 config issue" : "\(diagnostics.count) config issues"
+        return ([heading] + details).joined(separator: "\n")
     }
 
     private static let defaultConfiguration = TermyAppConfiguration(
@@ -74,8 +111,8 @@ struct TermyAppConfiguration {
 
     static let loadErrorMessage: String? = {
         switch loadedConfiguration {
-        case .success:
-            return nil
+        case .success(let configuration):
+            return configuration.configIssueMessage
         case .failure(let error):
             return String(describing: error)
         }
@@ -123,78 +160,83 @@ struct TermyAppConfiguration {
             termy_config_native(config, &native)
         )
 
-        var tmuxBinary = TermyFfiBytes()
-        try TermyFfiBridge.requireOK(
-            "termy_config_tmux_binary",
-            termy_config_tmux_binary(config, &tmuxBinary)
-        )
-        defer {
-            if tmuxBinary.ptr != nil {
-                _ = termy_buffer_free(tmuxBinary)
-            }
+        let tmuxBinary = try readBytes("termy_config_tmux_binary") {
+            termy_config_tmux_binary(config, &$0)
+        }
+        let uiFontFamily = try readBytes("termy_config_ui_font_family") {
+            termy_config_ui_font_family(config, &$0)
+        }
+        let configPath = try readBytes("termy_config_path") {
+            termy_config_path(config, &$0)
         }
 
-        var uiFontFamily = TermyFfiBytes()
-        try TermyFfiBridge.requireOK(
-            "termy_config_ui_font_family",
-            termy_config_ui_font_family(config, &uiFontFamily)
-        )
-        defer {
-            if uiFontFamily.ptr != nil {
-                _ = termy_buffer_free(uiFontFamily)
-            }
+        let tasksJSON = try readBytes("termy_config_tasks_json") {
+            termy_config_tasks_json(config, &$0)
         }
+        let tasks = try JSONDecoder().decode(
+            [TermyTaskConfiguration].self,
+            from: Data((tasksJSON ?? "").utf8)
+        )
 
-        var configPath = TermyFfiBytes()
-        try TermyFfiBridge.requireOK(
-            "termy_config_path",
-            termy_config_path(config, &configPath)
-        )
-        defer {
-            if configPath.ptr != nil {
-                _ = termy_buffer_free(configPath)
-            }
+        let keybindsJSON = try readBytes("termy_config_keybinds_json") {
+            termy_config_keybinds_json(config, &$0)
         }
-
-        var tasksJSON = TermyFfiBytes()
-        try TermyFfiBridge.requireOK(
-            "termy_config_tasks_json",
-            termy_config_tasks_json(config, &tasksJSON)
+        let keybinds = try JSONDecoder().decode(
+            [TermyKeybindConfiguration].self,
+            from: Data((keybindsJSON ?? "").utf8)
         )
-        defer {
-            if tasksJSON.ptr != nil {
-                _ = termy_buffer_free(tasksJSON)
-            }
-        }
-        let tasksData = Data(TermyFfiBridge.string(from: tasksJSON)?.utf8 ?? "".utf8)
-        let tasks = try JSONDecoder().decode([TermyTaskConfiguration].self, from: tasksData)
-
-        var keybindsJSON = TermyFfiBytes()
-        try TermyFfiBridge.requireOK(
-            "termy_config_keybinds_json",
-            termy_config_keybinds_json(config, &keybindsJSON)
-        )
-        defer {
-            if keybindsJSON.ptr != nil {
-                _ = termy_buffer_free(keybindsJSON)
-            }
-        }
-        let keybindsData = Data(TermyFfiBridge.string(from: keybindsJSON)?.utf8 ?? "".utf8)
-        let keybinds = try JSONDecoder().decode([TermyKeybindConfiguration].self, from: keybindsData)
 
         return TermyAppConfiguration(
             windowWidth: CGFloat(max(320, width)),
             windowHeight: CGFloat(max(240, height)),
             safety: TermySafetyConfiguration(safety),
-            tmux: TermyTmuxConfiguration(native, binary: TermyFfiBridge.string(from: tmuxBinary) ?? "tmux"),
+            tmux: TermyTmuxConfiguration(native, binary: tmuxBinary ?? "tmux"),
             native: TermyNativeConfiguration(native),
-            uiFontFamily: Self.normalizedUIFontFamily(
-                TermyFfiBridge.string(from: uiFontFamily) ?? defaultConfiguration.uiFontFamily
-            ),
-            configPath: TermyFfiBridge.string(from: configPath),
+            uiFontFamily: Self.normalizedUIFontFamily(uiFontFamily ?? defaultConfiguration.uiFontFamily),
+            configPath: configPath,
             tasks: tasks,
-            keybinds: keybinds
+            keybinds: keybinds,
+            diagnostics: try readDiagnostics(from: config),
+            scrollbackHistory: Int(termy_config_runtime_scrollback_history(config))
         )
+    }
+
+    /// Reads the parser's diagnostics for `config` (unknown keys, invalid values,
+    /// etc.) so they can be surfaced instead of silently ignored.
+    private static func readDiagnostics(from config: OpaquePointer) throws -> [TermyConfigDiagnostic] {
+        var batch = TermyFfiConfigDiagnosticBatch()
+        try TermyFfiBridge.requireOK(
+            "termy_config_diagnostics",
+            termy_config_diagnostics(config, &batch)
+        )
+        defer {
+            _ = termy_config_diagnostics_free(&batch)
+        }
+        guard let ptr = batch.diagnostics_ptr, batch.diagnostics_len > 0 else {
+            return []
+        }
+        return UnsafeBufferPointer(start: ptr, count: batch.diagnostics_len).map { diagnostic in
+            TermyConfigDiagnostic(
+                lineNumber: Int(diagnostic.line_number),
+                kind: TermyConfigDiagnostic.Kind(rawValue: diagnostic.kind) ?? .unknown,
+                message: TermyFfiBridge.string(from: diagnostic.message) ?? ""
+            )
+        }
+    }
+
+    /// Reads an FFI byte buffer via `call`, frees it, and returns its UTF-8 string.
+    private static func readBytes(
+        _ operation: String,
+        _ call: (inout TermyFfiBytes) -> TermyFfiStatus
+    ) throws -> String? {
+        var bytes = TermyFfiBytes()
+        try TermyFfiBridge.requireOK(operation, call(&bytes))
+        defer {
+            if bytes.ptr != nil {
+                _ = termy_buffer_free(bytes)
+            }
+        }
+        return TermyFfiBridge.string(from: bytes)
     }
 
     private static func normalizedUIFontFamily(_ value: String) -> String {
@@ -412,4 +454,8 @@ struct TermyTaskConfiguration: Codable, Equatable, Identifiable, Hashable {
 struct TermyKeybindConfiguration: Codable, Equatable, Hashable {
     var trigger: String
     var action: String
+
+    var keybindAction: TerminalKeybindAction {
+        TerminalKeybindAction(identifier: action)
+    }
 }

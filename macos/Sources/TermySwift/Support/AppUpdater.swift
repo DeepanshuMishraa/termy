@@ -1,8 +1,8 @@
 import AppKit
 
-/// Checks GitHub Releases for a newer version and guides the user to download
-/// it. (Foundational: it surfaces updates and opens the release page rather than
-/// installing silently, which would require a Sparkle-style framework.)
+/// Checks GitHub Releases for a newer version and opens the release page to
+/// download it. There is no in-place install (that would need a Sparkle-style
+/// framework), so the user finishes the update manually.
 @MainActor
 final class AppUpdater {
     static let shared = AppUpdater()

@@ -39,7 +39,11 @@ final class OnboardingPresenter {
     }
 
     private func finish() {
-        try? SettingsBridge.setRoot(key: "onboarding_complete", value: "true")
+        do {
+            try SettingsBridge.setRoot(key: "onboarding_complete", value: "true")
+        } catch {
+            TermyErrorPresenter.present("Couldn't save onboarding state", error: error)
+        }
         TermyConfigurationStore.shared.reload()
         NotificationCenter.default.post(name: .termySettingsChanged, object: nil)
         window?.close()
@@ -52,6 +56,8 @@ struct OnboardingView: View {
 
     @State private var detected: [ImportableTerminal] = []
     @State private var importedFrom: String?
+    @StateObject private var settingsStore = SettingsStore()
+    @State private var showThemeStore = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -73,7 +79,7 @@ struct OnboardingView: View {
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 } else {
-                    Text("We found these terminals. Import their font settings into Termy:")
+                    Text("We found these terminals. Import their font, colors, and keybinds into Termy:")
                         .font(.callout)
                         .foregroundStyle(.secondary)
 
@@ -92,10 +98,24 @@ struct OnboardingView: View {
                 }
 
                 if let importedFrom {
-                    Label("Imported font settings from \(importedFrom).", systemImage: "checkmark.circle.fill")
+                    Label("Imported settings from \(importedFrom).", systemImage: "checkmark.circle.fill")
                         .font(.callout)
                         .foregroundStyle(.green)
                 }
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Personalize")
+                    .font(.headline)
+                Text("Browse community themes and install one in a click.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Button("Browse Themes…") {
+                    showThemeStore = true
+                }
+                .buttonStyle(.bordered)
             }
 
             Spacer()
@@ -112,8 +132,12 @@ struct OnboardingView: View {
         .padding(28)
         .frame(minWidth: 520, minHeight: 440)
         .termyUIFont()
+        .sheet(isPresented: $showThemeStore) {
+            ThemeStoreView(settingsStore: settingsStore)
+        }
         .onAppear {
             detected = TerminalConfigImport.detected()
+            settingsStore.load()
         }
     }
 

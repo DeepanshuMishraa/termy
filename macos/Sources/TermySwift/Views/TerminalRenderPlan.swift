@@ -57,13 +57,8 @@ struct TerminalRenderPlan: Equatable {
 }
 
 /// The paint instructions for a single grid row, cached so unchanged rows are
-/// reused across frames.
-private struct RowRenderPlan: Equatable {
-    var backgroundRuns: [TerminalBackgroundRun]
-    var textSegments: [TerminalTextSegment]
-    var blockGlyphs: [TerminalBlockGlyph] = []
-    var strokeGlyphs: [TerminalStrokeGlyph] = []
-}
+/// reused across frames. Structurally identical to a whole-frame plan.
+private typealias RowRenderPlan = TerminalRenderPlan
 
 /// How the most recent `update` rebuilt the plan — surfaced to the debug overlay
 /// to validate that small changes only rebuild a few rows.

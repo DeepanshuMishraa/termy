@@ -163,18 +163,6 @@ final class TerminalWorkspaceStore: ObservableObject {
         return title.isEmpty ? "Shell" : title
     }
 
-    var panesInStableOrder: [TerminalPane] {
-        leaves()
-    }
-
-    var paneIDsInStableOrder: [UUID] {
-        leaves().map(\.id)
-    }
-
-    var isZoomed: Bool {
-        zoomedPaneID != nil
-    }
-
     var zoomedPane: TerminalPane? {
         guard let zoomedPaneID else {
             return nil
@@ -192,10 +180,6 @@ final class TerminalWorkspaceStore: ObservableObject {
         }
         tabPinned = pinned
         NotificationCenter.default.post(name: .termyNativeTabsChanged, object: nil)
-    }
-
-    func toggleTabPinned() {
-        setTabPinned(!tabPinned)
     }
 
     func renameTab(_ title: String) {
@@ -314,14 +298,6 @@ final class TerminalWorkspaceStore: ObservableObject {
             return
         }
         zoomedPaneID = zoomedPaneID == focusedPaneID ? nil : focusedPaneID
-    }
-
-    func clearPaneZoom() {
-        zoomedPaneID = nil
-    }
-
-    func isPaneZoomed(_ pane: TerminalPane) -> Bool {
-        zoomedPaneID == pane.id
     }
 
     func showSearch() {

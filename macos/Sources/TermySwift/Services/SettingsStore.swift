@@ -85,6 +85,29 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    /// Installs a theme chosen from the remote store (by slug) and makes it the
+    /// active theme.
+    func installStoreTheme(slug: String) {
+        guard !installingThemeIDs.contains(slug) else {
+            return
+        }
+        installingThemeIDs.insert(slug)
+        Task { @MainActor in
+            do {
+                try await Task.detached(priority: .userInitiated) {
+                    try SettingsBridge.installTheme(slug: slug)
+                }.value
+                installingThemeIDs.remove(slug)
+                load()
+                commitRoot(key: "theme", value: slug)
+                TermyToastCenter.shared.show("Installed theme \(slug)", kind: .success)
+            } catch {
+                installingThemeIDs.remove(slug)
+                report(error)
+            }
+        }
+    }
+
     func boolBinding(_ key: String) -> Binding<Bool> {
         Binding(
             get: { self.values[key] == "true" },

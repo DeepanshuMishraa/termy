@@ -4,13 +4,22 @@ import SwiftUI
 struct SettingsRootView: View {
     @StateObject private var store = SettingsStore()
     @State private var selection: String?
+    @State private var searchText = ""
 
     var body: some View {
         NavigationSplitView {
             SettingsSidebarView(sections: supportedSections, selection: $selection)
         } detail: {
-            SettingsDetailView(section: selectedSection, store: store)
+            if searchText.trimmingCharacters(in: .whitespaces).isEmpty {
+                SettingsDetailView(section: selectedSection, store: store)
+            } else {
+                SettingsSearchResultsView(
+                    results: SettingsSearch.results(in: supportedSections, query: searchText),
+                    store: store
+                )
+            }
         }
+        .searchable(text: $searchText, prompt: "Search settings")
         .frame(minWidth: 760, minHeight: 520)
         .onAppear {
             store.load()
@@ -76,6 +85,28 @@ private struct SettingsSidebarRow: View {
     var body: some View {
         Label(section.label, systemImage: section.systemImage)
             .lineLimit(1)
+    }
+}
+
+private struct SettingsSearchResultsView: View {
+    let results: [SettingsSearchResult]
+    @ObservedObject var store: SettingsStore
+
+    var body: some View {
+        Group {
+            if results.isEmpty {
+                ContentUnavailableView.search
+            } else {
+                Form {
+                    Section("Results") {
+                        ForEach(results) { result in
+                            SettingRow(setting: result.setting, store: store)
+                        }
+                    }
+                }
+            }
+        }
+        .frame(minWidth: 500, maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -198,6 +229,7 @@ private extension SettingsSectionModel {
 private struct ThemeSettingsContent: View {
     let section: SettingsSectionModel
     @ObservedObject var store: SettingsStore
+    @State private var showThemeStore = false
 
     private var settingsByKey: [String: Setting] {
         Dictionary(uniqueKeysWithValues: (section.groups ?? [])
@@ -283,6 +315,17 @@ private struct ThemeSettingsContent: View {
                 }
             }
             .padding(.vertical, 2)
+        }
+
+        Section {
+            Button {
+                showThemeStore = true
+            } label: {
+                Label("Browse Theme Store…", systemImage: "square.and.arrow.down")
+            }
+        }
+        .sheet(isPresented: $showThemeStore) {
+            ThemeStoreView(settingsStore: store)
         }
     }
 }
@@ -615,10 +658,25 @@ private struct KeybindSettingsContent: View {
         }
     }
 
+    private var conflictingTriggers: Set<String> {
+        TerminalKeybindConflicts.conflictingTriggers(in: configurationStore.configuration.keybinds)
+    }
+
     var body: some View {
+        let conflicts = conflictingTriggers
+
         Section("Active Keybindings") {
             TextField("Filter actions or keys", text: $search)
                 .textFieldStyle(.roundedBorder)
+
+            if !conflicts.isEmpty {
+                Label(
+                    "\(conflicts.count) trigger\(conflicts.count == 1 ? "" : "s") bound more than once — only the first binding takes effect.",
+                    systemImage: "exclamationmark.triangle.fill"
+                )
+                .font(.caption)
+                .foregroundStyle(.orange)
+            }
 
             if bindings.isEmpty {
                 Text("No keybindings match.")
@@ -627,9 +685,16 @@ private struct KeybindSettingsContent: View {
             } else {
                 ForEach(bindings, id: \.self) { binding in
                     LabeledContent {
-                        Text(binding.trigger)
-                            .font(.system(.body, design: .monospaced))
-                            .foregroundStyle(.secondary)
+                        HStack(spacing: 6) {
+                            if conflicts.contains(binding.trigger) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundStyle(.orange)
+                                    .help("This trigger is bound more than once.")
+                            }
+                            Text(binding.trigger)
+                                .font(.system(.body, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                        }
                     } label: {
                         Text(Self.humanize(binding.action))
                     }

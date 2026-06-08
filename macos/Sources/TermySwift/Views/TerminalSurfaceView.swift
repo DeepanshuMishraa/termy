@@ -6,6 +6,7 @@ struct TerminalSurfaceView: View {
     @State private var isScrollBarVisible = false
     @State private var scrollBarHideTask: Task<Void, Never>?
     @State private var lastSize: CGSize = .zero
+    @State private var bellFlashOpacity: Double = 0
 
     let isFocused: Bool
     let showsFocusBorder: Bool
@@ -102,9 +103,12 @@ struct TerminalSurfaceView: View {
                     },
                     onCopy: {
                         terminal.copySelection()
-                    }
+                    },
+                    onMarkedTextChanged: { terminal.setMarkedText($0) }
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                markedTextOverlay
 
                 TerminalTopLoader(progress: terminal.progress)
                     .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -134,6 +138,8 @@ struct TerminalSurfaceView: View {
                     TerminalScrollBar(
                         frame: terminal.frame,
                         renderConfig: terminal.renderConfig,
+                        searchMatches: terminal.searchMatches,
+                        commandMarks: terminal.commandMarkRows,
                         onInteraction: revealScrollBar,
                         onScrollToOffset: { offset in
                             revealScrollBar()
@@ -143,6 +149,20 @@ struct TerminalSurfaceView: View {
                     .frame(width: 14)
                     .padding(.trailing, 3)
                     .transition(.opacity)
+                }
+            }
+            .overlay {
+                if bellFlashOpacity > 0 {
+                    Rectangle()
+                        .fill(terminal.renderConfig.foreground.swiftUIColor)
+                        .opacity(bellFlashOpacity)
+                        .allowsHitTesting(false)
+                }
+            }
+            .onChange(of: terminal.bellPulse) { _, _ in
+                bellFlashOpacity = 0.2
+                withAnimation(.easeOut(duration: 0.3)) {
+                    bellFlashOpacity = 0
                 }
             }
             .background(
@@ -292,6 +312,27 @@ struct TerminalSurfaceView: View {
         }
     }
 
+    /// Draws the in-progress IME composition inline at the cursor cell, so CJK /
+    /// dead-key input is visible in the grid before it commits.
+    @ViewBuilder
+    private var markedTextOverlay: some View {
+        if !terminal.markedText.isEmpty, let cursor = terminal.frame.cursor {
+            let config = terminal.renderConfig
+            Text(terminal.markedText)
+                .font(.custom(config.fontFamily, size: config.fontSize))
+                .foregroundStyle(config.foreground.swiftUIColor)
+                .background(config.background.swiftUIColor)
+                .underline()
+                .fixedSize()
+                .offset(
+                    x: config.paddingX + CGFloat(cursor.col) * config.cellWidth,
+                    y: config.paddingY + CGFloat(cursor.row) * config.cellHeight
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .allowsHitTesting(false)
+        }
+    }
+
     @ViewBuilder
     private var focusEffectOverlay: some View {
         if showsFocusBorder {
@@ -390,6 +431,8 @@ private final class TerminalWindowChromeSyncNSView: NSView {
 private struct TerminalScrollBar: View {
     let frame: TerminalFrame
     let renderConfig: TerminalRenderConfig
+    let searchMatches: [TerminalSearchMatch]
+    let commandMarks: [Int]
     let onInteraction: () -> Void
     let onScrollToOffset: (Int) -> Void
 
@@ -400,6 +443,22 @@ private struct TerminalScrollBar: View {
                     Capsule()
                         .fill(trackColor)
                         .frame(width: 7)
+
+                    let prompts = markerYs(rows: commandMarks, for: proxy.size)
+                    ForEach(prompts.indices, id: \.self) { index in
+                        Capsule()
+                            .fill(renderConfig.foreground.swiftUIColor.opacity(0.4))
+                            .frame(width: 7, height: 1)
+                            .offset(y: prompts[index])
+                    }
+
+                    let markers = markerYs(rows: searchMatches.map(\.row), for: proxy.size)
+                    ForEach(markers.indices, id: \.self) { index in
+                        Capsule()
+                            .fill(Color.accentColor.opacity(0.85))
+                            .frame(width: 7, height: 2)
+                            .offset(y: markers[index])
+                    }
 
                     Capsule()
                         .fill(thumbColor)
@@ -429,6 +488,18 @@ private struct TerminalScrollBar: View {
 
     private var framePaddingY: CGFloat {
         8
+    }
+
+    /// Y offsets (within the padded track) for the given absolute scrollback
+    /// rows, so marks/hits show as buckets along the scrollbar.
+    private func markerYs(rows: [Int], for size: CGSize) -> [CGFloat] {
+        let totalRows = CGFloat(frame.historySize + frame.rows)
+        guard totalRows > 0, size.height > framePaddingY * 2, !rows.isEmpty else {
+            return []
+        }
+        let trackHeight = size.height - (framePaddingY * 2)
+        let unique = Set(rows).filter { $0 >= 0 }
+        return unique.map { trackHeight * min(1, CGFloat($0) / totalRows) }.sorted()
     }
 
     private var trackColor: Color {
@@ -483,13 +554,4 @@ private struct ScrollBarMetrics {
     var thumbHeight: CGFloat
     var thumbY: CGFloat
     var travel: CGFloat
-}
-
-private extension Array {
-    subscript(safe index: Int) -> Element? {
-        guard index >= 0, index < count else {
-            return nil
-        }
-        return self[index]
-    }
 }

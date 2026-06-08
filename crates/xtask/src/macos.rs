@@ -154,6 +154,7 @@ fn stage_app(paths: &MacosPaths) -> Result<()> {
     })?;
     make_executable(&paths.app_binary)?;
     bundle_ffi_dylib(paths)?;
+    bundle_cli(paths)?;
 
     build_icon(paths)?;
     copy_logo_assets(paths)?;
@@ -171,12 +172,14 @@ fn kill_existing_app() -> Result<()> {
 }
 
 fn build_ffi(paths: &MacosPaths) -> Result<()> {
+    // Builds the FFI dylib plus the `termy-cli` binary that gets bundled for the
+    // in-app "Install Command Line Tool" action.
     run_status(
         Command::new("cargo")
             .arg("build")
             .arg("--manifest-path")
             .arg(paths.root_dir.join("Cargo.toml"))
-            .args(["-p", "termy_ffi"]),
+            .args(["-p", "termy_ffi", "-p", "termy_cli"]),
     )
 }
 
@@ -215,6 +218,18 @@ fn bundle_ffi_dylib(paths: &MacosPaths) -> Result<()> {
             .arg("@rpath/libtermy_ffi.dylib")
             .arg(&paths.app_binary),
     )
+}
+
+fn bundle_cli(paths: &MacosPaths) -> Result<()> {
+    let source = paths.root_dir.join("target/debug/termy-cli");
+    if !source.exists() {
+        bail!("could not find built termy-cli under target/debug");
+    }
+    let bundled = paths.app_macos.join("termy-cli");
+    fs::copy(&source, &bundled).with_context(|| {
+        format!("failed to copy {} to {}", source.display(), bundled.display())
+    })?;
+    make_executable(&bundled)
 }
 
 fn ffi_dylib_path(paths: &MacosPaths) -> Result<PathBuf> {
@@ -396,6 +411,17 @@ fn info_plist(app_version: &str) -> String {
   <string>{MIN_SYSTEM_VERSION}</string>
   <key>NSPrincipalClass</key>
   <string>NSApplication</string>
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key>
+      <string>{BUNDLE_ID}</string>
+      <key>CFBundleURLSchemes</key>
+      <array>
+        <string>termy</string>
+      </array>
+    </dict>
+  </array>
 </dict>
 </plist>
 "#
