@@ -7,7 +7,7 @@ use super::super::payload::{
 use super::super::types::{TmuxControlError, TmuxNotification};
 
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum ControlStateEvent {
+pub enum ControlStateEvent {
     None,
     Notification(TmuxNotification),
     CommandBegin,
@@ -22,12 +22,12 @@ struct ControlCommandBlock {
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct ControlStateMachine {
+pub struct ControlStateMachine {
     current_block: Option<ControlCommandBlock>,
 }
 
 impl ControlStateMachine {
-    pub(crate) fn on_line(
+    pub fn on_line(
         &mut self,
         line: &[u8],
     ) -> std::result::Result<ControlStateEvent, TmuxControlError> {

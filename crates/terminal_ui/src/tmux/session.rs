@@ -9,11 +9,11 @@ use anyhow::{Context, Result, anyhow};
 use std::env;
 use std::process::Command;
 
-#[cfg(test)]
-use super::command::quote_tmux_arg;
-use super::command::tmux_command_line;
 use super::snapshot::{parse_session_summaries, session_snapshot_format};
-use super::types::{TmuxSessionSummary, TmuxSocketTarget};
+#[cfg(test)]
+use tmux_control_core::command::quote_tmux_arg;
+use tmux_control_core::command::tmux_command_line;
+use tmux_control_core::types::{TmuxSessionSummary, TmuxSocketTarget};
 
 pub(crate) fn append_socket_args(command: &mut Command, socket_target: &TmuxSocketTarget) {
     if let Some(socket_name) = socket_target.socket_name() {

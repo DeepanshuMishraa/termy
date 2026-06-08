@@ -5,47 +5,45 @@ use super::super::types::TmuxControlError;
 use super::super::types::TmuxControlErrorKind;
 use flume::{Receiver, Sender, TryRecvError, TrySendError};
 
-pub(crate) const REQUEST_QUEUE_BOUND: usize = 1024;
-pub(crate) const PENDING_QUEUE_BOUND: usize = 1;
-pub(crate) const NOTIFICATION_QUEUE_BOUND: usize = 2048;
-pub(crate) const FATAL_EXIT_QUEUE_BOUND: usize = 1;
+pub const REQUEST_QUEUE_BOUND: usize = 1024;
+pub const PENDING_QUEUE_BOUND: usize = 1;
+pub const NOTIFICATION_QUEUE_BOUND: usize = 2048;
+pub const FATAL_EXIT_QUEUE_BOUND: usize = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ControlCommandResult {
-    pub(crate) output: String,
+pub struct ControlCommandResult {
+    pub output: String,
 }
 
 #[derive(Debug)]
-pub(crate) struct ControlRequest {
-    pub(crate) command: String,
-    pub(crate) completion_token: String,
-    pub(crate) response_tx:
-        Option<Sender<std::result::Result<ControlCommandResult, TmuxControlError>>>,
+pub struct ControlRequest {
+    pub command: String,
+    pub completion_token: String,
+    pub response_tx: Option<Sender<std::result::Result<ControlCommandResult, TmuxControlError>>>,
 }
 
 #[derive(Debug)]
-pub(crate) struct PendingCommand {
-    pub(crate) command: String,
-    pub(crate) completion_token: String,
-    pub(crate) response_tx:
-        Option<Sender<std::result::Result<ControlCommandResult, TmuxControlError>>>,
-    pub(crate) completion_tx: Sender<()>,
+pub struct PendingCommand {
+    pub command: String,
+    pub completion_token: String,
+    pub response_tx: Option<Sender<std::result::Result<ControlCommandResult, TmuxControlError>>>,
+    pub completion_tx: Sender<()>,
 }
 
 #[derive(Debug)]
-pub(crate) enum ActiveControlCommand {
+pub enum ActiveControlCommand {
     Tracked(TrackedPendingCommand),
     Untracked,
 }
 
 #[derive(Debug)]
-pub(crate) struct TrackedPendingCommand {
-    pub(crate) pending: PendingCommand,
-    pub(crate) output: String,
-    pub(crate) is_error: bool,
+pub struct TrackedPendingCommand {
+    pub pending: PendingCommand,
+    pub output: String,
+    pub is_error: bool,
 }
 
-pub(crate) fn try_enqueue_control_request(
+pub fn try_enqueue_control_request(
     request_tx: &Sender<ControlRequest>,
     request: ControlRequest,
 ) -> std::result::Result<(), TmuxControlError> {
@@ -60,7 +58,7 @@ pub(crate) fn try_enqueue_control_request(
     }
 }
 
-pub(crate) fn claim_pending_for_command_begin(
+pub fn claim_pending_for_command_begin(
     pending_rx: &Receiver<PendingCommand>,
 ) -> std::result::Result<Option<PendingCommand>, TmuxControlError> {
     // Hard cutover: `%begin` must bind only to a request that is already pending.
@@ -74,7 +72,7 @@ pub(crate) fn claim_pending_for_command_begin(
     }
 }
 
-pub(crate) fn complete_pending_command(
+pub fn complete_pending_command(
     pending: PendingCommand,
     response: std::result::Result<ControlCommandResult, TmuxControlError>,
 ) {
@@ -84,7 +82,7 @@ pub(crate) fn complete_pending_command(
     let _ = pending.completion_tx.send(());
 }
 
-pub(crate) fn map_command_completion_response(
+pub fn map_command_completion_response(
     command: &str,
     is_error: bool,
     output: String,
@@ -101,7 +99,7 @@ pub(crate) fn map_command_completion_response(
     }))
 }
 
-pub(crate) fn append_command_output_chunk(accumulator: &mut String, chunk: &str) {
+pub fn append_command_output_chunk(accumulator: &mut String, chunk: &str) {
     if !accumulator.is_empty() {
         accumulator.push('\n');
     }

@@ -1,6 +1,6 @@
 #![cfg_attr(not(unix), allow(dead_code))]
 
-pub(crate) fn strip_control_line_wrappers(mut line: &[u8]) -> &[u8] {
+pub fn strip_control_line_wrappers(mut line: &[u8]) -> &[u8] {
     // tmux control mode may wrap protocol lines in DCS passthrough sequences
     // (for example: ESC P1000p ... ESC \\). Strip wrappers so parser matching
     // stays stable across tmux/terminal combinations.
@@ -18,7 +18,7 @@ pub(crate) fn strip_control_line_wrappers(mut line: &[u8]) -> &[u8] {
     line
 }
 
-pub(crate) fn capture_full_pane_args<'a>(pane_id: &'a str, start_row: &'a str) -> [&'a str; 11] {
+pub fn capture_full_pane_args<'a>(pane_id: &'a str, start_row: &'a str) -> [&'a str; 11] {
     // Full-history hydration does not rely on tmux viewport cursor coordinates.
     // Use `-J` here so soft-wrapped rows are rejoined and do not become hard
     // line breaks after restart when pane width differs at attach time.
@@ -37,7 +37,7 @@ pub(crate) fn capture_full_pane_args<'a>(pane_id: &'a str, start_row: &'a str) -
     ]
 }
 
-pub(crate) fn parse_exit_reason(line: &[u8]) -> Option<String> {
+pub fn parse_exit_reason(line: &[u8]) -> Option<String> {
     std::str::from_utf8(line)
         .ok()
         .and_then(|value| value.strip_prefix("%exit"))
@@ -46,7 +46,7 @@ pub(crate) fn parse_exit_reason(line: &[u8]) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-pub(crate) fn parse_output_notification(line: &[u8]) -> Option<(String, Vec<u8>)> {
+pub fn parse_output_notification(line: &[u8]) -> Option<(String, Vec<u8>)> {
     if let Some(rest) = line.strip_prefix(b"%output ") {
         let split = rest.iter().position(|byte| *byte == b' ')?;
         let pane_id = String::from_utf8(rest[..split].to_vec()).ok()?;
@@ -75,7 +75,7 @@ pub(crate) fn parse_output_notification(line: &[u8]) -> Option<(String, Vec<u8>)
     None
 }
 
-pub(crate) fn is_refresh_notification(line: &[u8]) -> bool {
+pub fn is_refresh_notification(line: &[u8]) -> bool {
     [
         b"%layout-change".as_slice(),
         b"%window-add".as_slice(),
@@ -93,7 +93,7 @@ pub(crate) fn is_refresh_notification(line: &[u8]) -> bool {
     .any(|prefix| line.starts_with(prefix))
 }
 
-pub(crate) fn unescape_tmux_payload(payload: &[u8]) -> Vec<u8> {
+pub fn unescape_tmux_payload(payload: &[u8]) -> Vec<u8> {
     let mut output = Vec::with_capacity(payload.len());
     let mut index = 0;
 
@@ -130,11 +130,11 @@ fn normalize_capture_payload(input: Vec<u8>) -> Vec<u8> {
     output
 }
 
-pub(crate) fn sanitize_tmux_payload(input: Vec<u8>) -> Vec<u8> {
+pub fn sanitize_tmux_payload(input: Vec<u8>) -> Vec<u8> {
     strip_legacy_title_sequences(normalize_capture_payload(input))
 }
 
-pub(crate) fn strip_legacy_title_sequences(input: Vec<u8>) -> Vec<u8> {
+pub fn strip_legacy_title_sequences(input: Vec<u8>) -> Vec<u8> {
     let mut output = Vec::with_capacity(input.len());
     let mut index = 0;
 
