@@ -2,7 +2,8 @@ import { createFileRoute, Link } from '@tanstack/react-router';
 import { HomeLayout } from 'fumadocs-ui/layouts/home';
 import { baseOptions } from '@/lib/layout.shared';
 import { sponsors } from '@/lib/sponsors';
-import landingScreenshot from '../../../assets/termy-landing.png?url';
+
+const landingScreenshot = '/termy-landing.png';
 
 export const Route = createFileRoute('/')({
   component: Home,
