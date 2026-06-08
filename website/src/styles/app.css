@@ -3,15 +3,6 @@
 @import 'fumadocs-ui/css/preset.css';
 
 
-@theme {
-  --color-termy-bg: #0b1020;
-  --color-termy-fg: #e7ebf5;
-  --color-termy-green: #a7e9a3;
-  --color-termy-cyan: #84bbf3;
-  --color-termy-magenta: #9fa9d6;
-  --color-termy-bright-black: #30385a;
-}
-
 /* Light theme — default */
 :root {
   color-scheme: light;

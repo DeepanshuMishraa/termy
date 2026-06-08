@@ -48,24 +48,24 @@ function Caret({ className = 'bg-fd-primary' }: { className?: string }) {
 
 function TerminalWindow() {
   return (
-    <div className="overflow-hidden rounded-lg border border-fd-border bg-termy-bg shadow-[0_24px_48px_-24px_rgba(11,16,32,0.4)]">
-      <div className="flex items-center gap-1.5 border-b border-termy-bright-black/40 px-4 py-3">
-        <span className="size-2.5 rounded-full bg-termy-bright-black" />
-        <span className="size-2.5 rounded-full bg-termy-bright-black" />
-        <span className="size-2.5 rounded-full bg-termy-bright-black" />
-        <span className="ml-3 font-mono text-xs text-termy-magenta">
+    <div className="overflow-hidden rounded-lg border border-fd-border bg-fd-card shadow-[0_24px_48px_-24px_var(--color-fd-overlay)]">
+      <div className="flex items-center gap-1.5 border-b border-fd-border bg-fd-muted px-4 py-3">
+        <span className="size-2.5 rounded-full bg-fd-muted-foreground/25" />
+        <span className="size-2.5 rounded-full bg-fd-muted-foreground/25" />
+        <span className="size-2.5 rounded-full bg-fd-muted-foreground/25" />
+        <span className="ml-3 font-mono text-xs text-fd-muted-foreground">
           termy
         </span>
       </div>
       <div className="px-4 py-5 font-mono text-sm leading-7">
         <p>
-          <span className="select-none text-termy-green">$ </span>
-          <span className="text-termy-fg">which terminal</span>
+          <span className="select-none text-fd-primary">$ </span>
+          <span className="text-fd-foreground">which terminal</span>
         </p>
-        <p className="text-termy-cyan">/usr/local/bin/termy</p>
+        <p className="text-fd-info">/usr/local/bin/termy</p>
         <p>
-          <span className="select-none text-termy-green">$ </span>
-          <Caret className="bg-termy-green" />
+          <span className="select-none text-fd-primary">$ </span>
+          <Caret className="bg-fd-primary" />
         </p>
       </div>
     </div>
