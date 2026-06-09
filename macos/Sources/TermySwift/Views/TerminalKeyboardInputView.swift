@@ -7,6 +7,7 @@ struct TerminalKeyboardInputView: NSViewRepresentable {
     var renderConfig: TerminalRenderConfig
     var isFocused: Bool
     var isInputEnabled: Bool
+    var isSearchVisible: Bool
     var canCopy: Bool
     var onFocus: () -> Void
     var onBytes: ([UInt8]) -> Void
@@ -22,6 +23,7 @@ struct TerminalKeyboardInputView: NSViewRepresentable {
     var onClosePaneIfSplit: () -> Bool
     var onFocusNextPane: () -> Void
     var onShowSearch: () -> Void
+    var onDismissSearch: () -> Void
     var onSelectionChanged: (TerminalSelection?) -> Void
     var onSelectWord: (TerminalGridPosition) -> Void
     var onSelectLine: (TerminalGridPosition) -> Void
@@ -54,6 +56,7 @@ final class KeyboardCaptureView: NSView {
     var renderConfig = TerminalRenderConfig.default
     var isTerminalFocused = false
     var isInputEnabled = true
+    var isSearchVisible = false
     var canCopy = false
     var onFocus: () -> Void = {}
     var onBytes: ([UInt8]) -> Void = { _ in }
@@ -69,6 +72,7 @@ final class KeyboardCaptureView: NSView {
     var onClosePaneIfSplit: () -> Bool = { false }
     var onFocusNextPane: () -> Void = {}
     var onShowSearch: () -> Void = {}
+    var onDismissSearch: () -> Void = {}
     var onSelectionChanged: (TerminalSelection?) -> Void = { _ in }
     var onSelectWord: (TerminalGridPosition) -> Void = { _ in }
     var onSelectLine: (TerminalGridPosition) -> Void = { _ in }
@@ -140,7 +144,7 @@ final class KeyboardCaptureView: NSView {
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        guard isInputEnabled else {
+        guard isInputEnabled || isSearchVisible else {
             return nil
         }
         return bounds.contains(point) ? self : nil
@@ -167,6 +171,12 @@ final class KeyboardCaptureView: NSView {
 
     private func handleMouseDown(_ event: NSEvent, button: TerminalMouseButton) {
         guard isInputEnabled else {
+            if isSearchVisible {
+                onFocus()
+                onDismissSearch()
+                focus()
+                return
+            }
             super.mouseDown(with: event)
             return
         }
@@ -337,6 +347,11 @@ final class KeyboardCaptureView: NSView {
             return
         }
         onFocus()
+
+        if isSearchVisible, event.keyCode == MacKeyCode.escape.rawValue {
+            onDismissSearch()
+            return
+        }
 
         if handleHostCommand(event) || handleCopy(event) || handlePaste(event) {
             return
@@ -848,6 +863,7 @@ private extension KeyboardCaptureView {
         renderConfig = configuration.renderConfig
         isTerminalFocused = configuration.isFocused
         isInputEnabled = configuration.isInputEnabled
+        isSearchVisible = configuration.isSearchVisible
         canCopy = configuration.canCopy
         onFocus = configuration.onFocus
         onBytes = configuration.onBytes
@@ -863,6 +879,7 @@ private extension KeyboardCaptureView {
         onClosePaneIfSplit = configuration.onClosePaneIfSplit
         onFocusNextPane = configuration.onFocusNextPane
         onShowSearch = configuration.onShowSearch
+        onDismissSearch = configuration.onDismissSearch
         onSelectionChanged = configuration.onSelectionChanged
         onSelectWord = configuration.onSelectWord
         onSelectLine = configuration.onSelectLine

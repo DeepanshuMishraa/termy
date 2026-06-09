@@ -64,9 +64,9 @@ How the native path works today (after P1/P2/P4):
   only for forced/full damage and changed cells for partial damage; Swift keeps a
   retained `TerminalFrameStore` and patches rows in place
   (`Services/LibTermyTerminal.swift`, `Models/TerminalFrameStore.swift`).
-- ✅ Redraw is driven from `CVDisplayLink` through
-  `DisplaySyncedRefreshDriver`, with the existing 60 Hz active / 15 Hz idle
-  cadence expressed as display-synced tick throttling.
+- ✅ Active redraw is driven from `CVDisplayLink` through
+  `DisplaySyncedRefreshDriver`; idle terminals now sleep on the FFI wake channel
+  and use a low-rate timer only for cursor blink.
 
 Net effect after P1/P2/P4: a one-cell cursor blink patches a small FFI update,
 rebuilds one row's layout, and invalidates that row's rect on the next display

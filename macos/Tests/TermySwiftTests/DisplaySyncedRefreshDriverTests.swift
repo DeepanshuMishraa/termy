@@ -14,4 +14,9 @@ final class DisplaySyncedRefreshDriverTests: XCTestCase {
         XCTAssertGreaterThan(DisplaySyncedRefreshDriver.thermalFloor(.serious), RefreshCadence.active.interval)
         XCTAssertGreaterThan(DisplaySyncedRefreshDriver.thermalFloor(.critical), RefreshCadence.active.interval)
     }
+
+    func testIdleCadenceTracksCursorBlinkInsteadOfFramePolling() {
+        XCTAssertEqual(RefreshCadence.idle.interval, TerminalCursorBlinkPhase.interval, accuracy: 1e-9)
+        XCTAssertGreaterThan(RefreshCadence.idle.interval, 1.0 / 15.0)
+    }
 }

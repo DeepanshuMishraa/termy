@@ -16,4 +16,31 @@ final class CommandMarkTests: XCTestCase {
         // Unknown cap (0) disables tracking rather than risk drift.
         XCTAssertFalse(TerminalViewModel.canTrackCommandMark(historySize: 0, scrollbackCap: 0))
     }
+
+    func testPlainWakeupsDoNotCountAsCadenceActivity() {
+        XCTAssertFalse(TerminalViewModel.hasActivityEvents([]))
+        XCTAssertFalse(TerminalViewModel.hasActivityEvents([.wakeup, .wakeup]))
+        XCTAssertTrue(TerminalViewModel.hasActivityEvents([.wakeup, .title("ready")]))
+    }
+
+    func testCadenceActivityRequiresMeaningfulEventContentPatchOrForcedRefresh() {
+        XCTAssertFalse(TerminalViewModel.hasCadenceActivity(
+            events: [.wakeup],
+            patchedCellCount: 0,
+            forceFull: false,
+            changed: true
+        ))
+        XCTAssertTrue(TerminalViewModel.hasCadenceActivity(
+            events: [],
+            patchedCellCount: 1,
+            forceFull: false,
+            changed: true
+        ))
+        XCTAssertTrue(TerminalViewModel.hasCadenceActivity(
+            events: [],
+            patchedCellCount: 0,
+            forceFull: true,
+            changed: true
+        ))
+    }
 }

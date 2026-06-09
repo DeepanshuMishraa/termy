@@ -301,6 +301,10 @@ TermyFfiStatus termy_config_from_contents(
 TermyFfiStatus termy_config_free(TermyFfiConfig *config);
 bool termy_config_loaded_from_disk(const TermyFfiConfig *config);
 size_t termy_config_runtime_scrollback_history(const TermyFfiConfig *config);
+TermyFfiStatus termy_config_runtime_inactive_tab_scrollback(
+    const TermyFfiConfig *config,
+    bool *out_enabled,
+    size_t *out_value);
 size_t termy_config_diagnostic_count(const TermyFfiConfig *config);
 TermyFfiStatus termy_config_window_size(
     const TermyFfiConfig *config,
@@ -426,6 +430,11 @@ TermyFfiStatus termy_terminal_resize(TermyFfiTerminal *terminal, TermyFfiSize si
 TermyFfiStatus termy_terminal_set_wakeup_enabled(
     TermyFfiTerminal *terminal,
     bool enabled);
+TermyFfiStatus termy_terminal_wait_for_wakeup(
+    TermyFfiTerminal *terminal,
+    uint64_t timeout_ms,
+    bool *out_woke);
+TermyFfiStatus termy_terminal_notify_wakeup(TermyFfiTerminal *terminal);
 TermyFfiStatus termy_terminal_scroll_display(
     TermyFfiTerminal *terminal,
     int32_t delta_lines,
@@ -436,6 +445,9 @@ TermyFfiStatus termy_terminal_scroll_to_bottom(
 TermyFfiStatus termy_terminal_clear_scrollback(
     TermyFfiTerminal *terminal,
     bool *out_changed);
+TermyFfiStatus termy_terminal_set_scrollback_history(
+    TermyFfiTerminal *terminal,
+    size_t scrollback_history);
 TermyFfiStatus termy_terminal_snapshot(
     TermyFfiTerminal *terminal,
     TermyFfiFrame *out_frame);

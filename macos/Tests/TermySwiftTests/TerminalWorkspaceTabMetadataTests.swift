@@ -30,4 +30,36 @@ final class TerminalWorkspaceTabMetadataTests: XCTestCase {
         XCTAssertNil(store.tabManualTitle)
         XCTAssertNil(store.snapshot().tabs.first?.manualTitle)
     }
+
+    func testOpeningSearchAlwaysRequestsInputFocus() {
+        let store = TerminalWorkspaceStore()
+
+        store.showSearch()
+        let firstRequest = store.searchFocusRequest
+
+        XCTAssertTrue(store.isSearchVisible)
+        XCTAssertTrue(store.isSearchInputFocused)
+        XCTAssertGreaterThan(firstRequest, 0)
+
+        store.setSearchInputFocused(false)
+
+        XCTAssertTrue(store.isSearchVisible)
+        XCTAssertFalse(store.isSearchInputFocused)
+
+        store.showSearch()
+
+        XCTAssertTrue(store.isSearchVisible)
+        XCTAssertTrue(store.isSearchInputFocused)
+        XCTAssertGreaterThan(store.searchFocusRequest, firstRequest)
+    }
+
+    func testClosingSearchClearsInputFocus() {
+        let store = TerminalWorkspaceStore()
+        store.showSearch()
+
+        store.hideSearch()
+
+        XCTAssertFalse(store.isSearchVisible)
+        XCTAssertFalse(store.isSearchInputFocused)
+    }
 }

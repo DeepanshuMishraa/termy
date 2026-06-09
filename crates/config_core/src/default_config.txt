@@ -108,9 +108,9 @@ scrollbar_visibility = on_scroll
 # Terminal scrollbar color style
 scrollbar_style = neutral
 # Lines retained in terminal scrollback
-scrollback_history = 2000
+scrollback_history = 1000
 # Scrollback limit for inactive tabs
-# inactive_tab_scrollback = none
+inactive_tab_scrollback = 250
 # How inactive panes are visually dimmed when a pane is active
 pane_focus_effect = soft_spotlight
 # Strength of active pane emphasis (0.0 to 2.0)

@@ -81,10 +81,21 @@ struct TerminalWorkspaceView: View {
                 }
             }
 
+            if store.isSearchVisible, store.isSearchInputFocused {
+                Color.clear
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        store.setSearchInputFocused(false)
+                    }
+                    .zIndex(9)
+            }
+
             if store.isSearchVisible, let terminal = store.focusedTerminal {
                 TerminalSearchPanel(
                     terminal: terminal,
                     options: $store.searchOptions,
+                    focusRequest: store.searchFocusRequest,
+                    onFocusChanged: store.setSearchInputFocused,
                     onClose: store.hideSearch
                 )
                 .padding(10)
@@ -901,7 +912,7 @@ private struct TerminalPaneLeafView: View {
                 // While an overlay owns the keyboard, the terminal must not
                 // re-steal first responder (updateNSView refocuses on every
                 // frame tick, which makes overlay text fields untypable).
-                isInputEnabled: !store.isSearchVisible && !store.isCommandPaletteVisible,
+                isInputEnabled: !store.isSearchInputFocused && !store.isCommandPaletteVisible,
                 isSearchVisible: store.isSearchVisible,
                 windowTitle: store.tabDisplayTitle,
                 onFocus: {
@@ -925,7 +936,9 @@ private struct TerminalPaneLeafView: View {
                 },
                 onFocusNextPane: store.focusNextPane,
                 onShowSearch: store.showSearch,
-                onDismissSearch: {}
+                onDismissSearch: {
+                    store.setSearchInputFocused(false)
+                }
             )
 
             if configurationStore.configuration.native.showDebugOverlay {
@@ -965,6 +978,8 @@ private struct TerminalDebugOverlay: View {
 private struct TerminalSearchPanel: View {
     @ObservedObject var terminal: TerminalViewModel
     @Binding var options: TerminalSearchOptions
+    let focusRequest: Int
+    let onFocusChanged: (Bool) -> Void
     let onClose: () -> Void
 
     @State private var query = ""
@@ -981,6 +996,9 @@ private struct TerminalSearchPanel: View {
                 .focused($isFieldFocused)
                 .onSubmit {
                     terminal.selectNextSearchMatch()
+                }
+                .onExitCommand {
+                    onClose()
                 }
 
             Text(matchSummary)
@@ -1039,14 +1057,23 @@ private struct TerminalSearchPanel: View {
                 .stroke(.separator.opacity(0.8), lineWidth: 1)
         }
         .onAppear {
-            isFieldFocused = true
+            focusSearchField()
             terminal.updateSearch(query, options: options)
+        }
+        .onChange(of: focusRequest) { _, _ in
+            focusSearchField()
+        }
+        .onChange(of: isFieldFocused) { _, isFocused in
+            onFocusChanged(isFocused)
         }
         .onChange(of: query) { _, value in
             terminal.updateSearch(value, options: options)
         }
         .onChange(of: options) { _, value in
             terminal.updateSearch(query, options: value)
+        }
+        .onDisappear {
+            onFocusChanged(false)
         }
     }
 
@@ -1058,5 +1085,15 @@ private struct TerminalSearchPanel: View {
             return "0/0"
         }
         return "\(terminal.activeSearchMatchIndex + 1)/\(terminal.searchMatches.count)"
+    }
+
+    private func focusSearchField() {
+        onFocusChanged(true)
+        isFieldFocused = true
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 10_000_000)
+            onFocusChanged(true)
+            isFieldFocused = true
+        }
     }
 }

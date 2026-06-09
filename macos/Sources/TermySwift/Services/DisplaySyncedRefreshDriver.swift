@@ -56,6 +56,11 @@ final class DisplaySyncedRefreshDriver: @unchecked Sendable {
         isRunning = true
         lastDeliveredAt = nil
 
+        guard cadence == .active else {
+            startFallbackTimer()
+            return
+        }
+
         var link: CVDisplayLink?
         let status = CVDisplayLinkCreateWithActiveCGDisplays(&link)
         guard status == kCVReturnSuccess, let link else {

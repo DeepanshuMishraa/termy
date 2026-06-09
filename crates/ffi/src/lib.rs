@@ -4,8 +4,10 @@ use std::{
     collections::{BTreeSet, HashMap},
     path::{Path, PathBuf},
     ptr, slice, str,
+    time::Duration,
 };
 
+use flume::{Receiver, Sender, bounded};
 use termy_core::{
     ConfigDiagnostic, ConfigDiagnosticKind, LoadedTermyConfig, ProgressState, Terminal,
     TerminalClipboardTarget, TerminalDamageSnapshot, TerminalDirtySpan, TerminalEvent,
@@ -255,6 +257,8 @@ pub struct TermyFfiNativeConfig {
 
 pub struct TermyFfiTerminal {
     terminal: Terminal,
+    wakeups_tx: Option<Sender<()>>,
+    wakeups_rx: Option<Receiver<()>>,
 }
 
 pub struct TermyFfiConfig {
@@ -669,10 +673,11 @@ unsafe fn terminal_new_with_runtime_config(
         Err(status) => return status,
     };
 
+    let (wakeups_tx, wakeups_rx) = bounded(1);
     let Ok(terminal) = Terminal::new(
         size.into(),
         configured_working_dir,
-        None,
+        Some(wakeups_tx.clone()),
         tab_title_shell_integration,
         Some(runtime_config),
         startup_command,
@@ -681,7 +686,11 @@ unsafe fn terminal_new_with_runtime_config(
     };
 
     unsafe {
-        *out_terminal = Box::into_raw(Box::new(TermyFfiTerminal { terminal }));
+        *out_terminal = Box::into_raw(Box::new(TermyFfiTerminal {
+            terminal,
+            wakeups_tx: Some(wakeups_tx),
+            wakeups_rx: Some(wakeups_rx),
+        }));
     }
     TermyFfiStatus::Ok
 }
@@ -730,7 +739,11 @@ pub unsafe extern "C" fn termy_display_terminal_new(
     }
     let terminal = Terminal::new_display(size.into(), None);
     unsafe {
-        *out_terminal = Box::into_raw(Box::new(TermyFfiTerminal { terminal }));
+        *out_terminal = Box::into_raw(Box::new(TermyFfiTerminal {
+            terminal,
+            wakeups_tx: None,
+            wakeups_rx: None,
+        }));
     }
     TermyFfiStatus::Ok
 }
@@ -883,6 +896,24 @@ pub unsafe extern "C" fn termy_config_runtime_scrollback_history(
     }
 
     unsafe { (*config).loaded.runtime_config.scrollback_history }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_config_runtime_inactive_tab_scrollback(
+    config: *const TermyFfiConfig,
+    out_enabled: *mut bool,
+    out_value: *mut usize,
+) -> TermyFfiStatus {
+    if config.is_null() || out_enabled.is_null() || out_value.is_null() {
+        return TermyFfiStatus::Null;
+    }
+
+    let inactive_tab_scrollback = unsafe { (*config).loaded.app_config.inactive_tab_scrollback };
+    unsafe {
+        *out_enabled = inactive_tab_scrollback.is_some();
+        *out_value = inactive_tab_scrollback.unwrap_or_default();
+    }
+    TermyFfiStatus::Ok
 }
 
 #[unsafe(no_mangle)]
@@ -2476,6 +2507,56 @@ pub unsafe extern "C" fn termy_terminal_set_wakeup_enabled(
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_terminal_wait_for_wakeup(
+    terminal: *mut TermyFfiTerminal,
+    timeout_ms: u64,
+    out_woke: *mut bool,
+) -> TermyFfiStatus {
+    if terminal.is_null() || out_woke.is_null() {
+        return TermyFfiStatus::Null;
+    }
+
+    let receiver = unsafe { (*terminal).wakeups_rx.as_ref() };
+    let woke = match receiver {
+        Some(receiver) => {
+            let received = if timeout_ms == 0 {
+                receiver.try_recv().is_ok()
+            } else {
+                receiver
+                    .recv_timeout(Duration::from_millis(timeout_ms))
+                    .is_ok()
+            };
+            if received {
+                while receiver.try_recv().is_ok() {}
+                true
+            } else {
+                false
+            }
+        }
+        None => false,
+    };
+
+    unsafe {
+        *out_woke = woke;
+    }
+    TermyFfiStatus::Ok
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_terminal_notify_wakeup(
+    terminal: *mut TermyFfiTerminal,
+) -> TermyFfiStatus {
+    if terminal.is_null() {
+        return TermyFfiStatus::Null;
+    }
+
+    if let Some(sender) = unsafe { (*terminal).wakeups_tx.as_ref() } {
+        let _ = sender.try_send(());
+    }
+    TermyFfiStatus::Ok
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn termy_terminal_scroll_display(
     terminal: *mut TermyFfiTerminal,
     delta_lines: i32,
@@ -2517,6 +2598,23 @@ pub unsafe extern "C" fn termy_terminal_clear_scrollback(
 
     unsafe {
         *out_changed = (*terminal).terminal.clear_scrollback();
+    }
+    TermyFfiStatus::Ok
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_terminal_set_scrollback_history(
+    terminal: *mut TermyFfiTerminal,
+    scrollback_history: usize,
+) -> TermyFfiStatus {
+    if terminal.is_null() {
+        return TermyFfiStatus::Null;
+    }
+
+    unsafe {
+        (*terminal)
+            .terminal
+            .set_scrollback_history(scrollback_history);
     }
     TermyFfiStatus::Ok
 }
@@ -3270,6 +3368,54 @@ mod tests {
     }
 
     #[test]
+    fn config_from_contents_exposes_inactive_tab_scrollback() {
+        let contents = b"inactive_tab_scrollback = 123\n";
+        let mut config = ptr::null_mut();
+
+        let status =
+            unsafe { termy_config_from_contents(contents.as_ptr(), contents.len(), &mut config) };
+        assert_eq!(status, TermyFfiStatus::Ok);
+        assert!(!config.is_null());
+
+        let mut enabled = false;
+        let mut value = 0;
+        assert_eq!(
+            unsafe {
+                termy_config_runtime_inactive_tab_scrollback(config, &mut enabled, &mut value)
+            },
+            TermyFfiStatus::Ok
+        );
+        assert!(enabled);
+        assert_eq!(value, 123);
+
+        assert_eq!(unsafe { termy_config_free(config) }, TermyFfiStatus::Ok);
+    }
+
+    #[test]
+    fn config_from_contents_exposes_disabled_inactive_tab_scrollback() {
+        let contents = b"inactive_tab_scrollback = none\n";
+        let mut config = ptr::null_mut();
+
+        let status =
+            unsafe { termy_config_from_contents(contents.as_ptr(), contents.len(), &mut config) };
+        assert_eq!(status, TermyFfiStatus::Ok);
+        assert!(!config.is_null());
+
+        let mut enabled = true;
+        let mut value = 999;
+        assert_eq!(
+            unsafe {
+                termy_config_runtime_inactive_tab_scrollback(config, &mut enabled, &mut value)
+            },
+            TermyFfiStatus::Ok
+        );
+        assert!(!enabled);
+        assert_eq!(value, 0);
+
+        assert_eq!(unsafe { termy_config_free(config) }, TermyFfiStatus::Ok);
+    }
+
+    #[test]
     fn config_from_contents_exposes_render_config() {
         let contents = b"theme = nord\nfont_family = Example Mono\nfont_size = 18\nline_height = 1.25\npadding_x = 3\npadding_y = 5\nbackground_opacity = 0.5\nbackground_opacity_cells = true\nbackground_blur = true\nmouse_scroll_multiplier = 4.5\nscrollbar_visibility = always\nscrollbar_style = theme\ncopy_on_select = true\ncopy_on_select_toast = false\npane_focus_effect = cinematic\npane_focus_strength = 1.25\nchrome_contrast = true\ncursor_blink = false\ncursor_style = line\n[colors]\nbackground = #010203\ncursor = #040506\n";
         let mut config = ptr::null_mut();
@@ -3435,6 +3581,58 @@ mod tests {
             unsafe { termy_search_batch_free(&mut batch) },
             TermyFfiStatus::Ok
         );
+        assert_eq!(unsafe { termy_terminal_free(terminal) }, TermyFfiStatus::Ok);
+    }
+
+    #[test]
+    fn terminal_wakeup_wait_is_coalesced_and_notifiable() {
+        let size = TermyFfiSize {
+            cols: 16,
+            rows: 4,
+            cell_width: 9.0,
+            cell_height: 18.0,
+        };
+        #[cfg(target_os = "windows")]
+        let command: &[u8] = b"";
+        #[cfg(not(target_os = "windows"))]
+        let command: &[u8] = b"sleep 1";
+        let mut terminal = ptr::null_mut();
+
+        assert_eq!(
+            unsafe { termy_terminal_new(size, command.as_ptr(), command.len(), &mut terminal) },
+            TermyFfiStatus::Ok
+        );
+
+        let mut woke = false;
+        loop {
+            assert_eq!(
+                unsafe { termy_terminal_wait_for_wakeup(terminal, 0, &mut woke) },
+                TermyFfiStatus::Ok
+            );
+            if !woke {
+                break;
+            }
+        }
+
+        assert_eq!(
+            unsafe { termy_terminal_notify_wakeup(terminal) },
+            TermyFfiStatus::Ok
+        );
+        assert_eq!(
+            unsafe { termy_terminal_notify_wakeup(terminal) },
+            TermyFfiStatus::Ok
+        );
+        assert_eq!(
+            unsafe { termy_terminal_wait_for_wakeup(terminal, 50, &mut woke) },
+            TermyFfiStatus::Ok
+        );
+        assert!(woke);
+        assert_eq!(
+            unsafe { termy_terminal_wait_for_wakeup(terminal, 0, &mut woke) },
+            TermyFfiStatus::Ok
+        );
+        assert!(!woke);
+
         assert_eq!(unsafe { termy_terminal_free(terminal) }, TermyFfiStatus::Ok);
     }
 

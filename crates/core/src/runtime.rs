@@ -71,7 +71,7 @@ impl Default for WorkingDirFallback {
     }
 }
 
-const DEFAULT_SCROLLBACK_HISTORY: usize = 2000;
+const DEFAULT_SCROLLBACK_HISTORY: usize = 1000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum WindowsShell {
@@ -1298,6 +1298,9 @@ pub struct Terminal {
     size: TerminalSize,
     /// Colors returned to child processes that probe terminal palette state.
     query_colors: TerminalQueryColors,
+    /// Default cursor style from runtime config, reapplied when live terminal
+    /// options change for memory management.
+    default_cursor_style: TerminalCursorStyle,
     /// Shell process id backing this PTY.
     child_pid: Option<u32>,
 }
@@ -1367,6 +1370,7 @@ impl Terminal {
             events_rx,
             size,
             query_colors: runtime_config.query_colors,
+            default_cursor_style: runtime_config.default_cursor_style,
             child_pid,
         })
     }
@@ -1391,6 +1395,7 @@ impl Terminal {
             events_rx,
             size,
             query_colors: runtime_config.query_colors,
+            default_cursor_style: runtime_config.default_cursor_style,
             child_pid: None,
         }
     }
@@ -1607,6 +1612,14 @@ impl Terminal {
     /// Sync live term options derived from the current runtime configuration.
     pub fn set_term_options(&self, options: TerminalOptions) {
         self.with_term_mut(|term| term.set_options(options.term_config()));
+    }
+
+    /// Change only the live scrollback cap, preserving cursor defaults.
+    pub fn set_scrollback_history(&self, scrollback_history: usize) {
+        self.set_term_options(TerminalOptions {
+            scrollback_history,
+            default_cursor_style: self.default_cursor_style,
+        });
     }
 
     /// Check if bracketed paste mode is enabled

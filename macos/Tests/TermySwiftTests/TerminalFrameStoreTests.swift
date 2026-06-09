@@ -44,6 +44,48 @@ final class TerminalFrameStoreTests: XCTestCase {
         XCTAssertEqual(result.effectiveDamage.dirtyRows, [0])
     }
 
+    func testPartialUpdateMutatesSharedCellStorage() {
+        let store = TerminalFrameStore()
+        let initial = TerminalFrame.plainTextPreview("abc", cols: 3, rows: 1)
+        store.reset(to: initial)
+        let observedFrame = store.frame
+
+        var patched = initial.cells[1]
+        patched.character = "Z"
+        let result = store.apply(TerminalFrameUpdate(
+            cols: initial.cols,
+            rows: initial.rows,
+            cells: [patched],
+            cursor: nil,
+            displayOffset: 0,
+            historySize: 0,
+            damage: .partial([TerminalDirtySpan(row: 0, leftCol: 1, rightCol: 1)])
+        ))
+
+        XCTAssertTrue(result.changed)
+        XCTAssertEqual(observedFrame.cell(row: 0, col: 1).map { String($0.character) }, "Z")
+    }
+
+    func testPartialUpdateWithIdenticalCellDoesNotPatchOrRedraw() {
+        let store = TerminalFrameStore()
+        let initial = TerminalFrame.plainTextPreview("abc", cols: 3, rows: 1)
+        store.reset(to: initial)
+
+        let result = store.apply(TerminalFrameUpdate(
+            cols: initial.cols,
+            rows: initial.rows,
+            cells: [initial.cells[1]],
+            cursor: nil,
+            displayOffset: 0,
+            historySize: 0,
+            damage: .partial([TerminalDirtySpan(row: 0, leftCol: 1, rightCol: 1)])
+        ))
+
+        XCTAssertFalse(result.changed)
+        XCTAssertEqual(result.patchedCellCount, 0)
+        XCTAssertEqual(result.effectiveDamage, .none)
+    }
+
     func testCursorOnlyUpdateMarksOldAndNewRowsDirty() {
         let store = TerminalFrameStore()
         var initial = TerminalFrame.plainTextPreview("a\nb", cols: 1, rows: 2)

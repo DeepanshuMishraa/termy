@@ -74,6 +74,7 @@ final class TerminalViewModel: ObservableObject {
     private var activeSearchOptions = TerminalSearchOptions()
     private var lastSearchRefreshAt: Date?
     private var lastAutoCopiedSelectionText: String?
+    private var pendingWakeupPoll = false
     private var renderedFrameCount = 0
     private var skippedPresentCount = 0
     private var fullRebuildCount = 0
@@ -116,6 +117,9 @@ final class TerminalViewModel: ObservableObject {
                 startupCommand: effectiveStartupCommand
             )
             self.terminal = terminal
+            terminal.startWakeupMonitor { [weak self] in
+                self?.handleTerminalWakeup()
+            }
             applyBaseRenderConfig(terminal.renderConfig)
             currentWorkingDirectory = initialWorkingDirectory
             isExited = false
@@ -145,14 +149,18 @@ final class TerminalViewModel: ObservableObject {
         }
     }
 
-    /// Drives polling from display refresh boundaries: up to 60 Hz while the
-    /// terminal is actively producing output or receiving input, backing off to
-    /// 15 Hz once idle to save CPU/battery. Multiple core updates between ticks
-    /// coalesce into one frame update before presentation.
+    /// Drives presentation from display refresh boundaries while active, then
+    /// backs off to a low-rate idle timer for cursor blink. PTY output uses the
+    /// FFI wake channel to schedule an immediate poll while idle, so visible
+    /// terminals do not need to keep polling for changes.
     private func startRefreshDriver(_ cadence: RefreshCadence) {
         self.cadence = cadence
         if let refreshDriver {
-            refreshDriver.cadence = cadence
+            guard refreshDriver.cadence != cadence else {
+                return
+            }
+            refreshDriver.stop()
+            refreshDriver.start(cadence: cadence)
             return
         }
         let driver = DisplaySyncedRefreshDriver { [weak self] in
@@ -160,6 +168,20 @@ final class TerminalViewModel: ObservableObject {
         }
         refreshDriver = driver
         driver.start(cadence: cadence)
+    }
+
+    private func handleTerminalWakeup() {
+        guard terminal != nil, !isSuspended, !pendingWakeupPoll else {
+            return
+        }
+        pendingWakeupPoll = true
+        Task { @MainActor [weak self] in
+            guard let self else {
+                return
+            }
+            self.pendingWakeupPoll = false
+            self.pollAndPresent()
+        }
     }
 
     private func noteActivity() {
@@ -187,8 +209,10 @@ final class TerminalViewModel: ObservableObject {
             return
         }
         isSuspended = true
+        applyConfiguredScrollbackLimit()
         refreshDriver?.stop()
         refreshDriver = nil
+        terminal?.stopWakeupMonitor()
         pendingResizeRefresh?.cancel()
         pendingResizeRefresh = nil
     }
@@ -200,6 +224,10 @@ final class TerminalViewModel: ObservableObject {
             return
         }
         isSuspended = false
+        applyConfiguredScrollbackLimit()
+        terminal?.startWakeupMonitor { [weak self] in
+            self?.handleTerminalWakeup()
+        }
         startRefreshDriver(.active)
         pollAndPresent(force: true)
     }
@@ -207,8 +235,10 @@ final class TerminalViewModel: ObservableObject {
     func stop() {
         refreshDriver?.stop()
         refreshDriver = nil
+        terminal?.stopWakeupMonitor()
         pendingResizeRefresh?.cancel()
         pendingResizeRefresh = nil
+        pendingWakeupPoll = false
         isSuspended = false
         if let settingsObserver {
             NotificationCenter.default.removeObserver(settingsObserver)
@@ -239,10 +269,25 @@ final class TerminalViewModel: ObservableObject {
 
     private func reloadConfiguration() {
         configuration = TermyConfigurationStore.shared.reload()
+        applyConfiguredScrollbackLimit()
         if !configuration.native.progressIndicatorEnabled {
             progress = .clear
         }
         reloadAppearance()
+    }
+
+    private func applyConfiguredScrollbackLimit() {
+        guard terminal != nil else {
+            return
+        }
+        let limit = isSuspended
+            ? configuration.inactiveTabScrollback ?? configuration.scrollbackHistory
+            : configuration.scrollbackHistory
+        do {
+            try terminal?.setScrollbackHistory(max(0, limit))
+        } catch {
+            report(error)
+        }
     }
 
     func sendControlC() {
@@ -559,7 +604,6 @@ final class TerminalViewModel: ObservableObject {
         do {
             let events = try terminal?.drainEvents() ?? []
             handle(events)
-            let hasEvents = !events.isEmpty
             let forceFull = force || shouldForceStartupRefresh()
             let update = try terminal?.frameUpdate(forceFull: forceFull)
             let applyResult = update.map(frameStore.apply)
@@ -571,9 +615,12 @@ final class TerminalViewModel: ObservableObject {
             if let update {
                 nativeRenderMetricsRecorder.recordFrameUpdate(update, applyResult: applyResult)
             }
-            let hasDamage = applyResult.effectiveDamage.hasChanges
-
-            if hasEvents || hasDamage {
+            if Self.hasCadenceActivity(
+                events: events,
+                patchedCellCount: applyResult.patchedCellCount,
+                forceFull: forceFull,
+                changed: applyResult.changed
+            ) {
                 noteActivity()
             } else {
                 adaptCadenceWhenIdle()
@@ -830,6 +877,19 @@ final class TerminalViewModel: ObservableObject {
         scrollbackCap > 0 && historySize < scrollbackCap
     }
 
+    nonisolated static func hasActivityEvents(_ events: [TerminalRuntimeEvent]) -> Bool {
+        events.contains { !$0.isPlainWakeup }
+    }
+
+    nonisolated static func hasCadenceActivity(
+        events: [TerminalRuntimeEvent],
+        patchedCellCount: Int,
+        forceFull: Bool,
+        changed: Bool
+    ) -> Bool {
+        hasActivityEvents(events) || patchedCellCount > 0 || (forceFull && changed)
+    }
+
     private func recordCommandMark() {
         guard configuration.native.shellIntegrationEnabled,
               commandMarkTrackingActive,
@@ -966,8 +1026,27 @@ private struct ProcessUsageSample {
         return ProcessUsageSample(
             timestamp: Date(),
             cpuTime: userCPU + systemCPU,
-            memoryMegabytes: Double(max(0, usage.ru_maxrss)) / 1_048_576
+            memoryMegabytes: Self.currentResidentMemoryMegabytes()
         )
+    }
+
+    private static func currentResidentMemoryMegabytes() -> Double {
+        var info = mach_task_basic_info()
+        var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.stride / MemoryLayout<natural_t>.stride)
+        let status = withUnsafeMutablePointer(to: &info) { pointer in
+            pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { rebound in
+                task_info(
+                    mach_task_self_,
+                    task_flavor_t(MACH_TASK_BASIC_INFO),
+                    rebound,
+                    &count
+                )
+            }
+        }
+        guard status == KERN_SUCCESS else {
+            return 0
+        }
+        return Double(info.resident_size) / 1_048_576
     }
 }
 
@@ -987,7 +1066,7 @@ enum RefreshCadence {
         case .active:
             return 1.0 / 60.0
         case .idle:
-            return 1.0 / 15.0
+            return TerminalCursorBlinkPhase.interval
         }
     }
 }

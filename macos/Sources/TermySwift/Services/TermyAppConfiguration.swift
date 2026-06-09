@@ -45,6 +45,9 @@ struct TermyAppConfiguration {
     /// Scrollback line cap; command marks are tracked only while history stays
     /// below it (eviction begins at the cap and would otherwise drift marks).
     var scrollbackHistory: Int = 0
+    /// Optional lower scrollback cap applied while a native tab/window is
+    /// occluded to reduce background memory.
+    var inactiveTabScrollback: Int?
 
     var windowSize: CGSize {
         CGSize(width: windowWidth, height: windowHeight)
@@ -197,8 +200,19 @@ struct TermyAppConfiguration {
             tasks: tasks,
             keybinds: keybinds,
             diagnostics: try readDiagnostics(from: config),
-            scrollbackHistory: Int(termy_config_runtime_scrollback_history(config))
+            scrollbackHistory: Int(termy_config_runtime_scrollback_history(config)),
+            inactiveTabScrollback: try readInactiveTabScrollback(from: config)
         )
+    }
+
+    private static func readInactiveTabScrollback(from config: OpaquePointer) throws -> Int? {
+        var enabled = false
+        var value = 0
+        try TermyFfiBridge.requireOK(
+            "termy_config_runtime_inactive_tab_scrollback",
+            termy_config_runtime_inactive_tab_scrollback(config, &enabled, &value)
+        )
+        return enabled ? Int(value) : nil
     }
 
     /// Reads the parser's diagnostics for `config` (unknown keys, invalid values,

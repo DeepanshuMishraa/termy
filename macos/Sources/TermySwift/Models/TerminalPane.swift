@@ -67,6 +67,8 @@ final class TerminalWorkspaceStore: ObservableObject {
     @Published private(set) var root: TerminalPaneNode
     @Published var focusedPaneID: UUID
     @Published var isSearchVisible = false
+    @Published private(set) var isSearchInputFocused = false
+    @Published private(set) var searchFocusRequest = 0
     @Published var searchOptions = TerminalSearchOptions()
     @Published private(set) var zoomedPaneID: UUID?
     @Published var isCommandPaletteVisible = false
@@ -302,11 +304,21 @@ final class TerminalWorkspaceStore: ObservableObject {
 
     func showSearch() {
         isSearchVisible = true
+        isSearchInputFocused = true
+        searchFocusRequest &+= 1
     }
 
     func hideSearch() {
         isSearchVisible = false
+        isSearchInputFocused = false
         focusedTerminal?.updateSearch("", options: searchOptions)
+    }
+
+    func setSearchInputFocused(_ isFocused: Bool) {
+        guard isSearchInputFocused != isFocused else {
+            return
+        }
+        isSearchInputFocused = isFocused
     }
 
     func toggleSearchCaseSensitive() {

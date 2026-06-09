@@ -51,6 +51,7 @@ struct TerminalSurfaceView: View {
                     renderConfig: terminal.renderConfig,
                     isFocused: isFocused,
                     isInputEnabled: isInputEnabled,
+                    isSearchVisible: isSearchVisible,
                     canCopy: hasCopyableSelection,
                     onFocus: onFocus,
                     onBytes: { bytes in
@@ -83,6 +84,7 @@ struct TerminalSurfaceView: View {
                     onClosePaneIfSplit: onClosePaneIfSplit,
                     onFocusNextPane: onFocusNextPane,
                     onShowSearch: onShowSearch,
+                    onDismissSearch: onDismissSearch,
                     onSelectionChanged: { selection in
                         terminal.updateSelection(selection)
                     },

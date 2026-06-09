@@ -31,6 +31,8 @@ final class TermyConfigurationParityTests: XCTestCase {
         progress_indicator_enabled = false
         auto_hide_tabbar = false
         show_termy_in_titlebar = false
+        scrollback_history = 777
+        inactive_tab_scrollback = 123
         task.build.command = cargo build
         task.build.working_dir = crates/cli
         task.dev_server.layout = dashboard
@@ -69,6 +71,8 @@ final class TermyConfigurationParityTests: XCTestCase {
         XCTAssertEqual(native.autoHideTabbar, false)
         XCTAssertEqual(native.showTermyInTitlebar, false)
         XCTAssertEqual(configuration.uiFontFamily, "Avenir Next")
+        XCTAssertEqual(configuration.scrollbackHistory, 777)
+        XCTAssertEqual(configuration.inactiveTabScrollback, 123)
 
         XCTAssertEqual(configuration.tasks, [
             TermyTaskConfiguration(
@@ -88,6 +92,14 @@ final class TermyConfigurationParityTests: XCTestCase {
             TermyKeybindConfiguration(trigger: "cmd-p", action: "toggle_command_palette"),
             TermyKeybindConfiguration(trigger: "cmd-d", action: "split_pane_vertical")
         ])
+    }
+
+    func testInactiveTabScrollbackCanBeDisabled() throws {
+        let configuration = try TermyAppConfiguration.load(contents: """
+        inactive_tab_scrollback = none
+        """)
+
+        XCTAssertNil(configuration.inactiveTabScrollback)
     }
 
     func testConfigurationMatrixCoversNativeTabAndIconVariants() throws {

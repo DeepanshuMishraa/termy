@@ -205,9 +205,11 @@ private final class TerminalGridNSView: NSView {
     }
 
     private func drawBackgrounds(in dirtyRect: NSRect) {
-        for run in renderPlan.backgroundRuns where rowIntersectsDirty(run.row, dirtyRect) {
-            renderConfig.nsColor(run.color, opacity: run.opacity).setFill()
-            fill(cellRect(col: run.startCol, row: run.row, cols: run.cols))
+        for rowPlan in rowPlans(intersecting: dirtyRect) {
+            for run in rowPlan.backgroundRuns {
+                renderConfig.nsColor(run.color, opacity: run.opacity).setFill()
+                fill(cellRect(col: run.startCol, row: run.row, cols: run.cols))
+            }
         }
     }
 
@@ -284,8 +286,8 @@ private final class TerminalGridNSView: NSView {
     /// axis-aligned fills keep hard edges, unlike font glyphs which only cover
     /// the font box inside the taller line-height cell.
     private func drawBlockGlyphs(in dirtyRect: NSRect) {
-        let glyphs = renderPlan.blockGlyphs
-        guard !glyphs.isEmpty else {
+        let rowPlans = rowPlans(intersecting: dirtyRect)
+        guard rowPlans.contains(where: { !$0.blockGlyphs.isEmpty }) else {
             return
         }
 
@@ -294,24 +296,26 @@ private final class TerminalGridNSView: NSView {
         context?.shouldAntialias = false
         defer { context?.shouldAntialias = previousShouldAntialias }
 
-        for glyph in glyphs where rowIntersectsDirty(glyph.row, dirtyRect) {
-            for rect in glyph.rects {
-                guard let snapped = TerminalBlockGlyphs.snappedRect(
-                    rect,
-                    col: glyph.col,
-                    row: glyph.row,
-                    cellWidth: renderConfig.cellWidth,
-                    cellHeight: renderConfig.cellHeight,
-                    paddingX: renderConfig.paddingX,
-                    paddingY: renderConfig.paddingY,
-                    scale: backingScale
-                ) else {
-                    continue
+        for rowPlan in rowPlans {
+            for glyph in rowPlan.blockGlyphs {
+                for rect in glyph.rects {
+                    guard let snapped = TerminalBlockGlyphs.snappedRect(
+                        rect,
+                        col: glyph.col,
+                        row: glyph.row,
+                        cellWidth: renderConfig.cellWidth,
+                        cellHeight: renderConfig.cellHeight,
+                        paddingX: renderConfig.paddingX,
+                        paddingY: renderConfig.paddingY,
+                        scale: backingScale
+                    ) else {
+                        continue
+                    }
+                    glyph.foreground.nsColor
+                        .withAlphaComponent(glyph.foreground.alpha * rect.alpha)
+                        .setFill()
+                    fill(snapped)
                 }
-                glyph.foreground.nsColor
-                    .withAlphaComponent(glyph.foreground.alpha * rect.alpha)
-                    .setFill()
-                fill(snapped)
             }
         }
     }
@@ -322,32 +326,34 @@ private final class TerminalGridNSView: NSView {
     /// `paint_diagonal_path` in `crates/terminal_ui/src/grid.rs`. These stay
     /// anti-aliased — they are curves and slopes, not axis-aligned fills.
     private func drawStrokeGlyphs(in dirtyRect: NSRect) {
-        let glyphs = renderPlan.strokeGlyphs
-        guard !glyphs.isEmpty else {
+        let rowPlans = rowPlans(intersecting: dirtyRect)
+        guard rowPlans.contains(where: { !$0.strokeGlyphs.isEmpty }) else {
             return
         }
 
         let strokeWidth = TerminalBoxDrawing.strokeWidth(fontSize: renderConfig.fontSize)
-        for glyph in glyphs where rowIntersectsDirty(glyph.row, dirtyRect) {
-            guard let cell = TerminalBlockGlyphs.snappedRect(
-                TerminalBlockRect(left: 0, top: 0, right: 1, bottom: 1, alpha: 1),
-                col: glyph.col,
-                row: glyph.row,
-                cellWidth: renderConfig.cellWidth,
-                cellHeight: renderConfig.cellHeight,
-                paddingX: renderConfig.paddingX,
-                paddingY: renderConfig.paddingY,
-                scale: backingScale
-            ) else {
-                continue
-            }
+        for rowPlan in rowPlans {
+            for glyph in rowPlan.strokeGlyphs {
+                guard let cell = TerminalBlockGlyphs.snappedRect(
+                    TerminalBlockRect(left: 0, top: 0, right: 1, bottom: 1, alpha: 1),
+                    col: glyph.col,
+                    row: glyph.row,
+                    cellWidth: renderConfig.cellWidth,
+                    cellHeight: renderConfig.cellHeight,
+                    paddingX: renderConfig.paddingX,
+                    paddingY: renderConfig.paddingY,
+                    scale: backingScale
+                ) else {
+                    continue
+                }
 
-            glyph.foreground.nsColor.setStroke()
-            switch glyph.kind {
-            case .roundedCorner:
-                strokeRoundedCorner(glyph.character, in: cell, strokeWidth: strokeWidth)
-            case .diagonal:
-                strokeDiagonal(glyph.character, in: cell, strokeWidth: strokeWidth)
+                glyph.foreground.nsColor.setStroke()
+                switch glyph.kind {
+                case .roundedCorner:
+                    strokeRoundedCorner(glyph.character, in: cell, strokeWidth: strokeWidth)
+                case .diagonal:
+                    strokeDiagonal(glyph.character, in: cell, strokeWidth: strokeWidth)
+                }
             }
         }
     }
@@ -468,24 +474,36 @@ private final class TerminalGridNSView: NSView {
             + regularFont.ascender
 
         let scale = backingScale
-        for segment in renderPlan.textSegments where rowIntersectsDirty(segment.row, dirtyRect) {
-            let font = segment.bold ? boldFont : regularFont
-            // Snap the glyph origin to device pixels so baselines land on
-            // consistent pixel rows, matching the pixel-aligned backgrounds.
-            let point = CGPoint(
-                x: ((renderConfig.paddingX + CGFloat(segment.startCol) * renderConfig.cellWidth)
-                    * scale).rounded() / scale,
-                y: ((renderConfig.paddingY + CGFloat(segment.row) * renderConfig.cellHeight
-                    + baselineOffset - font.ascender) * scale).rounded() / scale
-            )
-            (segment.text as NSString).draw(
-                at: point,
-                withAttributes: [
-                    .font: font,
-                    .foregroundColor: segment.foreground.nsColor
-                ]
-            )
+        for rowPlan in rowPlans(intersecting: dirtyRect) {
+            for segment in rowPlan.textSegments {
+                let font = segment.bold ? boldFont : regularFont
+                // Snap the glyph origin to device pixels so baselines land on
+                // consistent pixel rows, matching the pixel-aligned backgrounds.
+                let point = CGPoint(
+                    x: ((renderConfig.paddingX + CGFloat(segment.startCol) * renderConfig.cellWidth)
+                        * scale).rounded() / scale,
+                    y: ((renderConfig.paddingY + CGFloat(segment.row) * renderConfig.cellHeight
+                        + baselineOffset - font.ascender) * scale).rounded() / scale
+                )
+                (segment.text as NSString).draw(
+                    at: point,
+                    withAttributes: [
+                        .font: font,
+                        .foregroundColor: segment.foreground.nsColor
+                    ]
+                )
+            }
         }
+    }
+
+    private func rowPlans(intersecting dirtyRect: NSRect) -> ArraySlice<TerminalRowRenderPlan> {
+        guard !renderPlan.rows.isEmpty else {
+            return []
+        }
+        let range = dirtyRowRange(for: dirtyRect)
+        let lower = max(0, min(range.lowerBound, renderPlan.rows.count - 1))
+        let upper = max(lower, min(range.upperBound, renderPlan.rows.count - 1))
+        return renderPlan.rows[lower...upper]
     }
 
     private func terminalFont(weight: NSFont.Weight) -> NSFont {

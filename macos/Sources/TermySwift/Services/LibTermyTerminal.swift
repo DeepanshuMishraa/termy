@@ -15,9 +15,73 @@ enum LibTermyError: Error, CustomStringConvertible {
     }
 }
 
+private final class TerminalWakeupMonitor: @unchecked Sendable {
+    private let handle: OpaquePointer
+    private let onWakeup: @MainActor () -> Void
+    private let queue = DispatchQueue(label: "dev.termy.terminal-wakeup", qos: .userInteractive)
+    private let group = DispatchGroup()
+    private let lock = NSLock()
+    private var running = true
+
+    init(handle: OpaquePointer, onWakeup: @escaping @MainActor () -> Void) {
+        self.handle = handle
+        self.onWakeup = onWakeup
+        group.enter()
+        queue.async { [weak self] in
+            self?.run()
+        }
+    }
+
+    func stop() {
+        lock.lock()
+        let wasRunning = running
+        running = false
+        lock.unlock()
+
+        guard wasRunning else {
+            return
+        }
+
+        _ = termy_terminal_notify_wakeup(handle)
+        group.wait()
+    }
+
+    private func run() {
+        defer {
+            group.leave()
+        }
+
+        while isRunning {
+            var woke = false
+            let status = termy_terminal_wait_for_wakeup(handle, 250, &woke)
+            guard status == TERMY_FFI_OK else {
+                return
+            }
+            guard woke, isRunning else {
+                continue
+            }
+            Task { @MainActor [weak self] in
+                guard let self, self.isRunning else {
+                    return
+                }
+                self.onWakeup()
+            }
+        }
+    }
+
+    private var isRunning: Bool {
+        lock.lock()
+        defer {
+            lock.unlock()
+        }
+        return running
+    }
+}
+
 final class LibTermyTerminal {
     private var handle: OpaquePointer?
     private var configHandle: OpaquePointer?
+    private var wakeupMonitor: TerminalWakeupMonitor?
 
     let renderConfig: TerminalRenderConfig
 
@@ -63,9 +127,9 @@ final class LibTermyTerminal {
         guard let terminal else {
             throw LibTermyError.missingTerminal
         }
-        // The Swift shell polls damage on its own cadence, so plain wakeup
-        // events only add queue churn. Metadata events still flow through.
-        _ = termy_terminal_set_wakeup_enabled(terminal, false)
+        // The Swift shell consumes the FFI wake channel, so plain wakeups are
+        // useful: they move idle terminals from timer cadence to immediate poll.
+        _ = termy_terminal_set_wakeup_enabled(terminal, true)
         handle = terminal
     }
 
@@ -87,17 +151,30 @@ final class LibTermyTerminal {
         guard let terminal else {
             throw LibTermyError.missingTerminal
         }
-        _ = termy_terminal_set_wakeup_enabled(terminal, false)
         handle = terminal
     }
 
     deinit {
+        stopWakeupMonitor()
         if let handle {
             _ = termy_terminal_free(handle)
         }
         if let configHandle {
             _ = termy_config_free(configHandle)
         }
+    }
+
+    func startWakeupMonitor(onWakeup: @escaping @MainActor () -> Void) {
+        stopWakeupMonitor()
+        guard let handle else {
+            return
+        }
+        wakeupMonitor = TerminalWakeupMonitor(handle: handle, onWakeup: onWakeup)
+    }
+
+    func stopWakeupMonitor() {
+        wakeupMonitor?.stop()
+        wakeupMonitor = nil
     }
 
     /// Advance the grid with output bytes (e.g. tmux `%output`) on a display
@@ -231,6 +308,14 @@ final class LibTermyTerminal {
         try changedBy("termy_terminal_clear_scrollback") { handle, changed in
             termy_terminal_clear_scrollback(handle, changed)
         }
+    }
+
+    func setScrollbackHistory(_ scrollbackHistory: Int) throws {
+        let handle = try terminalHandle()
+        try TermyFfiBridge.requireOK(
+            "termy_terminal_set_scrollback_history",
+            termy_terminal_set_scrollback_history(handle, max(0, scrollbackHistory))
+        )
     }
 
     func drainEvents() throws -> [TerminalRuntimeEvent] {

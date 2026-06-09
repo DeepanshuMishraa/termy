@@ -20,9 +20,9 @@ pub const MIN_LINE_HEIGHT: f32 = 0.8;
 /// Highest accepted line-height multiplier. Values above this make the grid
 /// unusably sparse.
 pub const MAX_LINE_HEIGHT: f32 = 2.5;
-pub(crate) const DEFAULT_SCROLLBACK_HISTORY: usize = 2000;
+pub(crate) const DEFAULT_SCROLLBACK_HISTORY: usize = 1000;
 pub(crate) const MAX_SCROLLBACK_HISTORY: usize = 100_000;
-pub(crate) const DEFAULT_INACTIVE_TAB_SCROLLBACK: Option<usize> = None;
+pub(crate) const DEFAULT_INACTIVE_TAB_SCROLLBACK: Option<usize> = Some(250);
 pub(crate) const DEFAULT_PANE_FOCUS_STRENGTH: f32 = 0.6;
 pub(crate) const DEFAULT_TAB_SWITCH_MODIFIER_HINTS: bool = true;
 pub(crate) const MAX_PANE_FOCUS_STRENGTH: f32 = 2.0;

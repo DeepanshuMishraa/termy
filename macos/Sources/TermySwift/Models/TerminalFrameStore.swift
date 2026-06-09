@@ -41,28 +41,33 @@ final class TerminalFrameStore {
             )
         }
 
-        var nextFrame = frame
-        nextFrame.cursor = update.cursor
-        nextFrame.displayOffset = update.displayOffset
-        nextFrame.historySize = update.historySize
+        let oldCursor = frame.cursor
+        let oldDisplayOffset = frame.displayOffset
+        let oldHistorySize = frame.historySize
+        frame.cursor = update.cursor
+        frame.displayOffset = update.displayOffset
+        frame.historySize = update.historySize
 
         var patchedRows = Set<Int>()
         var patchedCellCount = 0
         for cell in update.cells {
-            guard cell.row >= 0, cell.row < nextFrame.rows, cell.col >= 0, cell.col < nextFrame.cols else {
+            guard cell.row >= 0, cell.row < frame.rows, cell.col >= 0, cell.col < frame.cols else {
                 continue
             }
-            let index = (cell.row * nextFrame.cols) + cell.col
-            guard nextFrame.cells.indices.contains(index) else {
+            let index = (cell.row * frame.cols) + cell.col
+            guard frame.setCell(cell, at: index) else {
                 continue
             }
-            nextFrame.cells[index] = cell
             patchedRows.insert(cell.row)
             patchedCellCount += 1
         }
 
-        let metadataDamage = metadataDamage(from: frame, to: nextFrame)
-        frame = nextFrame
+        let metadataDamage = metadataDamage(
+            oldCursor: oldCursor,
+            oldDisplayOffset: oldDisplayOffset,
+            oldHistorySize: oldHistorySize,
+            newFrame: frame
+        )
 
         let effectiveDamage = mergedDamage(
             cellDamage: update.damage,
@@ -112,14 +117,19 @@ final class TerminalFrameStore {
         return cells
     }
 
-    private func metadataDamage(from oldFrame: TerminalFrame, to newFrame: TerminalFrame) -> TerminalDamage {
-        if oldFrame.displayOffset != newFrame.displayOffset || oldFrame.historySize != newFrame.historySize {
+    private func metadataDamage(
+        oldCursor: TerminalCursor?,
+        oldDisplayOffset: Int,
+        oldHistorySize: Int,
+        newFrame: TerminalFrame
+    ) -> TerminalDamage {
+        if oldDisplayOffset != newFrame.displayOffset || oldHistorySize != newFrame.historySize {
             return .full
         }
 
         var rows = Set<Int>()
-        if oldFrame.cursor != newFrame.cursor {
-            if let oldCursor = oldFrame.cursor, oldCursor.row >= 0, oldCursor.row < newFrame.rows {
+        if oldCursor != newFrame.cursor {
+            if let oldCursor, oldCursor.row >= 0, oldCursor.row < newFrame.rows {
                 rows.insert(oldCursor.row)
             }
             if let newCursor = newFrame.cursor, newCursor.row >= 0, newCursor.row < newFrame.rows {
@@ -145,9 +155,6 @@ final class TerminalFrameStore {
         }
 
         var spans: [TerminalDirtySpan] = []
-        if case let .partial(cellSpans) = cellDamage {
-            spans.append(contentsOf: cellSpans)
-        }
         if case let .partial(metadataSpans) = metadataDamage {
             spans.append(contentsOf: metadataSpans)
         }
