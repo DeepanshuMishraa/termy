@@ -24,6 +24,13 @@ final class DisplaySyncedRefreshDriver: @unchecked Sendable {
     }
 
     deinit {
+        // Tear down the display link before the object is freed. `stop()` calls
+        // `CVDisplayLinkStop`, which fences against an in-flight callback on the
+        // CoreVideo thread, so the unretained `self` pointer handed to the
+        // callback can never be dereferenced after deallocation. Without this a
+        // window closing while the link runs leaves a live 60 Hz callback (and a
+        // running fallback Timer) pointing at freed memory.
+        stop()
         if let thermalObserver {
             NotificationCenter.default.removeObserver(thermalObserver)
         }

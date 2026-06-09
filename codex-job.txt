@@ -1,0 +1,162 @@
+# Codex job: continue the macOS-host security + performance hardening
+
+You are continuing a security/performance hardening effort on **Termy**, a terminal
+emulator. Scope is the **native macOS SwiftUI host** in `macos/` and its Rust FFI
+boundary in `crates/ffi/` (and, for the first remaining task, `crates/core/`).
+Do NOT touch the GPUI desktop app (`crates/desktop_app/`) unless a shared crate
+genuinely requires it.
+
+Read `CLAUDE.md` at the repo root first — it documents the workspace boundaries,
+generated files, and validation commands. Respect the crate ownership rules.
+
+---
+
+## What has already been done (do not redo these)
+
+Two rounds of fixes landed and are validated (141 Swift tests pass, Rust builds,
+`cargo fmt` clean on touched crates, app launches and renders correctly).
+
+### Security (macOS host + FFI)
+1. **Driver use-after-free + leak** — `DisplaySyncedRefreshDriver.deinit` now calls
+   `stop()` so `CVDisplayLinkStop` fences the in-flight CoreVideo callback before
+   the object frees, and the fallback `Timer` can't outlive the driver.
+2. **Observer leak on window close** — added `NotificationObserverBag` (a non-isolated
+   `@unchecked Sendable` class) in `TerminalViewModel.swift` that removes the
+   settings/appearance observers in its own `deinit`, covering teardown paths that
+   bypass `stop()`.
+3. **OSC 8 hyperlink scheme allowlist** — `TerminalFrameLink.openableURL(for:)` in
+   `TerminalLinkInteraction.swift` (allows http/https/ftp/mailto, rejects `file`,
+   `javascript:`, custom schemes). Both the heuristic detector and the ⌘-click
+   `openLink` path go through it. `file://` dropped from the allowed set. Regression
+   tests in `macos/Tests/TermySwiftTests/TerminalLinkAllowlistTests.swift`.
+4. **Bracketed paste honored** — new FFI fn `termy_terminal_bracketed_paste_mode`
+   (in `crates/ffi/src/lib.rs` + `crates/ffi/include/termy.h`), wrapped by
+   `LibTermyTerminal.bracketedPasteMode()`, used by a new `TerminalViewModel.paste(_:)`
+   that wraps pastes in `ESC[200~`/`ESC[201~` and strips an embedded terminator.
+   Paste now routes through a dedicated `onPaste` closure (added through
+   `TerminalKeyboardInputView` and wired in `TerminalSurfaceView`); typed/IME/drop
+   input stays raw.
+5. **ureq timeouts** — 10s timeout added to both theme-registry/theme-file fetches
+   in `crates/ffi/src/lib.rs`.
+6. **Scrollback persisted 0600** — `TerminalWorkspacePersistence.saveState` sets
+   owner-only permissions on the workspace JSON.
+7. **Small correctness** — config-handle leak on init throw (both `LibTermyTerminal`
+   inits); `(NULL,0)` write/feed_output is now a no-op not an error; tmux layout dims
+   use `UInt16(clamping:)`; tmux octal unescape computes in `u16` to avoid the `u8`
+   shift overflow (`crates/tmux_control_core/src/payload.rs`).
+
+### Performance (macOS idle + streaming + render)
+8. Removed the dead per-tick `@Published nativeRenderMetrics` writes (no consumer;
+   was forcing whole-pane SwiftUI body recompute every tick).
+9. Gated the per-tick `getrusage`/`task_info` debug-metrics work behind the
+   `showDebugOverlay` flag (its only consumer).
+10. `handleTerminalWakeup` bails when cadence is already `.active`, so streaming
+    output (`yes`, `cat bigfile`) no longer schedules an extra full poll per PTY
+    chunk on top of the 60 Hz display link.
+11. **Render-path caching in `TerminalGridView.swift`**: cached regular/bold `NSFont`s
+    (`syncFonts`), `NSColor` memoized by packed value (`cachedNSColor`, new
+    `TerminalRGBA.packedValue`), and a bounded `CTLine` typeset cache (`TextLineCache`,
+    `NSCache` countLimit 4096) keyed by weight+color+text. `drawText` now draws cached
+    `CTLine`s with a local counter-flip (the view is flipped) instead of re-typesetting
+    via `NSString.draw(at:)` every segment every frame. Verified visually.
+12. `TerminalViewModel.send(bytes:)` no longer forces a full-grid frame on input —
+    the echo arrives as partial damage and the cadence is already active.
+
+---
+
+## Remaining work (your job) — ordered by value
+
+Do these as separate, focused commits. After each, run the validation in the
+"Build & test" section and keep the working tree green. Don't bundle unrelated
+drive-by changes. Match the surrounding code's style (small explicit paths, the
+existing comment density).
+
+### 1. Core partial-update extraction is O(cells × spans)  [HIGH — Rust]
+`crates/core/src/frame.rs`, `snapshot_update_from_term` (~lines 265–290). For partial
+damage it iterates the entire visible grid via `renderable_content()` and does a linear
+`update_spans.iter().find(...)` per cell — e.g. a 200×60 grid with 30 dirty rows is
+~360k span comparisons per frame (vim repainting). Index the spans by row (a per-row
+`Vec`/`HashMap`, or iterate only the damaged rows) so lookup is O(1) and the pass is
+O(cells) — or better, O(damaged cells). Add/extend a unit test in the same crate
+(`cargo test -p termy_core`). Verify the produced update is identical to the old path
+for both full and partial damage.
+
+### 2. FFI panic safety (`catch_unwind`)  [MED — Rust]
+`crates/ffi/src/lib.rs` exports ~60 `pub unsafe extern "C" fn`s with the default
+`panic = unwind`. A panic in an attacker-reachable path (terminal output flows through
+`termy_terminal_feed_output` → parser, and `termy_terminal_snapshot` /
+`take_frame_update` / `take_damage` / `drain_events` / `search`) unwinds across the C
+boundary = UB / hard abort. Pick ONE approach and apply consistently:
+  - Preferred: a small helper, e.g. `fn ffi_guard<T>(default: T, f: impl FnOnce() -> T + UnwindSafe) -> T`
+    using `std::panic::catch_unwind(AssertUnwindSafe(f))`, returning a new
+    `TermyFfiStatus::Panicked` variant (add it to the enum + `termy.h`) for the
+    status-returning fns and a documented default for the rest. Apply at least to the
+    attacker-reachable I/O + snapshot/update/damage/events/search functions; ideally all.
+  - Or: deliberately set `panic = "abort"` for release and document the contract in
+    `termy.h` and the crate README — note this also affects the rlib consumers, so weigh
+    it. The helper approach is safer and more contained; prefer it unless there's a
+    reason not to.
+Add a test that a panicking core call surfaces as a status rather than aborting (you can
+gate a test-only panic behind a cfg or feature if needed). Keep `crates/ffi/include/termy.h`
+in sync — it is hand-maintained; update it whenever you add/modify an exported fn or enum.
+
+### 3. NSDataDetector runs on every mouseMoved  [MED — Swift]
+`TerminalKeyboardInputView.swift` ~line 330 (`onHoverProbe`) → `TerminalViewModel.updateHoveredLink`
+→ `TerminalFrame.link(at:)` (`TerminalLinkInteraction.swift`) builds the full row string and
+runs the regex-based `NSDataDetector` per event; mouse movement delivers hundreds/sec, and
+a `hoveredLink` change flips `requiresFullRedraw` in `TerminalGridView` (full grid repaint).
+Cache row links keyed on `(row, renderRevision)` so a row is scanned once per frame, and/or
+only probe while ⌘ is held (links are only actionable with ⌘-click — check how the modifier
+state is available in the hover path). Make sure the hover highlight still clears correctly
+when the pointer leaves a link.
+
+### 4. Codepoint round-trip per cell  [LOW-MED — Swift]
+`LibTermyTerminal.swift` (~613–639) converts the FFI `codepoint: UInt32` to `Character`, and
+`TerminalCell.init` (`TerminalFrame.swift` ~303–321) converts it straight back to `UInt32`.
+Add a `TerminalCell` initializer that takes the codepoint directly and use it on the FFI path,
+avoiding the round trip at up to ~12k cells × 60 fps on full frames. Keep the `Character`-based
+init if other call sites need it.
+
+### 5. Render-plan partial update copies the whole rows array  [LOW-MED — Swift]
+`TerminalRenderPlan.swift` ~125–130: `var rows = plan.rows` while `plan` still references it
+triggers a CoW copy of 4 arrays per row every frame even when one row changed. Keep a mutable
+`rows` ivar as the source of truth and wrap it into `plan` lazily, or assign `plan = .empty`
+before mutating so the copy is avoided.
+
+### 6. Theme-install deeplink confirmation  [LOW — Swift]
+`TermyDeeplink.swift` — `termy://store/theme-install?slug=…` currently fetches + installs +
+switches the active theme with no user prompt (slug is sanitized and the registry URL is
+hardcoded HTTPS, so impact is limited, but it's a no-confirmation side effect any webpage can
+trigger). Add a confirmation dialog (NSAlert) before installing/switching. Find where the
+deeplink is dispatched (it routes through NotificationCenter — see `TermyNotifications.swift` /
+`TerminalCommandRouting.swift`) and gate the install action.
+
+---
+
+## Build & test (run the smallest that proves your change; full gate before finishing)
+
+- Rust changed-crate check:  `cargo check -p termy_ffi -p termy_core -p tmux_control_core`
+- Rust tests:                `cargo test -p termy_core` (etc. for the crate you touched)
+- Rust format:               `cargo fmt -p <crate> -- --check`  (must be clean on touched crates)
+- Build the FFI dylib first, THEN the Swift package/tests (the Swift build links it):
+    `cargo build -p termy_ffi`
+    `TERMY_FFI_LIBRARY_PATH="$(pwd)/target/debug" swift build --package-path macos`
+    `TERMY_FFI_LIBRARY_PATH="$(pwd)/target/debug" swift test --package-path macos`
+- Run the app to visually verify render changes (#3/#4/#5):
+    `cargo macos run`   (or `open macos/dist/Termy.app` after a build)
+- macOS config parity (if you touch config/schema): `just test-macos-config`
+
+NOTE on Swift strict concurrency: `TerminalViewModel` is `@MainActor`. A nonisolated
+`deinit` cannot touch non-Sendable stored properties — that's why observer cleanup lives
+in the separate `NotificationObserverBag`. Keep that pattern if you add more deinit cleanup.
+
+NOTE: `crates/ffi/include/termy.h` is hand-maintained, not generated — keep it in lockstep
+with any exported-symbol or enum changes.
+
+## Definition of done
+- Each item is a focused change with tests where applicable.
+- `cargo fmt` clean on every touched Rust crate; Swift builds with no new warnings.
+- 141+ Swift tests still pass; new tests added for #1 and #2.
+- Render-affecting changes (#3, #4, #5) visually verified by running the app — text must
+  render upright with correct baselines/alignment/colors, and hover highlighting must still work.
+- Briefly report, per item, what you changed and how you verified it.

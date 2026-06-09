@@ -234,10 +234,18 @@ struct TerminalWorkspacePersistence {
 
         let temporaryURL = directory.appendingPathComponent(".\(fileURL.lastPathComponent).tmp")
         try data.write(to: temporaryURL, options: .atomic)
+        // Persisted state can include terminal buffer text (scrollback often
+        // holds secrets: tokens, `export KEY=…`, echoed prompts). Restrict it to
+        // the owner so other local accounts can't read it. Set on the temp file
+        // before it's swapped in, and again on the final file since
+        // `replaceItemAt` may carry over the previous file's permissions.
+        let ownerOnly: [FileAttributeKey: Any] = [.posixPermissions: 0o600]
+        try? FileManager.default.setAttributes(ownerOnly, ofItemAtPath: temporaryURL.path)
         if FileManager.default.fileExists(atPath: fileURL.path) {
             _ = try FileManager.default.replaceItemAt(fileURL, withItemAt: temporaryURL)
         } else {
             try FileManager.default.moveItem(at: temporaryURL, to: fileURL)
         }
+        try? FileManager.default.setAttributes(ownerOnly, ofItemAtPath: fileURL.path)
     }
 }

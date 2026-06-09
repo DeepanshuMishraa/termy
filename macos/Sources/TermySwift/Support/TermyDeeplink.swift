@@ -54,6 +54,9 @@ enum TermyDeeplinkRouter {
         case .openConfig:
             _ = TermyNativeAppActions.openConfigFileInEditor()
         case .installTheme(let slug):
+            guard confirmThemeInstall(slug: slug) else {
+                return
+            }
             do {
                 try SettingsBridge.installTheme(slug: slug)
                 TermyConfigurationStore.shared.reload()
@@ -63,5 +66,15 @@ enum TermyDeeplinkRouter {
                 TermyErrorPresenter.present("Couldn't install theme", error: error)
             }
         }
+    }
+
+    private static func confirmThemeInstall(slug: String) -> Bool {
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = "Install theme?"
+        alert.informativeText = "Termy will download and switch to \"\(slug)\"."
+        alert.addButton(withTitle: "Install")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
     }
 }

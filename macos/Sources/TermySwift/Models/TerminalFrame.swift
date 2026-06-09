@@ -24,6 +24,12 @@ struct TerminalRGBA: Equatable {
         self.init(redByte: color.r, greenByte: color.g, blueByte: color.b, alphaByte: color.a)
     }
 
+    /// The packed `0xRRGGBBAA` value. Stable and cheap, so it doubles as a
+    /// cache key for derived `NSColor`s and typeset lines in the renderer.
+    var packedValue: UInt32 {
+        packedRGBA
+    }
+
     var red: Double {
         Double((packedRGBA >> 24) & 0xff) / 255.0
     }
@@ -313,6 +319,26 @@ struct TerminalCell: Identifiable, Equatable {
         self.col = col
         self.row = row
         codepoint = Self.codepoint(from: character)
+        self.foreground = foreground
+        self.background = background
+        self.usesTerminalDefaultBackground = usesTerminalDefaultBackground
+        self.renderText = renderText
+        self.bold = bold
+    }
+
+    init(
+        col: Int,
+        row: Int,
+        codepoint: UInt32,
+        foreground: TerminalRGBA,
+        background: TerminalRGBA,
+        usesTerminalDefaultBackground: Bool,
+        renderText: Bool,
+        bold: Bool
+    ) {
+        self.col = col
+        self.row = row
+        self.codepoint = UnicodeScalar(codepoint) == nil ? 32 : codepoint
         self.foreground = foreground
         self.background = background
         self.usesTerminalDefaultBackground = usesTerminalDefaultBackground

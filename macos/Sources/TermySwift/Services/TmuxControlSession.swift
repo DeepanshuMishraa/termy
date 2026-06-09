@@ -110,7 +110,10 @@ final class TmuxControlSession {
     static func paneGeometry(in node: TmuxLayoutNode) -> [Int: (cols: UInt16, rows: UInt16)] {
         switch node {
         case let .pane(id, width, height, _, _):
-            return [id: (UInt16(max(1, width)), UInt16(max(1, height)))]
+            // `clamping:` rather than the trapping `UInt16(_:)`: a buggy/hostile
+            // tmux `#{window_layout}` reply can carry out-of-range dimensions,
+            // and a parser trap here would crash the app.
+            return [id: (UInt16(clamping: max(1, width)), UInt16(clamping: max(1, height)))]
         case let .horizontal(children), let .vertical(children):
             return children.reduce(into: [:]) { accumulated, child in
                 accumulated.merge(paneGeometry(in: child)) { existing, _ in existing }

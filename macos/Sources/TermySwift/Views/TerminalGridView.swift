@@ -1,4 +1,5 @@
 import AppKit
+import CoreText
 import SwiftUI
 
 struct TerminalGridView: View {
@@ -73,6 +74,22 @@ private final class TerminalGridNSView: NSView {
     private var hoveredLink: TerminalFrameLink?
     private var isTerminalFocused = false
     private var isCursorVisible = true
+
+    // Per-frame draw caches. Building NSFonts, NSColors and (most expensively)
+    // typeset CTLines per text segment on every `draw(_:)` dominated the render
+    // cost while scrolling a full screen at 60 Hz; these memoize that work
+    // across frames. The font and line caches are invalidated together whenever
+    // the font family/size changes (`syncFonts`).
+    private var cachedFontKey: FontKey?
+    private var cachedRegularFont = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+    private var cachedBoldFont = NSFont.monospacedSystemFont(ofSize: 12, weight: .semibold)
+    private var nsColorCache: [UInt32: NSColor] = [:]
+    private let lineCache = TextLineCache()
+
+    private struct FontKey: Equatable {
+        var family: String
+        var size: CGFloat
+    }
 
     override var isFlipped: Bool { true }
 
@@ -207,7 +224,9 @@ private final class TerminalGridNSView: NSView {
     private func drawBackgrounds(in dirtyRect: NSRect) {
         for rowPlan in rowPlans(intersecting: dirtyRect) {
             for run in rowPlan.backgroundRuns {
-                renderConfig.nsColor(run.color, opacity: run.opacity).setFill()
+                cachedNSColor(run.color)
+                    .withAlphaComponent(run.color.alpha * run.opacity)
+                    .setFill()
                 fill(cellRect(col: run.startCol, row: run.row, cols: run.cols))
             }
         }
@@ -311,7 +330,7 @@ private final class TerminalGridNSView: NSView {
                     ) else {
                         continue
                     }
-                    glyph.foreground.nsColor
+                    cachedNSColor(glyph.foreground)
                         .withAlphaComponent(glyph.foreground.alpha * rect.alpha)
                         .setFill()
                     fill(snapped)
@@ -347,7 +366,7 @@ private final class TerminalGridNSView: NSView {
                     continue
                 }
 
-                glyph.foreground.nsColor.setStroke()
+                cachedNSColor(glyph.foreground).setStroke()
                 switch glyph.kind {
                 case .roundedCorner:
                     strokeRoundedCorner(glyph.character, in: cell, strokeWidth: strokeWidth)
@@ -468,12 +487,16 @@ private final class TerminalGridNSView: NSView {
     }
 
     private func drawText(in dirtyRect: NSRect) {
-        let regularFont = terminalFont(weight: .regular)
-        let boldFont = terminalFont(weight: .semibold)
+        syncFonts()
+        let regularFont = cachedRegularFont
+        let boldFont = cachedBoldFont
         let baselineOffset = max(0, (renderConfig.cellHeight - regularFont.ascender + regularFont.descender) / 2)
             + regularFont.ascender
 
         let scale = backingScale
+        guard let cgContext = NSGraphicsContext.current?.cgContext else {
+            return
+        }
         for rowPlan in rowPlans(intersecting: dirtyRect) {
             for segment in rowPlan.textSegments {
                 let font = segment.bold ? boldFont : regularFont
@@ -485,15 +508,79 @@ private final class TerminalGridNSView: NSView {
                     y: ((renderConfig.paddingY + CGFloat(segment.row) * renderConfig.cellHeight
                         + baselineOffset - font.ascender) * scale).rounded() / scale
                 )
-                (segment.text as NSString).draw(
-                    at: point,
-                    withAttributes: [
-                        .font: font,
-                        .foregroundColor: segment.foreground.nsColor
-                    ]
+                let line = cachedLine(
+                    text: segment.text,
+                    bold: segment.bold,
+                    foreground: segment.foreground,
+                    font: font
                 )
+                // Draw the cached line at its baseline. The view is flipped, so
+                // counter-flip locally (`scaleBy y: -1`) to keep glyphs upright;
+                // `point.y` is the glyph-box top, so the baseline sits one
+                // ascender below it — matching the previous `NSString.draw(at:)`.
+                cgContext.saveGState()
+                cgContext.textMatrix = .identity
+                cgContext.translateBy(x: point.x, y: point.y + font.ascender)
+                cgContext.scaleBy(x: 1, y: -1)
+                CTLineDraw(line, cgContext)
+                cgContext.restoreGState()
             }
         }
+    }
+
+    /// Returns the typeset line for `text`, building and caching it on first use.
+    /// The cache key folds in weight and foreground color (both baked into the
+    /// line's attributes) so a given styled run is typeset at most once; the
+    /// cache is cleared when the font changes (`syncFonts`).
+    private func cachedLine(
+        text: String,
+        bold: Bool,
+        foreground: TerminalRGBA,
+        font: NSFont
+    ) -> CTLine {
+        let key = "\(bold ? 1 : 0):\(foreground.packedValue):\(text)" as NSString
+        if let box = lineCache.object(forKey: key) {
+            return box.line
+        }
+        let attributed = NSAttributedString(
+            string: text,
+            attributes: [
+                .font: font,
+                .foregroundColor: cachedNSColor(foreground)
+            ]
+        )
+        let line = CTLineCreateWithAttributedString(attributed)
+        lineCache.setObject(TextLineBox(line: line), forKey: key)
+        return line
+    }
+
+    /// Rebuilds the cached regular/bold fonts when the font family or size
+    /// changes, clearing the typeset-line cache (lines bake in the font).
+    private func syncFonts() {
+        let family = renderConfig.fontFamily.trimmingCharacters(in: .whitespacesAndNewlines)
+        let key = FontKey(family: family, size: renderConfig.fontSize)
+        guard key != cachedFontKey else {
+            return
+        }
+        cachedFontKey = key
+        cachedRegularFont = terminalFont(weight: .regular)
+        cachedBoldFont = terminalFont(weight: .semibold)
+        lineCache.removeAll()
+    }
+
+    /// Memoizes the sRGB `NSColor` for a packed terminal color so identical
+    /// colors aren't reallocated per cell/run/segment each draw.
+    private func cachedNSColor(_ rgba: TerminalRGBA) -> NSColor {
+        if let cached = nsColorCache[rgba.packedValue] {
+            return cached
+        }
+        // Truecolor content can produce many distinct values; bound the cache.
+        if nsColorCache.count >= 4096 {
+            nsColorCache.removeAll(keepingCapacity: true)
+        }
+        let color = rgba.nsColor
+        nsColorCache[rgba.packedValue] = color
+        return color
     }
 
     private func rowPlans(intersecting dirtyRect: NSRect) -> ArraySlice<TerminalRowRenderPlan> {
@@ -541,6 +628,37 @@ private final class TerminalGridNSView: NSView {
     }
 }
 
+/// Boxes a `CTLine` (a CoreFoundation type) so it can live in `NSCache`.
+private final class TextLineBox {
+    let line: CTLine
+    init(line: CTLine) {
+        self.line = line
+    }
+}
+
+/// Bounded cache of typeset lines keyed by weight+color+text. `NSCache` evicts
+/// under memory pressure and respects `countLimit`, so a long-running session
+/// streaming varied text can't grow this without bound.
+private final class TextLineCache {
+    private let cache = NSCache<NSString, TextLineBox>()
+
+    init() {
+        cache.countLimit = 4096
+    }
+
+    func object(forKey key: NSString) -> TextLineBox? {
+        cache.object(forKey: key)
+    }
+
+    func setObject(_ object: TextLineBox, forKey key: NSString) {
+        cache.setObject(object, forKey: key)
+    }
+
+    func removeAll() {
+        cache.removeAllObjects()
+    }
+}
+
 private extension TerminalRGBA {
     /// Terminal escape-sequence colors are sRGB by convention; the calibrated
     /// (generic) color space renders them visibly duller, and the settings UI
@@ -552,12 +670,6 @@ private extension TerminalRGBA {
             blue: blue,
             alpha: alpha
         )
-    }
-}
-
-private extension TerminalRenderConfig {
-    func nsColor(_ color: TerminalRGBA, opacity: Double = 1.0) -> NSColor {
-        color.nsColor.withAlphaComponent(color.alpha * opacity)
     }
 }
 

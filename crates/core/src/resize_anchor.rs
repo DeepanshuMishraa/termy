@@ -88,7 +88,9 @@ mod tests {
     fn visible_row_text(term: &Term<VoidListener>, line: usize) -> String {
         let grid = term.grid();
         let row = &grid[Line(line as i32)];
-        (0..row.len()).map(|col| row[alacritty_terminal::index::Column(col)].c).collect()
+        (0..row.len())
+            .map(|col| row[alacritty_terminal::index::Column(col)].c)
+            .collect()
     }
 
     /// Narrowing wraps three 18-char lines to two rows each. Stock alacritty

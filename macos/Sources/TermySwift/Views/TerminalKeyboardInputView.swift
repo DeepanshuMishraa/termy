@@ -31,6 +31,7 @@ struct TerminalKeyboardInputView: NSViewRepresentable {
     var onHoverProbe: (TerminalGridPosition?) -> Bool
     var onOpenLink: (TerminalGridPosition) -> Bool
     var onCopy: () -> Bool
+    var onPaste: (String) -> Void
     var onMarkedTextChanged: (String) -> Void = { _ in }
 
     func makeNSView(context: Context) -> KeyboardCaptureView {
@@ -80,6 +81,7 @@ final class KeyboardCaptureView: NSView {
     var onHoverProbe: (TerminalGridPosition?) -> Bool = { _ in false }
     var onOpenLink: (TerminalGridPosition) -> Bool = { _ in false }
     var onCopy: () -> Bool = { false }
+    var onPaste: (String) -> Void = { _ in }
     var onMarkedTextChanged: (String) -> Void = { _ in }
 
     private var selectionAnchor: TerminalGridPosition?
@@ -567,7 +569,7 @@ final class KeyboardCaptureView: NSView {
             return false
         }
 
-        onBytes(Array(text.utf8))
+        onPaste(text)
         return true
     }
 
@@ -575,7 +577,7 @@ final class KeyboardCaptureView: NSView {
         guard let text = NSPasteboard.general.string(forType: .string), !text.isEmpty else {
             return
         }
-        onBytes(Array(text.utf8))
+        onPaste(text)
     }
 
     private func showTerminalContextMenu(for event: NSEvent) {
@@ -887,6 +889,7 @@ private extension KeyboardCaptureView {
         onHoverProbe = configuration.onHoverProbe
         onOpenLink = configuration.onOpenLink
         onCopy = configuration.onCopy
+        onPaste = configuration.onPaste
         onMarkedTextChanged = configuration.onMarkedTextChanged
     }
 }

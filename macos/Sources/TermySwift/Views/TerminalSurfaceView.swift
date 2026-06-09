@@ -106,6 +106,9 @@ struct TerminalSurfaceView: View {
                     onCopy: {
                         terminal.copySelection()
                     },
+                    onPaste: { text in
+                        terminal.paste(text)
+                    },
                     onMarkedTextChanged: { terminal.setMarkedText($0) }
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)

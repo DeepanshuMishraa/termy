@@ -101,8 +101,14 @@ pub fn unescape_tmux_payload(payload: &[u8]) -> Vec<u8> {
         if payload[index] == b'\\' && index + 3 < payload.len() {
             let oct = &payload[index + 1..index + 4];
             if oct.iter().all(|digit| (b'0'..=b'7').contains(digit)) {
-                let value = ((oct[0] - b'0') << 6) | ((oct[1] - b'0') << 3) | (oct[2] - b'0');
-                output.push(value);
+                // Compute in u16 so a malformed `\400`..`\777` (only a buggy
+                // tmux binary can emit these — real tmux escapes bytes as
+                // `\000`..`\377`) wraps instead of overflowing the `u8` shift,
+                // which panics in debug and would kill the reader thread.
+                let value = (u16::from(oct[0] - b'0') << 6)
+                    | (u16::from(oct[1] - b'0') << 3)
+                    | u16::from(oct[2] - b'0');
+                output.push(value as u8);
                 index += 4;
                 continue;
             }

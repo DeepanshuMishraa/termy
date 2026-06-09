@@ -15,7 +15,6 @@ final class TerminalViewModel: ObservableObject {
     @Published private(set) var activeSearchMatchIndex = 0
     @Published private(set) var hoveredLink: TerminalFrameLink?
     @Published private(set) var debugMetrics = TerminalDebugMetrics.empty
-    @Published private(set) var nativeRenderMetrics = NativeRenderMetricsSnapshot()
     /// Bumped whenever the cached render plan changes, so the grid view redraws.
     /// The plan itself lives in `renderPlanCache` (not `@Published`) to avoid
     /// diffing large arrays on every frame.
@@ -35,6 +34,7 @@ final class TerminalViewModel: ObservableObject {
     func setMarkedText(_ text: String) {
         markedText = text
     }
+
     /// Host-driven cursor blink visibility; the grid view skips the cursor
     /// while this is `false`. Ticked from the refresh driver in
     /// `pollAndPresent()` so blinking follows the active/idle cadence and
@@ -63,8 +63,13 @@ final class TerminalViewModel: ObservableObject {
     private var lastResizeRefreshAt: Date?
     private var isSuspended = false
     private static let resizeRefreshInterval: TimeInterval = 1.0 / 60.0
-    private var settingsObserver: NSObjectProtocol?
-    private var appearanceObserver: NSObjectProtocol?
+    /// Owns the settings/appearance notification observers. Removing them in
+    /// `stop()` covers the normal teardown, but a window closing can deallocate
+    /// the view model without routing through `stop()`; the bag's own `deinit`
+    /// then removes the observers, so they don't accumulate for the process
+    /// lifetime. (A nonisolated `deinit` on this `@MainActor` class can't touch
+    /// these non-Sendable tokens directly, hence the separate bag.)
+    private let observers = NotificationObserverBag()
     private var startupRefreshUntil: Date?
     private let initialWorkingDirectory: String?
     private let startupCommand: String?
@@ -80,6 +85,8 @@ final class TerminalViewModel: ObservableObject {
     private var fullRebuildCount = 0
     private var partialRebuildCount = 0
     private var lastDebugSample = ProcessUsageSample.capture()
+    private var cachedLinkRowsRevision: Int?
+    private var cachedLinkRows: [Int: [TerminalFrameLink]] = [:]
 
     init(
         workingDirectory: String? = nil,
@@ -126,24 +133,30 @@ final class TerminalViewModel: ObservableObject {
             startupRefreshUntil = Date().addingTimeInterval(2)
             pollAndPresent(force: true)
             startRefreshDriver(.active)
-            settingsObserver = NotificationCenter.default.addObserver(
-                forName: .termySettingsChanged,
-                object: nil,
-                queue: .main
-            ) { [weak self] _ in
-                Task { @MainActor in
-                    self?.reloadConfiguration()
-                }
-            }
-            appearanceObserver = DistributedNotificationCenter.default().addObserver(
-                forName: Notification.Name("AppleInterfaceThemeChangedNotification"),
-                object: nil,
-                queue: .main
-            ) { [weak self] _ in
-                Task { @MainActor in
-                    self?.reloadAppearance()
-                }
-            }
+            observers.add(
+                NotificationCenter.default.addObserver(
+                    forName: .termySettingsChanged,
+                    object: nil,
+                    queue: .main
+                ) { [weak self] _ in
+                    Task { @MainActor in
+                        self?.reloadConfiguration()
+                    }
+                },
+                center: .default
+            )
+            observers.add(
+                DistributedNotificationCenter.default().addObserver(
+                    forName: Notification.Name("AppleInterfaceThemeChangedNotification"),
+                    object: nil,
+                    queue: .main
+                ) { [weak self] _ in
+                    Task { @MainActor in
+                        self?.reloadAppearance()
+                    }
+                },
+                center: DistributedNotificationCenter.default()
+            )
         } catch {
             report(error)
         }
@@ -171,7 +184,13 @@ final class TerminalViewModel: ObservableObject {
     }
 
     private func handleTerminalWakeup() {
-        guard terminal != nil, !isSuspended, !pendingWakeupPoll else {
+        // The wake channel only needs to rouse an *idle* terminal: while active,
+        // the display link is already polling at 60 Hz, so a per-PTY-chunk
+        // wakeup poll is redundant. Without this guard, streaming output (`yes`,
+        // `cat bigfile`) schedules an extra full poll per chunk on top of the
+        // 60 Hz link — `pendingWakeupPoll` only coalesces within a single
+        // runloop turn, so the effective poll rate is otherwise unbounded.
+        guard terminal != nil, !isSuspended, cadence != .active, !pendingWakeupPoll else {
             return
         }
         pendingWakeupPoll = true
@@ -240,14 +259,7 @@ final class TerminalViewModel: ObservableObject {
         pendingResizeRefresh = nil
         pendingWakeupPoll = false
         isSuspended = false
-        if let settingsObserver {
-            NotificationCenter.default.removeObserver(settingsObserver)
-            self.settingsObserver = nil
-        }
-        if let appearanceObserver {
-            DistributedNotificationCenter.default().removeObserver(appearanceObserver)
-            self.appearanceObserver = nil
-        }
+        observers.removeAll()
         terminal = nil
         isExited = true
         progress = .clear
@@ -318,6 +330,33 @@ final class TerminalViewModel: ObservableObject {
         }
     }
 
+    /// Pastes clipboard text into the terminal. When the foreground program has
+    /// enabled bracketed-paste mode the payload is wrapped in `ESC[200~`/
+    /// `ESC[201~` so the program treats it as inert data instead of typed input;
+    /// any embedded end-marker is stripped first so the paste cannot break out
+    /// of the brackets and inject commands. This is the standard mitigation for
+    /// clipboard-injection (e.g. a copied blob ending in `; rm -rf …\n`): without
+    /// it, embedded newlines execute line-by-line on paste.
+    func paste(_ text: String) {
+        guard !text.isEmpty else {
+            return
+        }
+
+        let bracketed = (try? terminal?.bracketedPasteMode()) ?? false
+        guard bracketed else {
+            send(bytes: Array(text.utf8))
+            return
+        }
+
+        // Strip any embedded paste terminator so the payload can't close the
+        // bracket early. `\u{1b}[201~` is the only sequence that ends a paste.
+        let sanitized = text.replacingOccurrences(of: "\u{1b}[201~", with: "")
+        var bytes = Array("\u{1b}[200~".utf8)
+        bytes.append(contentsOf: sanitized.utf8)
+        bytes.append(contentsOf: Array("\u{1b}[201~".utf8))
+        send(bytes: bytes)
+    }
+
     func send(bytes: [UInt8]) {
         guard !bytes.isEmpty else {
             return
@@ -331,7 +370,12 @@ final class TerminalViewModel: ObservableObject {
             try terminal?.write(bytes)
             noteActivity()
             resetCursorBlinkPhase()
-            pollAndPresent(force: true)
+            // Don't force a full-grid frame on input: `noteActivity()` keeps the
+            // display link at the active 60 Hz cadence, and the echo arrives as
+            // ordinary partial damage. Forcing here serialized the entire grid
+            // across the FFI (three full copies) and repainted the whole window
+            // on every keystroke and scroll-wheel tick.
+            pollAndPresent()
         } catch {
             report(error)
         }
@@ -454,7 +498,25 @@ final class TerminalViewModel: ObservableObject {
         if let link = terminal?.hyperlink(atRow: position.row, col: position.col) {
             return link
         }
-        return frame.link(at: position)
+        return links(inRow: position.row).first {
+            position.col >= $0.startCol && position.col <= $0.endCol
+        }
+    }
+
+    private func links(inRow row: Int) -> [TerminalFrameLink] {
+        guard row >= 0, row < frame.rows else {
+            return []
+        }
+        if cachedLinkRowsRevision != renderRevision {
+            cachedLinkRowsRevision = renderRevision
+            cachedLinkRows.removeAll(keepingCapacity: true)
+        }
+        if let links = cachedLinkRows[row] {
+            return links
+        }
+        let links = frame.links(inRow: row)
+        cachedLinkRows[row] = links
+        return links
     }
 
     /// Updates the link highlighted under the pointer. Returns true when a link
@@ -469,8 +531,14 @@ final class TerminalViewModel: ObservableObject {
     }
 
     /// Opens the link under `position` (⌘-click). Returns true if one was opened.
+    /// The target is validated against a scheme allowlist first: an OSC 8
+    /// hyperlink's target comes straight from (attacker-influenced) terminal
+    /// output, so a disguised `file://` or custom-scheme URL must not reach
+    /// `NSWorkspace.open`.
     func openLink(at position: TerminalGridPosition) -> Bool {
-        guard let link = link(at: position), let url = URL(string: link.target) else {
+        guard let link = link(at: position),
+              let url = TerminalFrameLink.openableURL(for: link.target)
+        else {
             return false
         }
         return NSWorkspace.shared.open(url)
@@ -671,7 +739,6 @@ final class TerminalViewModel: ObservableObject {
                 damage: effectiveDamage
             )
             nativeRenderMetricsRecorder.recordPresentedFrame(planStats: renderPlanCache.stats)
-            nativeRenderMetrics = nativeRenderMetricsRecorder.snapshot
             renderRevision &+= 1
             updateDebugMetrics(renderedFrame: true)
             refreshSearchMatches(resetActive: false, revealActive: false, force: false)
@@ -766,6 +833,14 @@ final class TerminalViewModel: ObservableObject {
     }
 
     private func updateDebugMetrics(renderedFrame: Bool) {
+        // `debugMetrics` only has a consumer while the debug overlay is shown.
+        // Skipping this when it's off avoids a `getrusage` + `task_info` syscall
+        // pair (and counter bookkeeping) on every refresh tick — 60 Hz active,
+        // and otherwise pure idle cost.
+        guard configuration.native.showDebugOverlay else {
+            return
+        }
+
         if renderedFrame {
             renderedFrameCount += 1
             if renderPlanCache.stats.wasFullRebuild {
@@ -776,7 +851,6 @@ final class TerminalViewModel: ObservableObject {
         } else {
             skippedPresentCount += 1
             nativeRenderMetricsRecorder.recordSkippedPresent()
-            nativeRenderMetrics = nativeRenderMetricsRecorder.snapshot
         }
 
         let nextSample = ProcessUsageSample.capture()
@@ -1047,6 +1121,32 @@ private struct ProcessUsageSample {
             return 0
         }
         return Double(info.resident_size) / 1_048_576
+    }
+}
+
+/// Holds NotificationCenter observer tokens and removes them on `removeAll()`
+/// or when the bag is deallocated. Being a plain (non–`@MainActor`) class, its
+/// `deinit` can access the stored non-Sendable tokens, which a `@MainActor`
+/// owner's nonisolated `deinit` cannot. `removeObserver` is thread-safe, and in
+/// practice all access happens on the main actor, so `@unchecked Sendable` is
+/// sound. `DistributedNotificationCenter` is a `NotificationCenter` subclass,
+/// so a single token list covers both.
+private final class NotificationObserverBag: @unchecked Sendable {
+    private var entries: [(center: NotificationCenter, token: any NSObjectProtocol)] = []
+
+    func add(_ token: any NSObjectProtocol, center: NotificationCenter) {
+        entries.append((center, token))
+    }
+
+    func removeAll() {
+        for entry in entries {
+            entry.center.removeObserver(entry.token)
+        }
+        entries.removeAll()
+    }
+
+    deinit {
+        removeAll()
     }
 }
 

@@ -96,8 +96,19 @@ final class LibTermyTerminal {
         size.cols = cols
         size.rows = rows
         let config = try loadUserConfig ? Self.loadDefaultConfig() : nil
+        // `renderConfig` (a non-optional `let`) is the last property to gain a
+        // value, so until it's set the object is not fully initialized and
+        // `deinit` won't run. If `renderConfig(for:)` throws after we've stored
+        // `config`, the boxed config would leak — so free it explicitly here.
+        do {
+            renderConfig = try Self.renderConfig(for: config)
+        } catch {
+            if let config {
+                _ = termy_config_free(config)
+            }
+            throw error
+        }
         configHandle = config
-        renderConfig = try Self.renderConfig(for: config)
         let workingDirectory: String?
         if let override = Self.normalizedWorkingDirectory(workingDirectoryOverride) {
             workingDirectory = override
@@ -140,8 +151,17 @@ final class LibTermyTerminal {
         size.cols = cols
         size.rows = rows
         let config = try loadUserConfig ? Self.loadDefaultConfig() : nil
+        // See the main initializer: free `config` if `renderConfig(for:)` throws
+        // before the object is fully initialized, since `deinit` won't run yet.
+        do {
+            renderConfig = try Self.renderConfig(for: config)
+        } catch {
+            if let config {
+                _ = termy_config_free(config)
+            }
+            throw error
+        }
         configHandle = config
-        renderConfig = try Self.renderConfig(for: config)
 
         var terminal: OpaquePointer?
         try TermyFfiBridge.requireOK(
@@ -307,6 +327,15 @@ final class LibTermyTerminal {
     func clearScrollback() throws -> Bool {
         try changedBy("termy_terminal_clear_scrollback") { handle, changed in
             termy_terminal_clear_scrollback(handle, changed)
+        }
+    }
+
+    /// Whether the foreground program has enabled bracketed-paste mode. When
+    /// true, the host wraps pasted text in `ESC[200~`/`ESC[201~` so the program
+    /// can treat it as inert data rather than typed input.
+    func bracketedPasteMode() throws -> Bool {
+        try changedBy("termy_terminal_bracketed_paste_mode") { handle, enabled in
+            termy_terminal_bracketed_paste_mode(handle, enabled)
         }
     }
 
@@ -614,7 +643,7 @@ final class LibTermyTerminal {
         TerminalCell(
             col: Int(ffiCell.col),
             row: Int(ffiCell.row),
-            character: character(from: ffiCell.codepoint),
+            codepoint: ffiCell.codepoint,
             foreground: TerminalRGBA(ffiCell.fg),
             background: TerminalRGBA(ffiCell.bg),
             usesTerminalDefaultBackground: ffiCell.uses_terminal_default_bg,
@@ -632,10 +661,6 @@ final class LibTermyTerminal {
             row: Int(ffiCursor.row),
             style: TerminalCursorStyle(ffiRawValue: ffiCursor.style)
         )
-    }
-
-    private static func character(from codepoint: UInt32) -> Character {
-        UnicodeScalar(codepoint).map(Character.init) ?? " "
     }
 
 }

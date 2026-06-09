@@ -18,6 +18,8 @@ typedef enum {
   TERMY_FFI_UNKNOWN_KEY = 5,
   TERMY_FFI_WRITE_FAILED = 6,
   TERMY_FFI_SERIALIZE_FAILED = 7,
+  /* A Rust panic was caught before it could unwind across the C ABI. */
+  TERMY_FFI_PANICKED = 8,
 } TermyFfiStatus;
 
 typedef enum {
@@ -448,6 +450,9 @@ TermyFfiStatus termy_terminal_clear_scrollback(
 TermyFfiStatus termy_terminal_set_scrollback_history(
     TermyFfiTerminal *terminal,
     size_t scrollback_history);
+TermyFfiStatus termy_terminal_bracketed_paste_mode(
+    TermyFfiTerminal *terminal,
+    bool *out_enabled);
 TermyFfiStatus termy_terminal_snapshot(
     TermyFfiTerminal *terminal,
     TermyFfiFrame *out_frame);

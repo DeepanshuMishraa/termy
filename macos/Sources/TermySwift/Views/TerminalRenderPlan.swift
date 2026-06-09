@@ -100,6 +100,7 @@ final class TerminalRenderPlanCache {
     private(set) var plan = TerminalRenderPlan.empty
     private(set) var stats = TerminalRenderPlanStats.empty
 
+    private var rows: [TerminalRowRenderPlan] = []
     private var cachedConfig: TerminalRenderConfig?
     private var cachedCols = 0
     private var cachedRows = 0
@@ -109,13 +110,14 @@ final class TerminalRenderPlanCache {
         let configChanged = cachedConfig != renderConfig
         let dimensionsChanged = cachedCols != frame.cols
             || cachedRows != frame.rows
-            || plan.rows.count != frame.rows
+            || rows.count != frame.rows
         let forceFull = configChanged || dimensionsChanged || damage == .full
 
         if forceFull {
-            plan = TerminalRenderPlan(rows: (0..<frame.rows).map { row in
+            rows = (0..<frame.rows).map { row in
                 buildRow(row, frame: frame, renderConfig: renderConfig)
-            })
+            }
+            plan = TerminalRenderPlan(rows: rows)
             stats = TerminalRenderPlanStats(
                 wasFullRebuild: true,
                 rebuiltRowCount: frame.rows,
@@ -123,7 +125,7 @@ final class TerminalRenderPlanCache {
             )
         } else {
             let dirtyRows = dirtyRows(for: damage, rowCount: frame.rows)
-            var rows = plan.rows
+            plan = .empty
             for row in dirtyRows {
                 rows[row] = buildRow(row, frame: frame, renderConfig: renderConfig)
             }
