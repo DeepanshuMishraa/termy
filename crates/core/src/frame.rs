@@ -177,9 +177,16 @@ pub(crate) fn snapshot_from_term<T: EventListener>(
     let rows = usize::from(size.rows);
     let live_colors = term.colors();
     let mut cells = Vec::with_capacity(cols.saturating_mul(rows));
+    // Resolving the default fg/bg colors costs several palette lookups per
+    // call; stamp coordinates onto one template instead of resolving per cell.
+    let template = default_cell(0, 0, live_colors, query_colors);
     for row in 0..rows {
         for col in 0..cols {
-            cells.push(default_cell(col, row, live_colors, query_colors));
+            cells.push(TermyCell {
+                col,
+                row,
+                ..template.clone()
+            });
         }
     }
 
@@ -241,6 +248,7 @@ pub(crate) fn snapshot_update_from_term<T: EventListener>(
         TerminalDamageSnapshot::Partial(spans) => {
             let mut update_spans = Vec::new();
             let mut cells = Vec::new();
+            let template = default_cell(0, 0, live_colors, query_colors);
 
             for span in spans {
                 if span.row >= rows || cols == 0 {
@@ -259,7 +267,11 @@ pub(crate) fn snapshot_update_from_term<T: EventListener>(
                     base_index,
                 });
                 for col in left_col..=right_col {
-                    cells.push(default_cell(col, span.row, live_colors, query_colors));
+                    cells.push(TermyCell {
+                        col,
+                        row: span.row,
+                        ..template.clone()
+                    });
                 }
             }
 

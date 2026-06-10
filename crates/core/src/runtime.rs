@@ -715,12 +715,11 @@ fn normalized_dirty_span(
     damage: LineDamageBounds,
     rows: usize,
     cols: usize,
-    display_offset: usize,
 ) -> Option<TerminalDirtySpan> {
-    // Alacritty line damage is tracked in terminal-space line coordinates and can straddle
-    // wide characters. Expand by one column on both sides so partial updates never split
-    // a multi-cell glyph and leave stale spacer artifacts.
-    if rows == 0 || cols == 0 || display_offset != 0 {
+    // Alacritty line damage can straddle wide characters. Expand by one column
+    // on both sides so partial updates never split a multi-cell glyph and
+    // leave stale spacer artifacts.
+    if rows == 0 || cols == 0 {
         return None;
     }
     if damage.line >= rows {
@@ -776,29 +775,24 @@ fn searchable_grid_line<T: EventListener>(term: &Term<T>, line: Line, cols: usiz
 pub fn take_term_damage_snapshot<T: EventListener>(term: &mut Term<T>) -> TerminalDamageSnapshot {
     let rows = term.grid().screen_lines();
     let cols = term.grid().columns();
-    let display_offset = term.grid().display_offset();
     let snapshot = match term.damage() {
         TermDamage::Full => TerminalDamageSnapshot::Full,
         TermDamage::Partial(damage_iter) => {
-            let mut damage_iter = damage_iter.peekable();
-            if display_offset != 0 {
-                // While viewing history, partial damage coordinates are difficult to map
-                // correctly across viewport-relative lines. Only force a full rebuild when
-                // alacritty actually reports damaged lines, otherwise keep this as a no-op.
-                if damage_iter.peek().is_some() {
-                    TerminalDamageSnapshot::Full
-                } else {
-                    TerminalDamageSnapshot::Partial(Vec::new())
+            // Alacritty reports partial damage in viewport coordinates with
+            // off-viewport lines already filtered out (`TermDamageIterator`
+            // shifts live-grid rows by `display_offset` and slices away the
+            // rest), and it marks the whole terminal damaged for any
+            // content-shifting scroll. The spans are therefore valid as-is
+            // even while scrolled into history — collapsing them to a full
+            // rebuild would force a whole-grid repaint for every cursor or
+            // cell update during scrollback viewing.
+            let mut spans = Vec::with_capacity(rows.min(64));
+            for damage in damage_iter {
+                if let Some(span) = normalized_dirty_span(damage, rows, cols) {
+                    spans.push(span);
                 }
-            } else {
-                let mut spans = Vec::with_capacity(rows.min(64));
-                for damage in damage_iter {
-                    if let Some(span) = normalized_dirty_span(damage, rows, cols, display_offset) {
-                        spans.push(span);
-                    }
-                }
-                TerminalDamageSnapshot::Partial(spans)
             }
+            TerminalDamageSnapshot::Partial(spans)
         }
     };
     term.reset_damage();
@@ -1066,9 +1060,16 @@ impl NativeEventLoop {
         let mut terminal = None;
 
         loop {
+            // Whether this iteration pulled new bytes off the PTY. When the
+            // PTY is dry and the terminal lock is contended, looping back to
+            // read() would hot-spin a core; block on the lock instead.
+            let mut read_progressed = false;
             match self.pty.reader().read(&mut buf[unprocessed..]) {
                 Ok(0) if unprocessed == 0 => break,
-                Ok(got) => unprocessed += got,
+                Ok(got) => {
+                    read_progressed = got > 0;
+                    unprocessed += got;
+                }
                 Err(err) => match err.kind() {
                     ErrorKind::Interrupted | ErrorKind::WouldBlock => {
                         if unprocessed == 0 {
@@ -1082,7 +1083,9 @@ impl NativeEventLoop {
             let terminal = match &mut terminal {
                 Some(terminal) => terminal,
                 None => terminal.insert(match self.terminal.try_lock_unfair() {
-                    None if unprocessed >= NATIVE_EVENT_LOOP_READ_BUFFER_SIZE => {
+                    None if !read_progressed
+                        || unprocessed >= NATIVE_EVENT_LOOP_READ_BUFFER_SIZE =>
+                    {
                         self.terminal.lock_unfair()
                     }
                     None => continue,
@@ -2309,7 +2312,7 @@ mod tests {
     }
 
     #[test]
-    fn take_term_damage_snapshot_while_scrolled_returns_full_for_visible_damage() {
+    fn take_term_damage_snapshot_while_scrolled_maps_damage_to_viewport_rows() {
         let size = TerminalSize {
             cols: 12,
             rows: 4,
@@ -2327,22 +2330,61 @@ mod tests {
         let _ = take_term_damage_snapshot(&mut term);
         let _ = take_term_damage_snapshot(&mut term);
 
+        // Damage on live row 0 must surface shifted down by the display
+        // offset (viewport row 1), as a partial span — not a full rebuild.
         ansi::Handler::goto(&mut term, 0, 0);
-        assert!(matches!(
-            take_term_damage_snapshot(&mut term),
-            TerminalDamageSnapshot::Full
-        ));
+        match take_term_damage_snapshot(&mut term) {
+            TerminalDamageSnapshot::Partial(spans) => {
+                assert!(spans.iter().any(|span| span.row == 1), "spans: {spans:?}");
+                assert!(spans.iter().all(|span| span.row < 4), "spans: {spans:?}");
+            }
+            TerminalDamageSnapshot::Full => {
+                panic!("visible damage while scrolled should stay partial")
+            }
+        }
+    }
+
+    #[test]
+    fn take_term_damage_snapshot_while_scrolled_drops_damage_below_viewport() {
+        let size = TerminalSize {
+            cols: 12,
+            rows: 4,
+            cell_width: 9.0,
+            cell_height: 18.0,
+        };
+        let mut term: Term<VoidListener> = Term::new(TermConfig::default(), &size, VoidListener);
+        let _ = take_term_damage_snapshot(&mut term);
+
+        let mut parser: ansi::Processor = ansi::Processor::new();
+        parser.advance(&mut term, b"1\n2\n3\n4\n5\n6\n");
+        let _ = take_term_damage_snapshot(&mut term);
+
+        term.scroll_display(Scroll::Delta(3));
+        let _ = take_term_damage_snapshot(&mut term);
+        let _ = take_term_damage_snapshot(&mut term);
+
+        // Writing on the bottom live row (shifted past the viewport by the
+        // offset) must not repaint anything the user can see.
+        parser.advance(&mut term, b"x");
+        match take_term_damage_snapshot(&mut term) {
+            TerminalDamageSnapshot::Partial(spans) => {
+                assert!(spans.iter().all(|span| span.row < 4), "spans: {spans:?}");
+            }
+            TerminalDamageSnapshot::Full => {
+                panic!("invisible damage while scrolled should stay partial")
+            }
+        }
     }
 
     #[test]
     fn normalized_dirty_span_expands_and_clamps_column_bounds() {
-        let span = super::normalized_dirty_span(LineDamageBounds::new(1, 1, 2), 4, 4, 0)
+        let span = super::normalized_dirty_span(LineDamageBounds::new(1, 1, 2), 4, 4)
             .expect("dirty span should normalize");
         assert_eq!(span.row, 1);
         assert_eq!(span.left_col, 0);
         assert_eq!(span.right_col, 3);
 
-        let span = super::normalized_dirty_span(LineDamageBounds::new(0, 0, 0), 4, 4, 0)
+        let span = super::normalized_dirty_span(LineDamageBounds::new(0, 0, 0), 4, 4)
             .expect("left edge should clamp");
         assert_eq!(span.left_col, 0);
         assert_eq!(span.right_col, 1);

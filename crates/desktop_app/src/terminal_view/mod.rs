@@ -3804,21 +3804,29 @@ impl TerminalView {
         }
 
         // Toggle cursor visibility for blink in both terminal and inline inputs.
-        // Skip the redraw request when the blink has no visible effect (blink disabled
-        // or command palette is covering the terminal cursor).
+        // Skip the redraw request when the blink has no visible effect (blink disabled,
+        // command palette covering the terminal cursor, or the window inactive — an
+        // unfocused cursor is drawn solid, so blinking would only burn redraws).
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             loop {
                 smol::Timer::after(Duration::from_millis(CURSOR_BLINK_INTERVAL_MS)).await;
-                let result = cx.update(|cx| {
-                    this.update(cx, |view, cx| {
-                        if view.tick_cursor_blink()
-                            && !view.is_command_palette_open()
-                            && view.renaming_tab.is_none()
-                        {
-                            cx.notify();
-                        }
+                let result = cx
+                    .update_window(window_handle, |_, window, cx| {
+                        let window_active = window.is_window_active();
+                        this.update(cx, |view, cx| {
+                            if !window_active {
+                                view.cursor_blink_visible = true;
+                                return;
+                            }
+                            if view.tick_cursor_blink()
+                                && !view.is_command_palette_open()
+                                && view.renaming_tab.is_none()
+                            {
+                                cx.notify();
+                            }
+                        })
                     })
-                });
+                    .and_then(|inner| inner);
                 if result.is_err() {
                     break;
                 }
@@ -4562,10 +4570,9 @@ impl TerminalView {
         let mut pending_tab_closures: HashSet<TabId> = HashSet::new();
         let mut pending_pane_closures: Vec<(TabId, String)> = Vec::new();
         let mut simulated_tab_count = self.tabs.len();
-        let mut simulated_pane_counts = HashMap::new();
-        for tab in &self.tabs {
-            simulated_pane_counts.insert(tab.id, tab.panes.len());
-        }
+        // Built lazily on the first Exit event: this drain pass runs for every
+        // PTY wakeup burst, and allocating the map per pass is wasted work.
+        let mut simulated_pane_counts: Option<HashMap<TabId, usize>> = None;
 
         for tab_index in 0..self.tabs.len() {
             let tab_id = self.tabs[tab_index].id;
@@ -4592,11 +4599,18 @@ impl TerminalView {
                             }
                         }
                         TerminalEvent::Exit => {
+                            let simulated_pane_counts =
+                                simulated_pane_counts.get_or_insert_with(|| {
+                                    self.tabs
+                                        .iter()
+                                        .map(|tab| (tab.id, tab.panes.len()))
+                                        .collect()
+                                });
                             let exit_should_quit = Self::schedule_native_exit(
                                 tab_id,
                                 pane_id.as_str(),
                                 &mut simulated_tab_count,
-                                &mut simulated_pane_counts,
+                                simulated_pane_counts,
                                 &mut pending_tab_closures,
                                 &mut pending_pane_closures,
                             );
