@@ -35,6 +35,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
+      # The Swift host uses Swift 6.2 features (isolated conformances), but the
+      # runner image defaults to Xcode 16.x / Swift 6.1. Select the newest
+      # Xcode 26.x available on the image instead.
+      - name: Select Xcode with Swift 6.2
+        run: |
+          xcode_app="$(ls -d /Applications/Xcode_26*.app | sort -V | tail -n 1)"
+          echo "Selecting ${xcode_app}"
+          sudo xcode-select -s "${xcode_app}/Contents/Developer"
+          swift --version
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
