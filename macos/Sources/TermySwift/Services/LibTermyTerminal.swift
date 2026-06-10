@@ -53,7 +53,11 @@ private final class TerminalWakeupMonitor: @unchecked Sendable {
 
         while isRunning {
             var woke = false
-            let status = termy_terminal_wait_for_wakeup(handle, 250, &woke)
+            // The timeout is a safety net only: PTY output and `stop()` (via
+            // `termy_terminal_notify_wakeup`) both wake the blocking wait
+            // immediately, so a long timeout keeps the monitor thread asleep
+            // instead of waking 4×/s per pane just to re-check `running`.
+            let status = termy_terminal_wait_for_wakeup(handle, 10_000, &woke)
             guard status == TERMY_FFI_OK else {
                 return
             }

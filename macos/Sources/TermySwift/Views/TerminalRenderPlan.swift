@@ -20,9 +20,21 @@ struct TerminalBackgroundRun: Equatable {
 struct TerminalTextSegment: Equatable {
     var row: Int
     var startCol: Int
+    var cols: Int
     var text: String
     var foreground: TerminalRGBA
     var bold: Bool
+    var lineCacheKey: TextLineCacheKey
+}
+
+struct TextLineCacheKey: Hashable {
+    var bold: Bool
+    var foregroundPackedValue: UInt32
+    var text: String
+
+    var estimatedCost: Int {
+        max(64, text.utf16.count * 2)
+    }
 }
 
 /// A block-element or box-drawing cell drawn as pixel-snapped rects instead of
@@ -171,6 +183,7 @@ final class TerminalRenderPlanCache {
         var textForeground: TerminalRGBA?
         var textBold = false
         var textStartCol = 0
+        var textCols = 0
 
         func flushBackgroundRun() {
             guard let run = activeBackgroundRun else {
@@ -187,11 +200,18 @@ final class TerminalRenderPlanCache {
             textSegments.append(TerminalTextSegment(
                 row: row,
                 startCol: textStartCol,
+                cols: textCols,
                 text: text,
                 foreground: foreground,
-                bold: textBold
+                bold: textBold,
+                lineCacheKey: TextLineCacheKey(
+                    bold: textBold,
+                    foregroundPackedValue: foreground.packedValue,
+                    text: text
+                )
             ))
             text = ""
+            textCols = 0
         }
 
         for cell in frame.cells(inRow: row) {
@@ -269,6 +289,7 @@ final class TerminalRenderPlanCache {
                 textStartCol = cell.col
             }
             text.append(cell.character)
+            textCols += 1
         }
 
         flushBackgroundRun()

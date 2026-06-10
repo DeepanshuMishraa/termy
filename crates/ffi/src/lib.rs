@@ -1457,15 +1457,8 @@ fn settings_normalize_theme_id(theme_id: &str) -> String {
 }
 
 fn settings_installed_theme_ids(config_path: Option<&Path>) -> Vec<String> {
-    let owned_config_path;
-    let config_path = if let Some(path) = config_path {
-        path
-    } else {
-        owned_config_path = match cfg::config_path() {
-            Some(path) => path,
-            None => return Vec::new(),
-        };
-        owned_config_path.as_path()
+    let Some(config_path) = config_path else {
+        return Vec::new();
     };
     let Some(config_dir) = config_path.parent() else {
         return Vec::new();
@@ -1784,15 +1777,14 @@ fn settings_installed_theme_colors(
         return None;
     }
 
-    if let Some(config_path) = config_path
-        && let Some(config_dir) = config_path.parent()
+    let Some(config_dir) = config_path.and_then(Path::parent) else {
+        return None;
+    };
+    let path = config_dir.join("themes").join(format!("{normalized}.json"));
+    if let Ok(contents) = std::fs::read_to_string(path)
+        && let Ok(colors) = termy_themes::parse_theme_colors_json(&contents)
     {
-        let path = config_dir.join("themes").join(format!("{normalized}.json"));
-        if let Ok(contents) = std::fs::read_to_string(path)
-            && let Ok(colors) = termy_themes::parse_theme_colors_json(&contents)
-        {
-            return Some(colors);
-        }
+        return Some(colors);
     }
     None
 }

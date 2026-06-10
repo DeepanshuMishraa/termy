@@ -64,7 +64,7 @@ private struct TerminalGridRepresentable: NSViewRepresentable {
     }
 }
 
-private final class TerminalGridNSView: NSView {
+final class TerminalGridNSView: NSView {
     private var terminalFrame = TerminalFrame.empty
     private var renderPlan = TerminalRenderPlan.empty
     private var selection: TerminalSelection?
@@ -84,11 +84,26 @@ private final class TerminalGridNSView: NSView {
     private var cachedRegularFont = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
     private var cachedBoldFont = NSFont.monospacedSystemFont(ofSize: 12, weight: .semibold)
     private var nsColorCache: [UInt32: NSColor] = [:]
+    private var alphaColorCache: [UInt64: NSColor] = [:]
     private let lineCache = TextLineCache()
+    private var occlusionObserver: NotificationObserverToken?
 
     private struct FontKey: Equatable {
         var family: String
         var size: CGFloat
+    }
+
+    private struct DirtyGridBounds {
+        var rows: ClosedRange<Int>
+        var cols: ClosedRange<Int>
+
+        func intersects(row: Int, startCol: Int, cols: Int) -> Bool {
+            guard rows.contains(row), cols > 0 else {
+                return false
+            }
+            let endCol = startCol + cols - 1
+            return startCol <= self.cols.upperBound && endCol >= self.cols.lowerBound
+        }
     }
 
     override var isFlipped: Bool { true }
@@ -122,6 +137,41 @@ private final class TerminalGridNSView: NSView {
         // the new bounds (the rubber-band look).
         layerContentsRedrawPolicy = .duringViewResize
         layerContentsPlacement = .topLeft
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        occlusionObserver = nil
+        guard let window else {
+            return
+        }
+        occlusionObserver = NotificationObserverToken(
+            NotificationCenter.default.addObserver(
+                forName: NSWindow.didChangeOcclusionStateNotification,
+                object: window,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self, let window = self.window else {
+                        return
+                    }
+                    self.applyWindowOcclusion(visible: window.occlusionState.contains(.visible))
+                }
+            }
+        )
+    }
+
+    /// An occluded window (e.g. a background native tab) doesn't need this
+    /// view's layer backing store — a full window-size retina bitmap that runs
+    /// 10-25 MB per tab. Drop it and the typeset-line cache while hidden; the
+    /// repaint on return rebuilds both.
+    func applyWindowOcclusion(visible: Bool) {
+        if visible {
+            needsDisplay = true
+        } else {
+            layer?.contents = nil
+            lineCache.removeAll()
+        }
     }
 
     func update(
@@ -161,11 +211,11 @@ private final class TerminalGridNSView: NSView {
             return
         }
 
-        guard let dirtyRows = renderDamage.dirtyRows, !dirtyRows.isEmpty else {
+        guard let dirtySpans = renderDamage.dirtySpans, !dirtySpans.isEmpty else {
             return
         }
-        for row in dirtyRows {
-            setNeedsDisplay(rowRect(row).insetBy(dx: -1, dy: -1))
+        for span in dirtySpans {
+            setNeedsDisplay(spanRect(span).insetBy(dx: -1, dy: -1))
         }
     }
 
@@ -175,14 +225,15 @@ private final class TerminalGridNSView: NSView {
             return
         }
 
-        drawBackgrounds(in: dirtyRect)
-        drawSearch(in: dirtyRect)
-        drawSelection(in: dirtyRect)
-        drawCursor(in: dirtyRect)
-        drawBlockGlyphs(in: dirtyRect)
-        drawStrokeGlyphs(in: dirtyRect)
-        drawText(in: dirtyRect)
-        drawHoveredLink(in: dirtyRect)
+        let dirtyBounds = dirtyGridBounds(for: dirtyRect)
+        drawBackgrounds(in: dirtyRect, dirtyBounds: dirtyBounds)
+        drawSearch(in: dirtyRect, dirtyBounds: dirtyBounds)
+        drawSelection(in: dirtyRect, dirtyBounds: dirtyBounds)
+        drawCursor(in: dirtyRect, dirtyBounds: dirtyBounds)
+        drawBlockGlyphs(in: dirtyRect, dirtyBounds: dirtyBounds)
+        drawStrokeGlyphs(in: dirtyRect, dirtyBounds: dirtyBounds)
+        drawText(in: dirtyRect, dirtyBounds: dirtyBounds)
+        drawHoveredLink(in: dirtyRect, dirtyBounds: dirtyBounds)
     }
 
     private var backingScale: CGFloat {
@@ -207,59 +258,106 @@ private final class TerminalGridNSView: NSView {
         )
     }
 
-    private func dirtyRowRange(for dirtyRect: NSRect) -> ClosedRange<Int> {
+    private func spanRect(_ span: TerminalDirtySpan) -> CGRect {
+        guard span.leftCol <= span.rightCol else {
+            return rowRect(span.row)
+        }
+        return cellRect(
+            col: max(0, span.leftCol),
+            row: span.row,
+            cols: max(1, span.rightCol - span.leftCol + 1)
+        )
+    }
+
+    private func dirtyGridBounds(for dirtyRect: NSRect) -> DirtyGridBounds {
         let cellHeight = max(1, renderConfig.cellHeight)
+        let cellWidth = max(1, renderConfig.cellWidth)
         let first = max(0, Int(floor((dirtyRect.minY - renderConfig.paddingY) / cellHeight)))
         let last = min(
             max(0, terminalFrame.rows - 1),
             Int(ceil((dirtyRect.maxY - renderConfig.paddingY) / cellHeight))
         )
-        return first...max(first, last)
+        let firstCol = max(0, Int(floor((dirtyRect.minX - renderConfig.paddingX) / cellWidth)))
+        let lastCol = min(
+            max(0, terminalFrame.cols - 1),
+            Int(ceil((dirtyRect.maxX - renderConfig.paddingX) / cellWidth))
+        )
+        return DirtyGridBounds(
+            rows: first...max(first, last),
+            cols: firstCol...max(firstCol, lastCol)
+        )
     }
 
-    private func rowIntersectsDirty(_ row: Int, _ dirtyRect: NSRect) -> Bool {
-        dirtyRowRange(for: dirtyRect).contains(row)
+    private func rowIntersectsDirty(_ row: Int, _ dirtyBounds: DirtyGridBounds) -> Bool {
+        dirtyBounds.rows.contains(row)
     }
 
-    private func drawBackgrounds(in dirtyRect: NSRect) {
-        for rowPlan in rowPlans(intersecting: dirtyRect) {
+    private func drawBackgrounds(in dirtyRect: NSRect, dirtyBounds: DirtyGridBounds) {
+        for rowPlan in rowPlans(intersecting: dirtyBounds) {
             for run in rowPlan.backgroundRuns {
-                cachedNSColor(run.color)
-                    .withAlphaComponent(run.color.alpha * run.opacity)
-                    .setFill()
-                fill(cellRect(col: run.startCol, row: run.row, cols: run.cols))
+                guard dirtyBounds.intersects(row: run.row, startCol: run.startCol, cols: run.cols) else {
+                    continue
+                }
+                let rect = cellRect(col: run.startCol, row: run.row, cols: run.cols)
+                guard rect.intersects(dirtyRect) else {
+                    continue
+                }
+                cachedNSColor(run.color, alpha: CGFloat(run.color.alpha * run.opacity)).setFill()
+                fill(rect)
             }
         }
     }
 
-    private func drawSelection(in dirtyRect: NSRect) {
+    private func drawSelection(in dirtyRect: NSRect, dirtyBounds: DirtyGridBounds) {
         guard let ranges = selection?.rowRanges(cols: terminalFrame.cols, rows: terminalFrame.rows) else {
             return
         }
         NSColor.controlAccentColor.withAlphaComponent(0.35).setFill()
-        for range in ranges where rowIntersectsDirty(range.row, dirtyRect) {
+        for range in ranges where rowIntersectsDirty(range.row, dirtyBounds) {
             guard range.endCol >= range.startCol else {
                 continue
             }
-            fill(cellRect(
+            guard dirtyBounds.intersects(
+                row: range.row,
+                startCol: range.startCol,
+                cols: range.endCol - range.startCol + 1
+            ) else {
+                continue
+            }
+            let rect = cellRect(
                 col: range.startCol,
                 row: range.row,
                 cols: range.endCol - range.startCol + 1
-            ))
+            )
+            guard rect.intersects(dirtyRect) else {
+                continue
+            }
+            fill(rect)
         }
     }
 
-    private func drawSearch(in dirtyRect: NSRect) {
+    private func drawSearch(in dirtyRect: NSRect, dirtyBounds: DirtyGridBounds) {
         for match in searchMatches {
-            guard let row = visibleSearchRow(for: match), rowIntersectsDirty(row, dirtyRect) else {
+            guard let row = visibleSearchRow(for: match), rowIntersectsDirty(row, dirtyBounds) else {
                 continue
             }
-            searchColor(for: match).setFill()
-            fill(cellRect(
+            guard dirtyBounds.intersects(
+                row: row,
+                startCol: match.startCol,
+                cols: max(1, match.endCol - match.startCol + 1)
+            ) else {
+                continue
+            }
+            let rect = cellRect(
                 col: match.startCol,
                 row: row,
                 cols: max(1, match.endCol - match.startCol + 1)
-            ))
+            )
+            guard rect.intersects(dirtyRect) else {
+                continue
+            }
+            searchColor(for: match).setFill()
+            fill(rect)
         }
     }
 
@@ -279,17 +377,20 @@ private final class TerminalGridNSView: NSView {
         return NSColor.controlAccentColor.withAlphaComponent(0.18)
     }
 
-    private func drawCursor(in dirtyRect: NSRect) {
+    private func drawCursor(in dirtyRect: NSRect, dirtyBounds: DirtyGridBounds) {
         guard isTerminalFocused,
               isCursorVisible,
               let cursor = terminalFrame.cursor,
               terminalFrame.displayOffset == 0,
-              rowIntersectsDirty(cursor.row, dirtyRect)
+              dirtyBounds.intersects(row: cursor.row, startCol: cursor.col, cols: 1)
         else {
             return
         }
 
         let rect = cellRect(col: cursor.col, row: cursor.row)
+        guard rect.intersects(dirtyRect) else {
+            return
+        }
         renderConfig.cursor.nsColor.setFill()
         switch cursor.style {
         case .block:
@@ -304,8 +405,8 @@ private final class TerminalGridNSView: NSView {
     /// seam-free shared-boundary guarantee). Anti-aliasing is disabled so the
     /// axis-aligned fills keep hard edges, unlike font glyphs which only cover
     /// the font box inside the taller line-height cell.
-    private func drawBlockGlyphs(in dirtyRect: NSRect) {
-        let rowPlans = rowPlans(intersecting: dirtyRect)
+    private func drawBlockGlyphs(in dirtyRect: NSRect, dirtyBounds: DirtyGridBounds) {
+        let rowPlans = rowPlans(intersecting: dirtyBounds)
         guard rowPlans.contains(where: { !$0.blockGlyphs.isEmpty }) else {
             return
         }
@@ -317,6 +418,9 @@ private final class TerminalGridNSView: NSView {
 
         for rowPlan in rowPlans {
             for glyph in rowPlan.blockGlyphs {
+                guard dirtyBounds.intersects(row: glyph.row, startCol: glyph.col, cols: 1) else {
+                    continue
+                }
                 for rect in glyph.rects {
                     guard let snapped = TerminalBlockGlyphs.snappedRect(
                         rect,
@@ -330,9 +434,10 @@ private final class TerminalGridNSView: NSView {
                     ) else {
                         continue
                     }
-                    cachedNSColor(glyph.foreground)
-                        .withAlphaComponent(glyph.foreground.alpha * rect.alpha)
-                        .setFill()
+                    guard snapped.intersects(dirtyRect) else {
+                        continue
+                    }
+                    cachedNSColor(glyph.foreground, alpha: CGFloat(glyph.foreground.alpha * rect.alpha)).setFill()
                     fill(snapped)
                 }
             }
@@ -344,8 +449,8 @@ private final class TerminalGridNSView: NSView {
     /// straight segments, mirroring `paint_rounded_corner_path` /
     /// `paint_diagonal_path` in `crates/terminal_ui/src/grid.rs`. These stay
     /// anti-aliased — they are curves and slopes, not axis-aligned fills.
-    private func drawStrokeGlyphs(in dirtyRect: NSRect) {
-        let rowPlans = rowPlans(intersecting: dirtyRect)
+    private func drawStrokeGlyphs(in dirtyRect: NSRect, dirtyBounds: DirtyGridBounds) {
+        let rowPlans = rowPlans(intersecting: dirtyBounds)
         guard rowPlans.contains(where: { !$0.strokeGlyphs.isEmpty }) else {
             return
         }
@@ -353,6 +458,9 @@ private final class TerminalGridNSView: NSView {
         let strokeWidth = TerminalBoxDrawing.strokeWidth(fontSize: renderConfig.fontSize)
         for rowPlan in rowPlans {
             for glyph in rowPlan.strokeGlyphs {
+                guard dirtyBounds.intersects(row: glyph.row, startCol: glyph.col, cols: 1) else {
+                    continue
+                }
                 guard let cell = TerminalBlockGlyphs.snappedRect(
                     TerminalBlockRect(left: 0, top: 0, right: 1, bottom: 1, alpha: 1),
                     col: glyph.col,
@@ -363,6 +471,9 @@ private final class TerminalGridNSView: NSView {
                     paddingY: renderConfig.paddingY,
                     scale: backingScale
                 ) else {
+                    continue
+                }
+                guard cell.intersects(dirtyRect) else {
                     continue
                 }
 
@@ -486,7 +597,7 @@ private final class TerminalGridNSView: NSView {
         return (minEdge + maxEdge) / 2
     }
 
-    private func drawText(in dirtyRect: NSRect) {
+    private func drawText(in dirtyRect: NSRect, dirtyBounds: DirtyGridBounds) {
         syncFonts()
         let regularFont = cachedRegularFont
         let boldFont = cachedBoldFont
@@ -497,8 +608,23 @@ private final class TerminalGridNSView: NSView {
         guard let cgContext = NSGraphicsContext.current?.cgContext else {
             return
         }
-        for rowPlan in rowPlans(intersecting: dirtyRect) {
+        for rowPlan in rowPlans(intersecting: dirtyBounds) {
             for segment in rowPlan.textSegments {
+                guard dirtyBounds.intersects(
+                    row: segment.row,
+                    startCol: segment.startCol,
+                    cols: max(1, segment.cols)
+                ) else {
+                    continue
+                }
+                let segmentRect = cellRect(
+                    col: segment.startCol,
+                    row: segment.row,
+                    cols: max(1, segment.cols)
+                )
+                guard segmentRect.intersects(dirtyRect) else {
+                    continue
+                }
                 let font = segment.bold ? boldFont : regularFont
                 // Snap the glyph origin to device pixels so baselines land on
                 // consistent pixel rows, matching the pixel-aligned backgrounds.
@@ -512,7 +638,8 @@ private final class TerminalGridNSView: NSView {
                     text: segment.text,
                     bold: segment.bold,
                     foreground: segment.foreground,
-                    font: font
+                    font: font,
+                    cacheKey: segment.lineCacheKey
                 )
                 // Draw the cached line at its baseline. The view is flipped, so
                 // counter-flip locally (`scaleBy y: -1`) to keep glyphs upright;
@@ -536,10 +663,10 @@ private final class TerminalGridNSView: NSView {
         text: String,
         bold: Bool,
         foreground: TerminalRGBA,
-        font: NSFont
+        font: NSFont,
+        cacheKey: TextLineCacheKey
     ) -> CTLine {
-        let key = "\(bold ? 1 : 0):\(foreground.packedValue):\(text)" as NSString
-        if let box = lineCache.object(forKey: key) {
+        if let box = lineCache.object(forKey: cacheKey) {
             return box.line
         }
         let attributed = NSAttributedString(
@@ -550,7 +677,7 @@ private final class TerminalGridNSView: NSView {
             ]
         )
         let line = CTLineCreateWithAttributedString(attributed)
-        lineCache.setObject(TextLineBox(line: line), forKey: key)
+        lineCache.setObject(TextLineBox(line: line), forKey: cacheKey)
         return line
     }
 
@@ -583,11 +710,30 @@ private final class TerminalGridNSView: NSView {
         return color
     }
 
-    private func rowPlans(intersecting dirtyRect: NSRect) -> ArraySlice<TerminalRowRenderPlan> {
+    private func cachedNSColor(_ rgba: TerminalRGBA, alpha: CGFloat) -> NSColor {
+        let alpha = min(1, max(0, alpha))
+        if abs(alpha - CGFloat(rgba.alpha)) <= 0.0001 {
+            return cachedNSColor(rgba)
+        }
+
+        let alphaUnit = UInt64((alpha * 65_535).rounded())
+        let key = (UInt64(rgba.packedValue) << 16) | alphaUnit
+        if let cached = alphaColorCache[key] {
+            return cached
+        }
+        if alphaColorCache.count >= 4096 {
+            alphaColorCache.removeAll(keepingCapacity: true)
+        }
+        let color = cachedNSColor(rgba).withAlphaComponent(alpha)
+        alphaColorCache[key] = color
+        return color
+    }
+
+    private func rowPlans(intersecting dirtyBounds: DirtyGridBounds) -> ArraySlice<TerminalRowRenderPlan> {
         guard !renderPlan.rows.isEmpty else {
             return []
         }
-        let range = dirtyRowRange(for: dirtyRect)
+        let range = dirtyBounds.rows
         let lower = max(0, min(range.lowerBound, renderPlan.rows.count - 1))
         let upper = max(lower, min(range.upperBound, renderPlan.rows.count - 1))
         return renderPlan.rows[lower...upper]
@@ -601,11 +747,11 @@ private final class TerminalGridNSView: NSView {
         return NSFont.monospacedSystemFont(ofSize: renderConfig.fontSize, weight: weight)
     }
 
-    private func drawHoveredLink(in dirtyRect: NSRect) {
+    private func drawHoveredLink(in dirtyRect: NSRect, dirtyBounds: DirtyGridBounds) {
         guard let link = hoveredLink,
               link.row >= 0,
               link.row < terminalFrame.rows,
-              rowIntersectsDirty(link.row, dirtyRect)
+              dirtyBounds.intersects(row: link.row, startCol: link.startCol, cols: max(1, link.endCol - link.startCol + 1))
         else {
             return
         }
@@ -624,7 +770,7 @@ private final class TerminalGridNSView: NSView {
     }
 
     private func fill(_ rect: CGRect) {
-        NSBezierPath(rect: rect).fill()
+        rect.fill()
     }
 }
 
@@ -637,21 +783,27 @@ private final class TextLineBox {
 }
 
 /// Bounded cache of typeset lines keyed by weight+color+text. `NSCache` evicts
-/// under memory pressure and respects `countLimit`, so a long-running session
-/// streaming varied text can't grow this without bound.
+/// under memory pressure and respects both entry and cost limits, so a
+/// long-running session streaming varied long lines can't grow this without
+/// bound.
 private final class TextLineCache {
-    private let cache = NSCache<NSString, TextLineBox>()
+    private let cache = NSCache<TextLineCacheObjectKey, TextLineBox>()
 
     init() {
         cache.countLimit = 4096
+        cache.totalCostLimit = 512 * 1024
     }
 
-    func object(forKey key: NSString) -> TextLineBox? {
-        cache.object(forKey: key)
+    func object(forKey key: TextLineCacheKey) -> TextLineBox? {
+        cache.object(forKey: TextLineCacheObjectKey(key))
     }
 
-    func setObject(_ object: TextLineBox, forKey key: NSString) {
-        cache.setObject(object, forKey: key)
+    func setObject(_ object: TextLineBox, forKey key: TextLineCacheKey) {
+        cache.setObject(
+            object,
+            forKey: TextLineCacheObjectKey(key),
+            cost: key.estimatedCost
+        )
     }
 
     func removeAll() {
@@ -659,17 +811,36 @@ private final class TextLineCache {
     }
 }
 
-private extension TerminalRGBA {
-    /// Terminal escape-sequence colors are sRGB by convention; the calibrated
-    /// (generic) color space renders them visibly duller, and the settings UI
-    /// already builds its swatches in sRGB.
-    var nsColor: NSColor {
-        NSColor(
-            srgbRed: red,
-            green: green,
-            blue: blue,
-            alpha: alpha
-        )
+/// Removes the wrapped NotificationCenter observer when released, so owners
+/// don't have to touch the non-Sendable token from a nonisolated deinit.
+private final class NotificationObserverToken: @unchecked Sendable {
+    private let token: NSObjectProtocol
+
+    init(_ token: NSObjectProtocol) {
+        self.token = token
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(token)
+    }
+}
+
+private final class TextLineCacheObjectKey: NSObject {
+    let key: TextLineCacheKey
+
+    init(_ key: TextLineCacheKey) {
+        self.key = key
+    }
+
+    override var hash: Int {
+        key.hashValue
+    }
+
+    override func isEqual(_ object: Any?) -> Bool {
+        guard let object = object as? TextLineCacheObjectKey else {
+            return false
+        }
+        return key == object.key
     }
 }
 

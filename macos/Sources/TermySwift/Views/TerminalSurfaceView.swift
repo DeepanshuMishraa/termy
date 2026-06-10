@@ -40,19 +40,20 @@ struct TerminalSurfaceView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .opacity(paneContentOpacity)
                 .onChange(of: isFocused) { _, nowFocused in
-                    if nowFocused {
-                        terminal.resetCursorBlinkPhase()
-                    }
+                    terminal.setPaneFocused(nowFocused)
+                }
+                .onAppear {
+                    terminal.setPaneFocused(isFocused)
                 }
 
                 TerminalKeyboardInputView(
-                    cols: terminal.frame.cols,
-                    rows: terminal.frame.rows,
+                    cols: terminal.frameMetadata.cols,
+                    rows: terminal.frameMetadata.rows,
                     renderConfig: terminal.renderConfig,
                     isFocused: isFocused,
                     isInputEnabled: isInputEnabled,
                     isSearchVisible: isSearchVisible,
-                    canCopy: hasCopyableSelection,
+                    canCopy: terminal.canCopySelection,
                     onFocus: onFocus,
                     onBytes: { bytes in
                         terminal.send(bytes: bytes)
@@ -127,7 +128,7 @@ struct TerminalSurfaceView: View {
                         .padding(8)
                 }
 
-                if terminal.isExited && !hasVisibleTerminalContent {
+                if terminal.isExited && !terminal.hasVisibleContent {
                     Text("Process exited")
                         .font(.system(size: 12, design: .monospaced))
                         .foregroundStyle(.secondary)
@@ -141,7 +142,7 @@ struct TerminalSurfaceView: View {
             .overlay(alignment: .trailing) {
                 if shouldShowScrollBar {
                     TerminalScrollBar(
-                        frame: terminal.frame,
+                        frameMetadata: terminal.frameMetadata,
                         renderConfig: terminal.renderConfig,
                         searchMatches: terminal.searchMatches,
                         commandMarks: terminal.commandMarkRows,
@@ -183,7 +184,10 @@ struct TerminalSurfaceView: View {
             }
             .background(TerminalWindowChromeSyncView(
                 title: windowTitle,
-                isFocused: isFocused
+                isFocused: isFocused,
+                background: terminal.renderConfig.background,
+                backgroundOpacity: terminal.renderConfig.backgroundOpacity,
+                backgroundBlur: terminal.renderConfig.backgroundBlur
             ))
             .onTapGesture {
                 onFocus()
@@ -206,7 +210,7 @@ struct TerminalSurfaceView: View {
                 // for the current pixel size when settings live-apply.
                 resizeTerminal(to: lastSize)
             }
-            .onChange(of: terminal.frame.displayOffset) { oldValue, newValue in
+            .onChange(of: terminal.frameMetadata.displayOffset) { oldValue, newValue in
                 if oldValue != newValue {
                     revealScrollBar()
                 }
@@ -233,7 +237,7 @@ struct TerminalSurfaceView: View {
     }
 
     private func revealScrollBar() {
-        guard terminal.frame.historySize > 0,
+        guard terminal.frameMetadata.historySize > 0,
               terminal.renderConfig.scrollbarVisibility != .off
         else {
             return
@@ -256,7 +260,7 @@ struct TerminalSurfaceView: View {
     }
 
     private var shouldShowScrollBar: Bool {
-        guard terminal.frame.historySize > 0 else {
+        guard terminal.frameMetadata.historySize > 0 else {
             return false
         }
         switch terminal.renderConfig.scrollbarVisibility {
@@ -266,19 +270,6 @@ struct TerminalSurfaceView: View {
             return true
         case .onScroll:
             return isScrollBarVisible
-        }
-    }
-
-    private var hasCopyableSelection: Bool {
-        guard let text = terminal.frame.selectedText(for: terminal.selection) else {
-            return false
-        }
-        return !text.isEmpty
-    }
-
-    private var hasVisibleTerminalContent: Bool {
-        terminal.frame.cells.contains { cell in
-            cell.renderText && cell.character != " "
         }
     }
 
@@ -321,7 +312,7 @@ struct TerminalSurfaceView: View {
     /// dead-key input is visible in the grid before it commits.
     @ViewBuilder
     private var markedTextOverlay: some View {
-        if !terminal.markedText.isEmpty, let cursor = terminal.frame.cursor {
+        if !terminal.markedText.isEmpty, let cursor = terminal.frameMetadata.cursor {
             let config = terminal.renderConfig
             Text(terminal.markedText)
                 .font(.custom(config.fontFamily, size: config.fontSize))
@@ -379,6 +370,9 @@ struct TerminalSurfaceView: View {
 private struct TerminalWindowChromeSyncView: NSViewRepresentable {
     let title: String
     let isFocused: Bool
+    let background: TerminalRGBA
+    let backgroundOpacity: Double
+    let backgroundBlur: Bool
 
     func makeNSView(context: Context) -> TerminalWindowChromeSyncNSView {
         let view = TerminalWindowChromeSyncNSView(frame: .zero)
@@ -394,14 +388,87 @@ private struct TerminalWindowChromeSyncView: NSViewRepresentable {
         let nextTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         return TerminalWindowChromeState(
             title: nextTitle.isEmpty ? "Shell" : nextTitle,
-            isFocused: isFocused
+            isFocused: isFocused,
+            background: background,
+            backgroundOpacity: backgroundOpacity,
+            backgroundBlur: backgroundBlur
         )
     }
 }
 
-private struct TerminalWindowChromeState: Equatable {
+struct TerminalWindowChromeState: Equatable {
     var title: String
     var isFocused: Bool
+    var background: TerminalRGBA
+    var backgroundOpacity: Double
+    var backgroundBlur: Bool
+
+    var effectiveBackgroundAlpha: CGFloat {
+        CGFloat(min(1.0, max(0.0, background.alpha * backgroundOpacity)))
+    }
+
+    var requiresTransparentWindow: Bool {
+        backgroundBlur || effectiveBackgroundAlpha < 1.0
+    }
+
+    var chromeBackgroundColor: NSColor {
+        background.nsColor.withAlphaComponent(effectiveBackgroundAlpha)
+    }
+}
+
+@MainActor
+enum TerminalWindowChromeApplier {
+    @discardableResult
+    static func apply(
+        _ state: TerminalWindowChromeState,
+        to window: NSWindow,
+        appliedState: inout TerminalWindowChromeState?
+    ) -> Bool {
+        guard state.isFocused else {
+            return false
+        }
+        guard state != appliedState || windowNeedsChrome(state, window: window) else {
+            return false
+        }
+        let titleChanged = applyFocusedChrome(state, to: window)
+        if titleChanged {
+            NotificationCenter.default.post(name: .termyNativeTabsChanged, object: nil)
+        }
+        appliedState = state
+        return true
+    }
+
+    @discardableResult
+    static func applyFocusedChrome(_ state: TerminalWindowChromeState, to window: NSWindow) -> Bool {
+        var titleChanged = false
+        if window.title != state.title {
+            window.title = state.title
+            titleChanged = true
+        }
+        window.titlebarAppearsTransparent = true
+        window.backgroundColor = state.chromeBackgroundColor
+        window.isOpaque = !state.requiresTransparentWindow
+        return titleChanged
+    }
+
+    private static func windowNeedsChrome(_ state: TerminalWindowChromeState, window: NSWindow) -> Bool {
+        if window.title != state.title
+            || !window.titlebarAppearsTransparent
+            || window.isOpaque == state.requiresTransparentWindow
+        {
+            return true
+        }
+
+        let expectedColor = state.chromeBackgroundColor.usingColorSpace(.sRGB)
+        let actualColor = window.backgroundColor.usingColorSpace(.sRGB)
+        guard let expectedColor, let actualColor else {
+            return true
+        }
+        return abs(actualColor.redComponent - expectedColor.redComponent) > 0.001
+            || abs(actualColor.greenComponent - expectedColor.greenComponent) > 0.001
+            || abs(actualColor.blueComponent - expectedColor.blueComponent) > 0.001
+            || abs(actualColor.alphaComponent - expectedColor.alphaComponent) > 0.001
+    }
 }
 
 private final class TerminalWindowChromeSyncNSView: NSView {
@@ -422,19 +489,12 @@ private final class TerminalWindowChromeSyncNSView: NSView {
         guard let state = pendingState, state.isFocused, let window else {
             return
         }
-        guard state != appliedState else {
-            return
-        }
-        if window.title != state.title {
-            window.title = state.title
-            NotificationCenter.default.post(name: .termyNativeTabsChanged, object: nil)
-        }
-        appliedState = state
+        TerminalWindowChromeApplier.apply(state, to: window, appliedState: &appliedState)
     }
 }
 
 private struct TerminalScrollBar: View {
-    let frame: TerminalFrame
+    let frameMetadata: TerminalFrameMetadata
     let renderConfig: TerminalRenderConfig
     let searchMatches: [TerminalSearchMatch]
     let commandMarks: [Int]
@@ -479,7 +539,7 @@ private struct TerminalScrollBar: View {
                                     }
                                     let clampedY = max(0, min(value.location.y, metrics.travel))
                                     let progressFromTop = clampedY / metrics.travel
-                                    let target = Int(round(CGFloat(frame.historySize) * (1 - progressFromTop)))
+                                    let target = Int(round(CGFloat(frameMetadata.historySize) * (1 - progressFromTop)))
                                     onScrollToOffset(target)
                                 }
                         )
@@ -488,7 +548,7 @@ private struct TerminalScrollBar: View {
                 .contentShape(Rectangle())
             }
         }
-        .allowsHitTesting(frame.historySize > 0)
+        .allowsHitTesting(frameMetadata.historySize > 0)
     }
 
     private var framePaddingY: CGFloat {
@@ -498,7 +558,7 @@ private struct TerminalScrollBar: View {
     /// Y offsets (within the padded track) for the given absolute scrollback
     /// rows, so marks/hits show as buckets along the scrollbar.
     private func markerYs(rows: [Int], for size: CGSize) -> [CGFloat] {
-        let totalRows = CGFloat(frame.historySize + frame.rows)
+        let totalRows = CGFloat(frameMetadata.historySize + frameMetadata.rows)
         guard totalRows > 0, size.height > framePaddingY * 2, !rows.isEmpty else {
             return []
         }
@@ -519,7 +579,7 @@ private struct TerminalScrollBar: View {
     }
 
     private var thumbColor: Color {
-        let opacity = frame.displayOffset == 0 ? 0.34 : 0.58
+        let opacity = frameMetadata.displayOffset == 0 ? 0.34 : 0.58
         switch renderConfig.scrollbarStyle {
         case .neutral:
             return Color.primary.opacity(opacity)
@@ -531,17 +591,17 @@ private struct TerminalScrollBar: View {
     }
 
     private func metrics(for size: CGSize) -> ScrollBarMetrics {
-        guard frame.historySize > 0, frame.rows > 0, size.height > framePaddingY * 2 else {
+        guard frameMetadata.historySize > 0, frameMetadata.rows > 0, size.height > framePaddingY * 2 else {
             return ScrollBarMetrics(isVisible: false, thumbHeight: 0, thumbY: 0, travel: 0)
         }
 
         let trackHeight = size.height - (framePaddingY * 2)
-        let totalRows = max(1, frame.historySize + frame.rows)
-        let visibleFraction = CGFloat(frame.rows) / CGFloat(totalRows)
+        let totalRows = max(1, frameMetadata.historySize + frameMetadata.rows)
+        let visibleFraction = CGFloat(frameMetadata.rows) / CGFloat(totalRows)
         let thumbHeight = max(28, min(trackHeight, trackHeight * visibleFraction))
         let travel = max(0, trackHeight - thumbHeight)
-        let maxOffset = max(1, frame.historySize)
-        let normalizedOffset = CGFloat(max(0, min(frame.displayOffset, frame.historySize)))
+        let maxOffset = max(1, frameMetadata.historySize)
+        let normalizedOffset = CGFloat(max(0, min(frameMetadata.displayOffset, frameMetadata.historySize)))
             / CGFloat(maxOffset)
         let thumbY = travel * (1 - normalizedOffset)
 

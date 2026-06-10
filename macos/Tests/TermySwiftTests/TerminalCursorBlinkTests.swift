@@ -61,6 +61,17 @@ final class TerminalCursorBlinkTests: XCTestCase {
         )
     }
 
+    func testPartialDamageExposesExactDirtySpans() {
+        let spans = [
+            TerminalDirtySpan(row: 2, leftCol: 4, rightCol: 6),
+            TerminalDirtySpan(row: 0, leftCol: 1, rightCol: 1)
+        ]
+
+        XCTAssertEqual(TerminalDamage.partial(spans).dirtySpans, spans)
+        XCTAssertEqual(TerminalDamage.none.dirtySpans, [])
+        XCTAssertNil(TerminalDamage.full.dirtySpans)
+    }
+
     @MainActor
     func testResetCursorBlinkPhaseForcesVisibleCursor() {
         let terminal = TerminalViewModel()

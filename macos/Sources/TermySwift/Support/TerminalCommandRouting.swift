@@ -227,6 +227,79 @@ final class TerminalCommandRouter {
         store(for: event?.window ?? NSApp.keyWindow ?? NSApp.mainWindow)
     }
 
+    func focusedCommandSet(for window: NSWindow? = nil) -> TerminalCommandSet? {
+        guard let store = store(for: window ?? NSApp.keyWindow ?? NSApp.mainWindow) else {
+            return nil
+        }
+        return TerminalCommandSet(
+            newTab: {
+                NativeTabWindowManager.shared.openNativeTab()
+            },
+            closePaneOrTab: {
+                if !store.closeFocusedPaneIfSplit() {
+                    (window ?? NSApp.keyWindow)?.performClose(nil)
+                }
+            },
+            splitRight: {
+                store.splitFocused(.horizontal)
+            },
+            splitDown: {
+                store.splitFocused(.vertical)
+            },
+            closePane: {
+                store.closeFocusedPane()
+            },
+            focusPane: { direction in
+                _ = store.focusPane(in: direction)
+            },
+            focusNextPane: store.focusNextPane,
+            focusPreviousPane: store.focusPreviousPane,
+            resizePane: { direction in
+                _ = store.resizeFocusedPane(in: direction)
+            },
+            togglePaneZoom: store.toggleFocusedPaneZoom,
+            increaseFontSize: {
+                store.focusedTerminal?.increaseFontSize()
+            },
+            decreaseFontSize: {
+                store.focusedTerminal?.decreaseFontSize()
+            },
+            resetFontSize: {
+                store.focusedTerminal?.resetFontSize()
+            },
+            copy: {
+                store.focusedTerminal?.copySelection() ?? false
+            },
+            paste: {
+                guard let text = NSPasteboard.general.string(forType: .string) else {
+                    return
+                }
+                store.focusedTerminal?.paste(text)
+            },
+            clearScrollback: {
+                store.focusedTerminal?.clearScrollback()
+            },
+            showSearch: store.showSearch,
+            hideSearch: store.hideSearch,
+            searchNext: {
+                store.focusedTerminal?.selectNextSearchMatch()
+            },
+            searchPrevious: {
+                store.focusedTerminal?.selectPreviousSearchMatch()
+            },
+            toggleSearchCaseSensitive: {
+                store.toggleSearchCaseSensitive()
+            },
+            toggleSearchRegex: {
+                store.toggleSearchRegex()
+            },
+            sendInterrupt: {
+                store.focusedTerminal?.sendControlC()
+            },
+            toggleCommandPalette: store.toggleCommandPalette
+        )
+    }
+
     func hasRunningTerminalProcess() -> Bool {
         cleanupReleasedStores()
         if activeStore?.hasRunningTerminalProcess == true {

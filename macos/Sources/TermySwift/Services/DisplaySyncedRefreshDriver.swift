@@ -1,5 +1,6 @@
 import CoreVideo
 import Foundation
+import QuartzCore
 
 final class DisplaySyncedRefreshDriver: @unchecked Sendable {
     var cadence: RefreshCadence = .active
@@ -7,10 +8,15 @@ final class DisplaySyncedRefreshDriver: @unchecked Sendable {
     private var displayLink: CVDisplayLink?
     private var fallbackTimer: Timer?
     private let onTick: @MainActor () -> Void
-    private var lastDeliveredAt: Date?
+    private var lastDeliveredUptime: TimeInterval?
     private var isRunning = false
     private var thermalState = ProcessInfo.processInfo.thermalState
     private var thermalObserver: NSObjectProtocol?
+    /// Guards the dispatch pre-filter state shared with the CoreVideo callback
+    /// thread (`displayLinkTick`).
+    private let dispatchGate = NSLock()
+    private var dispatchGap: TimeInterval = 0
+    private var lastDispatchUptime: TimeInterval = 0
 
     init(onTick: @escaping @MainActor () -> Void) {
         self.onTick = onTick
@@ -19,7 +25,11 @@ final class DisplaySyncedRefreshDriver: @unchecked Sendable {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.thermalState = ProcessInfo.processInfo.thermalState
+            guard let self else {
+                return
+            }
+            self.thermalState = ProcessInfo.processInfo.thermalState
+            self.updateDispatchGap()
         }
     }
 
@@ -55,13 +65,22 @@ final class DisplaySyncedRefreshDriver: @unchecked Sendable {
         }
     }
 
+    /// The CoreVideo-thread pre-filter threshold: half the delivery interval, so
+    /// link-fire jitter can never starve `deliverTickIfDue`, while ticks that
+    /// would certainly be dropped (a ProMotion link fires at 120 Hz against a
+    /// 60 Hz cadence) are discarded before the main-queue hop.
+    static func dispatchGap(deliveryInterval: TimeInterval) -> TimeInterval {
+        deliveryInterval * 0.5
+    }
+
     func start(cadence: RefreshCadence) {
         self.cadence = cadence
+        updateDispatchGap()
         guard !isRunning else {
             return
         }
         isRunning = true
-        lastDeliveredAt = nil
+        lastDeliveredUptime = nil
 
         guard cadence == .active else {
             startFallbackTimer()
@@ -93,7 +112,17 @@ final class DisplaySyncedRefreshDriver: @unchecked Sendable {
             CVDisplayLinkSetOutputCallback(displayLink, nil, nil)
             self.displayLink = nil
         }
-        lastDeliveredAt = nil
+        lastDeliveredUptime = nil
+        dispatchGate.lock()
+        lastDispatchUptime = 0
+        dispatchGate.unlock()
+    }
+
+    private func updateDispatchGap() {
+        let gap = Self.dispatchGap(deliveryInterval: effectiveInterval)
+        dispatchGate.lock()
+        dispatchGap = gap
+        dispatchGate.unlock()
     }
 
     private func startFallbackTimer() {
@@ -109,6 +138,19 @@ final class DisplaySyncedRefreshDriver: @unchecked Sendable {
     }
 
     fileprivate func displayLinkTick() {
+        // Drop over-rate link fires here, on the CoreVideo thread, so they never
+        // cost a main-queue hop: `deliverTickIfDue` still enforces the full
+        // delivery interval for whatever gets through.
+        let now = CACurrentMediaTime()
+        dispatchGate.lock()
+        let due = now - lastDispatchUptime >= dispatchGap
+        if due {
+            lastDispatchUptime = now
+        }
+        dispatchGate.unlock()
+        guard due else {
+            return
+        }
         DispatchQueue.main.async { [weak self] in
             self?.deliverTickIfDue()
         }
@@ -120,13 +162,13 @@ final class DisplaySyncedRefreshDriver: @unchecked Sendable {
             return
         }
 
-        let now = Date()
-        if let lastDeliveredAt,
-           now.timeIntervalSince(lastDeliveredAt) < effectiveInterval {
+        let now = CACurrentMediaTime()
+        if let lastDeliveredUptime,
+           now - lastDeliveredUptime < effectiveInterval {
             return
         }
 
-        lastDeliveredAt = now
+        lastDeliveredUptime = now
         onTick()
     }
 }

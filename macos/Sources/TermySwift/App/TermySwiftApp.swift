@@ -63,11 +63,7 @@ enum TermyNativeAppActions {
     }
 
     static func toggleNativeTabBarVisibility(for window: NSWindow?) -> Bool {
-        guard let window = window ?? NSApp.keyWindow ?? NSApp.mainWindow else {
-            return false
-        }
-        NSApp.sendAction(#selector(NSWindow.toggleTabBar(_:)), to: nil, from: window)
-        return true
+        NativeTabWindowManager.shared.showNativeTabBar(for: window)
     }
 }
 
@@ -81,6 +77,10 @@ struct TermySwiftApp: App {
         // Runs the headless render benchmark and exits when `--benchmark` is
         // passed, before any window is created.
         TermyBenchmarkRunner.runIfRequested()
+    }
+
+    private var effectiveTerminalCommands: TerminalCommandSet? {
+        terminalCommands ?? TerminalCommandRouter.shared.focusedCommandSet()
     }
 
     var body: some Scene {
@@ -110,8 +110,8 @@ struct TermySwiftApp: App {
 
             CommandGroup(replacing: .newItem) {
                 Button("New Tab") {
-                    if let terminalCommands {
-                        terminalCommands.execute(.newTab)
+                    if let effectiveTerminalCommands {
+                        effectiveTerminalCommands.execute(.newTab)
                     } else {
                         NativeTabWindowManager.shared.openNativeTab()
                     }
@@ -129,125 +129,143 @@ struct TermySwiftApp: App {
 
                 Divider()
 
+                Button("Previous Tab") {
+                    NativeTabWindowManager.shared.selectRelativeNativeTab(offset: -1)
+                }
+
+                Button("Next Tab") {
+                    NativeTabWindowManager.shared.selectRelativeNativeTab(offset: 1)
+                }
+
+                Button("Move Tab Left") {
+                    NativeTabWindowManager.shared.moveSelectedNativeTab(offset: -1)
+                }
+
+                Button("Move Tab Right") {
+                    NativeTabWindowManager.shared.moveSelectedNativeTab(offset: 1)
+                }
+
+                Divider()
+
                 Button("Split Right") {
                     if !TerminalCommandRouter.shared.splitFocused(.horizontal) {
-                        terminalCommands?.execute(.splitPaneVertical)
+                        effectiveTerminalCommands?.execute(.splitPaneVertical)
                     }
                 }
                 .keyboardShortcut("d", modifiers: [.command])
-                .disabled(terminalCommands == nil)
+                .disabled(effectiveTerminalCommands == nil)
 
                 Button("Split Down") {
                     if !TerminalCommandRouter.shared.splitFocused(.vertical) {
-                        terminalCommands?.execute(.splitPaneHorizontal)
+                        effectiveTerminalCommands?.execute(.splitPaneHorizontal)
                     }
                 }
                 .keyboardShortcut("d", modifiers: [.command, .shift])
-                .disabled(terminalCommands == nil)
+                .disabled(effectiveTerminalCommands == nil)
 
                 Divider()
 
                 Button("Close Pane or Tab") {
-                    terminalCommands?.execute(.closePaneOrTab)
+                    effectiveTerminalCommands?.execute(.closePaneOrTab)
                 }
                 .keyboardShortcut("w", modifiers: [.command])
-                .disabled(terminalCommands == nil)
+                .disabled(effectiveTerminalCommands == nil)
 
                 Button("Close Pane") {
-                    terminalCommands?.execute(.closePane)
+                    effectiveTerminalCommands?.execute(.closePane)
                 }
                 .keyboardShortcut("w", modifiers: [.command, .shift])
-                .disabled(terminalCommands == nil)
+                .disabled(effectiveTerminalCommands == nil)
 
                 Divider()
 
                 Button("Next Pane") {
-                    terminalCommands?.execute(.focusPaneNext)
+                    effectiveTerminalCommands?.execute(.focusPaneNext)
                 }
                 .keyboardShortcut("o", modifiers: [.command])
-                .disabled(terminalCommands == nil)
+                .disabled(effectiveTerminalCommands == nil)
 
                 Button("Previous Pane") {
-                    terminalCommands?.execute(.focusPanePrevious)
+                    effectiveTerminalCommands?.execute(.focusPanePrevious)
                 }
                 .keyboardShortcut("o", modifiers: [.command, .shift])
-                .disabled(terminalCommands == nil)
+                .disabled(effectiveTerminalCommands == nil)
 
                 Button("Focus Pane Left") {
-                    terminalCommands?.execute(.focusPane(.left))
+                    effectiveTerminalCommands?.execute(.focusPane(.left))
                 }
                 .keyboardShortcut(.leftArrow, modifiers: [.command, .option])
-                .disabled(terminalCommands == nil)
+                .disabled(effectiveTerminalCommands == nil)
 
                 Button("Focus Pane Right") {
-                    terminalCommands?.execute(.focusPane(.right))
+                    effectiveTerminalCommands?.execute(.focusPane(.right))
                 }
                 .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
-                .disabled(terminalCommands == nil)
+                .disabled(effectiveTerminalCommands == nil)
 
                 Button("Focus Pane Up") {
-                    terminalCommands?.execute(.focusPane(.up))
+                    effectiveTerminalCommands?.execute(.focusPane(.up))
                 }
                 .keyboardShortcut(.upArrow, modifiers: [.command, .option])
-                .disabled(terminalCommands == nil)
+                .disabled(effectiveTerminalCommands == nil)
 
                 Button("Focus Pane Down") {
-                    terminalCommands?.execute(.focusPane(.down))
+                    effectiveTerminalCommands?.execute(.focusPane(.down))
                 }
                 .keyboardShortcut(.downArrow, modifiers: [.command, .option])
-                .disabled(terminalCommands == nil)
+                .disabled(effectiveTerminalCommands == nil)
 
                 Divider()
 
                 Button("Resize Pane Left") {
-                    terminalCommands?.execute(.resizePane(.left))
+                    effectiveTerminalCommands?.execute(.resizePane(.left))
                 }
                 .keyboardShortcut(.leftArrow, modifiers: [.command, .option, .shift])
-                .disabled(terminalCommands == nil)
+                .disabled(effectiveTerminalCommands == nil)
 
                 Button("Resize Pane Right") {
-                    terminalCommands?.execute(.resizePane(.right))
+                    effectiveTerminalCommands?.execute(.resizePane(.right))
                 }
                 .keyboardShortcut(.rightArrow, modifiers: [.command, .option, .shift])
-                .disabled(terminalCommands == nil)
+                .disabled(effectiveTerminalCommands == nil)
 
                 Button("Resize Pane Up") {
-                    terminalCommands?.execute(.resizePane(.up))
+                    effectiveTerminalCommands?.execute(.resizePane(.up))
                 }
                 .keyboardShortcut(.upArrow, modifiers: [.command, .option, .shift])
-                .disabled(terminalCommands == nil)
+                .disabled(effectiveTerminalCommands == nil)
 
                 Button("Resize Pane Down") {
-                    terminalCommands?.execute(.resizePane(.down))
+                    effectiveTerminalCommands?.execute(.resizePane(.down))
                 }
                 .keyboardShortcut(.downArrow, modifiers: [.command, .option, .shift])
-                .disabled(terminalCommands == nil)
+                .disabled(effectiveTerminalCommands == nil)
 
                 Button("Toggle Pane Zoom") {
-                    terminalCommands?.execute(.togglePaneZoom)
+                    effectiveTerminalCommands?.execute(.togglePaneZoom)
                 }
                 .keyboardShortcut(.return, modifiers: [.command])
-                .disabled(terminalCommands == nil)
+                .disabled(effectiveTerminalCommands == nil)
 
                 Divider()
 
                 Button("Increase Font Size") {
-                    terminalCommands?.execute(.increaseFontSize)
+                    effectiveTerminalCommands?.execute(.increaseFontSize)
                 }
                 .keyboardShortcut("=", modifiers: [.command])
-                .disabled(terminalCommands == nil)
+                .disabled(effectiveTerminalCommands == nil)
 
                 Button("Decrease Font Size") {
-                    terminalCommands?.execute(.decreaseFontSize)
+                    effectiveTerminalCommands?.execute(.decreaseFontSize)
                 }
                 .keyboardShortcut("-", modifiers: [.command])
-                .disabled(terminalCommands == nil)
+                .disabled(effectiveTerminalCommands == nil)
 
                 Button("Reset Font Size") {
-                    terminalCommands?.execute(.resetFontSize)
+                    effectiveTerminalCommands?.execute(.resetFontSize)
                 }
                 .keyboardShortcut("0", modifiers: [.command])
-                .disabled(terminalCommands == nil)
+                .disabled(effectiveTerminalCommands == nil)
 
                 Divider()
 
@@ -264,48 +282,48 @@ struct TermySwiftApp: App {
                 }
 
                 Button("Send Interrupt") {
-                    terminalCommands?.execute(.sendInterrupt)
+                    effectiveTerminalCommands?.execute(.sendInterrupt)
                 }
                 .keyboardShortcut("c", modifiers: [.control])
-                .disabled(terminalCommands == nil)
+                .disabled(effectiveTerminalCommands == nil)
             }
 
             CommandGroup(after: .textEditing) {
                 Button("Find") {
-                    terminalCommands?.execute(.openSearch)
+                    effectiveTerminalCommands?.execute(.openSearch)
                 }
                 .keyboardShortcut("f", modifiers: [.command])
-                .disabled(terminalCommands == nil)
+                .disabled(effectiveTerminalCommands == nil)
 
                 Button("Find Next") {
-                    terminalCommands?.execute(.searchNext)
+                    effectiveTerminalCommands?.execute(.searchNext)
                 }
                 .keyboardShortcut("g", modifiers: [.command])
-                .disabled(terminalCommands == nil)
+                .disabled(effectiveTerminalCommands == nil)
 
                 Button("Find Previous") {
-                    terminalCommands?.execute(.searchPrevious)
+                    effectiveTerminalCommands?.execute(.searchPrevious)
                 }
                 .keyboardShortcut("g", modifiers: [.command, .shift])
-                .disabled(terminalCommands == nil)
+                .disabled(effectiveTerminalCommands == nil)
 
                 Button("Case Sensitive") {
-                    terminalCommands?.execute(.toggleSearchCaseSensitive)
+                    effectiveTerminalCommands?.execute(.toggleSearchCaseSensitive)
                 }
                 .keyboardShortcut("c", modifiers: [.command, .option])
-                .disabled(terminalCommands == nil)
+                .disabled(effectiveTerminalCommands == nil)
 
                 Button("Regex") {
-                    terminalCommands?.execute(.toggleSearchRegex)
+                    effectiveTerminalCommands?.execute(.toggleSearchRegex)
                 }
                 .keyboardShortcut("r", modifiers: [.command, .option])
-                .disabled(terminalCommands == nil)
+                .disabled(effectiveTerminalCommands == nil)
 
                 Button("Close Search") {
-                    terminalCommands?.execute(.closeSearch)
+                    effectiveTerminalCommands?.execute(.closeSearch)
                 }
                 .keyboardShortcut(.escape, modifiers: [])
-                .disabled(terminalCommands == nil)
+                .disabled(effectiveTerminalCommands == nil)
             }
         }
 
@@ -774,13 +792,25 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
 
         let identifier = ObjectIdentifier(window)
         guard !configuredWindowIDs.contains(identifier) else {
+            showSystemTabBarIfNeeded(for: window)
+            applyFocusedTerminalChrome(for: window)
             return
         }
         configuredWindowIDs.insert(identifier)
         if window.title.isEmpty || window.title == "Window" {
             window.title = AppMetadata.displayName
         }
-        hideSystemTabBarIfNeeded(for: window)
+        TerminalWindowChromeApplier.applyFocusedChrome(
+            TerminalWindowChromeState(
+                title: window.title,
+                isFocused: true,
+                background: TerminalRenderConfig.default.background,
+                backgroundOpacity: TerminalRenderConfig.default.backgroundOpacity,
+                backgroundBlur: TerminalRenderConfig.default.backgroundBlur
+            ),
+            to: window
+        )
+        showSystemTabBarIfNeeded(for: window)
         window.setContentSize(TermyConfigurationStore.shared.configuration.windowSize)
         window.center()
         postTabsChanged()
@@ -799,7 +829,8 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
 
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        hideSystemTabBarIfNeeded(for: window)
+        showSystemTabBarIfNeeded(for: window)
+        applyFocusedTerminalChrome(for: window)
         postTabsChanged()
     }
 
@@ -864,7 +895,8 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
         }
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        hideSystemTabBarIfNeeded(for: window)
+        showSystemTabBarIfNeeded(for: window)
+        applyFocusedTerminalChrome(for: window)
         postTabsChanged()
     }
 
@@ -901,7 +933,8 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
         }
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        hideSystemTabBarIfNeeded(for: window)
+        showSystemTabBarIfNeeded(for: window)
+        applyFocusedTerminalChrome(for: window)
         postTabsChanged()
     }
 
@@ -964,7 +997,8 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
         let anchorWindow = tabbedWindows[targetIndex]
         anchorWindow.addTabbedWindow(movingWindow, ordered: offset < 0 ? .below : .above)
         movingWindow.makeKeyAndOrderFront(nil)
-        hideSystemTabBarIfNeeded(for: movingWindow)
+        showSystemTabBarIfNeeded(for: movingWindow)
+        applyFocusedTerminalChrome(for: movingWindow)
         postTabsChanged()
     }
 
@@ -989,8 +1023,20 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
         let anchorWindow = tabbedWindows[clamped]
         anchorWindow.addTabbedWindow(movingWindow, ordered: clamped < currentIndex ? .below : .above)
         movingWindow.makeKeyAndOrderFront(nil)
-        hideSystemTabBarIfNeeded(for: movingWindow)
+        showSystemTabBarIfNeeded(for: movingWindow)
+        applyFocusedTerminalChrome(for: movingWindow)
         postTabsChanged()
+    }
+
+    func showNativeTabBar(for window: NSWindow?) -> Bool {
+        guard let window = window ?? NSApp.keyWindow ?? NSApp.mainWindow,
+              isNativeTerminalTabWindow(window)
+        else {
+            return false
+        }
+        showSystemTabBarIfNeeded(for: window)
+        applyFocusedTerminalChrome(for: window)
+        return true
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -1003,6 +1049,10 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
     }
 
     func windowDidBecomeKey(_ notification: Notification) {
+        if let window = notification.object as? NSWindow {
+            showSystemTabBarIfNeeded(for: window)
+            applyFocusedTerminalChrome(for: window)
+        }
         postTabsChanged()
     }
 
@@ -1057,11 +1107,40 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
         window.tabbingIdentifier == tabbingIdentifier
     }
 
-    private func hideSystemTabBarIfNeeded(for window: NSWindow) {
-        guard window.tabGroup?.isTabBarVisible == true else {
+    private func showSystemTabBarIfNeeded(for window: NSWindow) {
+        guard isNativeTerminalTabWindow(window),
+              nativeTabWindows(for: window).count > 1,
+              window.tabGroup?.isTabBarVisible == false
+        else {
             return
         }
         window.toggleTabBar(nil)
+    }
+
+    @discardableResult
+    func applyFocusedTerminalChrome(for window: NSWindow?) -> Bool {
+        guard let window,
+              isNativeTerminalTabWindow(window),
+              let store = TerminalCommandRouter.shared.store(forWindow: window),
+              let renderConfig = store.focusedTerminal?.renderConfig
+        else {
+            return false
+        }
+
+        let titleChanged = TerminalWindowChromeApplier.applyFocusedChrome(
+            TerminalWindowChromeState(
+                title: store.tabDisplayTitle,
+                isFocused: true,
+                background: renderConfig.background,
+                backgroundOpacity: renderConfig.backgroundOpacity,
+                backgroundBlur: renderConfig.backgroundBlur
+            ),
+            to: window
+        )
+        if titleChanged {
+            postTabsChanged()
+        }
+        return true
     }
 
     private func postTabsChanged() {

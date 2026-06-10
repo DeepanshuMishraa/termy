@@ -18,22 +18,26 @@ struct TerminalFrameStoreApplyResult: Equatable {
 
 final class TerminalFrameStore {
     private(set) var frame: TerminalFrame = .empty
+    private(set) var hasVisibleContent = false
 
     func reset(to frame: TerminalFrame) {
         self.frame = frame
+        resetVisibleContentCount(from: frame.cells)
     }
 
     @discardableResult
     func apply(_ update: TerminalFrameUpdate) -> TerminalFrameStoreApplyResult {
         if update.damage == .full || dimensionsChanged(for: update) || frame.cells.isEmpty {
+            let cells = normalizedFullCells(from: update)
             frame = TerminalFrame(
                 cols: update.cols,
                 rows: update.rows,
-                cells: normalizedFullCells(from: update),
+                cells: cells,
                 cursor: update.cursor,
                 displayOffset: update.displayOffset,
                 historySize: update.historySize
             )
+            resetVisibleContentCount(from: cells)
             return TerminalFrameStoreApplyResult(
                 changed: true,
                 effectiveDamage: .full,
@@ -55,9 +59,11 @@ final class TerminalFrameStore {
                 continue
             }
             let index = (cell.row * frame.cols) + cell.col
+            let oldCell = frame.cells[index]
             guard frame.setCell(cell, at: index) else {
                 continue
             }
+            updateVisibleContentCount(oldCell: oldCell, newCell: cell)
             patchedRows.insert(cell.row)
             patchedCellCount += 1
         }
@@ -163,5 +169,32 @@ final class TerminalFrameStore {
         }
 
         return TerminalDamage.partialCoalesced(spans)
+    }
+
+    private var visibleContentCellCount = 0 {
+        didSet {
+            hasVisibleContent = visibleContentCellCount > 0
+        }
+    }
+
+    private func resetVisibleContentCount(from cells: [TerminalCell]) {
+        visibleContentCellCount = cells.reduce(into: 0) { count, cell in
+            if Self.isVisibleContent(cell) {
+                count += 1
+            }
+        }
+    }
+
+    private func updateVisibleContentCount(oldCell: TerminalCell, newCell: TerminalCell) {
+        let oldVisible = Self.isVisibleContent(oldCell)
+        let newVisible = Self.isVisibleContent(newCell)
+        if oldVisible == newVisible {
+            return
+        }
+        visibleContentCellCount += newVisible ? 1 : -1
+    }
+
+    private static func isVisibleContent(_ cell: TerminalCell) -> Bool {
+        cell.renderText && cell.character != " "
     }
 }

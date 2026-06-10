@@ -876,7 +876,10 @@ impl EventListener for JsonEventListener {
     }
 }
 
-const NATIVE_EVENT_LOOP_READ_BUFFER_SIZE: usize = 0x10_0000;
+/// Sized at 2× `NATIVE_EVENT_LOOP_MAX_LOCKED_READ`: enough to keep
+/// accumulating PTY output while the UI holds the terminal lock, without
+/// dirtying a full megabyte of stack per session thread.
+const NATIVE_EVENT_LOOP_READ_BUFFER_SIZE: usize = 0x2_0000;
 const NATIVE_EVENT_LOOP_MAX_LOCKED_READ: usize = u16::MAX as usize;
 #[cfg(not(target_os = "windows"))]
 const NATIVE_EVENT_LOOP_READ_WRITE_TOKEN: usize = 0;
@@ -1611,7 +1614,7 @@ impl Terminal {
 
     /// Sync live term options derived from the current runtime configuration.
     pub fn set_term_options(&self, options: TerminalOptions) {
-        self.with_term_mut(|term| term.set_options(options.term_config()));
+        self.with_term_mut(|term| apply_term_config(term, options.term_config()));
     }
 
     /// Change only the live scrollback cap, preserving cursor defaults.
@@ -1643,6 +1646,18 @@ impl Terminal {
     pub fn alternate_screen_mode(&self) -> bool {
         let term = self.term.lock();
         term.mode().contains(TermMode::ALT_SCREEN)
+    }
+}
+
+/// Apply a new term config, releasing the memory of any scrollback rows the
+/// new cap evicts. alacritty's history shrink keeps up to 1000 spare rows
+/// allocated (`Storage::MAX_CACHE_SIZE`), so lowering the cap — e.g. the
+/// inactive-tab scrollback limit — would otherwise free nothing.
+fn apply_term_config<L: EventListener>(term: &mut Term<L>, config: TermConfig) {
+    let shrinks_history = config.scrolling_history < term.grid().history_size();
+    term.set_options(config);
+    if shrinks_history {
+        term.grid_mut().truncate();
     }
 }
 
@@ -1767,11 +1782,12 @@ mod tests {
         DEFAULT_TERM, GHOSTTY_COMPAT_TERM_PROGRAM, GHOSTTY_COMPAT_TERM_PROGRAM_VERSION,
         JsonEventListener, RuntimeEvent, TERMY_TERM_PROGRAM, TerminalCursorState,
         TerminalCursorStyle, TerminalDamageSnapshot, TerminalEvent, TerminalRuntimeConfig,
-        TerminalSize, WindowsShell, WorkingDirFallback, cursor_position_from_term,
-        cursor_state_from_term, default_shell_launch, drain_runtime_events,
-        normalize_working_directory_candidate, pty_env_overrides, resolve_launch_working_directory,
-        resolve_shell_path, search_term_buffer, take_term_damage_snapshot, terminal_event_from_osc,
-        termmode_to_terminal_mouse_mode, user_home_dir,
+        TerminalSize, WindowsShell, WorkingDirFallback, apply_term_config,
+        cursor_position_from_term, cursor_state_from_term, default_shell_launch,
+        drain_runtime_events, normalize_working_directory_candidate, pty_env_overrides,
+        resolve_launch_working_directory, resolve_shell_path, search_term_buffer,
+        take_term_damage_snapshot, terminal_event_from_osc, termmode_to_terminal_mouse_mode,
+        user_home_dir,
     };
     use crate::keyboard::{
         Keystroke, Modifiers, TerminalKeyEventKind, TerminalKeyboardMode, keystroke_to_input,
@@ -2897,6 +2913,37 @@ mod tests {
 
         assert_eq!(term.grid().history_size(), 8);
         assert_eq!(term.cursor_style().shape, CursorShape::Beam);
+    }
+
+    #[test]
+    fn shrinking_scrollback_trims_history_and_keeps_terminal_usable() {
+        let size = test_terminal_size();
+        let initial = TerminalRuntimeConfig {
+            scrollback_history: 256,
+            ..TerminalRuntimeConfig::default()
+        };
+        let mut term: Term<VoidListener> =
+            Term::new(initial.term_options().term_config(), &size, VoidListener);
+
+        let mut parser: ansi::Processor = ansi::Processor::new();
+        let output = (0..300)
+            .map(|index| format!("line-{index}\r\n"))
+            .collect::<String>();
+        parser.advance(&mut term, output.as_bytes());
+        assert_eq!(term.grid().history_size(), 256);
+
+        // Shrink (the inactive-tab path), which must also trim the raw buffer.
+        let inactive = TerminalRuntimeConfig {
+            scrollback_history: 16,
+            ..initial.clone()
+        };
+        apply_term_config(&mut term, inactive.term_options().term_config());
+        assert_eq!(term.grid().history_size(), 16);
+
+        // Grow back (tab reactivated) and keep scrolling: storage must regrow.
+        apply_term_config(&mut term, initial.term_options().term_config());
+        parser.advance(&mut term, output.as_bytes());
+        assert_eq!(term.grid().history_size(), 256);
     }
 
     #[test]

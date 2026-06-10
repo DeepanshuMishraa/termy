@@ -44,6 +44,49 @@ final class TerminalFrameStoreTests: XCTestCase {
         XCTAssertEqual(result.effectiveDamage.dirtyRows, [0])
     }
 
+    func testVisibleContentTracksFullAndPartialUpdates() {
+        let store = TerminalFrameStore()
+        var blank = TerminalFrame.plainTextPreview("   ", cols: 3, rows: 1)
+        blank.cells = blank.cells.map { cell in
+            var next = cell
+            next.renderText = false
+            return next
+        }
+        store.reset(to: blank)
+
+        XCTAssertFalse(store.hasVisibleContent)
+
+        var visibleCell = blank.cells[1]
+        visibleCell.character = "Z"
+        visibleCell.renderText = true
+        _ = store.apply(TerminalFrameUpdate(
+            cols: blank.cols,
+            rows: blank.rows,
+            cells: [visibleCell],
+            cursor: nil,
+            displayOffset: 0,
+            historySize: 0,
+            damage: .partial([TerminalDirtySpan(row: 0, leftCol: 1, rightCol: 1)])
+        ))
+
+        XCTAssertTrue(store.hasVisibleContent)
+
+        var clearedCell = visibleCell
+        clearedCell.character = " "
+        clearedCell.renderText = false
+        _ = store.apply(TerminalFrameUpdate(
+            cols: blank.cols,
+            rows: blank.rows,
+            cells: [clearedCell],
+            cursor: nil,
+            displayOffset: 0,
+            historySize: 0,
+            damage: .partial([TerminalDirtySpan(row: 0, leftCol: 1, rightCol: 1)])
+        ))
+
+        XCTAssertFalse(store.hasVisibleContent)
+    }
+
     func testPartialUpdateMutatesSharedCellStorage() {
         let store = TerminalFrameStore()
         let initial = TerminalFrame.plainTextPreview("abc", cols: 3, rows: 1)

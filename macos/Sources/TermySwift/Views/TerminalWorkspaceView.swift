@@ -8,7 +8,6 @@ struct TerminalWorkspaceView: View {
     @State private var workspacePersistenceError: String?
     @State private var didRestoreWorkspace = false
     @State private var persistenceSaveTask: Task<Void, Never>?
-    @State private var currentWindow: NSWindow?
     private let workspacePersistence = TerminalWorkspacePersistence()
     private let shouldRestorePersistedWorkspace: Bool
 
@@ -18,12 +17,10 @@ struct TerminalWorkspaceView: View {
     }
 
     var body: some View {
-        tabbedWorkspaceContent
+        workspaceContent
             .background(TerminalWorkspaceRoutingView(
                 store: store,
-                onWindowChanged: { window in
-                    currentWindow = window
-                }
+                onWindowChanged: { _ in }
             ))
             .focusedValue(\.terminalCommands, commandSet)
             .onAppear {
@@ -42,23 +39,6 @@ struct TerminalWorkspaceView: View {
             .onReceive(configurationStore.$loadErrorMessage) { message in
                 appConfigurationError = message
             }
-    }
-
-    @ViewBuilder
-    private var tabbedWorkspaceContent: some View {
-        let configuration = configurationStore.configuration
-        switch configuration.native.tabBarPosition {
-        case .top:
-            VStack(spacing: 0) {
-                NativeTabChromeView(window: currentWindow, configuration: configuration)
-                workspaceContent
-            }
-        case .right:
-            HStack(spacing: 0) {
-                workspaceContent
-                NativeTabChromeView(window: currentWindow, configuration: configuration)
-            }
-        }
     }
 
     private var workspaceContent: some View {
@@ -540,9 +520,6 @@ private struct TerminalCommandPalette: View {
             PaletteCommand(title: "Prettify Config", action: .prettifyConfig, systemImage: "wand.and.stars") { _ in
                 _ = TermyNativeAppActions.prettifyConfig()
             },
-            PaletteCommand(title: "Toggle Native Tab Bar", action: .toggleTabBarVisibility, systemImage: "sidebar.left") { _ in
-                _ = TermyNativeAppActions.toggleNativeTabBarVisibility(for: NSApp.keyWindow)
-            },
             PaletteCommand(title: "App Info", action: .appInfo, systemImage: "info.circle") { _ in
                 TermyNativeAppActions.showAppInfo()
             },
@@ -620,6 +597,7 @@ private final class RoutingRegistrationView: NSView {
         }
         registeredWindow = window
         TerminalCommandRouter.shared.register(store, for: window)
+        NativeTabWindowManager.shared.applyFocusedTerminalChrome(for: window)
         onWindowChanged(window)
     }
 }

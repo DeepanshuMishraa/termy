@@ -10,6 +10,9 @@ final class TerminalViewModel: ObservableObject {
     @Published private(set) var title = "Shell"
     @Published private(set) var progress = TerminalProgress.clear
     @Published private(set) var isExited = false
+    @Published private(set) var hasVisibleContent = false
+    @Published private(set) var frameMetadata = TerminalFrameMetadata.empty
+    @Published private(set) var canCopySelection = false
     @Published private(set) var currentWorkingDirectory: String?
     @Published private(set) var searchMatches: [TerminalSearchMatch] = []
     @Published private(set) var activeSearchMatchIndex = 0
@@ -51,6 +54,10 @@ final class TerminalViewModel: ObservableObject {
 
     private var terminal: LibTermyTerminal?
     private var cursorBlinkPhase = TerminalCursorBlinkPhase()
+    /// Whether the hosting pane is focused (pushed in by the surface view).
+    /// Unfocused panes never draw a cursor, so they skip blink ticking and idle
+    /// at the slower inert cadence instead of the blink interval.
+    private var isPaneFocused = true
     private var baseRenderConfig = TerminalRenderConfig.default
     private var fontSizeDelta: CGFloat = 0
     private var refreshDriver: DisplaySyncedRefreshDriver?
@@ -101,6 +108,9 @@ final class TerminalViewModel: ObservableObject {
             let previewFrame = TerminalFrame.plainTextPreview(restoredBufferText)
             frameStore.reset(to: previewFrame)
             frame = previewFrame
+            hasVisibleContent = frameStore.hasVisibleContent
+            frameMetadata = TerminalFrameMetadata(frame: previewFrame)
+            canCopySelection = previewFrame.hasSelectedText(for: selection)
             renderPlanCache.update(
                 frame: previewFrame,
                 renderConfig: renderConfig,
@@ -211,12 +221,49 @@ final class TerminalViewModel: ObservableObject {
     }
 
     private func adaptCadenceWhenIdle() {
-        guard cadence == .active,
-              Date().timeIntervalSince(lastActivityAt) > Self.idleCadenceThreshold
-        else {
+        let idleCadence = Self.idleCadence(
+            cursorBlink: renderConfig.cursorBlink,
+            paneFocused: isPaneFocused
+        )
+        if cadence == .active {
+            guard Date().timeIntervalSince(lastActivityAt) > Self.idleCadenceThreshold else {
+                return
+            }
+            startRefreshDriver(idleCadence)
             return
         }
-        startRefreshDriver(.idle)
+        // Already idle, but the blink relevance may have changed (focus moved,
+        // config reloaded) — switch between the blink and inert idle cadences.
+        if cadence != idleCadence {
+            startRefreshDriver(idleCadence)
+        }
+    }
+
+    /// The idle cadence for the current blink relevance: panes that animate a
+    /// blinking cursor poll at the blink interval; panes with nothing to animate
+    /// (blink disabled, or unfocused — no cursor is drawn) only need the slow
+    /// safety poll, as output wakes them through the FFI wake channel.
+    nonisolated static func idleCadence(cursorBlink: Bool, paneFocused: Bool) -> RefreshCadence {
+        cursorBlink && paneFocused ? .idle : .idleInert
+    }
+
+    /// Pushed by the surface view when pane focus changes. Restores a solid
+    /// cursor on focus gain and re-evaluates the idle cadence either way.
+    func setPaneFocused(_ focused: Bool) {
+        guard focused != isPaneFocused else {
+            return
+        }
+        isPaneFocused = focused
+        if focused {
+            resetCursorBlinkPhase()
+        }
+        guard terminal != nil, !isSuspended, cadence != .active else {
+            return
+        }
+        startRefreshDriver(Self.idleCadence(
+            cursorBlink: renderConfig.cursorBlink,
+            paneFocused: focused
+        ))
     }
 
     /// Pauses refresh polling without tearing down the PTY, so the terminal core
@@ -362,7 +409,7 @@ final class TerminalViewModel: ObservableObject {
             return
         }
 
-        selection = nil
+        updateSelection(nil)
         if frame.displayOffset > 0 {
             scrollToBottom()
         }
@@ -453,6 +500,7 @@ final class TerminalViewModel: ObservableObject {
 
     func updateSelection(_ selection: TerminalSelection?) {
         self.selection = selection
+        canCopySelection = frame.hasSelectedText(for: selection)
         guard renderConfig.copyOnSelect,
               let text = frame.selectedText(for: selection),
               !text.isEmpty
@@ -694,7 +742,11 @@ final class TerminalViewModel: ObservableObject {
                 adaptCadenceWhenIdle()
             }
 
-            let blinkToggled = cursorBlinkPhase.tick(blinkEnabled: renderConfig.cursorBlink)
+            // Only the focused pane draws a cursor, so only it animates blink;
+            // unfocused panes settle to a solid (visible) phase.
+            let blinkToggled = cursorBlinkPhase.tick(
+                blinkEnabled: renderConfig.cursorBlink && isPaneFocused
+            )
             if blinkToggled {
                 cursorBlinkVisible = cursorBlinkPhase.isVisible
             }
@@ -711,7 +763,7 @@ final class TerminalViewModel: ObservableObject {
                 return
             }
 
-            frame = frameStore.frame
+            publishFrameState()
             // Once the scrollback fills, eviction would drift recorded marks, so
             // stop tracking and drop them rather than show stale positions.
             if commandMarkTrackingActive,
@@ -757,6 +809,13 @@ final class TerminalViewModel: ObservableObject {
         renderDamage = .partial([
             TerminalDirtySpan(row: cursor.row, leftCol: cursor.col, rightCol: cursor.col)
         ])
+    }
+
+    private func publishFrameState() {
+        frame = frameStore.frame
+        hasVisibleContent = frameStore.hasVisibleContent
+        frameMetadata = TerminalFrameMetadata(frame: frame)
+        canCopySelection = frame.hasSelectedText(for: selection)
     }
 
     private func shouldForceStartupRefresh() -> Bool {
@@ -1160,6 +1219,10 @@ private struct TerminalResize: Equatable {
 enum RefreshCadence {
     case active
     case idle
+    /// Idle with no cursor blink to animate (blink disabled or pane unfocused):
+    /// the only remaining job is a slow safety poll, since PTY output wakes the
+    /// terminal immediately through the FFI wake channel.
+    case idleInert
 
     var interval: TimeInterval {
         switch self {
@@ -1167,6 +1230,8 @@ enum RefreshCadence {
             return 1.0 / 60.0
         case .idle:
             return TerminalCursorBlinkPhase.interval
+        case .idleInert:
+            return 2.0
         }
     }
 }

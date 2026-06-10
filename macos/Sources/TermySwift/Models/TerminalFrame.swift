@@ -1,4 +1,5 @@
 import CTermy
+import AppKit
 import SwiftUI
 
 struct TerminalRGBA: Equatable {
@@ -48,6 +49,17 @@ struct TerminalRGBA: Equatable {
 
     var swiftUIColor: Color {
         Color(red: red, green: green, blue: blue, opacity: alpha)
+    }
+
+    /// Terminal escape-sequence colors are sRGB by convention; the calibrated
+    /// generic color space renders them visibly duller.
+    var nsColor: NSColor {
+        NSColor(
+            srgbRed: red,
+            green: green,
+            blue: blue,
+            alpha: alpha
+        )
     }
 
     private static func byte(_ value: Double) -> UInt8 {
@@ -366,6 +378,46 @@ struct TerminalCursor: Equatable {
     var style: TerminalCursorStyle
 }
 
+struct TerminalFrameMetadata: Equatable {
+    var cols: Int
+    var rows: Int
+    var cursor: TerminalCursor?
+    var displayOffset: Int
+    var historySize: Int
+
+    static let empty = TerminalFrameMetadata(
+        cols: 0,
+        rows: 0,
+        cursor: nil,
+        displayOffset: 0,
+        historySize: 0
+    )
+
+    init(
+        cols: Int,
+        rows: Int,
+        cursor: TerminalCursor?,
+        displayOffset: Int,
+        historySize: Int
+    ) {
+        self.cols = cols
+        self.rows = rows
+        self.cursor = cursor
+        self.displayOffset = displayOffset
+        self.historySize = historySize
+    }
+
+    init(frame: TerminalFrame) {
+        self.init(
+            cols: frame.cols,
+            rows: frame.rows,
+            cursor: frame.cursor,
+            displayOffset: frame.displayOffset,
+            historySize: frame.historySize
+        )
+    }
+}
+
 private final class TerminalCellStorage: Equatable {
     var cells: [TerminalCell]
 
@@ -510,6 +562,39 @@ struct TerminalFrame: Equatable {
             return nil
         }
         return lines.joined(separator: "\n")
+    }
+
+    /// Whether `selectedText(for:)` would return non-empty text, without
+    /// building the string (this runs per render pass). A multi-row selection
+    /// is always non-empty (the row join contributes a newline); a single-row
+    /// selection is non-empty exactly when some cell renders a non-space — the
+    /// trailing-space trim removes everything else.
+    func hasSelectedText(for selection: TerminalSelection?) -> Bool {
+        guard let selection else {
+            return false
+        }
+        let ranges = selection.rowRanges(cols: cols, rows: rows)
+        guard let range = ranges.first else {
+            return false
+        }
+        if ranges.count > 1 {
+            return true
+        }
+        guard range.startCol <= range.endCol else {
+            return false
+        }
+        return (range.startCol...range.endCol).contains { col in
+            guard let cell = cell(row: range.row, col: col), cell.renderText else {
+                return false
+            }
+            return cell.character != " "
+        }
+    }
+
+    var hasVisibleContent: Bool {
+        cells.contains { cell in
+            cell.renderText && cell.character != " "
+        }
     }
 
     func visibleTextSnapshot() -> String {
