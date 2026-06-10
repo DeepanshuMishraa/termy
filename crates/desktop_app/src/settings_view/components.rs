@@ -32,20 +32,14 @@ impl SettingsWindow {
         section: SettingsSection,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let bg_input = self.bg_input();
         let hover_bg = self.bg_hover();
-        let border_color = self.border_color();
         let text_primary = self.text_primary();
         let text_muted = self.text_muted();
-        let text_secondary = self.text_secondary();
         let subtitle = Self::settings_section_subtitle(section);
+        // Quiet ghost button, rendered only while the section actually has
+        // something to reset — native settings keep destructive affordances
+        // out of sight until they apply.
         let can_reset = self.section_has_non_default_values(section);
-        let mut disabled_bg = bg_input;
-        disabled_bg.a *= 0.6;
-        let mut disabled_border = border_color;
-        disabled_border.a *= 0.6;
-        let mut disabled_text = text_muted;
-        disabled_text.a *= 0.6;
 
         div()
             .flex()
@@ -71,7 +65,7 @@ impl SettingsWindow {
                             .child(subtitle),
                     ),
             )
-            .child({
+            .children(can_reset.then(|| {
                 let is_section_hovered = self.hovered_reset_section == Some(section);
                 let tooltip_bg = self.bg_elevated();
                 let tooltip_border = self.border_color();
@@ -79,42 +73,27 @@ impl SettingsWindow {
                 div()
                     .id(SharedString::from(format!("reset-section-{section:?}")))
                     .relative()
-                    .px_3()
-                    .py(px(6.0))
+                    .px_2()
+                    .py(px(5.0))
                     .rounded(px(SETTINGS_BUTTON_RADIUS))
-                    .bg(if can_reset { bg_input } else { disabled_bg })
-                    .border_1()
-                    .border_color(if can_reset {
-                        border_color
-                    } else {
-                        disabled_border
-                    })
                     .text_xs()
                     .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(if can_reset {
-                        text_secondary
-                    } else {
-                        disabled_text
-                    })
-                    .when(can_reset, |s| {
-                        s.cursor_pointer()
-                            .hover(move |s| s.bg(hover_bg).text_color(text_primary))
-                            .on_hover(cx.listener(move |view, hovering: &bool, _window, cx| {
-                                if *hovering {
-                                    view.hovered_reset_section = Some(section);
-                                } else if view.hovered_reset_section == Some(section) {
-                                    view.hovered_reset_section = None;
-                                }
-                                cx.notify();
-                            }))
-                    })
+                    .text_color(text_muted)
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(hover_bg).text_color(text_primary))
+                    .on_hover(cx.listener(move |view, hovering: &bool, _window, cx| {
+                        if *hovering {
+                            view.hovered_reset_section = Some(section);
+                        } else if view.hovered_reset_section == Some(section) {
+                            view.hovered_reset_section = None;
+                        }
+                        cx.notify();
+                    }))
                     .child("Reset section")
-                    .when(can_reset, |s| {
-                        s.on_click(cx.listener(move |view, _, _, cx| {
-                            view.confirm_reset_section_to_defaults(section, cx);
-                        }))
-                    })
-                    .when(is_section_hovered && can_reset, move |s| {
+                    .on_click(cx.listener(move |view, _, _, cx| {
+                        view.confirm_reset_section_to_defaults(section, cx);
+                    }))
+                    .when(is_section_hovered, move |s| {
                         s.child(
                             deferred(
                                 div()
@@ -136,7 +115,7 @@ impl SettingsWindow {
                             .with_priority(20),
                         )
                     })
-            })
+            }))
     }
 
     pub(super) fn render_group_header(&self, title: &'static str) -> impl IntoElement {
@@ -157,11 +136,10 @@ impl SettingsWindow {
     ) -> impl IntoElement {
         let hover_bg = self.bg_hover();
         let text_primary = self.text_primary();
-        let text_muted = self.text_muted();
+        // Settings at their default value render an empty slot of the same size
+        // so controls stay column-aligned while the reset affordance stays out
+        // of sight until it applies.
         let can_reset = !self.is_setting_at_default(setting_key);
-        let mut disabled_text = text_muted;
-        disabled_text.a *= 0.35;
-        let icon_color = if can_reset { text_muted } else { disabled_text };
         let is_hovered = self.hovered_reset_setting == Some(setting_key);
         let tooltip_bg = self.bg_elevated();
         let tooltip_border = self.border_color();
@@ -188,12 +166,12 @@ impl SettingsWindow {
                         cx.notify();
                     }))
             })
-            .child(
+            .children(can_reset.then(|| {
                 svg()
                     .path(SharedString::from("icons/settings/reset.svg"))
                     .size(px(13.0))
-                    .text_color(if can_reset { text_primary } else { icon_color }),
-            )
+                    .text_color(text_primary)
+            }))
             .when(can_reset, |s| {
                 s.on_click(cx.listener(move |view, _, _, cx| {
                     view.confirm_reset_setting_to_default(setting_key, cx);
@@ -770,11 +748,12 @@ impl SettingsWindow {
             .as_ref()
             .is_some_and(|input| input.field == field);
         let uses_dropdown = Self::field_uses_dropdown(field);
-        let accent_inner_border = is_numeric || uses_dropdown;
         let text_secondary = self.text_secondary();
         let hover_bg = self.bg_hover();
+        let row_hover_bg = self.bg_elevated();
         let input_bg = self.bg_input();
         let border_color = self.border_color();
+        let idle_border = self.card_border_color();
         let accent = self.accent();
         let bg_card = self.bg_card();
         let text_primary = self.text_primary();
@@ -827,6 +806,7 @@ impl SettingsWindow {
                 )
             })
             .cursor_pointer()
+            .hover(move |s| s.bg(row_hover_bg))
             .when(!is_numeric, |s| {
                 s.on_mouse_down(
                     MouseButton::Left,
@@ -896,11 +876,7 @@ impl SettingsWindow {
                                     .rounded(px(SETTINGS_INPUT_RADIUS))
                                     .bg(input_bg)
                                     .border_1()
-                                    .border_color(if is_active && accent_inner_border {
-                                        accent
-                                    } else {
-                                        border_color
-                                    })
+                                    .border_color(if is_active { accent } else { idle_border })
                                     .overflow_hidden()
                                     .child(value_element),
                             )
@@ -1249,7 +1225,7 @@ impl SettingsWindow {
         let is_search_match = self.setting_matches_sidebar_query(search_key);
         let match_stripe = self.accent_with_alpha(0.85);
         let match_bg = self.accent_with_alpha(0.06);
-        let border_color = self.border_color();
+        let border_color = self.card_border_color();
         let input_bg = self.bg_input();
         let text_primary = self.text_primary();
         let text_secondary = self.text_secondary();

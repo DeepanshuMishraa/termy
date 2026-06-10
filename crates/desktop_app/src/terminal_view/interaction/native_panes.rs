@@ -317,6 +317,7 @@ mod tests {
             height,
             pane_zoom_steps: 0,
             degraded: false,
+            progress_state: ProgressState::default(),
             terminal: test_terminal(),
             render_cache: RefCell::new(TerminalPaneRenderCache::default()),
             last_alternate_screen: Cell::new(false),
@@ -370,7 +371,6 @@ mod tests {
             sticky_title_width: 0.0,
             display_width: TAB_MIN_WIDTH,
             running_process: false,
-            progress_state: ProgressState::default(),
             command_lifecycle: CommandLifecycle::default(),
         };
 
@@ -407,7 +407,6 @@ mod tests {
             sticky_title_width: 0.0,
             display_width: TAB_MIN_WIDTH,
             running_process: false,
-            progress_state: ProgressState::default(),
             command_lifecycle: CommandLifecycle::default(),
         };
 
@@ -445,7 +444,6 @@ mod tests {
             sticky_title_width: 0.0,
             display_width: TAB_MIN_WIDTH,
             running_process: false,
-            progress_state: ProgressState::default(),
             command_lifecycle: CommandLifecycle::default(),
         };
 

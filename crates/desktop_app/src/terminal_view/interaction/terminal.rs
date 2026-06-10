@@ -270,7 +270,10 @@ impl TerminalView {
         let now = Instant::now();
         let viewport = window.viewport_size();
         let viewport_width: f32 = viewport.width.into();
-        let viewport_height: f32 = viewport.height.into();
+        // The inspector pane reserves space at the bottom; size the PTY grids
+        // against the remaining terminal area so content never hides under it.
+        let viewport_height: f32 =
+            Into::<f32>::into(viewport.height) - self.inspector_bottom_inset();
         let cell_width: f32 = layout_cell_size.width.into();
         let cell_height: f32 = layout_cell_size.height.into();
 
@@ -443,6 +446,7 @@ mod tests {
             height: 1,
             pane_zoom_steps: 0,
             degraded: false,
+            progress_state: ProgressState::default(),
             terminal: test_terminal(),
             render_cache: RefCell::new(TerminalPaneRenderCache::default()),
             last_alternate_screen: Cell::new(false),
@@ -485,7 +489,6 @@ mod tests {
             sticky_title_width: 0.0,
             display_width: TAB_MIN_WIDTH,
             running_process: false,
-            progress_state: ProgressState::default(),
             command_lifecycle: CommandLifecycle::default(),
         };
 
@@ -493,6 +496,86 @@ mod tests {
             &mut tab
         ));
         assert_eq!(tab.active_pane_id, "%native-1");
+    }
+
+    #[test]
+    fn aggregate_progress_state_picks_highest_severity_across_panes() {
+        let mut tab = TerminalTab {
+            id: 1,
+            window_id: "@native-1".to_string(),
+            window_index: 0,
+            panes: vec![
+                test_pane("%native-1"),
+                test_pane("%native-2"),
+                test_pane("%native-3"),
+            ],
+            active_pane_id: "%native-1".to_string(),
+            pinned: false,
+            manual_title: None,
+            explicit_title: None,
+            explicit_title_is_prediction: false,
+            shell_title: None,
+            current_command: None,
+            pending_command_title: None,
+            pending_command_token: 0,
+            last_prompt_cwd: None,
+            title: DEFAULT_TAB_TITLE.to_string(),
+            title_text_width: 0.0,
+            sticky_title_width: 0.0,
+            display_width: TAB_MIN_WIDTH,
+            running_process: false,
+            command_lifecycle: CommandLifecycle::default(),
+        };
+
+        assert_eq!(tab.aggregate_progress_state(), ProgressState::Clear);
+
+        tab.panes[0].progress_state = ProgressState::InProgress(20);
+        tab.panes[1].progress_state = ProgressState::InProgress(80);
+        assert_eq!(
+            tab.aggregate_progress_state(),
+            ProgressState::InProgress(50)
+        );
+
+        tab.panes[2].progress_state = ProgressState::Indeterminate;
+        assert_eq!(
+            tab.aggregate_progress_state(),
+            ProgressState::InProgress(50)
+        );
+
+        tab.panes[1].progress_state = ProgressState::Warning(80);
+        assert_eq!(tab.aggregate_progress_state(), ProgressState::Warning(80));
+
+        tab.panes[0].progress_state = ProgressState::Error(42);
+        assert_eq!(tab.aggregate_progress_state(), ProgressState::Error(42));
+    }
+
+    #[test]
+    fn aggregate_progress_state_falls_back_to_indeterminate() {
+        let mut tab = TerminalTab {
+            id: 1,
+            window_id: "@native-1".to_string(),
+            window_index: 0,
+            panes: vec![test_pane("%native-1"), test_pane("%native-2")],
+            active_pane_id: "%native-1".to_string(),
+            pinned: false,
+            manual_title: None,
+            explicit_title: None,
+            explicit_title_is_prediction: false,
+            shell_title: None,
+            current_command: None,
+            pending_command_title: None,
+            pending_command_token: 0,
+            last_prompt_cwd: None,
+            title: DEFAULT_TAB_TITLE.to_string(),
+            title_text_width: 0.0,
+            sticky_title_width: 0.0,
+            display_width: TAB_MIN_WIDTH,
+            running_process: false,
+            command_lifecycle: CommandLifecycle::default(),
+        };
+
+        tab.panes[1].progress_state = ProgressState::Indeterminate;
+        assert_eq!(tab.aggregate_progress_state(), ProgressState::Indeterminate);
     }
 
     #[test]

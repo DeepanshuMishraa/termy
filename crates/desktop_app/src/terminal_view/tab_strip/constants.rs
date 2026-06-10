@@ -9,19 +9,25 @@ pub(crate) const TOP_STRIP_TERMY_BRANDING_TEXT: &str = "termy";
 pub(crate) const TOP_STRIP_TERMY_BRANDING_FONT_SIZE: f32 = 12.0;
 pub(crate) const TOP_STRIP_TERMY_BRANDING_SIDE_PADDING: f32 = 10.0;
 pub(crate) const TOP_STRIP_TERMY_BRANDING_TAB_GAP: f32 = 8.0;
-pub(crate) const TAB_HORIZONTAL_PADDING: f32 = 0.0;
-pub(crate) const TAB_ITEM_HEIGHT: f32 = 28.0;
-pub(crate) const TAB_ITEM_GAP: f32 = 0.0;
-pub(crate) const TAB_ITEM_RADIUS: f32 = 0.0;
+pub(crate) const TAB_HORIZONTAL_PADDING: f32 = 6.0;
+pub(crate) const TAB_ITEM_HEIGHT: f32 = 26.0;
+pub(crate) const TAB_ITEM_GAP: f32 = 4.0;
+pub(crate) const TAB_ITEM_RADIUS: f32 = 5.0;
 pub(crate) const TAB_TEXT_PADDING_X: f32 = 10.0;
-pub(crate) const TAB_LEADING_ICON_SLOT_WIDTH: f32 = 19.0;
-pub(crate) const TAB_LEADING_ICON_SIZE: f32 = 13.0;
+// Reserved leading area inside each tab. Stays empty unless the tab reports a
+// progress state, in which case the progress dot renders here; reserving it
+// unconditionally keeps the title from shifting when progress appears.
+pub(crate) const TAB_LEADING_SLOT_WIDTH: f32 = 14.0;
+// Accent bar marking the active tab. Inset vertically past the chip corner
+// radius so the rounded corners never clip it.
+pub(crate) const TAB_ACTIVE_INDICATOR_WIDTH: f32 = 2.0;
+pub(crate) const TAB_ACTIVE_INDICATOR_INSET_Y: f32 = 6.0;
 pub(crate) const TAB_HORIZONTAL_TITLE_FONT_SIZE: f32 = 12.0;
 pub(crate) const TAB_TITLE_FONT_SIZE: f32 = 12.0;
 // Adds a small cushion to avoid early clipping from glyph/metrics variance.
 pub(crate) const TAB_TITLE_LAYOUT_SLACK_PX: f32 = 18.0;
 pub(crate) const TAB_MIN_WIDTH: f32 = 96.0;
-pub(crate) const TAB_MAX_WIDTH: f32 = 180.0;
+pub(crate) const TAB_MAX_WIDTH: f32 = 260.0;
 // Width a tab expands to while its title is being renamed, to give the inline
 // editor room to type. Exceeds TAB_MAX_WIDTH on purpose; clamped to the
 // available viewport width so it never overflows the strip.
@@ -50,12 +56,13 @@ pub(crate) const TABBAR_NEW_TAB_BUTTON_SIZE: f32 = TAB_ITEM_HEIGHT;
 pub(crate) const SIDEBAR_WIDTH: f32 = 200.0;
 pub(crate) const SIDEBAR_COLLAPSED_WIDTH: f32 = 28.0;
 pub(crate) const SIDEBAR_HEADER_HEIGHT: f32 = 32.0;
-pub(crate) const SIDEBAR_TAB_ROW_HEIGHT: f32 = 34.0;
-// Kept at 0 so the shared 1D drop-slot / hit-test helpers (which use
-// TAB_ITEM_GAP between items) work unchanged for the vertical axis.
-pub(crate) const SIDEBAR_TAB_ROW_GAP: f32 = 0.0;
+pub(crate) const SIDEBAR_TAB_ROW_HEIGHT: f32 = 32.0;
+pub(crate) const SIDEBAR_TAB_ROW_GAP: f32 = 2.0;
+// Horizontal margin around sidebar tab rows and vertical padding above the
+// first row, so the rounded rows read as chips inside the sidebar column.
+pub(crate) const SIDEBAR_TAB_MARGIN_X: f32 = 6.0;
+pub(crate) const SIDEBAR_TAB_PADDING_Y: f32 = 6.0;
 pub(crate) const TAB_STRIP_SCROLL_EPSILON: f32 = 0.5;
 pub(crate) const TAB_STRIP_WHEEL_DELTA_LINE_REFERENCE_PX: f32 = 16.0;
-pub(crate) const TAB_PROGRESS_BADGE_SIZE: f32 = 8.0;
-pub(crate) const TAB_PROGRESS_BADGE_MARGIN: f32 = 6.0;
+pub(crate) const TAB_PROGRESS_BADGE_SIZE: f32 = 7.0;
 pub(crate) const TAB_STRIP_BRANDING_TEXT_ALPHA_FLOOR: f32 = 0.82;

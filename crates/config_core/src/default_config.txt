@@ -79,6 +79,8 @@ colorterm = truecolor
 window_width = 1280
 # Default startup window height in pixels
 window_height = 820
+# Remembered height in pixels of the developer inspector panel
+inspector_height = 280
 # Font family used in terminal UI
 font_family = JetBrains Mono
 # Font family used for tabs, command palette, and settings UI (not the terminal cells)
@@ -110,7 +112,7 @@ scrollbar_style = neutral
 # Lines retained in terminal scrollback
 scrollback_history = 1000
 # Scrollback limit for inactive tabs
-inactive_tab_scrollback = 250
+# inactive_tab_scrollback = 250
 # How inactive panes are visually dimmed when a pane is active
 pane_focus_effect = soft_spotlight
 # Strength of active pane emphasis (0.0 to 2.0)

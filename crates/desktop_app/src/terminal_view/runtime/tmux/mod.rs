@@ -89,6 +89,7 @@ impl TerminalPane {
             height: state.height,
             pane_zoom_steps: 0,
             degraded,
+            progress_state: ProgressState::default(),
             terminal,
             render_cache: std::cell::RefCell::new(TerminalPaneRenderCache::default()),
             last_alternate_screen: std::cell::Cell::new(false),
@@ -134,7 +135,6 @@ impl TerminalTab {
             sticky_title_width,
             display_width,
             running_process: false,
-            progress_state: ProgressState::default(),
             command_lifecycle: CommandLifecycle::default(),
         }
     }

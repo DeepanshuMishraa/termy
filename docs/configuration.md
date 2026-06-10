@@ -153,13 +153,13 @@ Platform note: the Agent Sidebar/Workspace is currently unavailable on Windows b
 - Group: `SCROLLING`
 
 `scrollback_history`
-- Default: `2000`
+- Default: `1000`
 - Aliases: `scrollback`
 - Lines retained in terminal scrollback
 - Group: `SCROLLING`
 
 `inactive_tab_scrollback`
-- Default: unset
+- Default: `250`
 - Scrollback limit for inactive tabs
 - Group: `SCROLLING`
 
@@ -332,6 +332,11 @@ Platform note: the Agent Sidebar/Workspace is currently unavailable on Windows b
 - Default: `820`
 - Default startup window height in pixels
 - Group: `WINDOW`
+
+`inspector_height`
+- Default: `280`
+- Remembered height in pixels of the developer inspector panel
+- Group: `UI`
 
 ## Keybindings
 

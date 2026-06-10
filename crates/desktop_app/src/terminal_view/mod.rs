@@ -59,6 +59,7 @@ mod benchmark;
 mod command_palette;
 mod constants;
 mod inline_input;
+mod inspector;
 mod interaction;
 #[cfg(target_os = "macos")]
 mod macos_file_drop;
@@ -732,6 +733,9 @@ struct TerminalPane {
     pane_zoom_steps: i16,
     degraded: bool,
     terminal: Terminal,
+    // Progress reported by this pane's shell via OSC 9;4; the tab strip shows
+    // the per-tab aggregate (TerminalTab::aggregate_progress_state).
+    progress_state: ProgressState,
     render_cache: RefCell<TerminalPaneRenderCache>,
     /// Tracks the previous alternate-screen state so that transitions can be
     /// detected during `sync_terminal_size` and a SIGWINCH nudge sent.
@@ -820,6 +824,7 @@ impl TerminalPane {
             height,
             pane_zoom_steps: 0,
             degraded: false,
+            progress_state: ProgressState::default(),
             terminal,
             render_cache: RefCell::new(TerminalPaneRenderCache::default()),
             last_alternate_screen: Cell::new(false),
@@ -1128,7 +1133,6 @@ struct TerminalTab {
     sticky_title_width: f32,
     display_width: f32,
     running_process: bool,
-    progress_state: ProgressState,
     command_lifecycle: CommandLifecycle,
 }
 
@@ -1140,6 +1144,38 @@ struct NativePaneZoomSnapshot {
     layout_tree: Option<NativePaneLayoutTree>,
 }
 impl TerminalTab {
+    /// Tab-level progress summary across panes, by severity: any error wins,
+    /// then warnings, then determinate progress (averaged across reporting
+    /// panes), then indeterminate.
+    fn aggregate_progress_state(&self) -> ProgressState {
+        let mut warning: Option<u8> = None;
+        let mut in_progress_sum = 0u32;
+        let mut in_progress_count = 0u32;
+        let mut has_indeterminate = false;
+        for pane in &self.panes {
+            match pane.progress_state {
+                ProgressState::Error(percent) => return ProgressState::Error(percent),
+                ProgressState::Warning(percent) => warning = warning.or(Some(percent)),
+                ProgressState::InProgress(percent) => {
+                    in_progress_sum += u32::from(percent);
+                    in_progress_count += 1;
+                }
+                ProgressState::Indeterminate => has_indeterminate = true,
+                ProgressState::Clear => {}
+            }
+        }
+        if let Some(percent) = warning {
+            return ProgressState::Warning(percent);
+        }
+        if let Some(average) = in_progress_sum.checked_div(in_progress_count) {
+            return ProgressState::InProgress(average as u8);
+        }
+        if has_indeterminate {
+            return ProgressState::Indeterminate;
+        }
+        ProgressState::Clear
+    }
+
     fn has_active_pane(&self) -> bool {
         self.panes.iter().any(|pane| pane.id == self.active_pane_id)
     }
@@ -1597,6 +1633,7 @@ pub struct TerminalView {
     benchmark_session: Option<BenchmarkSession>,
     benchmark_exit_scheduled: bool,
     show_debug_overlay: bool,
+    inspector: inspector::InspectorState,
     debug_overlay_stats: DebugOverlayStats,
     install_cli_available: bool,
     tab_strip: TabStripState,
@@ -2698,7 +2735,6 @@ impl TerminalView {
             sticky_title_width,
             display_width,
             running_process: false,
-            progress_state: ProgressState::default(),
             command_lifecycle: CommandLifecycle::default(),
         }
     }
@@ -3019,7 +3055,7 @@ impl TerminalView {
     }
 
     fn record_debug_overlay_frame(&mut self) {
-        if !self.show_debug_overlay {
+        if !self.show_debug_overlay && !self.inspector_collects_render_stats() {
             return;
         }
         self.debug_overlay_stats.record_frame(Instant::now());
@@ -3191,7 +3227,7 @@ impl TerminalView {
             0.0,
             0.0,
             (viewport_width - self.effective_sidebar_width()).max(0.0),
-            viewport_height - self.terminal_content_top_inset(),
+            viewport_height - self.terminal_content_top_inset() - self.inspector_bottom_inset(),
         )
     }
 
@@ -3962,6 +3998,7 @@ impl TerminalView {
             benchmark_session: benchmark_config.map(BenchmarkSession::new),
             benchmark_exit_scheduled: false,
             show_debug_overlay: config.show_debug_overlay,
+            inspector: inspector::InspectorState::new(config.inspector_height),
             debug_overlay_stats: DebugOverlayStats::new(),
             install_cli_available: Self::install_cli_available_from_system(),
             tab_strip: TabStripState::new(config.tab_switch_modifier_hints),
@@ -4201,6 +4238,9 @@ impl TerminalView {
         self.auto_hide_tabbar = config.auto_hide_tabbar;
         self.show_termy_in_titlebar = config.show_termy_in_titlebar;
         self.show_debug_overlay = config.show_debug_overlay;
+        if self.sync_inspector_height_from_config(config.inspector_height) {
+            cx.notify();
+        }
         self.simple_mode = config.simple_mode;
         if self.simple_mode {
             if self.is_command_palette_open() {
@@ -4606,12 +4646,13 @@ impl TerminalView {
                                     .command_finished(code);
                             }
                         }
-                        // Progress indicator (OSC 9;4)
+                        // Progress indicator (OSC 9;4) — tracked per pane; the
+                        // tab strip shows the per-tab aggregate.
                         TerminalEvent::Progress(state) => {
                             if self.progress_indicator_enabled
-                                && self.tabs[tab_index].progress_state != state
+                                && self.tabs[tab_index].panes[pane_index].progress_state != state
                             {
-                                self.tabs[tab_index].progress_state = state;
+                                self.tabs[tab_index].panes[pane_index].progress_state = state;
                                 should_redraw = true;
                             }
                         }

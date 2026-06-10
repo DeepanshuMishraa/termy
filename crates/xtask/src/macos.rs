@@ -227,7 +227,11 @@ fn bundle_cli(paths: &MacosPaths) -> Result<()> {
     }
     let bundled = paths.app_macos.join("termy-cli");
     fs::copy(&source, &bundled).with_context(|| {
-        format!("failed to copy {} to {}", source.display(), bundled.display())
+        format!(
+            "failed to copy {} to {}",
+            source.display(),
+            bundled.display()
+        )
     })?;
     make_executable(&bundled)
 }

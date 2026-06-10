@@ -687,6 +687,7 @@ impl TerminalView {
                     height: pane.height.max(1),
                     pane_zoom_steps: 0,
                     degraded: false,
+                    progress_state: ProgressState::default(),
                     terminal,
                     render_cache: RefCell::new(TerminalPaneRenderCache::default()),
                     last_alternate_screen: Cell::new(false),

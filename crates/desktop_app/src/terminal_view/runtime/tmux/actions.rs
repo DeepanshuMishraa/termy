@@ -580,6 +580,7 @@ mod tests {
             height: 10,
             pane_zoom_steps: 0,
             degraded: false,
+            progress_state: ProgressState::default(),
             terminal: Terminal::new_tmux(TerminalSize::default(), TerminalOptions::default()),
             render_cache: RefCell::new(TerminalPaneRenderCache::default()),
             last_alternate_screen: Cell::new(false),
@@ -593,6 +594,7 @@ mod tests {
             height: 10,
             pane_zoom_steps: 0,
             degraded: false,
+            progress_state: ProgressState::default(),
             terminal: Terminal::new_tmux(TerminalSize::default(), TerminalOptions::default()),
             render_cache: RefCell::new(TerminalPaneRenderCache::default()),
             last_alternate_screen: Cell::new(false),
@@ -618,7 +620,6 @@ mod tests {
             sticky_title_width: 0.0,
             display_width: 0.0,
             running_process: false,
-            progress_state: ProgressState::default(),
             command_lifecycle: CommandLifecycle::default(),
         };
 

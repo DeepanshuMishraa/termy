@@ -1,4 +1,3 @@
-pub(super) mod chrome;
 pub(crate) mod constants;
 pub(super) mod gestures;
 pub(super) mod hints;

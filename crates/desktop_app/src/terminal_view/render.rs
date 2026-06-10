@@ -1762,11 +1762,7 @@ impl TerminalView {
             let _ = cx.update(|cx| {
                 this.update(cx, |view, cx| {
                     view.progress_indicator_animation_scheduled = false;
-                    if view
-                        .tabs
-                        .get(view.active_tab)
-                        .is_some_and(|tab| tab.progress_state.is_indeterminate())
-                    {
+                    if view.active_tab_has_indeterminate_progress() {
                         cx.notify();
                     }
                 })
@@ -1775,21 +1771,19 @@ impl TerminalView {
         .detach();
     }
 
-    fn render_terminal_progress_loader(
-        &mut self,
-        _now: Instant,
-        cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
-        if !self.progress_indicator_enabled {
-            return None;
-        }
+    fn active_tab_has_indeterminate_progress(&self) -> bool {
+        self.tabs.get(self.active_tab).is_some_and(|tab| {
+            tab.panes
+                .iter()
+                .any(|pane| pane.progress_state.is_indeterminate())
+        })
+    }
 
-        let state = self.tabs.get(self.active_tab)?.progress_state;
-        if !state.is_active() {
+    /// Thin progress bar pinned to the top edge of a single pane, driven by
+    /// that pane's own OSC 9;4 state.
+    fn pane_progress_loader_element(&self, state: ProgressState) -> Option<AnyElement> {
+        if !self.progress_indicator_enabled || !state.is_active() {
             return None;
-        }
-        if state.is_indeterminate() {
-            self.schedule_progress_indicator_animation(cx);
         }
 
         let elapsed_ms = std::time::SystemTime::now()
@@ -1809,7 +1803,6 @@ impl TerminalView {
 
         Some(
             div()
-                .id("terminal-progress-loader")
                 .absolute()
                 .top_0()
                 .left_0()
@@ -2482,6 +2475,10 @@ impl Render for TerminalView {
             let _ = self.calculate_cell_size_for_font_size(pane_font_size, window, cx);
         }
 
+        if self.progress_indicator_enabled && self.active_tab_has_indeterminate_progress() {
+            self.schedule_progress_indicator_animation(cx);
+        }
+
         if let Some(active_tab) = self.tabs.get(self.active_tab)
             && let Some(content_bounds) = self.terminal_content_bounds(window)
         {
@@ -2645,6 +2642,7 @@ impl Render for TerminalView {
                 let pane_height = pane_layout.content_frame.height;
 
                 let link_hovered = is_active_pane && self.hovered_link.is_some();
+                let pane_progress_loader = self.pane_progress_loader_element(pane.progress_state);
                 pane_layers.push(
                     div()
                         .id(pane.cached_element_ids.pane.clone())
@@ -2656,6 +2654,7 @@ impl Render for TerminalView {
                         .cursor_text()
                         .when(link_hovered, |el| el.cursor_pointer())
                         .child(terminal_grid)
+                        .children(pane_progress_loader)
                         .into_any_element(),
                 );
 
@@ -2845,7 +2844,6 @@ impl Render for TerminalView {
         let terminal_scrollbar_overlay = terminal_scrollbar_layout.and_then(|(surface, layout)| {
             self.render_terminal_scrollbar_overlay(surface, layout, terminal_display_offset > 0)
         });
-        let terminal_progress_loader = self.render_terminal_progress_loader(now, cx);
         let terminal_grid_layer = div()
             .relative()
             .w_full()
@@ -2855,6 +2853,7 @@ impl Render for TerminalView {
             .children(pane_resize_handles)
             .children(pane_focus_accents)
             .into_any_element();
+        let inspector_panel = self.render_inspector_panel(cx);
         let has_active_inline = self.has_active_inline_input();
         let ime_focus_handle = self.focus_handle.clone();
         let ime_view = cx.entity();
@@ -3039,6 +3038,7 @@ impl Render for TerminalView {
                         s.on_action(cx.listener(Self::handle_install_cli_action))
                     })
                     .on_action(cx.listener(Self::handle_toggle_tab_bar_visibility_action))
+                    .on_action(cx.listener(Self::handle_toggle_inspector_action))
                     .on_action(cx.listener(Self::handle_inline_backspace_action))
                     .on_action(cx.listener(Self::handle_inline_delete_action))
                     .on_action(cx.listener(Self::handle_inline_move_left_action))
@@ -3129,9 +3129,9 @@ impl Render for TerminalView {
                                             .child(ime_input_layer)
                                             .child(terminal_grid_layer)
                                             .children(ime_preedit_overlay)
-                                            .children(terminal_scrollbar_overlay)
-                                            .children(terminal_progress_loader),
-                                    ),
+                                            .children(terminal_scrollbar_overlay),
+                                    )
+                                    .children(inspector_panel),
                             )
                             .children(tab_sidebar),
                     ),
@@ -3314,6 +3314,7 @@ mod tests {
             height: rows,
             pane_zoom_steps: 0,
             degraded: false,
+            progress_state: ProgressState::default(),
             terminal: Terminal::new_tmux(
                 size,
                 TerminalOptions {

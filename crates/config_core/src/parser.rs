@@ -569,6 +569,13 @@ impl AppConfig {
                         config.window_height = parsed;
                     }
                 }
+                RootSettingId::InspectorHeight => {
+                    if let Some(parsed) =
+                        parse_positive_f32_field(&mut diagnostics, line_number, key, value)
+                    {
+                        config.inspector_height = parsed;
+                    }
+                }
                 RootSettingId::FontFamily => {
                     if let Some(parsed) = parse_string_field(
                         &mut diagnostics,

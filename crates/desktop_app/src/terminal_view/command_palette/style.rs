@@ -2,9 +2,9 @@ use super::super::{
     COMMAND_PALETTE_INPUT_SELECTION_ALPHA, COMMAND_PALETTE_PANEL_BG_ALPHA,
     COMMAND_PALETTE_PANEL_SOLID_ALPHA, COMMAND_PALETTE_ROW_SELECTED_BG_ALPHA,
     COMMAND_PALETTE_SCROLLBAR_THUMB_ALPHA, COMMAND_PALETTE_SCROLLBAR_TRACK_ALPHA,
-    COMMAND_PALETTE_SHORTCUT_BG_ALPHA, COMMAND_PALETTE_SHORTCUT_TEXT_ALPHA,
-    OVERLAY_MUTED_TEXT_ALPHA, OVERLAY_PRIMARY_TEXT_ALPHA, TerminalView,
-    resolve_chrome_stroke_color,
+    COMMAND_PALETTE_SELECTED_ACCENT_ALPHA, COMMAND_PALETTE_SHORTCUT_BG_ALPHA,
+    COMMAND_PALETTE_SHORTCUT_TEXT_ALPHA, OVERLAY_MUTED_TEXT_ALPHA, OVERLAY_PRIMARY_TEXT_ALPHA,
+    TerminalView, resolve_chrome_stroke_color,
 };
 
 pub(in super::super) const COMMAND_PALETTE_PANEL_RADIUS: f32 = 12.0;
@@ -19,8 +19,10 @@ pub(in super::super) struct CommandPaletteStyle {
     pub(in super::super) muted_text: gpui::Rgba,
     pub(in super::super) input_selection: gpui::Rgba,
     pub(super) selected_bg: gpui::Rgba,
+    // Accent bar marking the selected row; mirrors the active-tab indicator so
+    // the chrome speaks one visual language.
+    pub(super) selected_accent: gpui::Rgba,
     pub(super) shortcut_bg: gpui::Rgba,
-    pub(super) shortcut_border: gpui::Rgba,
     pub(super) shortcut_text: gpui::Rgba,
     pub(super) scrollbar_track: gpui::Rgba,
     pub(super) scrollbar_thumb: gpui::Rgba,
@@ -51,6 +53,8 @@ impl CommandPaletteStyle {
         );
 
         let selected_bg = overlay_style.chrome_panel_cursor(COMMAND_PALETTE_ROW_SELECTED_BG_ALPHA);
+        let selected_accent =
+            overlay_style.chrome_panel_cursor(COMMAND_PALETTE_SELECTED_ACCENT_ALPHA);
         let primary_text = overlay_style.panel_foreground(OVERLAY_PRIMARY_TEXT_ALPHA);
         let muted_text = overlay_style.panel_foreground(OVERLAY_MUTED_TEXT_ALPHA);
         let input_selection =
@@ -69,8 +73,8 @@ impl CommandPaletteStyle {
             muted_text,
             input_selection,
             selected_bg,
+            selected_accent,
             shortcut_bg,
-            shortcut_border: panel_border,
             shortcut_text,
             scrollbar_track,
             scrollbar_thumb,

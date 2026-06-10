@@ -620,6 +620,14 @@ impl TerminalView {
         let cursor_was_hidden = !self.cursor_blink_visible;
         self.reset_cursor_blink_phase();
         let _ = self.close_terminal_context_menu(cx);
+        let inspector_route = if self.overlay_owns_terminal_input() {
+            "overlay"
+        } else if should_defer_key_down_to_ime(&event.keystroke) {
+            "ime"
+        } else {
+            "pty"
+        };
+        self.record_inspector_key_event(event, inspector_route, cx);
         let key = event.keystroke.key.as_str();
         self.maybe_suppress_tab_switch_hint_for_key_down(key, event.keystroke.modifiers, cx);
 

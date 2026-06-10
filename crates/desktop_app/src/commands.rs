@@ -976,6 +976,22 @@ define_commands!(
             MenuActionRole::Normal
         ))
     ),
+    (
+        ToggleInspector,
+        TERMINAL_CONTEXT,
+        Some(palette(
+            "Toggle Inspector",
+            "open show close hide inspector developer debug devtools terminal state keyboard render",
+            CommandPaletteVisibility::Always
+        )),
+        Some(menu(
+            MenuRoot::View,
+            0,
+            "Inspector",
+            MenuVisibility::Always,
+            MenuActionRole::Normal
+        ))
+    ),
 );
 
 termy_command_core::termy_command_catalog!(impl_command_action_id_mapping);

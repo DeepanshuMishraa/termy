@@ -140,6 +140,9 @@ impl TerminalView {
                     cx.notify();
                 }
             }
+            CommandAction::ToggleInspector => {
+                self.toggle_inspector(cx);
+            }
             _ if shortcuts_suspended => {}
             CommandAction::OpenConfig
             | CommandAction::PrettifyConfig
@@ -288,6 +291,15 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) {
         self.execute_command_action(CommandAction::ToggleTabBarVisibility, true, window, cx);
+    }
+
+    pub(in super::super) fn handle_toggle_inspector_action(
+        &mut self,
+        _: &commands::ToggleInspector,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.execute_command_action(CommandAction::ToggleInspector, true, window, cx);
     }
 
     pub(in super::super) fn handle_new_tab_action(
