@@ -51,6 +51,8 @@ pub(crate) const TAB_DRAG_AUTOSCROLL_MAX_STEP: f32 = 24.0;
 #[cfg(not(target_os = "windows"))]
 pub(crate) const TABBAR_ACTION_RAIL_WIDTH: f32 = 28.0;
 pub(crate) const TABBAR_NEW_TAB_BUTTON_SIZE: f32 = TAB_ITEM_HEIGHT;
+// Dropdown under the "+" button choosing between terminal and browser tabs.
+pub(crate) const NEW_TAB_MENU_WIDTH: f32 = 190.0;
 
 // Vertical tab sidebar (tab_bar_position = right).
 pub(crate) const SIDEBAR_WIDTH: f32 = 200.0;

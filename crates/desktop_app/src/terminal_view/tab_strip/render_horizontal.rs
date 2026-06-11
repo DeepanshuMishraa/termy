@@ -304,6 +304,13 @@ impl TerminalView {
         let mut icon_color = palette.inactive_tab_text;
         icon_color.a = icon_color.a.max(0.70);
 
+        // Anchor for the new-tab kind dropdown: right-aligned under the "+"
+        // so it never overflows the window edge.
+        let menu_anchor = (
+            (state.geometry.button_end_x - NEW_TAB_MENU_WIDTH).max(4.0),
+            TABBAR_HEIGHT + 2.0,
+        );
+
         div()
             .id("tabbar-action-rail")
             .relative()
@@ -332,9 +339,9 @@ impl TerminalView {
                     .cursor_pointer()
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(|this, _event: &MouseDownEvent, window, cx| {
+                        cx.listener(move |this, _event: &MouseDownEvent, window, cx| {
                             window.prevent_default();
-                            this.add_tab(cx);
+                            this.handle_new_tab_button(menu_anchor, cx);
                             cx.stop_propagation();
                         }),
                     )

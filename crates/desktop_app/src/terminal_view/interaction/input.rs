@@ -152,8 +152,9 @@ fn overlay_owns_terminal_input_state(
     command_palette_open: bool,
     search_open: bool,
     renaming_tab: Option<usize>,
+    browser_url_editing: bool,
 ) -> bool {
-    command_palette_open || search_open || renaming_tab.is_some()
+    command_palette_open || search_open || renaming_tab.is_some() || browser_url_editing
 }
 
 fn terminal_modifier_transition_events(
@@ -205,6 +206,7 @@ impl TerminalView {
             self.is_command_palette_open(),
             self.search_open,
             self.renaming_tab,
+            self.browser_url_editing(),
         )
     }
 
@@ -620,6 +622,7 @@ impl TerminalView {
         let cursor_was_hidden = !self.cursor_blink_visible;
         self.reset_cursor_blink_phase();
         let _ = self.close_terminal_context_menu(cx);
+        let _ = self.close_new_tab_menu(cx);
         let inspector_route = if self.overlay_owns_terminal_input() {
             "overlay"
         } else if should_defer_key_down_to_ime(&event.keystroke) {
@@ -642,6 +645,21 @@ impl TerminalView {
             if self.search_open {
                 if self.handle_search_key_down(key, event.keystroke.modifiers.shift, cx) {
                     self.remember_consumed_key_release(key);
+                }
+                return;
+            }
+
+            if self.browser_url_editing() {
+                match key {
+                    "enter" => {
+                        self.commit_browser_url(cx);
+                        self.remember_consumed_key_release(key);
+                    }
+                    "escape" => {
+                        self.cancel_browser_url_edit(cx);
+                        self.remember_consumed_key_release(key);
+                    }
+                    _ => {}
                 }
                 return;
             }

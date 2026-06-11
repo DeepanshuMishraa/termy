@@ -470,6 +470,7 @@ mod tests {
     #[test]
     fn repair_native_tab_active_pane_for_resize_falls_back_to_first_pane() {
         let mut tab = TerminalTab {
+            kind: TabKind::Terminal,
             id: 1,
             window_id: "@native-1".to_string(),
             window_index: 0,
@@ -501,6 +502,7 @@ mod tests {
     #[test]
     fn aggregate_progress_state_picks_highest_severity_across_panes() {
         let mut tab = TerminalTab {
+            kind: TabKind::Terminal,
             id: 1,
             window_id: "@native-1".to_string(),
             window_index: 0,
@@ -552,6 +554,7 @@ mod tests {
     #[test]
     fn aggregate_progress_state_falls_back_to_indeterminate() {
         let mut tab = TerminalTab {
+            kind: TabKind::Terminal,
             id: 1,
             window_id: "@native-1".to_string(),
             window_index: 0,

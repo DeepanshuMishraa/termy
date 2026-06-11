@@ -2018,6 +2018,94 @@ impl TerminalView {
         }
     }
 
+    /// Dropdown under the tab strip's "+" button offering the tab kind.
+    /// Rendered only when browser tabs are enabled (plain "+" otherwise
+    /// creates a terminal tab directly).
+    fn render_new_tab_menu_overlay(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (menu_x, menu_y) = self.new_tab_menu_anchor?;
+        let overlay_style = self.overlay_style();
+        let row_height = 30.0;
+        let panel_bg = overlay_style.chrome_panel_background(0.98);
+        let panel_border = overlay_style.chrome_panel_neutral(0.22);
+        let text_color = overlay_style.panel_foreground(0.95);
+        let hover_bg = overlay_style.chrome_panel_cursor(0.22);
+
+        let menu_row = |id: &'static str,
+                        label: &'static str,
+                        cx: &mut Context<Self>,
+                        on_select: fn(&mut Self, &mut Context<Self>)| {
+            div()
+                .id(id)
+                .h(px(row_height))
+                .px(px(10.0))
+                .flex()
+                .items_center()
+                .text_size(px(13.0))
+                .text_color(text_color)
+                .cursor_pointer()
+                .hover(move |style| style.bg(hover_bg))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |view, _event: &MouseDownEvent, _window, cx| {
+                        let _ = view.close_new_tab_menu(cx);
+                        on_select(view, cx);
+                        cx.stop_propagation();
+                    }),
+                )
+                .child(label)
+        };
+
+        Some(
+            div()
+                .id("new-tab-menu-overlay")
+                .absolute()
+                .top_0()
+                .left_0()
+                .right_0()
+                .bottom_0()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|view, _event: &MouseDownEvent, _window, cx| {
+                        let _ = view.close_new_tab_menu(cx);
+                        cx.stop_propagation();
+                    }),
+                )
+                .child(
+                    div()
+                        .id("new-tab-menu-panel")
+                        .absolute()
+                        .left(px(menu_x))
+                        .top(px(menu_y))
+                        .w(px(NEW_TAB_MENU_WIDTH))
+                        .py(px(4.0))
+                        .bg(panel_bg)
+                        .border_1()
+                        .border_color(panel_border)
+                        .rounded(px(8.0))
+                        .shadow_lg()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|_view, _event: &MouseDownEvent, _window, cx| {
+                                cx.stop_propagation();
+                            }),
+                        )
+                        .child(menu_row(
+                            "new-tab-menu-terminal",
+                            "New Terminal Tab",
+                            cx,
+                            |view, cx| view.add_tab(cx),
+                        ))
+                        .child(menu_row(
+                            "new-tab-menu-browser",
+                            "New Browser Tab",
+                            cx,
+                            |view, cx| view.add_browser_tab(cx),
+                        )),
+                )
+                .into_any_element(),
+        )
+    }
+
     fn render_tab_context_menu_overlay(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         #[cfg(target_os = "macos")]
         {
@@ -2269,6 +2357,7 @@ impl TerminalView {
             });
         let context_menu_overlay = self.render_terminal_context_menu_overlay(cx);
         let tab_context_menu_overlay = self.render_tab_context_menu_overlay(cx);
+        let new_tab_menu_overlay = self.render_new_tab_menu_overlay(cx);
         let toast_overlay = self.render_toast_overlay(&colors, cx);
         let link_preview_overlay = self.render_link_preview_overlay();
         let resize_overlay = self
@@ -2402,6 +2491,7 @@ impl TerminalView {
             .children(terminal_overlay)
             .children(context_menu_overlay)
             .children(tab_context_menu_overlay)
+            .children(new_tab_menu_overlay)
             .children(resize_overlay)
             .children(debug_overlay)
             .children(toast_overlay)
@@ -2963,6 +3053,11 @@ impl Render for TerminalView {
         let workspace_sidebar = self
             .workspace_sidebar_visible()
             .then(|| self.render_workspace_sidebar(&colors, &ui_font_family, tabbar_bg, cx));
+        self.sync_browser_tab_titles();
+        self.sync_browser_webviews(window);
+        let browser_chrome = self
+            .active_tab_is_browser()
+            .then(|| self.render_browser_chrome(&colors, &ui_font_family, cx));
         let hidden_titlebar_branding = Self::should_render_hidden_titlebar_branding(
             self.auto_hide_tabbar,
             self.tabs.len(),
@@ -3224,6 +3319,7 @@ impl Render for TerminalView {
                                     .flex_1()
                                     .h_full()
                                     .overflow_hidden()
+                                    .children(browser_chrome)
                                     .child(
                                         div()
                                             .id("terminal-surface")

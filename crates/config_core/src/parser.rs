@@ -525,6 +525,20 @@ impl AppConfig {
                         config.sidebar_enabled = parsed;
                     }
                 }
+                RootSettingId::BrowserTabsEnabled => {
+                    if let Some(parsed) =
+                        parse_bool_field(&mut diagnostics, line_number, key, value)
+                    {
+                        config.browser_tabs_enabled = parsed;
+                    }
+                }
+                RootSettingId::GitPanelEnabled => {
+                    if let Some(parsed) =
+                        parse_bool_field(&mut diagnostics, line_number, key, value)
+                    {
+                        config.git_panel_enabled = parsed;
+                    }
+                }
                 RootSettingId::ShowTermyInTitlebar => {
                     if let Some(parsed) =
                         parse_bool_field(&mut diagnostics, line_number, key, value)

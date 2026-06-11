@@ -558,8 +558,8 @@ mod tests {
         should_refresh_search_after_tmux_pane_focus,
     };
     use crate::terminal_view::{
-        PaneCachedElementIds, Terminal, TerminalOptions, TerminalPane, TerminalPaneRenderCache,
-        TerminalSize, TerminalTab,
+        PaneCachedElementIds, TabKind, Terminal, TerminalOptions, TerminalPane,
+        TerminalPaneRenderCache, TerminalSize, TerminalTab,
     };
     use std::cell::{Cell, RefCell};
     use termy_terminal_ui::{CommandLifecycle, ProgressState};
@@ -601,6 +601,7 @@ mod tests {
             cached_element_ids: PaneCachedElementIds::new("%2"),
         };
         let mut tab = TerminalTab {
+            kind: TabKind::Terminal,
             id: 1,
             window_id: "@1".to_string(),
             window_index: 0,

@@ -22,6 +22,7 @@ fn command_icon_path(id: termy_command_core::CommandId) -> &'static str {
     use termy_command_core::CommandId::*;
     match id {
         NewTab => "icons/command_palette/new-tab.svg",
+        NewBrowserTab => "icons/command_palette/new-tab.svg",
         CloseTab | ClosePane | ClosePaneOrTab => "icons/command_palette/close-tab.svg",
         MoveTabLeft | SwitchTabLeft => "icons/command_palette/tab-left.svg",
         MoveTabRight | SwitchTabRight | CycleTabs => "icons/command_palette/tab-right.svg",
@@ -203,10 +204,12 @@ impl TerminalView {
         action: CommandAction,
         install_cli_available: bool,
         tmux_enabled: bool,
+        browser_tabs_enabled: bool,
     ) -> CommandAvailability {
         action.availability(CommandCapabilities {
             tmux_runtime_active: tmux_enabled,
             install_cli_available,
+            browser_tabs_enabled,
         })
     }
 
@@ -216,6 +219,7 @@ impl TerminalView {
         match reason {
             CommandUnavailableReason::RequiresTmuxRuntime => "tmux required",
             CommandUnavailableReason::InstallCliAlreadyInstalled => "Installed",
+            CommandUnavailableReason::BrowserTabsDisabled => "Disabled",
         }
     }
 
@@ -225,11 +229,13 @@ impl TerminalView {
         keywords: &str,
         install_cli_available: bool,
         tmux_enabled: bool,
+        browser_tabs_enabled: bool,
     ) -> CommandPaletteItem {
         let availability = Self::command_palette_action_availability_for_state(
             action,
             install_cli_available,
             tmux_enabled,
+            browser_tabs_enabled,
         );
         let status_hint = availability
             .reason
@@ -247,6 +253,7 @@ impl TerminalView {
     fn command_palette_core_command_items_for_state(
         install_cli_available: bool,
         tmux_enabled: bool,
+        browser_tabs_enabled: bool,
     ) -> Vec<CommandPaletteItem> {
         CommandAction::palette_entries()
             .into_iter()
@@ -257,6 +264,7 @@ impl TerminalView {
                     entry.keywords,
                     install_cli_available,
                     tmux_enabled,
+                    browser_tabs_enabled,
                 )
             })
             .collect()
@@ -265,8 +273,13 @@ impl TerminalView {
     fn command_palette_command_items_for_state(
         install_cli_available: bool,
         tmux_enabled: bool,
+        browser_tabs_enabled: bool,
     ) -> Vec<CommandPaletteItem> {
-        Self::command_palette_core_command_items_for_state(install_cli_available, tmux_enabled)
+        Self::command_palette_core_command_items_for_state(
+            install_cli_available,
+            tmux_enabled,
+            browser_tabs_enabled,
+        )
     }
 
     fn command_palette_items_for_mode(
@@ -279,6 +292,7 @@ impl TerminalView {
             CommandPaletteMode::Commands => Self::command_palette_command_items_for_state(
                 self.install_cli_available(),
                 self.runtime_uses_tmux(),
+                self.browser_tabs_enabled,
             ),
             CommandPaletteMode::Themes => self.command_palette_theme_items(),
             CommandPaletteMode::TmuxSessions => self.command_palette.tmux_session_items_for_query(
@@ -1018,6 +1032,7 @@ impl TerminalView {
                         action,
                         self.install_cli_available(),
                         self.runtime_uses_tmux(),
+                        self.browser_tabs_enabled,
                     ));
                     self.notify_overlay(cx);
                     return;
@@ -1447,11 +1462,13 @@ impl TerminalView {
         action: CommandAction,
         install_cli_available: bool,
         tmux_enabled: bool,
+        browser_tabs_enabled: bool,
     ) -> &'static str {
         let availability = Self::command_palette_action_availability_for_state(
             action,
             install_cli_available,
             tmux_enabled,
+            browser_tabs_enabled,
         );
 
         match availability.reason {
@@ -1460,6 +1477,9 @@ impl TerminalView {
             }
             Some(CommandUnavailableReason::InstallCliAlreadyInstalled) => {
                 "CLI is already installed"
+            }
+            Some(CommandUnavailableReason::BrowserTabsDisabled) => {
+                "Enable Browser Tabs in Settings to use this command"
             }
             None => "Command is currently unavailable",
         }
@@ -1516,6 +1536,7 @@ impl TerminalView {
                 self.notify_overlay(cx);
             }
             CommandAction::NewTab => termy_toast::success("Opened new tab"),
+            CommandAction::NewBrowserTab => termy_toast::success("Opened browser tab"),
             CommandAction::CloseTab => termy_toast::info("Closed active tab"),
             CommandAction::ClosePaneOrTab => termy_toast::info("Closed active pane or tab"),
             CommandAction::ZoomIn => termy_toast::info("Zoomed in"),
@@ -1704,9 +1725,9 @@ mod tests {
     #[test]
     fn install_cli_command_is_present_and_tracks_availability_state() {
         let available_items =
-            TerminalView::command_palette_core_command_items_for_state(true, true);
+            TerminalView::command_palette_core_command_items_for_state(true, true, true);
         let unavailable_items =
-            TerminalView::command_palette_core_command_items_for_state(false, true);
+            TerminalView::command_palette_core_command_items_for_state(false, true, true);
 
         let available_install_cli = available_items
             .iter()
@@ -1735,7 +1756,7 @@ mod tests {
 
     #[test]
     fn tmux_query_surfaces_only_tmux_sessions_entry() {
-        let items = TerminalView::command_palette_core_command_items_for_state(true, true);
+        let items = TerminalView::command_palette_core_command_items_for_state(true, true, true);
         let filtered_indices =
             super::state::filter_command_palette_item_indices_by_query(&items, "tmux");
         let filtered_actions = filtered_indices
@@ -1754,7 +1775,7 @@ mod tests {
 
     #[test]
     fn resize_commands_remain_available_when_tmux_runtime_is_off() {
-        let items = TerminalView::command_palette_core_command_items_for_state(false, false);
+        let items = TerminalView::command_palette_core_command_items_for_state(false, false, true);
         let resize = items.iter().find(|item| {
             matches!(
                 item.kind,
@@ -1781,6 +1802,7 @@ mod tests {
                 CommandAction::InstallCli,
                 false,
                 true,
+                true,
             ),
             "CLI is already installed"
         );
@@ -1793,6 +1815,7 @@ mod tests {
                 CommandAction::ResizePaneLeft,
                 true,
                 false,
+                true,
             ),
             "Command is currently unavailable"
         );

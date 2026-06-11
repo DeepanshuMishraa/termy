@@ -586,6 +586,7 @@ impl SettingsWindow {
             .child(self.render_tabs_title_group(cx))
             .child(self.render_tabs_strip_group(cx))
             .child(self.render_tabs_sidebar_group(cx))
+            .child(self.render_tabs_browser_group(cx))
             .child(self.render_tabs_titlebar_group(cx))
     }
 
@@ -758,6 +759,20 @@ impl SettingsWindow {
         )];
 
         self.render_settings_group("SIDEBAR", rows)
+    }
+
+    pub(super) fn render_tabs_browser_group(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let browser_tabs_enabled = self.config.browser_tabs_enabled;
+        let rows = vec![self.render_root_bool_setting_row(
+            "browser_tabs_enabled",
+            "browser_tabs_enabled-toggle",
+            RootSettingId::BrowserTabsEnabled,
+            browser_tabs_enabled,
+            "Saved",
+            cx,
+        )];
+
+        self.render_settings_group("BROWSER", rows)
     }
 
     pub(super) fn render_tabs_titlebar_group(&mut self, cx: &mut Context<Self>) -> AnyElement {

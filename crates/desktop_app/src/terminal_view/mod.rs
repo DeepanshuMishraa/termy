@@ -56,6 +56,7 @@ use termy_terminal_ui::{TerminalUiRenderMetricsSnapshot, terminal_ui_render_metr
 use termy_toast::ToastManager;
 
 mod benchmark;
+mod browser;
 mod command_palette;
 mod constants;
 mod inline_input;
@@ -1138,10 +1139,19 @@ fn percentile_millis(samples_micros: &[u32], numerator: usize, denominator: usiz
     samples_micros[index] as f32 / 1000.0
 }
 
+/// What a tab hosts: terminal panes (the default) or an embedded browser.
+/// Browser tabs have an empty `panes` vec; the pane-oriented machinery
+/// treats them as pane-less and the render path swaps in the browser chrome.
+enum TabKind {
+    Terminal,
+    Browser(Box<browser::BrowserTabState>),
+}
+
 struct TerminalTab {
     id: TabId,
     window_id: String,
     window_index: i32,
+    kind: TabKind,
     panes: Vec<TerminalPane>,
     active_pane_id: String,
     pinned: bool,
@@ -1562,6 +1572,7 @@ pub struct TerminalView {
     active_workspace: usize,
     next_workspace_id: u64,
     workspace_sidebar_enabled: bool,
+    browser_tabs_enabled: bool,
     native_pane_zoom_snapshots: HashMap<TabId, NativePaneZoomSnapshot>,
     native_pane_layout_trees: HashMap<TabId, NativePaneLayoutTree>,
     next_tab_id: TabId,
@@ -1657,6 +1668,9 @@ pub struct TerminalView {
     pending_cursor_move_preview: Option<PendingCursorMovePreview>,
     terminal_context_menu: Option<TerminalContextMenuState>,
     tab_context_menu: Option<TabContextMenuState>,
+    /// Window-space top-left of the "+" dropdown (terminal / browser tab
+    /// choice); `None` while closed. Only used when browser tabs are enabled.
+    new_tab_menu_anchor: Option<(f32, f32)>,
     hovered_link: Option<HoveredLink>,
     hovered_toast: Option<u64>,
     copied_toast_feedback: Option<(u64, Instant)>,
@@ -2819,6 +2833,7 @@ impl TerminalView {
             id: tab_id,
             window_id: format!("@native-{tab_id}"),
             window_index: 0,
+            kind: TabKind::Terminal,
             panes: vec![pane],
             active_pane_id: pane_id,
             pinned: false,
@@ -4004,6 +4019,7 @@ impl TerminalView {
             active_workspace: 0,
             next_workspace_id: 2,
             workspace_sidebar_enabled: config.sidebar_enabled,
+            browser_tabs_enabled: config.browser_tabs_enabled,
             native_pane_zoom_snapshots: HashMap::new(),
             native_pane_layout_trees: HashMap::new(),
             next_tab_id: 1,
@@ -4097,6 +4113,7 @@ impl TerminalView {
             pending_cursor_move_preview: None,
             terminal_context_menu: None,
             tab_context_menu: None,
+            new_tab_menu_anchor: None,
             hovered_link: None,
             hovered_toast: None,
             copied_toast_feedback: None,
@@ -4350,6 +4367,7 @@ impl TerminalView {
         let auto_hide_tabbar_changed = self.auto_hide_tabbar != config.auto_hide_tabbar;
         let workspace_sidebar_changed = self.workspace_sidebar_enabled != config.sidebar_enabled;
         self.workspace_sidebar_enabled = config.sidebar_enabled;
+        self.browser_tabs_enabled = config.browser_tabs_enabled;
         if !self.workspace_sidebar_enabled {
             // Stashed workspaces would be unreachable without the sidebar.
             self.collapse_workspaces_into_active();

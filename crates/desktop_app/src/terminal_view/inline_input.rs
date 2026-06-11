@@ -48,6 +48,7 @@ enum InlineInputTarget {
     CommandPalette,
     RenameTab,
     Search,
+    BrowserUrl,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1150,9 +1151,9 @@ impl TerminalView {
     fn inline_input_notify_target_for_target(target: InlineInputTarget) -> InlineInputNotifyTarget {
         match target {
             InlineInputTarget::CommandPalette => InlineInputNotifyTarget::Overlay,
-            InlineInputTarget::RenameTab | InlineInputTarget::Search => {
-                InlineInputNotifyTarget::Parent
-            }
+            InlineInputTarget::RenameTab
+            | InlineInputTarget::Search
+            | InlineInputTarget::BrowserUrl => InlineInputNotifyTarget::Parent,
         }
     }
 
@@ -1178,6 +1179,8 @@ impl TerminalView {
             Some(InlineInputTarget::Search)
         } else if self.renaming_tab.is_some() {
             Some(InlineInputTarget::RenameTab)
+        } else if self.browser_url_editing() {
+            Some(InlineInputTarget::BrowserUrl)
         } else {
             None
         }
@@ -1233,6 +1236,9 @@ impl TerminalView {
             InlineInputTarget::CommandPalette => Some(self.command_palette_input()),
             InlineInputTarget::Search => Some(&self.search_input),
             InlineInputTarget::RenameTab => Some(&self.rename_input),
+            InlineInputTarget::BrowserUrl => {
+                self.active_browser_state().map(|state| &state.url_input)
+            }
         }
     }
 
@@ -1241,6 +1247,11 @@ impl TerminalView {
             InlineInputTarget::CommandPalette => Some(self.command_palette_input_mut()),
             InlineInputTarget::Search => Some(&mut self.search_input),
             InlineInputTarget::RenameTab => Some(&mut self.rename_input),
+            InlineInputTarget::BrowserUrl => self
+                .tabs
+                .get_mut(self.active_tab)
+                .and_then(TerminalTab::browser_state_mut)
+                .map(|state| &mut state.url_input),
         }
     }
 
@@ -1284,6 +1295,16 @@ impl TerminalView {
                 mutate(&mut self.rename_input);
                 self.enforce_tab_rename_limit();
                 self.notify_for_inline_input_target(InlineInputTarget::RenameTab, cx);
+            }
+            Some(InlineInputTarget::BrowserUrl) => {
+                if let Some(state) = self
+                    .tabs
+                    .get_mut(self.active_tab)
+                    .and_then(TerminalTab::browser_state_mut)
+                {
+                    mutate(&mut state.url_input);
+                }
+                self.notify_for_inline_input_target(InlineInputTarget::BrowserUrl, cx);
             }
             None => {}
         }

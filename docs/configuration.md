@@ -265,6 +265,11 @@ Platform note: the Agent Sidebar/Workspace is currently unavailable on Windows b
 - Show the left sidebar for grouping tabs into workspaces
 - Group: `SIDEBAR`
 
+`browser_tabs_enabled`
+- Default: `false`
+- Enable embedded browser tabs (macOS only)
+- Group: `BROWSER`
+
 `show_termy_in_titlebar`
 - Default: `true`
 - Show or hide the termy branding in the titlebar

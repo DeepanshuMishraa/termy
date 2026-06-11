@@ -33,6 +33,7 @@ final class SettingsSchemaParityTests: XCTestCase {
             "progress_indicator_enabled",
             "auto_hide_tabbar",
             "sidebar_enabled",
+            "browser_tabs_enabled",
             "show_termy_in_titlebar"
         ]
 

@@ -352,6 +352,7 @@ mod tests {
     #[test]
     fn sync_native_tab_pane_geometry_keeps_existing_active_pane_id() {
         let mut tab = TerminalTab {
+            kind: TabKind::Terminal,
             id: 1,
             window_id: "@native-1".to_string(),
             window_index: 0,
@@ -385,6 +386,7 @@ mod tests {
     #[test]
     fn sync_native_tab_pane_geometry_rebalances_widths_to_meet_minimums() {
         let mut tab = TerminalTab {
+            kind: TabKind::Terminal,
             id: 1,
             window_id: "@native-1".to_string(),
             window_index: 0,
@@ -422,6 +424,7 @@ mod tests {
     #[test]
     fn sync_native_tab_pane_geometry_scales_below_default_minimum_when_extent_is_tight() {
         let mut tab = TerminalTab {
+            kind: TabKind::Terminal,
             id: 1,
             window_id: "@native-1".to_string(),
             window_index: 0,

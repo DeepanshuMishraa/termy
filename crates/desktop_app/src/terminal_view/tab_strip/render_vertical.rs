@@ -114,13 +114,21 @@ impl TerminalView {
                 cx,
                 |this, cx| this.toggle_sidebar_collapsed(cx),
             ))
-            .child(self.sidebar_icon_button(
-                "sidebar-new-tab-button",
-                "icons/tab_strip/plus.svg",
-                palette,
-                cx,
-                |this, cx| this.add_tab(cx),
-            ))
+            .child({
+                // Anchor the new-tab kind dropdown just below the header,
+                // right-aligned within the sidebar column.
+                let menu_anchor = (
+                    (self.last_viewport_width - NEW_TAB_MENU_WIDTH - 8.0).max(4.0),
+                    self.terminal_content_top_inset() + SIDEBAR_HEADER_HEIGHT + 2.0,
+                );
+                self.sidebar_icon_button(
+                    "sidebar-new-tab-button",
+                    "icons/tab_strip/plus.svg",
+                    palette,
+                    cx,
+                    move |this, cx| this.handle_new_tab_button(menu_anchor, cx),
+                )
+            })
             .into_any_element()
     }
 

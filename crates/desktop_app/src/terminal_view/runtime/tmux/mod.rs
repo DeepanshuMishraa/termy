@@ -113,6 +113,7 @@ impl TerminalTab {
 
         Self {
             id,
+            kind: TabKind::Terminal,
             window_id: window.id.clone(),
             window_index: window.index,
             active_pane_id: window

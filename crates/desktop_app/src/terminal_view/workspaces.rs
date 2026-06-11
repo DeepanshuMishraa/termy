@@ -48,6 +48,11 @@ impl TerminalView {
         if let Some(entry) = self.workspaces.get_mut(self.active_workspace) {
             entry.tabs = std::mem::take(&mut self.tabs);
             entry.active_tab = active_tab;
+            for tab in &mut entry.tabs {
+                if let Some(state) = tab.browser_state_mut() {
+                    state.editing_url = false;
+                }
+            }
         }
     }
 
