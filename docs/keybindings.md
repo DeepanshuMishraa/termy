@@ -193,6 +193,7 @@ Related UI option:
 
 - `new_tab`
 - `new_browser_tab`
+- `toggle_git_panel`
 - `close_tab`
 - `close_pane_or_tab`
 - `move_tab_left`

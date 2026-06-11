@@ -422,7 +422,7 @@ impl TerminalView {
         )
     }
 
-    fn persisted_native_workspace_working_dir(&self) -> Option<String> {
+    pub(super) fn persisted_native_workspace_working_dir(&self) -> Option<String> {
         termy_terminal_ui::resolve_launch_working_directory(
             self.configured_working_dir.as_deref(),
             self.terminal_runtime.working_dir_fallback,

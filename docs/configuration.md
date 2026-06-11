@@ -107,6 +107,11 @@ Platform note: the Agent Sidebar/Workspace is currently unavailable on Windows b
 - Show active tmux pane border highlight in managed sessions
 - Group: `TMUX`
 
+`git_panel_enabled`
+- Default: `false`
+- Enable the git changes panel docked to the right
+- Group: `GIT`
+
 `windows_shell`
 - Default: `cmd`
 - Preset shell used for new sessions on Windows

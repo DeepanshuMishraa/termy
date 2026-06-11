@@ -31,6 +31,17 @@ impl TerminalView {
         self.has_active_inline_input()
     }
 
+    /// Single source for runtime command gating so the palette, menus, and
+    /// execution path all apply the same capability rules.
+    pub(in super::super) fn command_capabilities(&self) -> CommandCapabilities {
+        CommandCapabilities {
+            tmux_runtime_active: self.runtime_uses_tmux(),
+            install_cli_available: self.install_cli_available(),
+            browser_tabs_enabled: self.browser_tabs_enabled,
+            git_panel_enabled: self.git_panel_enabled,
+        }
+    }
+
     fn maybe_suppress_tab_switch_hint_for_action(
         &mut self,
         action: CommandAction,
@@ -65,11 +76,7 @@ impl TerminalView {
 
         // Keep runtime command gating aligned with command_core so every UI surface
         // and execution path applies the same capability rules.
-        let availability = action.availability(CommandCapabilities {
-            tmux_runtime_active: self.runtime_uses_tmux(),
-            install_cli_available: self.install_cli_available(),
-            browser_tabs_enabled: self.browser_tabs_enabled,
-        });
+        let availability = action.availability(self.command_capabilities());
         if !availability.enabled {
             match availability.reason {
                 Some(CommandUnavailableReason::RequiresTmuxRuntime) => {
@@ -84,6 +91,11 @@ impl TerminalView {
                 }
                 Some(CommandUnavailableReason::BrowserTabsDisabled) => {
                     termy_toast::info("Enable Browser Tabs in Settings to use this command");
+                    self.notify_overlay(cx);
+                    return;
+                }
+                Some(CommandUnavailableReason::GitPanelDisabled) => {
+                    termy_toast::info("Enable Git Panel in Settings to use this command");
                     self.notify_overlay(cx);
                     return;
                 }
@@ -145,6 +157,9 @@ impl TerminalView {
                 if self.set_tab_bar_visibility(next_visibility) {
                     cx.notify();
                 }
+            }
+            CommandAction::ToggleGitPanel => {
+                self.toggle_git_panel(cx);
             }
             CommandAction::ToggleInspector => {
                 self.toggle_inspector(cx);

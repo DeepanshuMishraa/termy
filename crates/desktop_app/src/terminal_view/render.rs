@@ -2095,12 +2095,26 @@ impl TerminalView {
                             cx,
                             |view, cx| view.add_tab(cx),
                         ))
-                        .child(menu_row(
-                            "new-tab-menu-browser",
-                            "New Browser Tab",
-                            cx,
-                            |view, cx| view.add_browser_tab(cx),
-                        )),
+                        .when(self.browser_tabs_enabled, |panel| {
+                            panel.child(menu_row(
+                                "new-tab-menu-browser",
+                                "New Browser Tab",
+                                cx,
+                                |view, cx| view.add_browser_tab(cx),
+                            ))
+                        })
+                        .when(self.git_panel_enabled, |panel| {
+                            panel.child(menu_row(
+                                "new-tab-menu-git-panel",
+                                if self.git_panel_open {
+                                    "Hide Git Panel"
+                                } else {
+                                    "Show Git Panel"
+                                },
+                                cx,
+                                |view, cx| view.toggle_git_panel(cx),
+                            ))
+                        }),
                 )
                 .into_any_element(),
         )
@@ -3055,6 +3069,11 @@ impl Render for TerminalView {
             .then(|| self.render_workspace_sidebar(&colors, &ui_font_family, tabbar_bg, cx));
         self.sync_browser_tab_titles();
         self.sync_browser_webviews(window);
+        self.apply_git_panel_updates();
+        self.schedule_git_panel_poll(cx);
+        let git_panel = self
+            .git_panel_visible()
+            .then(|| self.render_git_panel(&colors, &ui_font_family, cx));
         let browser_chrome = self
             .active_tab_is_browser()
             .then(|| self.render_browser_chrome(&colors, &ui_font_family, cx));
@@ -3383,7 +3402,8 @@ impl Render for TerminalView {
                                     )
                                     .children(inspector_panel),
                             )
-                            .children(tab_sidebar),
+                            .children(tab_sidebar)
+                            .children(git_panel),
                     ),
             )
             .child(overlay_view);

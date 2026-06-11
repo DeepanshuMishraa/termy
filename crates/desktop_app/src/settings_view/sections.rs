@@ -317,6 +317,21 @@ impl SettingsWindow {
             .child(self.render_terminal_scrolling_group(cx))
             .child(self.render_terminal_clipboard_group(cx))
             .child(self.render_terminal_ui_group(cx))
+            .child(self.render_terminal_git_group(cx))
+    }
+
+    pub(super) fn render_terminal_git_group(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let git_panel_enabled = self.config.git_panel_enabled;
+        let rows = vec![self.render_root_bool_setting_row(
+            "git_panel_enabled",
+            "git_panel_enabled-toggle",
+            RootSettingId::GitPanelEnabled,
+            git_panel_enabled,
+            "Saved",
+            cx,
+        )];
+
+        self.render_settings_group("GIT", rows)
     }
 
     pub(super) fn render_terminal_cursor_group(&mut self, cx: &mut Context<Self>) -> AnyElement {

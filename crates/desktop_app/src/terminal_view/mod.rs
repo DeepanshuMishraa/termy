@@ -59,6 +59,7 @@ mod benchmark;
 mod browser;
 mod command_palette;
 mod constants;
+mod git_panel;
 mod inline_input;
 mod inspector;
 mod interaction;
@@ -1573,6 +1574,9 @@ pub struct TerminalView {
     next_workspace_id: u64,
     workspace_sidebar_enabled: bool,
     browser_tabs_enabled: bool,
+    git_panel_enabled: bool,
+    git_panel_open: bool,
+    git_panel: git_panel::GitPanelState,
     native_pane_zoom_snapshots: HashMap<TabId, NativePaneZoomSnapshot>,
     native_pane_layout_trees: HashMap<TabId, NativePaneLayoutTree>,
     next_tab_id: TabId,
@@ -3343,8 +3347,11 @@ impl TerminalView {
         TerminalContentRect::new(
             0.0,
             0.0,
-            (viewport_width - self.effective_sidebar_width() - self.workspace_sidebar_width())
-                .max(0.0),
+            (viewport_width
+                - self.effective_sidebar_width()
+                - self.workspace_sidebar_width()
+                - self.git_panel_width_px())
+            .max(0.0),
             viewport_height - self.terminal_content_top_inset() - self.inspector_bottom_inset(),
         )
     }
@@ -4020,6 +4027,9 @@ impl TerminalView {
             next_workspace_id: 2,
             workspace_sidebar_enabled: config.sidebar_enabled,
             browser_tabs_enabled: config.browser_tabs_enabled,
+            git_panel_enabled: config.git_panel_enabled,
+            git_panel_open: false,
+            git_panel: git_panel::GitPanelState::new(),
             native_pane_zoom_snapshots: HashMap::new(),
             native_pane_layout_trees: HashMap::new(),
             next_tab_id: 1,
@@ -4368,6 +4378,14 @@ impl TerminalView {
         let workspace_sidebar_changed = self.workspace_sidebar_enabled != config.sidebar_enabled;
         self.workspace_sidebar_enabled = config.sidebar_enabled;
         self.browser_tabs_enabled = config.browser_tabs_enabled;
+        let git_panel_was_enabled = self.git_panel_enabled;
+        self.git_panel_enabled = config.git_panel_enabled;
+        if git_panel_was_enabled && !self.git_panel_enabled && self.git_panel_open {
+            self.git_panel_open = false;
+            self.git_panel.editing_commit = false;
+            self.mark_tab_strip_layout_dirty();
+            cx.notify();
+        }
         if !self.workspace_sidebar_enabled {
             // Stashed workspaces would be unreachable without the sidebar.
             self.collapse_workspaces_into_active();
