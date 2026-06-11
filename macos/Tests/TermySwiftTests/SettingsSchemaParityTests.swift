@@ -32,6 +32,7 @@ final class SettingsSchemaParityTests: XCTestCase {
             "shell_integration_enabled",
             "progress_indicator_enabled",
             "auto_hide_tabbar",
+            "sidebar_enabled",
             "show_termy_in_titlebar"
         ]
 

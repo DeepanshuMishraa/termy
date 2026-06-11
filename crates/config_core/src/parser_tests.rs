@@ -375,6 +375,7 @@ fn bool_root_setting_value(config: &AppConfig, setting: RootSettingId) -> Option
         RootSettingId::TabTitleShellIntegration => Some(config.tab_title.shell_integration),
         RootSettingId::TabSwitchModifierHints => Some(config.tab_switch_modifier_hints),
         RootSettingId::AutoHideTabbar => Some(config.auto_hide_tabbar),
+        RootSettingId::SidebarEnabled => Some(config.sidebar_enabled),
         RootSettingId::ShowTermyInTitlebar => Some(config.show_termy_in_titlebar),
         RootSettingId::CursorBlink => Some(config.cursor_blink),
         RootSettingId::BackgroundOpacityCells => Some(config.background_opacity_cells),

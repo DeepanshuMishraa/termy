@@ -386,6 +386,7 @@ define_root_settings! {
     (TabBarPosition, "tab_bar_position", [], Tabs, "TAB STRIP", "Tab Bar Position", "Where the tab bar is rendered: top strip or right sidebar", ["tab", "bar", "position", "sidebar", "vertical", "right", "top"], RootSettingValueKind::Enum, false),
     (TabSwitchModifierHints, "tab_switch_modifier_hints", [], Tabs, "TAB STRIP", "Show Tab Switch Hints", "Show secondary+1..9 number badges on the first nine tabs while the secondary modifier is held", ["tab", "switch", "hints", "modifier", "secondary", "shortcuts"], RootSettingValueKind::Boolean, false),
     (AutoHideTabbar, "auto_hide_tabbar", [], Tabs, "TAB STRIP", "Auto-hide Tab Bar", "Hide the tab bar when only one tab is open", ["tab", "tabs", "hide", "auto", "single", "tabbar"], RootSettingValueKind::Boolean, false),
+    (SidebarEnabled, "sidebar_enabled", [], Tabs, "SIDEBAR", "Workspace Sidebar", "Show the left sidebar for grouping tabs into workspaces", ["sidebar", "workspace", "workspaces", "tabs", "groups"], RootSettingValueKind::Boolean, false),
     (ShowTermyInTitlebar, "show_termy_in_titlebar", [], Tabs, "TITLE BAR", "Show Termy In Titlebar", "Show or hide the termy branding in the titlebar", ["titlebar", "branding", "tabs"], RootSettingValueKind::Boolean, false),
     (WindowsShell, "windows_shell", [], Terminal, "SHELL", "Windows Shell Preset", "Preset shell used for new sessions on Windows", ["windows", "shell", "cmd", "powershell", "pwsh", "git bash"], RootSettingValueKind::Enum, false),
     (Shell, "shell", [], Terminal, "SHELL", "Shell", "Optional executable path used for new sessions; overrides the Windows shell preset on Windows", ["shell", "bash", "zsh", "fish", "custom"], RootSettingValueKind::Text, false),
@@ -555,6 +556,7 @@ pub fn root_setting_default_value(config: &AppConfig, id: RootSettingId) -> Opti
         }),
         RootSettingId::TabSwitchModifierHints => Some(config.tab_switch_modifier_hints.to_string()),
         RootSettingId::AutoHideTabbar => Some(config.auto_hide_tabbar.to_string()),
+        RootSettingId::SidebarEnabled => Some(config.sidebar_enabled.to_string()),
         RootSettingId::ShowTermyInTitlebar => Some(config.show_termy_in_titlebar.to_string()),
         RootSettingId::WindowsShell => Some(match config.windows_shell {
             WindowsShell::Cmd => "cmd".to_string(),

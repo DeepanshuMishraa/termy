@@ -449,9 +449,9 @@ fn verify_app(paths: &MacosPaths) -> Result<()> {
 fn run_status(command: &mut Command) -> Result<()> {
     let status = command
         .status()
-        .with_context(|| format!("failed to run {:?}", command))?;
+        .with_context(|| format!("failed to run {command:?}"))?;
     if !status.success() {
-        bail!("command failed with {status}: {:?}", command);
+        bail!("command failed with {status}: {command:?}");
     }
     Ok(())
 }
@@ -459,7 +459,7 @@ fn run_status(command: &mut Command) -> Result<()> {
 fn run_ignore_failure(command: &mut Command) -> Result<()> {
     command
         .status()
-        .with_context(|| format!("failed to run {:?}", command))?;
+        .with_context(|| format!("failed to run {command:?}"))?;
     Ok(())
 }
 
@@ -471,7 +471,7 @@ fn run_status_quiet(command: &mut Command) -> Result<()> {
 fn run_status_captured(command: &mut Command) -> Result<()> {
     let output = command
         .output()
-        .with_context(|| format!("failed to run {:?}", command))?;
+        .with_context(|| format!("failed to run {command:?}"))?;
     if !output.status.success() {
         bail!(
             "command failed with {}: {:?}\n{}",

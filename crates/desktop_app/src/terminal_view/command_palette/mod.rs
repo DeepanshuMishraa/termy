@@ -18,10 +18,6 @@ pub(super) use state::{CommandPaletteMode, CommandPaletteState, TaskIntent};
 pub(super) use state_layouts::SavedLayoutIntent;
 pub(super) use state_tmux::TmuxSessionIntent;
 
-pub(super) fn prewarm_user_path_resolution() {
-    state::prewarm_user_path_resolution();
-}
-
 fn command_icon_path(id: termy_command_core::CommandId) -> &'static str {
     use termy_command_core::CommandId::*;
     match id {

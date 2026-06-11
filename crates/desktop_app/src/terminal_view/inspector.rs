@@ -21,19 +21,77 @@ const INSPECTOR_TAB_RADIUS: f32 = 5.0;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum InspectorTab {
     Terminal,
+    Runtime,
+    Input,
+    Config,
     Keyboard,
     Render,
 }
 
 impl InspectorTab {
-    const ALL: [Self; 3] = [Self::Terminal, Self::Keyboard, Self::Render];
+    const ALL: [Self; 6] = [
+        Self::Terminal,
+        Self::Runtime,
+        Self::Input,
+        Self::Config,
+        Self::Keyboard,
+        Self::Render,
+    ];
 
     fn label(self) -> &'static str {
         match self {
             Self::Terminal => "Terminal",
+            Self::Runtime => "Runtime",
+            Self::Input => "Input",
+            Self::Config => "Config",
             Self::Keyboard => "Keyboard",
             Self::Render => "Render",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mouse_mode_label_summarizes_enabled_features() {
+        let label = mouse_mode_label(TerminalMouseMode {
+            enabled: true,
+            report_click: true,
+            report_drag: true,
+            report_motion: false,
+            sgr_encoding: true,
+            utf8_encoding: false,
+        });
+
+        assert_eq!(label, "click, drag, sgr");
+        assert_eq!(mouse_mode_label(TerminalMouseMode::default()), "disabled");
+    }
+
+    #[test]
+    fn cursor_state_label_reports_hidden_or_position() {
+        assert_eq!(cursor_state_label(None), "hidden");
+        assert_eq!(
+            cursor_state_label(Some(TerminalCursorState {
+                col: 4,
+                row: 2,
+                style: TerminalCursorStyle::Line,
+            })),
+            "row 2 col 4 Line"
+        );
+    }
+
+    #[test]
+    fn mouse_target_label_reports_pane_and_cell() {
+        let target = MouseReportTargetCell {
+            pane_id: "%1".to_string(),
+            col: 9,
+            row: 3,
+        };
+
+        assert_eq!(mouse_target_label(Some(&target)), "%1 row 3 col 9");
+        assert_eq!(mouse_target_label(None), "-");
     }
 }
 
@@ -113,9 +171,90 @@ struct InspectorPaneSnapshot {
     display_offset: usize,
     history_size: usize,
     alternate_screen: bool,
+    bracketed_paste: bool,
+    mouse_mode: TerminalMouseMode,
+    keyboard_mode: TerminalKeyboardMode,
+    cursor_state: Option<TerminalCursorState>,
+    child_pid: Option<u32>,
     zoom_steps: i16,
     degraded: bool,
     progress: ProgressState,
+}
+
+struct InspectorActiveTabSnapshot {
+    title: String,
+    window_id: String,
+    pane_count: usize,
+    progress: ProgressState,
+    running_process: bool,
+    pinned: bool,
+    manual_title: Option<String>,
+    explicit_title: Option<String>,
+    shell_title: Option<String>,
+    current_command: Option<String>,
+    last_prompt_cwd: Option<String>,
+    active_pane_id: Option<String>,
+}
+
+fn option_label(value: Option<&str>) -> String {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("-")
+        .to_string()
+}
+
+fn bool_label(value: bool) -> &'static str {
+    if value { "yes" } else { "no" }
+}
+
+fn selection_pos_label(position: SelectionPos) -> String {
+    format!("line {} col {}", position.line, position.col)
+}
+
+fn cell_pos_label(position: CellPos) -> String {
+    format!("row {} col {}", position.row, position.col)
+}
+
+fn mouse_target_label(target: Option<&MouseReportTargetCell>) -> String {
+    target.map_or_else(
+        || "-".to_string(),
+        |target| format!("{} row {} col {}", target.pane_id, target.row, target.col),
+    )
+}
+
+fn mouse_mode_label(mode: TerminalMouseMode) -> String {
+    if !mode.enabled {
+        return "disabled".to_string();
+    }
+    let mut parts = Vec::new();
+    if mode.report_click {
+        parts.push("click");
+    }
+    if mode.report_drag {
+        parts.push("drag");
+    }
+    if mode.report_motion {
+        parts.push("motion");
+    }
+    if mode.sgr_encoding {
+        parts.push("sgr");
+    }
+    if mode.utf8_encoding {
+        parts.push("utf8");
+    }
+    if parts.is_empty() {
+        "enabled".to_string()
+    } else {
+        parts.join(", ")
+    }
+}
+
+fn cursor_state_label(cursor: Option<TerminalCursorState>) -> String {
+    cursor.map_or_else(
+        || "hidden".to_string(),
+        |cursor| format!("row {} col {} {:?}", cursor.row, cursor.col, cursor.style),
+    )
 }
 
 impl TerminalView {
@@ -237,12 +376,36 @@ impl TerminalView {
                     display_offset,
                     history_size,
                     alternate_screen: pane.terminal.alternate_screen_mode(),
+                    bracketed_paste: pane.terminal.bracketed_paste_mode(),
+                    mouse_mode: pane.terminal.mouse_mode(),
+                    keyboard_mode: pane.terminal.keyboard_mode(),
+                    cursor_state: pane.terminal.cursor_state(),
+                    child_pid: pane.terminal.child_pid(),
                     zoom_steps: pane.pane_zoom_steps,
                     degraded: pane.degraded,
                     progress: pane.progress_state,
                 }
             })
             .collect()
+    }
+
+    fn inspector_active_tab_snapshot(&self) -> Option<InspectorActiveTabSnapshot> {
+        self.tabs
+            .get(self.active_tab)
+            .map(|tab| InspectorActiveTabSnapshot {
+                title: tab.title.clone(),
+                window_id: tab.window_id.clone(),
+                pane_count: tab.panes.len(),
+                progress: tab.aggregate_progress_state(),
+                running_process: tab.running_process,
+                pinned: tab.pinned,
+                manual_title: tab.manual_title.clone(),
+                explicit_title: tab.explicit_title.clone(),
+                shell_title: tab.shell_title.clone(),
+                current_command: tab.current_command.clone(),
+                last_prompt_cwd: tab.last_prompt_cwd.clone(),
+                active_pane_id: tab.active_pane_id().map(ToOwned::to_owned),
+            })
     }
 
     fn inspector_row(
@@ -290,14 +453,7 @@ impl TerminalView {
             RuntimeKind::Native => "native",
             RuntimeKind::Tmux => "tmux",
         };
-        let tab_summary = self.tabs.get(self.active_tab).map(|tab| {
-            (
-                tab.title.clone(),
-                tab.window_id.clone(),
-                tab.panes.len(),
-                tab.aggregate_progress_state(),
-            )
-        });
+        let tab_summary = self.inspector_active_tab_snapshot();
         let panes = self.inspector_pane_snapshots();
         let font_size: f32 = self.font_size.into();
 
@@ -324,16 +480,60 @@ impl TerminalView {
             text_muted,
             text_primary,
         ));
-        if let Some((title, window_id, pane_count, progress)) = tab_summary {
+        if let Some(tab) = tab_summary {
             content = content.child(Self::inspector_row(
                 "Active Tab",
-                format!("{title}  ({window_id}, {pane_count} pane(s))"),
+                format!(
+                    "{}  ({}, {} pane(s))",
+                    tab.title, tab.window_id, tab.pane_count
+                ),
                 text_muted,
                 text_primary,
             ));
             content = content.child(Self::inspector_row(
                 "Tab Progress",
-                format!("{progress:?}"),
+                format!("{:?}", tab.progress),
+                text_muted,
+                text_primary,
+            ));
+            content = content.child(Self::inspector_row(
+                "Tab State",
+                format!(
+                    "running {} / pinned {} / active pane {}",
+                    bool_label(tab.running_process),
+                    bool_label(tab.pinned),
+                    option_label(tab.active_pane_id.as_deref())
+                ),
+                text_muted,
+                text_primary,
+            ));
+            content = content.child(Self::inspector_row(
+                "Current Command",
+                option_label(tab.current_command.as_deref()),
+                text_muted,
+                text_primary,
+            ));
+            content = content.child(Self::inspector_row(
+                "Manual Title",
+                option_label(tab.manual_title.as_deref()),
+                text_muted,
+                text_primary,
+            ));
+            content = content.child(Self::inspector_row(
+                "Explicit Title",
+                option_label(tab.explicit_title.as_deref()),
+                text_muted,
+                text_primary,
+            ));
+            content = content.child(Self::inspector_row(
+                "Shell Title",
+                option_label(tab.shell_title.as_deref()),
+                text_muted,
+                text_primary,
+            ));
+            content = content.child(Self::inspector_row(
+                "Prompt CWD",
+                option_label(tab.last_prompt_cwd.as_deref()),
                 text_muted,
                 text_primary,
             ));
@@ -382,11 +582,40 @@ impl TerminalView {
                 ))
                 .child(Self::inspector_row(
                     "Screen",
-                    if pane.alternate_screen {
-                        "alternate".to_string()
-                    } else {
-                        "primary".to_string()
-                    },
+                    format!(
+                        "{} / bracketed paste {}",
+                        if pane.alternate_screen {
+                            "alternate"
+                        } else {
+                            "primary"
+                        },
+                        bool_label(pane.bracketed_paste)
+                    ),
+                    text_muted,
+                    text_primary,
+                ))
+                .child(Self::inspector_row(
+                    "Cursor",
+                    cursor_state_label(pane.cursor_state),
+                    text_muted,
+                    text_primary,
+                ))
+                .child(Self::inspector_row(
+                    "Child PID",
+                    pane.child_pid
+                        .map_or_else(|| "-".to_string(), |pid| pid.to_string()),
+                    text_muted,
+                    text_primary,
+                ))
+                .child(Self::inspector_row(
+                    "Mouse Mode",
+                    mouse_mode_label(pane.mouse_mode),
+                    text_muted,
+                    text_primary,
+                ))
+                .child(Self::inspector_row(
+                    "Keyboard Mode",
+                    format!("{:?}", pane.keyboard_mode),
                     text_muted,
                     text_primary,
                 ))
@@ -404,6 +633,347 @@ impl TerminalView {
                 ));
         }
 
+        content.into_any_element()
+    }
+
+    fn render_inspector_runtime_tab(
+        &self,
+        text_primary: gpui::Rgba,
+        text_muted: gpui::Rgba,
+    ) -> AnyElement {
+        let mut content = div().flex().flex_col();
+        content = content
+            .child(Self::inspector_row(
+                "Runtime Kind",
+                format!("{:?}", self.runtime_kind()),
+                text_muted,
+                text_primary,
+            ))
+            .child(Self::inspector_row(
+                "Config tmux_enabled",
+                bool_label(self.tmux_enabled_config).to_string(),
+                text_muted,
+                text_primary,
+            ))
+            .child(Self::inspector_row(
+                "Configured Working Dir",
+                option_label(self.configured_working_dir.as_deref()),
+                text_muted,
+                text_primary,
+            ))
+            .child(Self::inspector_row(
+                "Config Path",
+                self.config_path
+                    .as_ref()
+                    .map_or_else(|| "-".to_string(), |path| path.display().to_string()),
+                text_muted,
+                text_primary,
+            ))
+            .child(Self::inspector_row(
+                "Last Config Error",
+                option_label(self.last_config_error_message.as_deref()),
+                text_muted,
+                text_primary,
+            ));
+
+        match self.runtime.as_tmux() {
+            Some(runtime) => {
+                content = content
+                    .child(Self::inspector_row(
+                        "tmux Session",
+                        runtime.client.session_name().to_string(),
+                        text_muted,
+                        text_primary,
+                    ))
+                    .child(Self::inspector_row(
+                        "tmux Binary",
+                        runtime.config.binary.clone(),
+                        text_muted,
+                        text_primary,
+                    ))
+                    .child(Self::inspector_row(
+                        "tmux Launch",
+                        format!("{:?}", runtime.config.launch),
+                        text_muted,
+                        text_primary,
+                    ))
+                    .child(Self::inspector_row(
+                        "tmux Client Grid",
+                        format!("{} × {}", runtime.client_cols, runtime.client_rows),
+                        text_muted,
+                        text_primary,
+                    ))
+                    .child(Self::inspector_row(
+                        "tmux Preferred CWD",
+                        option_label(runtime.preferred_cwd.as_deref()),
+                        text_muted,
+                        text_primary,
+                    ))
+                    .child(Self::inspector_row(
+                        "tmux Resize Work",
+                        format!(
+                            "{} / wake scheduled {}",
+                            bool_label(runtime.resize_scheduler.has_work()),
+                            bool_label(runtime.resize_wakeup_scheduled)
+                        ),
+                        text_muted,
+                        text_primary,
+                    ))
+                    .child(Self::inspector_row(
+                        "tmux Title Refresh",
+                        format!(
+                            "deadline {} / wake scheduled {}",
+                            bool_label(runtime.title_refresh_deadline.is_some()),
+                            bool_label(runtime.title_refresh_wakeup_scheduled)
+                        ),
+                        text_muted,
+                        text_primary,
+                    ))
+                    .child(Self::inspector_row(
+                        "tmux Active Border",
+                        bool_label(runtime.config.show_active_pane_border).to_string(),
+                        text_muted,
+                        text_primary,
+                    ));
+            }
+            None => {
+                content = content.child(Self::inspector_row(
+                    "Native Runtime",
+                    "active".to_string(),
+                    text_muted,
+                    text_primary,
+                ));
+            }
+        }
+
+        content.into_any_element()
+    }
+
+    fn render_inspector_input_tab(
+        &self,
+        text_primary: gpui::Rgba,
+        text_muted: gpui::Rgba,
+    ) -> AnyElement {
+        let active_overlay = if self.is_command_palette_open() {
+            "command palette"
+        } else if self.search_open {
+            "search"
+        } else if self.renaming_tab.is_some() {
+            "tab rename"
+        } else if self.terminal_context_menu.is_some() {
+            "terminal context menu"
+        } else if self.tab_context_menu.is_some() {
+            "tab context menu"
+        } else {
+            "-"
+        };
+        let selection = match (self.selection_anchor, self.selection_head) {
+            (Some(anchor), Some(head)) => format!(
+                "{} -> {} / dragging {} / moved {}",
+                selection_pos_label(anchor),
+                selection_pos_label(head),
+                bool_label(self.selection_dragging),
+                bool_label(self.selection_moved)
+            ),
+            _ => "-".to_string(),
+        };
+        let hovered_link = self.hovered_link.as_ref().map_or_else(
+            || "-".to_string(),
+            |link| {
+                format!(
+                    "row {} cols {}-{} -> {}",
+                    link.row, link.start_col, link.end_col, link.target
+                )
+            },
+        );
+        let hovered_divider = self.hovered_pane_divider.as_ref().map_or_else(
+            || "-".to_string(),
+            |divider| format!("{} {:?} {:?}", divider.pane_id, divider.axis, divider.edge),
+        );
+        let pane_resize = self.pane_resize_drag.as_ref().map_or_else(
+            || "-".to_string(),
+            |drag| {
+                format!(
+                    "{} {:?} {:?} steps {}",
+                    drag.pane_id, drag.axis, drag.edge, drag.applied_steps
+                )
+            },
+        );
+        let pending_cursor = self.pending_cursor_move_click.as_ref().map_or_else(
+            || "-".to_string(),
+            |pending| {
+                format!(
+                    "{} {} -> {}",
+                    pending.pane_id,
+                    cell_pos_label(pending.start_cell),
+                    cell_pos_label(pending.target)
+                )
+            },
+        );
+        let cursor_preview = self.pending_cursor_move_preview.as_ref().map_or_else(
+            || "-".to_string(),
+            |preview| {
+                format!(
+                    "{} {} {:?}",
+                    preview.pane_id,
+                    cell_pos_label(preview.target),
+                    preview.style
+                )
+            },
+        );
+        let active_mouse_mode = self
+            .tabs
+            .get(self.active_tab)
+            .and_then(TerminalTab::active_terminal)
+            .map_or_else(
+                || "-".to_string(),
+                |terminal| mouse_mode_label(terminal.mouse_mode()),
+            );
+
+        let rows: Vec<(&'static str, String)> = vec![
+            ("Active Overlay", active_overlay.to_string()),
+            ("Selection", selection),
+            ("Hovered Link", hovered_link),
+            ("Hovered Pane Divider", hovered_divider),
+            ("Pane Resize Drag", pane_resize),
+            ("Pending Cursor Move", pending_cursor),
+            ("Cursor Move Preview", cursor_preview),
+            ("Active Mouse Mode", active_mouse_mode),
+            (
+                "Mouse Press Targets",
+                format!(
+                    "L {} / M {} / R {}",
+                    mouse_target_label(self.mouse_reporting.left_button.as_ref()),
+                    mouse_target_label(self.mouse_reporting.middle_button.as_ref()),
+                    mouse_target_label(self.mouse_reporting.right_button.as_ref())
+                ),
+            ),
+            (
+                "Mouse Hover Target",
+                mouse_target_label(self.mouse_reporting.hover_target.as_ref()),
+            ),
+            (
+                "Scroll Accumulators",
+                format!(
+                    "terminal {:.2} / report x {:.2} y {:.2}",
+                    self.terminal_scroll_accumulator_y,
+                    self.mouse_reporting.scroll_accumulator_x,
+                    self.mouse_reporting.scroll_accumulator_y
+                ),
+            ),
+            (
+                "Pending Key Releases",
+                format!(
+                    "{} terminal / {} ime",
+                    self.pending_key_releases.len(),
+                    self.deferred_ime_key_releases.len()
+                ),
+            ),
+        ];
+
+        let mut content = div().flex().flex_col();
+        for (label, value) in rows {
+            content = content.child(Self::inspector_row(label, value, text_muted, text_primary));
+        }
+        content.into_any_element()
+    }
+
+    fn render_inspector_config_tab(
+        &self,
+        text_primary: gpui::Rgba,
+        text_muted: gpui::Rgba,
+    ) -> AnyElement {
+        let rows: Vec<(&'static str, String)> = vec![
+            ("Theme", self.theme_id.clone()),
+            ("Theme Mode", format!("{:?}", self.theme_mode)),
+            (
+                "Manual / Light / Dark Theme",
+                format!(
+                    "{} / {} / {}",
+                    self.manual_theme, self.light_theme, self.dark_theme
+                ),
+            ),
+            ("Font", self.font_family.to_string()),
+            ("UI Font", self.ui_font_family.to_string()),
+            ("Base Font Size", format!("{:.1}px", self.base_font_size)),
+            (
+                "Effective Font Size",
+                format!("{:.1}px", f32::from(self.font_size)),
+            ),
+            ("Line Height", format!("{:.2}", self.line_height)),
+            (
+                "Padding",
+                format!("{:.1} × {:.1}", self.padding_x, self.padding_y),
+            ),
+            ("Cursor Style", format!("{:?}", self.cursor_style)),
+            ("Cursor Blink", bool_label(self.cursor_blink).to_string()),
+            (
+                "Background",
+                format!(
+                    "opacity {:.2} / blur {} / cells {}",
+                    self.background_opacity,
+                    bool_label(self.background_blur),
+                    bool_label(self.background_opacity_cells)
+                ),
+            ),
+            (
+                "Chrome Contrast",
+                bool_label(self.chrome_contrast).to_string(),
+            ),
+            ("Tab Bar Position", format!("{:?}", self.tab_bar_position)),
+            (
+                "Tab Bar Visibility",
+                format!("{:?}", self.tab_bar_visibility),
+            ),
+            (
+                "Sidebar Collapsed",
+                bool_label(self.sidebar_collapsed).to_string(),
+            ),
+            (
+                "Auto Hide Tab Bar",
+                bool_label(self.auto_hide_tabbar).to_string(),
+            ),
+            ("Simple Mode", bool_label(self.simple_mode).to_string()),
+            (
+                "Command Palette Keybinds",
+                bool_label(self.command_palette.show_keybinds()).to_string(),
+            ),
+            (
+                "Shell Integration",
+                bool_label(self.shell_integration_enabled).to_string(),
+            ),
+            (
+                "Progress Indicator",
+                bool_label(self.progress_indicator_enabled).to_string(),
+            ),
+            (
+                "Native Persistence",
+                format!(
+                    "tabs {} / layouts {} / buffers {}",
+                    bool_label(self.native_tab_persistence),
+                    bool_label(self.native_layout_autosave),
+                    bool_label(self.native_buffer_persistence)
+                ),
+            ),
+            (
+                "Quit Warnings",
+                format!(
+                    "quit {} / running process {}",
+                    bool_label(self.warn_on_quit),
+                    bool_label(self.warn_on_quit_with_running_process)
+                ),
+            ),
+            ("Tasks", self.tasks.len().to_string()),
+            (
+                "Current Layout",
+                option_label(self.current_named_layout.as_deref()),
+            ),
+        ];
+
+        let mut content = div().flex().flex_col();
+        for (label, value) in rows {
+            content = content.child(Self::inspector_row(label, value, text_muted, text_primary));
+        }
         content.into_any_element()
     }
 
@@ -475,7 +1045,8 @@ impl TerminalView {
         text_muted: gpui::Rgba,
     ) -> AnyElement {
         let stats = &self.debug_overlay_stats;
-        let rows: Vec<(&'static str, String)> = vec![
+        let terminal_ui = terminal_ui_render_metrics_snapshot();
+        let mut rows: Vec<(&'static str, String)> = vec![
             ("FPS", format!("{:.1}", stats.fps)),
             (
                 "Frame p50 / p95 / p99",
@@ -506,11 +1077,87 @@ impl TerminalView {
                     stats.span_paint_ms
                 ),
             ),
+            ("Grid Paints", terminal_ui.grid_paint_count.to_string()),
+            (
+                "Shape Calls / Hits / Misses",
+                format!(
+                    "{} / {} / {}",
+                    terminal_ui.shape_line_calls,
+                    terminal_ui.shaped_line_cache_hits,
+                    terminal_ui.shaped_line_cache_misses
+                ),
+            ),
+            (
+                "Runtime Wakeups",
+                terminal_ui.runtime_wakeup_count.to_string(),
+            ),
+            (
+                "Span Totals (damage/rebuild/shape/paint)",
+                format!(
+                    "{} / {} / {} / {} us",
+                    terminal_ui.span_damage_compute_us,
+                    terminal_ui.span_row_ops_rebuild_us,
+                    terminal_ui.span_text_shaping_us,
+                    terminal_ui.span_grid_paint_us
+                ),
+            ),
         ];
+
+        #[cfg(debug_assertions)]
+        {
+            let counters = self.render_metrics.counters;
+            let delta = counters.saturating_sub(self.render_metrics.last_emit_counters);
+            rows.extend([
+                (
+                    "Render Metrics Enabled",
+                    bool_label(self.render_metrics.enabled).to_string(),
+                ),
+                (
+                    "Cache Full / Partial / Reuse",
+                    format!(
+                        "{} / {} / {}",
+                        counters.cache_full_count,
+                        counters.cache_partial_count,
+                        counters.cache_reuse_count
+                    ),
+                ),
+                (
+                    "Dirty Spans / Patched Cells",
+                    format!(
+                        "{} / {}",
+                        counters.dirty_span_count, counters.patched_cell_count
+                    ),
+                ),
+                (
+                    "Since Last Log: Render / Full / Partial / Reuse",
+                    format!(
+                        "{} / {} / {} / {}",
+                        delta.render_count,
+                        delta.cache_full_count,
+                        delta.cache_partial_count,
+                        delta.cache_reuse_count
+                    ),
+                ),
+                (
+                    "Since Last Log: Dirty / Patched",
+                    format!("{} / {}", delta.dirty_span_count, delta.patched_cell_count),
+                ),
+            ]);
+        }
 
         let mut content = div().flex().flex_col();
         for (label, value) in rows {
             content = content.child(Self::inspector_row(label, value, text_muted, text_primary));
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            content = content.child(
+                div()
+                    .flex_none()
+                    .mt(px(8.0))
+                    .text_color(text_muted)
+                    .child("Cache and dirty-span counters require a debug build."),
+            );
         }
         content = content.child(
             div()
@@ -661,6 +1308,9 @@ impl TerminalView {
             InspectorTab::Terminal => {
                 self.render_inspector_terminal_tab(text_primary, text_muted, accent)
             }
+            InspectorTab::Runtime => self.render_inspector_runtime_tab(text_primary, text_muted),
+            InspectorTab::Input => self.render_inspector_input_tab(text_primary, text_muted),
+            InspectorTab::Config => self.render_inspector_config_tab(text_primary, text_muted),
             InspectorTab::Keyboard => self.render_inspector_keyboard_tab(text_primary, text_muted),
             InspectorTab::Render => self.render_inspector_render_tab(text_primary, text_muted),
         };

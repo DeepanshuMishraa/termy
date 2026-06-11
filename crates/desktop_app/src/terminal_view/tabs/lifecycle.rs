@@ -385,6 +385,11 @@ impl TerminalView {
         };
 
         if self.tabs.len() <= 1 {
+            // Closing the last tab of a workspace closes the workspace when
+            // others remain; the window-close path handles the final tab.
+            if self.has_other_workspaces() {
+                self.close_active_workspace(cx);
+            }
             return;
         }
 
@@ -836,7 +841,7 @@ impl TerminalView {
         }
     }
 
-    fn clear_native_zoom_snapshot_for_active_tab(&mut self) {
+    pub(in super::super) fn clear_native_zoom_snapshot_for_active_tab(&mut self) {
         if let Some(tab) = self.tabs.get(self.active_tab) {
             self.clear_native_zoom_snapshot_for_tab_id(tab.id);
         }
@@ -1316,7 +1321,10 @@ impl TerminalView {
         }
     }
 
-    fn native_close_expand_neighbors(panes: &mut [TerminalPane], removed: &TerminalPane) {
+    pub(in super::super) fn native_close_expand_neighbors(
+        panes: &mut [TerminalPane],
+        removed: &TerminalPane,
+    ) {
         if panes.is_empty() {
             return;
         }

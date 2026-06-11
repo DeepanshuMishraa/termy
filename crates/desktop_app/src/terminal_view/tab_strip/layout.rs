@@ -196,6 +196,7 @@ impl TerminalView {
         TabStripLayoutSnapshot { geometry }
     }
 
+    #[cfg(test)]
     pub(crate) fn tab_strip_layout_for_viewport_width(
         viewport_width: f32,
     ) -> TabStripLayoutSnapshot {
@@ -232,9 +233,24 @@ impl TerminalView {
         })
     }
 
+    /// Left inset before the first tab. The workspace sidebar replaces the
+    /// platform titlebar padding when visible so the tab strip starts flush
+    /// with the sidebar's right edge.
+    pub(crate) fn tab_strip_base_left_inset(&self) -> f32 {
+        let workspace_sidebar_width = self.workspace_sidebar_width();
+        if workspace_sidebar_width > 0.0 {
+            workspace_sidebar_width
+        } else {
+            Self::titlebar_left_padding_for_platform()
+        }
+    }
+
     pub(crate) fn tab_strip_layout(&self, window: &Window) -> TabStripLayoutSnapshot {
         let viewport_width: f32 = window.viewport_size().width.into();
-        Self::tab_strip_layout_for_viewport_width(viewport_width)
+        Self::tab_strip_layout_for_viewport_with_left_inset(
+            viewport_width,
+            self.tab_strip_base_left_inset(),
+        )
     }
 
     pub(crate) fn tab_strip_layout_snapshot(&self) -> Option<TabStripLayoutSnapshot> {

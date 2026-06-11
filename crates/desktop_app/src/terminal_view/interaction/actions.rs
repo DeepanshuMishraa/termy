@@ -329,11 +329,11 @@ impl TerminalView {
     ) {
         let _ = window;
         self.add_tab_with_working_dir(working_dir, cx);
-        if let Some(command) = command.filter(|value| is_safe_deeplink_terminal_input(value))
+        if let Some(command_input) = command.and_then(deeplink_command_terminal_input)
             && let Some(tab) = self.tabs.get(self.active_tab)
             && let Some(terminal) = tab.active_terminal()
         {
-            terminal.write_input(command.as_bytes());
+            terminal.write_input(command_input.as_bytes());
             cx.notify();
         }
     }
@@ -757,6 +757,17 @@ fn is_safe_deeplink_terminal_input(value: &str) -> bool {
     !value.is_empty() && value.len() <= 4096 && !value.bytes().any(|byte| byte.is_ascii_control())
 }
 
+fn deeplink_command_terminal_input(value: &str) -> Option<String> {
+    let mut input = value.trim().to_string();
+    if !is_safe_deeplink_terminal_input(&input) {
+        return None;
+    }
+    if !input.ends_with('\n') {
+        input.push('\n');
+    }
+    Some(input)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -818,5 +829,18 @@ mod tests {
         assert!(!TerminalView::simple_mode_blocks_command_action(
             CommandAction::OpenConfig
         ));
+    }
+
+    #[test]
+    fn deeplink_command_input_appends_newline() {
+        assert_eq!(
+            deeplink_command_terminal_input("git status").as_deref(),
+            Some("git status\n")
+        );
+    }
+
+    #[test]
+    fn deeplink_command_input_rejects_control_characters() {
+        assert_eq!(deeplink_command_terminal_input("git\nstatus"), None);
     }
 }

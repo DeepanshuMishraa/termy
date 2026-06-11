@@ -2458,6 +2458,8 @@ impl Render for TerminalView {
         let mut pane_dividers = Vec::<AnyElement>::new();
         let mut pane_resize_handles = Vec::<AnyElement>::new();
         let mut pane_focus_accents = Vec::<AnyElement>::new();
+        let mut pane_drag_handles = Vec::<AnyElement>::new();
+        let mut pane_drop_overlays = Vec::<AnyElement>::new();
         #[cfg(debug_assertions)]
         let mut render_pass_cache_counts = RenderPassCacheStrategyCounts::default();
 
@@ -2699,6 +2701,149 @@ impl Render for TerminalView {
                             .into_any_element(),
                     );
                 }
+
+                if multi_pane && self.runtime_kind() == RuntimeKind::Native {
+                    // Grab handle at the pane's top center: drag it to move
+                    // the pane (modifier-free entry into the pane-move drag).
+                    // Chromeless — just three grip dots that fade in when the
+                    // pointer is over the handle area (or during a drag).
+                    let is_drag_source = self
+                        .pane_move_drag
+                        .as_ref()
+                        .is_some_and(|drag| drag.pane_id == pane.id);
+                    let handle_width = PANE_DRAG_HANDLE_WIDTH.min(pane_frame_width * 0.5);
+                    let handle_left = pane_frame_left + (pane_frame_width - handle_width) * 0.5;
+                    let handle_top = pane_frame_top + PANE_DRAG_HANDLE_INSET_Y;
+                    let mut grip_color = colors.foreground;
+                    grip_color.a = self.scaled_chrome_alpha(0.55);
+                    let idle_grip_color = if is_drag_source {
+                        grip_color
+                    } else {
+                        gpui::Rgba {
+                            a: 0.0,
+                            ..grip_color
+                        }
+                    };
+                    let group_name = pane.cached_element_ids.drag_handle.clone();
+                    let drag_pane_id = pane.id.clone();
+                    pane_drag_handles.push(
+                        div()
+                            .id(pane.cached_element_ids.drag_handle.clone())
+                            .group(group_name.clone())
+                            .absolute()
+                            .left(px(handle_left))
+                            .top(px(handle_top))
+                            .w(px(handle_width))
+                            .h(px(PANE_DRAG_HANDLE_HEIGHT))
+                            .cursor(gpui::CursorStyle::OpenHand)
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .gap(px(3.0))
+                            .children((0..3).map(|_| {
+                                let group_name = group_name.clone();
+                                div()
+                                    .w(px(2.5))
+                                    .h(px(2.5))
+                                    .rounded_full()
+                                    .bg(idle_grip_color)
+                                    .group_hover(group_name, move |style| style.bg(grip_color))
+                            }))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |view, event: &MouseDownEvent, _window, cx| {
+                                    view.begin_pane_move_drag_from_handle(
+                                        drag_pane_id.clone(),
+                                        event.position,
+                                        cx,
+                                    );
+                                    cx.stop_propagation();
+                                }),
+                            )
+                            .into_any_element(),
+                    );
+                }
+
+                if let Some(drag) = self.pane_move_drag.as_ref().filter(|drag| drag.active) {
+                    if drag.pane_id == pane.id {
+                        // Mark the pane being dragged so its origin stays
+                        // readable while the pointer roams.
+                        let mut source_border = colors.foreground;
+                        source_border.a = self.scaled_chrome_alpha(0.45);
+                        let mut source_fill = colors.foreground;
+                        source_fill.a = self.scaled_chrome_alpha(0.05);
+                        pane_drop_overlays.push(
+                            div()
+                                .absolute()
+                                .left(px(pane_frame_left))
+                                .top(px(pane_frame_top))
+                                .w(px(pane_frame_width))
+                                .h(px(pane_frame_height))
+                                .bg(source_fill)
+                                .border_1()
+                                .border_color(source_border)
+                                .into_any_element(),
+                        );
+                    }
+                    if let Some(target) = drag
+                        .drop_target
+                        .as_ref()
+                        .filter(|target| target.pane_id == pane.id)
+                    {
+                        // Placement preview: the half (split) or whole pane
+                        // (swap) the dragged pane would occupy on drop.
+                        let (region_left, region_top, region_width, region_height) =
+                            match target.region {
+                                PaneDropRegion::Center => (
+                                    pane_frame_left,
+                                    pane_frame_top,
+                                    pane_frame_width,
+                                    pane_frame_height,
+                                ),
+                                PaneDropRegion::Left => (
+                                    pane_frame_left,
+                                    pane_frame_top,
+                                    pane_frame_width * 0.5,
+                                    pane_frame_height,
+                                ),
+                                PaneDropRegion::Right => (
+                                    pane_frame_left + pane_frame_width * 0.5,
+                                    pane_frame_top,
+                                    pane_frame_width * 0.5,
+                                    pane_frame_height,
+                                ),
+                                PaneDropRegion::Top => (
+                                    pane_frame_left,
+                                    pane_frame_top,
+                                    pane_frame_width,
+                                    pane_frame_height * 0.5,
+                                ),
+                                PaneDropRegion::Bottom => (
+                                    pane_frame_left,
+                                    pane_frame_top + pane_frame_height * 0.5,
+                                    pane_frame_width,
+                                    pane_frame_height * 0.5,
+                                ),
+                            };
+                        let mut placement_fill = colors.cursor;
+                        placement_fill.a = self.scaled_chrome_accent_alpha(0.16);
+                        let mut placement_outline = colors.cursor;
+                        placement_outline.a = self.scaled_chrome_accent_alpha(0.78);
+                        pane_drop_overlays.push(
+                            div()
+                                .absolute()
+                                .left(px(region_left))
+                                .top(px(region_top))
+                                .w(px(region_width))
+                                .h(px(region_height))
+                                .rounded(px(4.0))
+                                .bg(placement_fill)
+                                .border_1()
+                                .border_color(placement_outline)
+                                .into_any_element(),
+                        );
+                    }
+                }
             }
 
             for divider in pane_divider_layouts {
@@ -2815,6 +2960,9 @@ impl Render for TerminalView {
             .then(|| self.render_tab_strip(window, &colors, &ui_font_family, tabbar_bg, cx));
         let tab_sidebar = (vertical_tabs && show_tab_strip_chrome)
             .then(|| self.render_tab_sidebar(window, &colors, &ui_font_family, tabbar_bg, cx));
+        let workspace_sidebar = self
+            .workspace_sidebar_visible()
+            .then(|| self.render_workspace_sidebar(&colors, &ui_font_family, tabbar_bg, cx));
         let hidden_titlebar_branding = Self::should_render_hidden_titlebar_branding(
             self.auto_hide_tabbar,
             self.tabs.len(),
@@ -2852,6 +3000,8 @@ impl Render for TerminalView {
             .children(pane_dividers)
             .children(pane_resize_handles)
             .children(pane_focus_accents)
+            .children(pane_drag_handles)
+            .children(pane_drop_overlays)
             .into_any_element();
         let inspector_panel = self.render_inspector_panel(cx);
         let has_active_inline = self.has_active_inline_input();
@@ -3065,6 +3215,7 @@ impl Render for TerminalView {
                             .flex()
                             .w_full()
                             .h_full()
+                            .children(workspace_sidebar)
                             .child(
                                 div()
                                     .id("terminal-pane")
@@ -3124,6 +3275,9 @@ impl Render for TerminalView {
                                                     }
                                                 },
                                             )
+                                            .when(self.pane_move_drag_active(), |s| {
+                                                s.cursor(gpui::CursorStyle::ClosedHand)
+                                            })
                                             .font_family(font_family)
                                             .text_size(font_size)
                                             .child(ime_input_layer)

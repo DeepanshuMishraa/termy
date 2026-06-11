@@ -1,13 +1,14 @@
 use super::*;
+use crate::workspace_store::{
+    StoredPane, StoredSession, StoredTab, StoredWorkspace, WORKSPACE_STORE_FILE, WorkspaceStore,
+};
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Line};
 use serde_json::{Value, json};
 use std::fs;
-use std::io::Write;
 use std::path::PathBuf;
-use tempfile::NamedTempFile;
 
-const NATIVE_WORKSPACE_STATE_VERSION: u64 = 3;
+/// Legacy JSON state file; read once to seed a fresh SQLite store.
 const NATIVE_WORKSPACE_STATE_FILE: &str = "native-tabs.json";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -59,13 +60,22 @@ struct PersistedNativeWorkspaceState {
     layouts: Vec<PersistedNamedLayout>,
 }
 
-#[derive(Clone, Debug)]
+/// Rebuilt tabs for one workspace: `(tabs, pane layout trees by tab id,
+/// clamped active tab index)`.
+type RestoredWorkspaceTabs = (
+    Vec<TerminalTab>,
+    HashMap<TabId, NativePaneLayoutTree>,
+    usize,
+);
+
+#[derive(Clone)]
 struct PersistedNativeWorkspaceWriteRequest {
-    path: PathBuf,
-    workspace: PersistedNativeWorkspace,
-    current_named_layout: Option<String>,
+    store: Arc<WorkspaceStore>,
+    session: StoredSession,
+    /// `(name, snapshot_json)` of the visible workspace when layout autosave
+    /// applies; updates the named layout row if it still exists.
+    named_layout_autosave: Option<(String, String)>,
     persist_last_session: bool,
-    autosave_named_layout: bool,
 }
 
 impl TerminalView {
@@ -279,69 +289,137 @@ impl TerminalView {
         Self::parse_persisted_native_workspace_state(&contents)
     }
 
-    fn store_persisted_native_workspace_state_to_path(
-        path: &std::path::Path,
-        state: PersistedNativeWorkspaceState,
-    ) -> Result<(), String> {
-        if state.last_session.is_none() && state.layouts.is_empty() {
-            match fs::remove_file(path) {
-                Ok(()) => return Ok(()),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-                Err(error) => {
-                    return Err(format!(
-                        "Failed to remove workspace state '{}': {}",
-                        path.display(),
-                        error
-                    ));
-                }
-            }
-        }
-
-        let contents = serde_json::to_string_pretty(&json!({
-            "version": NATIVE_WORKSPACE_STATE_VERSION,
-            "last_session": state.last_session.map(Self::persisted_workspace_to_value),
-            "layouts": state.layouts.into_iter().map(|layout| {
-                json!({
-                    "name": layout.name,
-                    "workspace": Self::persisted_workspace_to_value(layout.workspace),
-                })
-            }).collect::<Vec<_>>(),
-        }))
-        .map_err(|error| format!("Failed to encode native tab workspace: {error}"))?;
-        Self::write_persisted_native_workspace_atomically(path, &contents)
+    fn workspace_store_path() -> Result<PathBuf, String> {
+        let config_path = crate::config::ensure_config_file().map_err(|error| error.to_string())?;
+        let parent = config_path
+            .parent()
+            .ok_or_else(|| format!("Invalid config path '{}'", config_path.display()))?;
+        Ok(parent.join(WORKSPACE_STORE_FILE))
     }
 
-    fn write_persisted_native_workspace_atomically(
-        path: &std::path::Path,
-        contents: &str,
-    ) -> Result<(), String> {
-        let parent = path
-            .parent()
-            .ok_or_else(|| format!("Invalid workspace state path '{}'", path.display()))?;
-        fs::create_dir_all(parent)
-            .map_err(|error| format!("Failed to create '{}': {}", parent.display(), error))?;
-        let mut temp = NamedTempFile::new_in(parent).map_err(|error| {
-            format!(
-                "Failed to create temp file in '{}': {}",
-                parent.display(),
-                error
-            )
-        })?;
-        temp.write_all(contents.as_bytes())
-            .map_err(|error| format!("Failed to write workspace state: {error}"))?;
-        temp.flush()
-            .map_err(|error| format!("Failed to flush workspace state: {error}"))?;
-        temp.as_file()
-            .sync_all()
-            .map_err(|error| format!("Failed to sync workspace state: {error}"))?;
-        temp.persist(path).map_err(|error| {
-            format!(
-                "Failed to persist workspace state '{}': {}",
-                path.display(),
-                error.error
-            )
-        })?;
-        Ok(())
+    /// Open (or return the cached) SQLite session store. A fresh database is
+    /// seeded from the legacy `native-tabs.json` file when one exists.
+    fn workspace_store(&self) -> Option<Arc<WorkspaceStore>> {
+        self.workspace_store
+            .get_or_init(|| match Self::open_workspace_store() {
+                Ok(store) => Some(store),
+                Err(error) => {
+                    log::error!("Failed to open workspace store: {error}");
+                    None
+                }
+            })
+            .clone()
+    }
+
+    fn open_workspace_store() -> Result<Arc<WorkspaceStore>, String> {
+        let store = Arc::new(WorkspaceStore::open(&Self::workspace_store_path()?)?);
+        if store.is_fresh()? {
+            Self::import_legacy_native_workspace_state(&store);
+        }
+        Ok(store)
+    }
+
+    fn import_legacy_native_workspace_state(store: &WorkspaceStore) {
+        let state = Self::persisted_native_workspace_path()
+            .and_then(|path| Self::load_persisted_native_workspace_state_from_path(&path));
+        match state {
+            Ok(state) => {
+                if let Some(last_session) = state.last_session {
+                    let session = StoredSession {
+                        workspaces: vec![Self::stored_workspace_from_persisted(
+                            "Workspace 1".to_string(),
+                            last_session,
+                        )],
+                        active_workspace: 0,
+                    };
+                    if let Err(error) = store.save_session(&session) {
+                        log::warn!("Failed to import legacy session: {error}");
+                    }
+                }
+                for layout in state.layouts {
+                    let snapshot = Self::persisted_workspace_to_value(layout.workspace).to_string();
+                    if let Err(error) = store.upsert_named_layout(&layout.name, &snapshot) {
+                        log::warn!("Failed to import legacy layout '{}': {error}", layout.name);
+                    }
+                }
+            }
+            Err(error) => {
+                log::warn!("Skipping legacy workspace state import: {error}");
+            }
+        }
+        if let Err(error) = store.mark_initialized() {
+            log::warn!("Failed to mark workspace store as initialized: {error}");
+        }
+    }
+
+    fn stored_workspace_from_persisted(
+        name: String,
+        workspace: PersistedNativeWorkspace,
+    ) -> StoredWorkspace {
+        StoredWorkspace {
+            name,
+            active_tab: workspace.active_tab,
+            tabs: workspace
+                .tabs
+                .into_iter()
+                .map(|tab| StoredTab {
+                    pinned: tab.pinned,
+                    manual_title: tab.manual_title,
+                    active_pane: tab.active_pane,
+                    layout_tree_json: tab
+                        .layout_tree
+                        .map(|tree| Self::persisted_layout_tree_to_value(tree).to_string()),
+                    panes: tab
+                        .panes
+                        .into_iter()
+                        .map(|pane| StoredPane {
+                            left: pane.left,
+                            top: pane.top,
+                            width: pane.width,
+                            height: pane.height,
+                            buffer: pane.buffer,
+                        })
+                        .collect(),
+                })
+                .collect(),
+        }
+    }
+
+    fn persisted_workspace_from_stored(
+        workspace: StoredWorkspace,
+    ) -> (String, PersistedNativeWorkspace) {
+        let tabs = workspace
+            .tabs
+            .into_iter()
+            .map(|tab| PersistedNativeTab {
+                pinned: tab.pinned,
+                manual_title: tab.manual_title,
+                active_pane: tab.active_pane,
+                layout_tree: tab
+                    .layout_tree_json
+                    .as_deref()
+                    .and_then(|json| serde_json::from_str::<Value>(json).ok())
+                    .and_then(|value| Self::parse_persisted_layout_tree_value(&value).ok()),
+                panes: tab
+                    .panes
+                    .into_iter()
+                    .map(|pane| PersistedNativePane {
+                        left: pane.left,
+                        top: pane.top,
+                        width: pane.width,
+                        height: pane.height,
+                        buffer: pane.buffer,
+                    })
+                    .collect(),
+            })
+            .collect::<Vec<_>>();
+        (
+            workspace.name,
+            PersistedNativeWorkspace {
+                tabs,
+                active_tab: workspace.active_tab,
+            },
+        )
     }
 
     fn persisted_native_workspace_working_dir(&self) -> Option<String> {
@@ -352,13 +430,61 @@ impl TerminalView {
         .map(|path| path.to_string_lossy().into_owned())
     }
 
+    /// Snapshot of the visible strip only; used for named layouts.
     fn collect_persisted_native_workspace(&self) -> Option<PersistedNativeWorkspace> {
-        if self.runtime_kind() != RuntimeKind::Native || self.tabs.is_empty() {
+        if self.runtime_kind() != RuntimeKind::Native {
+            return None;
+        }
+        self.collect_persisted_workspace_from_tabs(&self.tabs, self.active_tab)
+    }
+
+    /// Snapshot of every workspace — the visible strip plus stashed
+    /// workspaces — preserving grouping and sidebar order.
+    fn collect_stored_session(&self) -> Option<StoredSession> {
+        if self.runtime_kind() != RuntimeKind::Native {
             return None;
         }
 
-        let tabs = self
-            .tabs
+        let mut workspaces = Vec::with_capacity(self.workspaces.len());
+        let mut active_position = 0;
+        for (index, entry) in self.workspaces.iter().enumerate() {
+            let (tabs, active_tab) = if index == self.active_workspace {
+                (self.tabs.as_slice(), self.active_tab)
+            } else {
+                (entry.tabs.as_slice(), entry.active_tab)
+            };
+            let Some(workspace) = self.collect_persisted_workspace_from_tabs(tabs, active_tab)
+            else {
+                continue;
+            };
+            if index == self.active_workspace {
+                active_position = workspaces.len();
+            }
+            workspaces.push(Self::stored_workspace_from_persisted(
+                entry.name.clone(),
+                workspace,
+            ));
+        }
+        if workspaces.is_empty() {
+            return None;
+        }
+
+        Some(StoredSession {
+            active_workspace: active_position,
+            workspaces,
+        })
+    }
+
+    fn collect_persisted_workspace_from_tabs(
+        &self,
+        source_tabs: &[TerminalTab],
+        active_tab: usize,
+    ) -> Option<PersistedNativeWorkspace> {
+        if source_tabs.is_empty() {
+            return None;
+        }
+
+        let tabs = source_tabs
             .iter()
             .map(|tab| {
                 let panes = tab
@@ -401,7 +527,7 @@ impl TerminalView {
 
         Some(PersistedNativeWorkspace {
             tabs,
-            active_tab: self.active_tab.min(self.tabs.len().saturating_sub(1)),
+            active_tab: active_tab.min(source_tabs.len().saturating_sub(1)),
         })
     }
 
@@ -591,25 +717,12 @@ impl TerminalView {
         }
     }
 
-    fn load_persisted_native_workspace_state(
-        &self,
-    ) -> Result<PersistedNativeWorkspaceState, String> {
-        let path = Self::persisted_native_workspace_path()?;
-        Self::load_persisted_native_workspace_state_from_path(&path)
-    }
-
-    fn store_persisted_native_workspace_state(
-        state: PersistedNativeWorkspaceState,
-    ) -> Result<(), String> {
-        let path = Self::persisted_native_workspace_path()?;
-        Self::store_persisted_native_workspace_state_to_path(&path, state)
-    }
-
-    fn restore_workspace(
+    /// Spawn terminals and rebuild tabs for one persisted workspace without
+    /// touching the view state.
+    fn build_restored_tabs(
         &mut self,
         workspace: PersistedNativeWorkspace,
-        cx: &mut Context<Self>,
-    ) -> Result<(), String> {
+    ) -> Result<RestoredWorkspaceTabs, String> {
         let working_dir = self.persisted_native_workspace_working_dir();
         let predicted_prompt_cwd = Self::predicted_prompt_cwd(
             working_dir.as_deref(),
@@ -724,10 +837,85 @@ impl TerminalView {
             return Err("workspace state does not contain any restorable tabs".to_string());
         }
 
-        self.tabs = restored_tabs;
-        self.native_pane_layout_trees = restored_layout_trees;
+        let active_tab = workspace
+            .active_tab
+            .min(restored_tabs.len().saturating_sub(1));
+        Ok((restored_tabs, restored_layout_trees, active_tab))
+    }
+
+    /// Replace the visible strip with one restored workspace (named layout
+    /// loads). Stashed workspaces are left untouched.
+    fn restore_workspace(
+        &mut self,
+        workspace: PersistedNativeWorkspace,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let (tabs, layout_trees, active_tab) = self.build_restored_tabs(workspace)?;
+        self.tabs = tabs;
+        self.native_pane_layout_trees = layout_trees;
         self.native_pane_zoom_snapshots.clear();
-        self.active_tab = workspace.active_tab.min(self.tabs.len().saturating_sub(1));
+        self.active_tab = active_tab;
+        self.finish_workspace_restore(cx);
+        Ok(())
+    }
+
+    /// Rebuild the full workspace set from a stored session: the active
+    /// workspace becomes the visible strip, the rest are stashed.
+    fn restore_stored_session(
+        &mut self,
+        session: StoredSession,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let stored_active = session
+            .active_workspace
+            .min(session.workspaces.len().saturating_sub(1));
+        let mut entries: Vec<workspaces::WorkspaceEntry> =
+            Vec::with_capacity(session.workspaces.len());
+        let mut all_layout_trees = HashMap::new();
+        let mut active_entry: Option<usize> = None;
+
+        for (index, stored_workspace) in session.workspaces.into_iter().enumerate() {
+            let (name, workspace) = Self::persisted_workspace_from_stored(stored_workspace);
+            let (tabs, layout_trees, active_tab) = match self.build_restored_tabs(workspace) {
+                Ok(restored) => restored,
+                Err(error) => {
+                    log::warn!("Skipping workspace '{name}' during session restore: {error}");
+                    continue;
+                }
+            };
+            all_layout_trees.extend(layout_trees);
+            if index == stored_active {
+                active_entry = Some(entries.len());
+            }
+            entries.push(workspaces::WorkspaceEntry {
+                id: entries.len() as u64 + 1,
+                name,
+                tabs,
+                active_tab,
+            });
+        }
+
+        if entries.is_empty() {
+            return Err("session state does not contain any restorable workspaces".to_string());
+        }
+
+        let active_entry = active_entry.unwrap_or(0);
+        self.next_workspace_id = entries.len() as u64 + 1;
+        self.workspaces = entries;
+        self.active_workspace = active_entry;
+        let (tabs, active_tab) = {
+            let entry = &mut self.workspaces[active_entry];
+            (std::mem::take(&mut entry.tabs), entry.active_tab)
+        };
+        self.tabs = tabs;
+        self.active_tab = active_tab.min(self.tabs.len().saturating_sub(1));
+        self.native_pane_layout_trees = all_layout_trees;
+        self.native_pane_zoom_snapshots.clear();
+        self.finish_workspace_restore(cx);
+        Ok(())
+    }
+
+    fn finish_workspace_restore(&mut self, cx: &mut Context<Self>) {
         self.mark_tab_strip_layout_dirty();
         self.sync_tab_strip_for_active_tab();
         for index in 0..self.tabs.len() {
@@ -736,26 +924,20 @@ impl TerminalView {
         self.clear_selection();
         self.clear_hovered_link();
         cx.notify();
-        Ok(())
     }
 
     fn apply_persisted_native_workspace_write_request(
         request: PersistedNativeWorkspaceWriteRequest,
     ) -> Result<(), String> {
-        let mut state = Self::load_persisted_native_workspace_state_from_path(&request.path)?;
-        if request.autosave_named_layout
-            && let Some(current_named_layout) = request.current_named_layout.as_deref()
-            && let Some(layout) = state
-                .layouts
-                .iter_mut()
-                .find(|layout| layout.name.eq_ignore_ascii_case(current_named_layout))
-        {
-            layout.workspace = request.workspace.clone();
+        if let Some((name, snapshot)) = &request.named_layout_autosave {
+            request
+                .store
+                .update_named_layout_if_exists(name, snapshot)?;
         }
         if request.persist_last_session {
-            state.last_session = Some(request.workspace);
+            request.store.save_session(&request.session)?;
         }
-        Self::store_persisted_native_workspace_state_to_path(&request.path, state)
+        Ok(())
     }
 
     fn persisted_native_workspace_write_request(
@@ -764,20 +946,23 @@ impl TerminalView {
         if !self.should_sync_persisted_native_workspace() {
             return None;
         }
-        let workspace = self.collect_persisted_native_workspace()?;
-        let path = match Self::persisted_native_workspace_path() {
-            Ok(path) => path,
-            Err(error) => {
-                log::error!("Failed to resolve native workspace state path: {error}");
-                return None;
-            }
+        let session = self.collect_stored_session()?;
+        let store = self.workspace_store()?;
+        let named_layout_autosave = if self.native_layout_autosave {
+            self.current_named_layout.as_ref().and_then(|name| {
+                let snapshot = self
+                    .collect_persisted_native_workspace()
+                    .map(|workspace| Self::persisted_workspace_to_value(workspace).to_string())?;
+                Some((name.clone(), snapshot))
+            })
+        } else {
+            None
         };
         Some(PersistedNativeWorkspaceWriteRequest {
-            path,
-            workspace,
-            current_named_layout: self.current_named_layout.clone(),
+            store,
+            session,
+            named_layout_autosave,
             persist_last_session: self.native_tab_persistence,
-            autosave_named_layout: self.native_layout_autosave,
         })
     }
 
@@ -814,42 +999,39 @@ impl TerminalView {
         });
     }
 
+    fn require_workspace_store(&self) -> Result<Arc<WorkspaceStore>, String> {
+        self.workspace_store()
+            .ok_or_else(|| "The workspace store is unavailable".to_string())
+    }
+
     pub(in super::super) fn clear_persisted_native_workspace(&self) -> Result<(), String> {
-        let path = Self::persisted_native_workspace_path()?;
-        let mut state = Self::load_persisted_native_workspace_state_from_path(&path)
-            .unwrap_or_else(|_| PersistedNativeWorkspaceState::default());
-        state.last_session = None;
-        Self::store_persisted_native_workspace_state_to_path(&path, state)
+        self.require_workspace_store()?.clear_session()
     }
 
     pub(in super::super) fn rewrite_persisted_native_workspace_without_buffers(
         &self,
     ) -> Result<(), String> {
-        let path = Self::persisted_native_workspace_path()?;
-        let mut state = self.load_persisted_native_workspace_state()?;
-        let clear_buffers = |workspace: &mut PersistedNativeWorkspace| {
+        let store = self.require_workspace_store()?;
+        store.strip_session_buffers()?;
+        // Named layout snapshots are opaque JSON blobs; strip their pane
+        // buffers by round-tripping through the persisted representation.
+        for (name, snapshot) in store.all_named_layouts()? {
+            let value = serde_json::from_str::<Value>(&snapshot)
+                .map_err(|error| format!("Invalid saved layout '{name}': {error}"))?;
+            let mut workspace = Self::parse_persisted_native_workspace_value(&value)?;
             for tab in &mut workspace.tabs {
                 for pane in &mut tab.panes {
                     pane.buffer = None;
                 }
             }
-        };
-        if let Some(last_session) = state.last_session.as_mut() {
-            clear_buffers(last_session);
+            let stripped = Self::persisted_workspace_to_value(workspace).to_string();
+            store.upsert_named_layout(&name, &stripped)?;
         }
-        for layout in &mut state.layouts {
-            clear_buffers(&mut layout.workspace);
-        }
-        Self::store_persisted_native_workspace_state_to_path(&path, state)
+        Ok(())
     }
 
     pub(in super::super) fn saved_layout_names(&self) -> Result<Vec<String>, String> {
-        let state = self.load_persisted_native_workspace_state()?;
-        Ok(state
-            .layouts
-            .into_iter()
-            .map(|layout| layout.name)
-            .collect())
+        self.require_workspace_store()?.named_layout_names()
     }
 
     pub(in super::super) fn save_current_workspace_as_named_layout(
@@ -866,24 +1048,9 @@ impl TerminalView {
         let workspace = self
             .collect_persisted_native_workspace()
             .ok_or_else(|| "There is no native layout to save".to_string())?;
-        let mut state = self.load_persisted_native_workspace_state()?;
-        if let Some(existing) = state
-            .layouts
-            .iter_mut()
-            .find(|layout| layout.name.eq_ignore_ascii_case(layout_name))
-        {
-            existing.name = layout_name.to_string();
-            existing.workspace = workspace;
-        } else {
-            state.layouts.push(PersistedNamedLayout {
-                name: layout_name.to_string(),
-                workspace,
-            });
-            state
-                .layouts
-                .sort_unstable_by_key(|layout| layout.name.to_ascii_lowercase());
-        }
-        Self::store_persisted_native_workspace_state(state)?;
+        let snapshot = Self::persisted_workspace_to_value(workspace).to_string();
+        self.require_workspace_store()?
+            .upsert_named_layout(layout_name, &snapshot)?;
         self.current_named_layout = Some(layout_name.to_string());
         Ok(())
     }
@@ -896,14 +1063,15 @@ impl TerminalView {
         if self.runtime_kind() != RuntimeKind::Native {
             return Err("Saved layouts are only available in the native runtime".to_string());
         }
-        let state = self.load_persisted_native_workspace_state()?;
-        let layout = state
-            .layouts
-            .into_iter()
-            .find(|layout| layout.name.eq_ignore_ascii_case(layout_name))
+        let (canonical_name, snapshot) = self
+            .require_workspace_store()?
+            .named_layout(layout_name)?
             .ok_or_else(|| format!("Saved layout \"{layout_name}\" was not found"))?;
-        self.restore_workspace(layout.workspace, cx)?;
-        self.current_named_layout = Some(layout.name);
+        let value = serde_json::from_str::<Value>(&snapshot)
+            .map_err(|error| format!("Invalid saved layout '{canonical_name}': {error}"))?;
+        let workspace = Self::parse_persisted_native_workspace_value(&value)?;
+        self.restore_workspace(workspace, cx)?;
+        self.current_named_layout = Some(canonical_name);
         self.sync_persisted_native_workspace();
         Ok(())
     }
@@ -919,29 +1087,12 @@ impl TerminalView {
             return Err("Layout name is required".to_string());
         }
 
-        let mut state = self.load_persisted_native_workspace_state()?;
-        if state.layouts.iter().any(|layout| {
-            layout.name.eq_ignore_ascii_case(next_layout_name)
-                && !layout.name.eq_ignore_ascii_case(current_layout_name)
-        }) {
-            return Err(format!(
-                "A saved layout named \"{next_layout_name}\" already exists"
-            ));
-        }
-        let layout = state
-            .layouts
-            .iter_mut()
-            .find(|layout| layout.name.eq_ignore_ascii_case(current_layout_name))
-            .ok_or_else(|| format!("Saved layout \"{current_layout_name}\" was not found"))?;
-        layout.name = next_layout_name.to_string();
+        self.require_workspace_store()?
+            .rename_named_layout(current_layout_name, next_layout_name)?;
         let update_current_named_layout = self
             .current_named_layout
             .as_deref()
             .is_some_and(|name| name.eq_ignore_ascii_case(current_layout_name));
-        state
-            .layouts
-            .sort_unstable_by_key(|candidate| candidate.name.to_ascii_lowercase());
-        Self::store_persisted_native_workspace_state(state)?;
         if update_current_named_layout {
             self.current_named_layout = Some(next_layout_name.to_string());
         }
@@ -956,19 +1107,16 @@ impl TerminalView {
         if layout_name.is_empty() {
             return Err("Layout name is required".to_string());
         }
-        let mut state = self.load_persisted_native_workspace_state()?;
-        let previous_len = state.layouts.len();
-        state
-            .layouts
-            .retain(|layout| !layout.name.eq_ignore_ascii_case(layout_name));
-        if state.layouts.len() == previous_len {
+        if !self
+            .require_workspace_store()?
+            .delete_named_layout(layout_name)?
+        {
             return Err(format!("Saved layout \"{layout_name}\" was not found"));
         }
         let clear_current_named_layout = self
             .current_named_layout
             .as_deref()
             .is_some_and(|name| name.eq_ignore_ascii_case(layout_name));
-        Self::store_persisted_native_workspace_state(state)?;
         if clear_current_named_layout {
             self.current_named_layout = None;
         }
@@ -982,11 +1130,10 @@ impl TerminalView {
         if self.runtime_kind() != RuntimeKind::Native || !self.native_tab_persistence {
             return Ok(false);
         }
-        let state = self.load_persisted_native_workspace_state()?;
-        let Some(workspace) = state.last_session else {
+        let Some(session) = self.require_workspace_store()?.load_session()? else {
             return Ok(false);
         };
-        self.restore_workspace(workspace, cx)?;
+        self.restore_stored_session(session, cx)?;
         Ok(true)
     }
 }

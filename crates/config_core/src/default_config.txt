@@ -65,6 +65,8 @@ tab_bar_position = top
 tab_switch_modifier_hints = true
 # Hide the tab bar when only one tab is open
 auto_hide_tabbar = true
+# Show the left sidebar for grouping tabs into workspaces
+sidebar_enabled = false
 # Show or hide the termy branding in the titlebar
 show_termy_in_titlebar = true
 # Preset shell used for new sessions on Windows

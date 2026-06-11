@@ -518,6 +518,13 @@ impl AppConfig {
                         config.auto_hide_tabbar = parsed;
                     }
                 }
+                RootSettingId::SidebarEnabled => {
+                    if let Some(parsed) =
+                        parse_bool_field(&mut diagnostics, line_number, key, value)
+                    {
+                        config.sidebar_enabled = parsed;
+                    }
+                }
                 RootSettingId::ShowTermyInTitlebar => {
                     if let Some(parsed) =
                         parse_bool_field(&mut diagnostics, line_number, key, value)

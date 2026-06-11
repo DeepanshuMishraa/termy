@@ -156,11 +156,14 @@ impl TerminalView {
     }
 
     pub(crate) fn should_render_tab_strip_chrome(&self) -> bool {
-        Self::tab_strip_chrome_visible(
-            self.auto_hide_tabbar,
-            self.tabs.len(),
-            self.effective_tab_bar_visibility(),
-        )
+        // The workspace sidebar needs the top chrome row for its actions and
+        // for the tab strip it aligns with, so it overrides auto-hide.
+        self.workspace_sidebar_visible()
+            || Self::tab_strip_chrome_visible(
+                self.auto_hide_tabbar,
+                self.tabs.len(),
+                self.effective_tab_bar_visibility(),
+            )
     }
 
     pub(super) fn build_tab_strip_render_state(

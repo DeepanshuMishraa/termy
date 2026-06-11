@@ -260,6 +260,11 @@ Platform note: the Agent Sidebar/Workspace is currently unavailable on Windows b
 - Hide the tab bar when only one tab is open
 - Group: `TAB STRIP`
 
+`sidebar_enabled`
+- Default: `false`
+- Show the left sidebar for grouping tabs into workspaces
+- Group: `SIDEBAR`
+
 `show_termy_in_titlebar`
 - Default: `true`
 - Show or hide the termy branding in the titlebar

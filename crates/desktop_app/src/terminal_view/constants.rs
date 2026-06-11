@@ -49,8 +49,8 @@ pub(super) const TERMINAL_SCROLLBAR_TRACK_RADIUS: f32 = 999.0;
 pub(super) const TERMINAL_SCROLLBAR_THUMB_RADIUS: f32 = 999.0;
 pub(super) const TERMINAL_SCROLLBAR_THUMB_INSET: f32 = 3.0;
 pub(super) const TERMINAL_SCROLLBAR_MUTED_THEME_BLEND: f32 = 0.38;
-pub(super) const SEARCH_BAR_WIDTH: f32 = 420.0;
-pub(super) const SEARCH_BAR_HEIGHT: f32 = 44.0;
+pub(super) const SEARCH_BAR_WIDTH: f32 = 392.0;
+pub(super) const SEARCH_BAR_HEIGHT: f32 = 38.0;
 pub(super) const SEARCH_DEBOUNCE_MS: u64 = 50;
 pub(super) const TMUX_RESIZE_ERROR_TOAST_DEBOUNCE_MS: u64 = 2000;
 pub(super) const DEBUG_OVERLAY_SAMPLE_INTERVAL: Duration = Duration::from_millis(500);
@@ -77,7 +77,7 @@ pub(super) const COMMAND_PALETTE_INPUT_SELECTION_ALPHA: f32 = 0.28;
 pub(super) const COMMAND_PALETTE_SCROLLBAR_TRACK_ALPHA: f32 = 0.10;
 pub(super) const COMMAND_PALETTE_SCROLLBAR_THUMB_ALPHA: f32 = 0.42;
 pub(super) const SEARCH_BAR_BG_ALPHA: f32 = 0.92;
-pub(super) const SEARCH_INPUT_BG_ALPHA: f32 = 0.15;
+pub(super) const SEARCH_INPUT_BG_ALPHA: f32 = 0.20;
 pub(super) const SEARCH_COUNTER_TEXT_ALPHA: f32 = 0.72;
 pub(super) const SEARCH_BUTTON_TEXT_ALPHA: f32 = 0.70;
 pub(super) const SEARCH_BUTTON_HOVER_BG_ALPHA: f32 = 0.20;
@@ -89,6 +89,10 @@ pub(super) const TAB_INTERACTION_ANIMATION_FRAME_MS: u64 = 16;
 pub(super) const MAX_PANE_FOCUS_STRENGTH: f32 = 2.0;
 pub(super) const NATIVE_PANE_MIN_COLS: u16 = 24;
 pub(super) const NATIVE_PANE_MIN_ROWS: u16 = 8;
+// Grab handle pill at each pane's top center for drag-to-move.
+pub(super) const PANE_DRAG_HANDLE_WIDTH: f32 = 44.0;
+pub(super) const PANE_DRAG_HANDLE_HEIGHT: f32 = 12.0;
+pub(super) const PANE_DRAG_HANDLE_INSET_Y: f32 = 3.0;
 #[cfg(debug_assertions)]
 pub(super) const RENDER_METRICS_LOG_INTERVAL: Duration = Duration::from_secs(1);
 

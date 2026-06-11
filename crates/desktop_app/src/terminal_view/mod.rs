@@ -73,6 +73,7 @@ pub(crate) mod tab_strip;
 mod tabs;
 mod titles;
 mod update_toasts;
+mod workspaces;
 
 use self::benchmark::{BENCHMARK_SAMPLE_INTERVAL, BenchmarkConfig, BenchmarkSession};
 use command_palette::{CommandPaletteMode, CommandPaletteState, TmuxSessionIntent};
@@ -318,6 +319,34 @@ struct HoveredPaneDivider {
     pane_id: String,
     axis: PaneResizeAxis,
     edge: PaneResizeEdge,
+}
+
+/// Where a dragged pane would land relative to the pane under the cursor:
+/// an edge half (insert as a split on that side) or the center (swap).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PaneDropRegion {
+    Left,
+    Right,
+    Top,
+    Bottom,
+    Center,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PaneDropTarget {
+    pane_id: String,
+    region: PaneDropRegion,
+}
+
+#[derive(Clone, Debug)]
+struct PaneMoveDragState {
+    pane_id: String,
+    start_x: f32,
+    start_y: f32,
+    /// Set once the pointer travels past the drag threshold; the placement
+    /// overlay only renders for active drags so a modifier-click stays inert.
+    active: bool,
+    drop_target: Option<PaneDropTarget>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -752,6 +781,7 @@ struct PaneCachedElementIds {
     resize_handle_bottom: SharedString,
     focus_accent: SharedString,
     degraded_accent: SharedString,
+    drag_handle: SharedString,
 }
 
 impl PaneCachedElementIds {
@@ -762,6 +792,7 @@ impl PaneCachedElementIds {
             resize_handle_bottom: SharedString::from(format!("pane-resize-handle-bottom-{id}")),
             focus_accent: SharedString::from(format!("pane-focus-accent-{id}")),
             degraded_accent: SharedString::from(format!("pane-degraded-accent-{id}")),
+            drag_handle: SharedString::from(format!("pane-drag-handle-{id}")),
         }
     }
 }
@@ -1524,6 +1555,13 @@ pub(crate) enum TabBarVisibility {
 /// The main terminal view component
 pub struct TerminalView {
     tabs: Vec<TerminalTab>,
+    /// All workspaces in sidebar order. The entry at `active_workspace` always
+    /// has an empty `tabs` vec: the active workspace's tabs live in `tabs`
+    /// above so the existing tab machinery only ever sees the visible strip.
+    workspaces: Vec<workspaces::WorkspaceEntry>,
+    active_workspace: usize,
+    next_workspace_id: u64,
+    workspace_sidebar_enabled: bool,
     native_pane_zoom_snapshots: HashMap<TabId, NativePaneZoomSnapshot>,
     native_pane_layout_trees: HashMap<TabId, NativePaneLayoutTree>,
     next_tab_id: TabId,
@@ -1572,6 +1610,9 @@ pub struct TerminalView {
     native_buffer_persistence: bool,
     current_named_layout: Option<String>,
     native_persist_revision: Arc<AtomicU64>,
+    /// Lazily opened SQLite-backed session store; `None` once opening failed
+    /// (logged), so persistence degrades to a no-op instead of retry spam.
+    workspace_store: std::cell::OnceCell<Option<Arc<crate::workspace_store::WorkspaceStore>>>,
     tmux_show_active_pane_border: bool,
     config_path: Option<PathBuf>,
     config_fingerprint: Option<u64>,
@@ -1652,6 +1693,7 @@ pub struct TerminalView {
     command_palette_scrollbar_drag: Option<TerminalScrollbarDragState>,
     command_palette_scrollbar_lane_bounds: Option<Bounds<Pixels>>,
     pane_resize_drag: Option<PaneResizeDragState>,
+    pane_move_drag: Option<PaneMoveDragState>,
     hovered_pane_divider: Option<HoveredPaneDivider>,
     pane_resize_blocked: bool,
     terminal_scrollbar_marker_cache: TerminalScrollbarMarkerCache,
@@ -2153,30 +2195,88 @@ impl TerminalView {
         axis: PaneResizeAxis,
         new_pane_id: &str,
     ) -> bool {
+        Self::native_replace_leaf_with_split_ordered(node, target_pane_id, axis, new_pane_id, false)
+    }
+
+    /// Replace the `target_pane_id` leaf with an even split between it and a
+    /// new leaf. `new_first` places the new leaf on the left/top side.
+    fn native_replace_leaf_with_split_ordered(
+        node: &mut NativePaneLayoutNode,
+        target_pane_id: &str,
+        axis: PaneResizeAxis,
+        new_pane_id: &str,
+        new_first: bool,
+    ) -> bool {
         match node {
             NativePaneLayoutNode::Leaf { pane_id } if pane_id == target_pane_id => {
-                let existing = pane_id.clone();
+                let existing = NativePaneLayoutNode::Leaf {
+                    pane_id: pane_id.clone(),
+                };
+                let added = NativePaneLayoutNode::Leaf {
+                    pane_id: new_pane_id.to_string(),
+                };
+                let (first, second) = if new_first {
+                    (added, existing)
+                } else {
+                    (existing, added)
+                };
                 *node = NativePaneLayoutNode::Split {
                     axis,
                     ratio: 0.5,
-                    first: Box::new(NativePaneLayoutNode::Leaf { pane_id: existing }),
-                    second: Box::new(NativePaneLayoutNode::Leaf {
-                        pane_id: new_pane_id.to_string(),
-                    }),
+                    first: Box::new(first),
+                    second: Box::new(second),
                 };
                 true
             }
             NativePaneLayoutNode::Leaf { .. } => false,
             NativePaneLayoutNode::Split { first, second, .. } => {
-                Self::native_replace_leaf_with_split(first, target_pane_id, axis, new_pane_id)
-                    || Self::native_replace_leaf_with_split(
-                        second,
-                        target_pane_id,
-                        axis,
-                        new_pane_id,
-                    )
+                Self::native_replace_leaf_with_split_ordered(
+                    first,
+                    target_pane_id,
+                    axis,
+                    new_pane_id,
+                    new_first,
+                ) || Self::native_replace_leaf_with_split_ordered(
+                    second,
+                    target_pane_id,
+                    axis,
+                    new_pane_id,
+                    new_first,
+                )
             }
         }
+    }
+
+    /// Swap two leaves in the layout tree by renaming their pane ids.
+    /// Returns `true` only when both leaves were found.
+    fn native_swap_leaves(
+        node: &mut NativePaneLayoutNode,
+        first_id: &str,
+        second_id: &str,
+    ) -> bool {
+        fn walk(node: &mut NativePaneLayoutNode, first_id: &str, second_id: &str) -> (bool, bool) {
+            match node {
+                NativePaneLayoutNode::Leaf { pane_id } => {
+                    if pane_id == first_id {
+                        *pane_id = second_id.to_string();
+                        (true, false)
+                    } else if pane_id == second_id {
+                        *pane_id = first_id.to_string();
+                        (false, true)
+                    } else {
+                        (false, false)
+                    }
+                }
+                NativePaneLayoutNode::Split { first, second, .. } => {
+                    let left = walk(first, first_id, second_id);
+                    let right = walk(second, first_id, second_id);
+                    (left.0 || right.0, left.1 || right.1)
+                }
+            }
+        }
+
+        let (found_first, found_second) = walk(node, first_id, second_id);
+        found_first && found_second
     }
 
     fn native_adjust_tree_split(
@@ -3221,12 +3321,15 @@ impl TerminalView {
         let viewport = window.viewport_size();
         let viewport_width: f32 = viewport.width.into();
         let viewport_height: f32 = viewport.height.into();
-        // The right-side sidebar (if any) shortens the terminal content width;
-        // its origin stays at x=0 because the sidebar sits to the right.
+        // Sidebars on either side shorten the terminal content width; the
+        // origin stays at (0, 0) because these bounds are local to the
+        // terminal surface, which flex layout already offsets past the
+        // left workspace sidebar.
         TerminalContentRect::new(
             0.0,
             0.0,
-            (viewport_width - self.effective_sidebar_width()).max(0.0),
+            (viewport_width - self.effective_sidebar_width() - self.workspace_sidebar_width())
+                .max(0.0),
             viewport_height - self.terminal_content_top_inset() - self.inspector_bottom_inset(),
         )
     }
@@ -3897,6 +4000,10 @@ impl TerminalView {
 
         let mut view = Self {
             tabs: Vec::new(),
+            workspaces: vec![workspaces::WorkspaceEntry::new(1)],
+            active_workspace: 0,
+            next_workspace_id: 2,
+            workspace_sidebar_enabled: config.sidebar_enabled,
             native_pane_zoom_snapshots: HashMap::new(),
             native_pane_layout_trees: HashMap::new(),
             next_tab_id: 1,
@@ -3945,6 +4052,7 @@ impl TerminalView {
             native_buffer_persistence: config.native_buffer_persistence,
             current_named_layout: None,
             native_persist_revision: Arc::new(AtomicU64::new(0)),
+            workspace_store: std::cell::OnceCell::new(),
             tmux_show_active_pane_border: config.tmux_show_active_pane_border,
             config_path,
             config_fingerprint,
@@ -4025,6 +4133,7 @@ impl TerminalView {
             command_palette_scrollbar_drag: None,
             command_palette_scrollbar_lane_bounds: None,
             pane_resize_drag: None,
+            pane_move_drag: None,
             hovered_pane_divider: None,
             pane_resize_blocked: false,
             terminal_scrollbar_marker_cache: TerminalScrollbarMarkerCache::default(),
@@ -4052,7 +4161,6 @@ impl TerminalView {
             // Surface explicit feedback when a synced/shared config requests tmux on Windows.
             termy_toast::warning(TMUX_UNSUPPORTED_WINDOWS_TOAST);
         }
-        command_palette::prewarm_user_path_resolution();
         let restored_native_workspace = if resolved_runtime_kind == RuntimeKind::Native {
             match view.restore_persisted_native_workspace(cx) {
                 Ok(restored) => restored,
@@ -4240,6 +4348,12 @@ impl TerminalView {
         let show_debug_overlay_changed = self.show_debug_overlay != config.show_debug_overlay;
         let simple_mode_changed = self.simple_mode != config.simple_mode;
         let auto_hide_tabbar_changed = self.auto_hide_tabbar != config.auto_hide_tabbar;
+        let workspace_sidebar_changed = self.workspace_sidebar_enabled != config.sidebar_enabled;
+        self.workspace_sidebar_enabled = config.sidebar_enabled;
+        if !self.workspace_sidebar_enabled {
+            // Stashed workspaces would be unreachable without the sidebar.
+            self.collapse_workspaces_into_active();
+        }
         self.tab_close_visibility = config.tab_close_visibility;
         self.tab_width_mode = config.tab_width_mode;
         self.tab_bar_position = config.tab_bar_position;
@@ -4400,6 +4514,7 @@ impl TerminalView {
             || show_termy_in_titlebar_changed
             || simple_mode_changed
             || auto_hide_tabbar_changed
+            || workspace_sidebar_changed
         {
             self.mark_tab_strip_layout_dirty();
         }
@@ -4407,6 +4522,7 @@ impl TerminalView {
             || tab_bar_position_changed
             || auto_hide_tabbar_changed
             || simple_mode_changed
+            || workspace_sidebar_changed
         {
             cx.notify();
         }
@@ -4569,6 +4685,7 @@ impl TerminalView {
 
         let mut pending_tab_closures: HashSet<TabId> = HashSet::new();
         let mut pending_pane_closures: Vec<(TabId, String)> = Vec::new();
+        let mut pending_workspace_close = false;
         let mut simulated_tab_count = self.tabs.len();
         // Built lazily on the first Exit event: this drain pass runs for every
         // PTY wakeup burst, and allocating the map per pass is wasted work.
@@ -4615,7 +4732,14 @@ impl TerminalView {
                                 &mut pending_pane_closures,
                             );
                             if exit_should_quit {
-                                should_quit = true;
+                                // Other workspaces still hold live tabs: the
+                                // exit of the visible strip's last pane closes
+                                // the workspace, not the app.
+                                if self.has_other_workspaces() {
+                                    pending_workspace_close = true;
+                                } else {
+                                    should_quit = true;
+                                }
                             }
                             if tab_index == active_tab {
                                 should_redraw = true;
@@ -4679,6 +4803,10 @@ impl TerminalView {
             }
         }
 
+        if self.drain_stashed_workspace_terminal_events(&mut reply_host) {
+            terminal_events_remain = true;
+        }
+
         for (tab_id, pane_id) in pending_pane_closures.drain(..) {
             let closed = self.close_native_pane_by_id(tab_id, pane_id.as_str(), cx);
             should_redraw |= closed;
@@ -4691,6 +4819,10 @@ impl TerminalView {
                 self.close_tab(tab_index, cx);
                 should_redraw = true;
             }
+        }
+        if pending_workspace_close {
+            self.close_active_workspace(cx);
+            should_redraw = true;
         }
 
         if terminal_events_remain {

@@ -62,6 +62,14 @@ pub(crate) const SIDEBAR_TAB_ROW_GAP: f32 = 2.0;
 // first row, so the rounded rows read as chips inside the sidebar column.
 pub(crate) const SIDEBAR_TAB_MARGIN_X: f32 = 6.0;
 pub(crate) const SIDEBAR_TAB_PADDING_Y: f32 = 6.0;
+// Left workspace sidebar (sidebar_enabled = true).
+pub(crate) const WORKSPACE_SIDEBAR_WIDTH: f32 = 200.0;
+pub(crate) const WORKSPACE_SIDEBAR_HEADER_HEIGHT: f32 = 36.0;
+pub(crate) const WORKSPACE_SIDEBAR_ROW_HEIGHT: f32 = 30.0;
+pub(crate) const WORKSPACE_SIDEBAR_ROW_GAP: f32 = 2.0;
+pub(crate) const WORKSPACE_SIDEBAR_PADDING_X: f32 = 8.0;
+pub(crate) const WORKSPACE_SIDEBAR_PADDING_Y: f32 = 8.0;
+
 pub(crate) const TAB_STRIP_SCROLL_EPSILON: f32 = 0.5;
 pub(crate) const TAB_STRIP_WHEEL_DELTA_LINE_REFERENCE_PX: f32 = 16.0;
 pub(crate) const TAB_PROGRESS_BADGE_SIZE: f32 = 7.0;

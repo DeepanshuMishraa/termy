@@ -121,7 +121,7 @@ impl TerminalView {
         Ok(())
     }
 
-    fn tab_is_busy(tab: &TerminalTab) -> bool {
+    pub(in super::super) fn tab_is_busy(tab: &TerminalTab) -> bool {
         tab.running_process
             || tab
                 .panes
@@ -146,13 +146,17 @@ impl TerminalView {
     fn busy_tab_titles_for_close_target(&self, target: CloseRequestTarget) -> Vec<String> {
         let fallback_title = self.fallback_title();
         match target {
-            CloseRequestTarget::Application | CloseRequestTarget::WindowClose => self
-                .tabs
-                .iter()
-                .enumerate()
-                .filter(|(_, tab)| Self::tab_is_busy(tab))
-                .map(|(index, tab)| self.tab_title_for_warning(index, tab, fallback_title))
-                .collect(),
+            CloseRequestTarget::Application | CloseRequestTarget::WindowClose => {
+                let mut titles = self
+                    .tabs
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, tab)| Self::tab_is_busy(tab))
+                    .map(|(index, tab)| self.tab_title_for_warning(index, tab, fallback_title))
+                    .collect::<Vec<_>>();
+                titles.extend(self.stashed_busy_workspace_tab_titles());
+                titles
+            }
             CloseRequestTarget::TabClose { tab_id } => self
                 .tabs
                 .iter()
@@ -375,8 +379,19 @@ impl TerminalView {
             return;
         }
         let tab_id = self.tabs[self.active_tab].id;
-        let target = Self::tab_close_request_target(self.tabs.len(), tab_id);
+        let target = Self::tab_close_request_target(self.effective_tab_count_for_close(), tab_id);
         let _ = self.request_close(target, window, cx);
+    }
+
+    /// Tab count used to pick a close target: stashed workspaces keep the
+    /// window alive, so closing the visible strip's last tab is still a tab
+    /// close (the workspace folds) rather than a window close.
+    fn effective_tab_count_for_close(&self) -> usize {
+        if self.has_other_workspaces() {
+            self.tabs.len().saturating_add(1)
+        } else {
+            self.tabs.len()
+        }
     }
 
     pub(in super::super) fn request_tab_close_by_index(
@@ -389,7 +404,7 @@ impl TerminalView {
             return;
         }
         let tab_id = self.tabs[index].id;
-        let target = Self::tab_close_request_target(self.tabs.len(), tab_id);
+        let target = Self::tab_close_request_target(self.effective_tab_count_for_close(), tab_id);
         let _ = self.request_close(target, window, cx);
     }
 }

@@ -86,12 +86,14 @@ impl TerminalView {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_left_inset_lane(
         width: f32,
         font_family: &SharedString,
         termy_branding_slot_start_x: f32,
         termy_branding_slot_width: f32,
         termy_branding_text_color: gpui::Rgba,
+        workspace_actions: Option<AnyElement>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         div()
@@ -109,6 +111,7 @@ impl TerminalView {
                 termy_branding_slot_width,
                 termy_branding_text_color,
             ))
+            .children(workspace_actions)
             .into_any_element()
     }
 
@@ -358,9 +361,16 @@ impl TerminalView {
             self.measure_tab_title_widths(window, font_family, font_family_key);
         self.sync_tab_title_text_widths(&measured_title_widths);
 
-        let base_left_inset_width = Self::titlebar_left_padding_for_platform();
-        let termy_branding_reserved_width =
-            self.termy_branding_reserved_width(window, font_family, font_family_key);
+        let base_left_inset_width = self.tab_strip_base_left_inset();
+        let workspace_sidebar_visible = self.workspace_sidebar_visible();
+        // With the workspace sidebar, the inset lane hosts its actions and
+        // the first tab stays flush with the sidebar edge, so the titlebar
+        // branding is suppressed.
+        let termy_branding_reserved_width = if workspace_sidebar_visible {
+            0.0
+        } else {
+            self.termy_branding_reserved_width(window, font_family, font_family_key)
+        };
         let termy_branding_tab_gap = if termy_branding_reserved_width > f32::EPSILON {
             TOP_STRIP_TERMY_BRANDING_TAB_GAP
         } else {
@@ -389,6 +399,8 @@ impl TerminalView {
             cx,
         );
         let show_left_inset_divider = Self::should_render_left_inset_divider(state.overflow_state);
+        let workspace_actions = workspace_sidebar_visible
+            .then(|| self.render_workspace_sidebar_titlebar_actions(&palette, cx));
 
         div()
             .w_full()
@@ -403,6 +415,7 @@ impl TerminalView {
                     termy_branding_slot_start_x,
                     termy_branding_slot_width,
                     termy_branding_text_color,
+                    workspace_actions,
                     cx,
                 )
             }))

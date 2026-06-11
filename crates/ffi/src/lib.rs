@@ -1777,9 +1777,7 @@ fn settings_installed_theme_colors(
         return None;
     }
 
-    let Some(config_dir) = config_path.and_then(Path::parent) else {
-        return None;
-    };
+    let config_dir = config_path.and_then(Path::parent)?;
     let path = config_dir.join("themes").join(format!("{normalized}.json"));
     if let Ok(contents) = std::fs::read_to_string(path)
         && let Ok(colors) = termy_themes::parse_theme_colors_json(&contents)
