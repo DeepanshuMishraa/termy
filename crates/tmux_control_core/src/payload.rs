@@ -37,6 +37,24 @@ pub fn capture_full_pane_args<'a>(pane_id: &'a str, start_row: &'a str) -> [&'a 
     ]
 }
 
+pub fn capture_pane_range_args<'a>(
+    pane_id: &'a str,
+    start_row: &'a str,
+    end_row: &'a str,
+    join_wraps: bool,
+) -> Vec<&'a str> {
+    // Bounded range capture with caller-chosen end line and wrap handling.
+    // Unlike `capture_full_pane_args`, `-J` (rejoin soft-wrapped rows) is
+    // optional: with it off, every captured line maps 1:1 to a grid row, which
+    // a caller needs to splice captured history against a live grid line-exact.
+    let mut args = vec!["capture-pane", "-p", "-e", "-C"];
+    if join_wraps {
+        args.push("-J");
+    }
+    args.extend(["-S", start_row, "-E", end_row, "-t", pane_id]);
+    args
+}
+
 pub fn parse_exit_reason(line: &[u8]) -> Option<String> {
     std::str::from_utf8(line)
         .ok()
@@ -171,8 +189,8 @@ pub fn strip_legacy_title_sequences(input: Vec<u8>) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::{
-        capture_full_pane_args, parse_output_notification, strip_legacy_title_sequences,
-        unescape_tmux_payload,
+        capture_full_pane_args, capture_pane_range_args, parse_output_notification,
+        strip_legacy_title_sequences, unescape_tmux_payload,
     };
 
     fn bytes_contains(haystack: &[u8], needle: &[u8]) -> bool {
@@ -201,6 +219,34 @@ mod tests {
             ]
         );
         assert_ne!(args[6], "-");
+    }
+
+    #[test]
+    fn capture_pane_range_args_omits_join_and_uses_bounded_end() {
+        let args = capture_pane_range_args("%1", "-2060", "-25", false);
+        assert_eq!(
+            args,
+            [
+                "capture-pane",
+                "-p",
+                "-e",
+                "-C",
+                "-S",
+                "-2060",
+                "-E",
+                "-25",
+                "-t",
+                "%1",
+            ]
+        );
+        assert!(!args.contains(&"-J"));
+    }
+
+    #[test]
+    fn capture_pane_range_args_includes_join_when_requested() {
+        let args = capture_pane_range_args("%1", "-2060", "-", true);
+        assert!(args.contains(&"-J"));
+        assert_eq!(args[args.len() - 3], "-");
     }
 
     #[test]
