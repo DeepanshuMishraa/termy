@@ -1,4 +1,5 @@
 use super::*;
+use std::env;
 
 fn should_defer_key_down_to_ime(keystroke: &gpui::Keystroke) -> bool {
     let key = keystroke.key.as_str();

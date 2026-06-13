@@ -4,6 +4,7 @@
 
 use super::*;
 use std::collections::VecDeque;
+use termy_terminal_ui::terminal_ui_render_metrics_snapshot;
 
 const INSPECTOR_DEFAULT_HEIGHT: f32 = 280.0;
 const INSPECTOR_MIN_HEIGHT: f32 = 140.0;

@@ -9,6 +9,8 @@ use gpui::{ElementInputHandler, canvas};
 use std::sync::Arc;
 use std::time::Instant;
 use termy_terminal_ui::add_span_damage_compute_us;
+#[cfg(debug_assertions)]
+use termy_terminal_ui::terminal_ui_render_metrics_snapshot;
 
 fn blend_rgb_only(base: gpui::Rgba, target: gpui::Rgba, factor: f32) -> gpui::Rgba {
     let factor = factor.clamp(0.0, 1.0);
