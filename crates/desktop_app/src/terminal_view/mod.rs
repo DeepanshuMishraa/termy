@@ -90,7 +90,7 @@ use command_palette::{CommandPaletteMode, CommandPaletteState, TmuxSessionIntent
 use constants::*;
 use inline_input::{InlineInputAlignment, InlineInputState};
 use interaction::{
-    MouseReportTargetCell, MouseReportingState, PaneDropRegion, PaneMoveDragState,
+    HoveredLink, MouseReportTargetCell, MouseReportingState, PaneDropRegion, PaneMoveDragState,
     PendingCursorMoveClick, PendingCursorMovePreview, PendingKeyRelease, TabContextMenuState,
     TerminalContextMenuState,
 };
@@ -838,14 +838,6 @@ enum ExplicitTitlePayload {
 struct ChildWorkingDirCacheEntry {
     value: Option<String>,
     resolved_at: Instant,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct HoveredLink {
-    row: usize,
-    start_col: usize,
-    end_col: usize,
-    target: String,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
