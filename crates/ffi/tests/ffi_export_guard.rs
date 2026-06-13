@@ -13,6 +13,17 @@ struct AbiSignature {
     args: Vec<String>,
 }
 
+#[derive(Debug, Eq, PartialEq)]
+struct FieldShape {
+    name: String,
+    ty: String,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct EnumShape {
+    variants: Vec<(String, i64)>,
+}
+
 fn brace_delta(line: &str) -> isize {
     line.chars().fold(0, |depth, ch| match ch {
         '{' => depth + 1,
@@ -241,6 +252,185 @@ fn parse_header_declaration(declaration: &str) -> Option<(String, AbiSignature)>
     Some((name, AbiSignature { return_type, args }))
 }
 
+fn repr_c_blocks(source: &str) -> Vec<String> {
+    let mut blocks = Vec::new();
+    let mut lines = source.lines().peekable();
+
+    while let Some(line) = lines.next() {
+        if line.trim() != "#[repr(C)]" {
+            continue;
+        }
+
+        let mut block = String::new();
+        let mut depth = 0isize;
+        for next_line in lines.by_ref() {
+            let trimmed = next_line.trim();
+            if block.is_empty() && trimmed.starts_with("#[") {
+                continue;
+            }
+            block.push_str(next_line);
+            block.push('\n');
+            depth += brace_delta(next_line);
+            if !block.is_empty() && depth == 0 && next_line.contains('}') {
+                break;
+            }
+        }
+        if block.contains("pub struct TermyFfi") || block.contains("pub enum TermyFfi") {
+            blocks.push(block);
+        }
+    }
+
+    blocks
+}
+
+fn rust_item_name(block: &str, marker: &str) -> Option<String> {
+    let (_, rest) = block.split_once(marker)?;
+    Some(
+        rest.trim_start()
+            .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
+            .next()
+            .unwrap_or("<unknown>")
+            .to_string(),
+    )
+}
+
+fn rust_repr_c_struct_shapes(source: &str) -> BTreeMap<String, Vec<FieldShape>> {
+    repr_c_blocks(source)
+        .into_iter()
+        .filter_map(|block| {
+            let name = rust_item_name(&block, "pub struct ")?;
+            let fields = block
+                .lines()
+                .map(str::trim)
+                .filter_map(|line| {
+                    let field = line.strip_prefix("pub ")?;
+                    let (name, ty) = field.split_once(": ")?;
+                    Some(FieldShape {
+                        name: name.to_string(),
+                        ty: canonical_rust_type(ty),
+                    })
+                })
+                .collect();
+            Some((name, fields))
+        })
+        .collect()
+}
+
+fn rust_repr_c_enum_shapes(source: &str) -> BTreeMap<String, EnumShape> {
+    repr_c_blocks(source)
+        .into_iter()
+        .filter_map(|block| {
+            let name = rust_item_name(&block, "pub enum ")?;
+            let variants = block
+                .lines()
+                .map(str::trim)
+                .filter_map(|line| {
+                    let (variant, value) = line.split_once(" = ")?;
+                    Some((
+                        variant.trim().to_string(),
+                        value.trim_end_matches(',').parse().ok()?,
+                    ))
+                })
+                .collect();
+            Some((name, EnumShape { variants }))
+        })
+        .collect()
+}
+
+fn parse_c_field(line: &str) -> Option<FieldShape> {
+    let line = line.trim().trim_end_matches(';').trim();
+    if line.is_empty() {
+        return None;
+    }
+    let name_start = line
+        .char_indices()
+        .rev()
+        .find_map(|(index, ch)| (!ch.is_ascii_alphanumeric() && ch != '_').then_some(index + 1))?;
+    Some(FieldShape {
+        name: line[name_start..].to_string(),
+        ty: canonical_c_type(line[..name_start].trim()),
+    })
+}
+
+fn header_struct_shapes(header: &str) -> BTreeMap<String, Vec<FieldShape>> {
+    let mut structs = BTreeMap::new();
+    let mut lines = header.lines().peekable();
+
+    while let Some(line) = lines.next() {
+        if line.trim() != "typedef struct {" {
+            continue;
+        }
+
+        let mut fields = Vec::new();
+        for next_line in lines.by_ref() {
+            let trimmed = next_line.trim();
+            if let Some(rest) = trimmed.strip_prefix("}") {
+                let name = rest.trim().trim_end_matches(';').to_string();
+                structs.insert(name, fields);
+                break;
+            }
+            if let Some(field) = parse_c_field(trimmed) {
+                fields.push(field);
+            }
+        }
+    }
+
+    structs
+}
+
+fn upper_snake_to_pascal(name: &str) -> String {
+    name.split('_')
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            let Some(first) = chars.next() else {
+                return String::new();
+            };
+            let mut converted = String::new();
+            converted.push(first.to_ascii_uppercase());
+            converted.extend(chars.map(|ch| ch.to_ascii_lowercase()));
+            converted
+        })
+        .collect()
+}
+
+fn header_enum_variant_name(name: &str) -> String {
+    name.strip_prefix("TERMY_FFI_")
+        .map_or_else(|| name.to_string(), upper_snake_to_pascal)
+}
+
+fn header_enum_shapes(header: &str) -> BTreeMap<String, EnumShape> {
+    let mut enums = BTreeMap::new();
+    let mut lines = header.lines().peekable();
+
+    while let Some(line) = lines.next() {
+        if line.trim() != "typedef enum {" {
+            continue;
+        }
+
+        let mut variants = Vec::new();
+        for next_line in lines.by_ref() {
+            let trimmed = next_line.trim();
+            if let Some(rest) = trimmed.strip_prefix("}") {
+                let name = rest.trim().trim_end_matches(';').to_string();
+                enums.insert(name, EnumShape { variants });
+                break;
+            }
+            if trimmed.starts_with("/*") {
+                continue;
+            }
+            if let Some((variant, value)) = trimmed.split_once(" = ") {
+                let value = value.trim_end_matches(',').parse().unwrap_or_else(|_| {
+                    panic!("unparsable enum value in termy.h: {trimmed}");
+                });
+                variants.push((header_enum_variant_name(variant.trim()), value));
+            }
+        }
+    }
+
+    enums
+}
+
 #[test]
 fn status_returning_exports_use_panic_guard() {
     let exports = exported_fns(include_str!("../src/lib.rs"));
@@ -318,4 +508,75 @@ fn c_header_signatures_match_rust_exports() {
         !rust_signatures.is_empty(),
         "expected exported Rust functions"
     );
+}
+
+#[test]
+fn c_header_struct_layouts_match_rust_repr_c_types() {
+    let rust_structs = rust_repr_c_struct_shapes(include_str!("../src/lib.rs"));
+    let header_structs = header_struct_shapes(include_str!("../include/termy.h"));
+
+    let missing_from_header = rust_structs
+        .keys()
+        .filter(|name| !header_structs.contains_key(*name))
+        .cloned()
+        .collect::<Vec<_>>();
+    let missing_from_rust = header_structs
+        .keys()
+        .filter(|name| !rust_structs.contains_key(*name))
+        .cloned()
+        .collect::<Vec<_>>();
+    let mismatches = rust_structs
+        .iter()
+        .filter_map(|(name, rust_fields)| {
+            header_structs.get(name).and_then(|header_fields| {
+                (header_fields != rust_fields)
+                    .then(|| format!("{name}: rust={rust_fields:?}, header={header_fields:?}"))
+            })
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        missing_from_header.is_empty(),
+        "Rust repr(C) structs missing from termy.h: {missing_from_header:?}"
+    );
+    assert!(
+        missing_from_rust.is_empty(),
+        "termy.h structs missing Rust repr(C) structs: {missing_from_rust:?}"
+    );
+    assert!(
+        mismatches.is_empty(),
+        "termy.h struct layouts drifted from Rust repr(C) types: {mismatches:#?}"
+    );
+    assert!(!rust_structs.is_empty(), "expected Rust repr(C) structs");
+}
+
+#[test]
+fn c_header_enums_match_rust_repr_c_enums() {
+    let rust_enums = rust_repr_c_enum_shapes(include_str!("../src/lib.rs"));
+    let header_enums = header_enum_shapes(include_str!("../include/termy.h"));
+
+    let missing_from_header = rust_enums
+        .keys()
+        .filter(|name| !header_enums.contains_key(*name))
+        .cloned()
+        .collect::<Vec<_>>();
+    let mismatches = rust_enums
+        .iter()
+        .filter_map(|(name, rust_enum)| {
+            header_enums.get(name).and_then(|header_enum| {
+                (header_enum != rust_enum)
+                    .then(|| format!("{name}: rust={rust_enum:?}, header={header_enum:?}"))
+            })
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        missing_from_header.is_empty(),
+        "Rust repr(C) enums missing from termy.h: {missing_from_header:?}"
+    );
+    assert!(
+        mismatches.is_empty(),
+        "termy.h enum values drifted from Rust repr(C) types: {mismatches:#?}"
+    );
+    assert!(!rust_enums.is_empty(), "expected Rust repr(C) enums");
 }
