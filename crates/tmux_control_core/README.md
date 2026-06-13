@@ -1,16 +1,22 @@
 # tmux_control_core
 
-Shared, UI-agnostic core for tmux **control mode** (`tmux -CC`): command-line
-construction, payload (un)escaping, the control-stream parser/state machine,
-notification coalescing, and the worker channel plumbing.
+Shared, UI-agnostic core for tmux **control mode** (`tmux -CC`): command-line construction, payload escaping, the control-stream parser/state machine, notification coalescing, session launch, and worker channel plumbing.
 
-## Boundary
+## Owner
 
-Pure protocol logic — depends only on `flume` and `std`. It has **no GPUI, no
-app/UI, and no `terminal_ui` dependency**, so it can be driven by both
-`terminal_ui` (the GPUI app) and the FFI/native host (`termy_ffi`). Extracted
-from `terminal_ui::tmux` so the native macOS host can implement tmux control mode
-without crossing the `termy_ffi → terminal_ui` boundary.
+This crate owns tmux control-mode contracts that must be shared by `termy_terminal_ui` and `termy_ffi`. It has no GPUI, app UI, or `termy_terminal_ui` dependency.
 
-Process spawning, PTY wiring, and pane/layout integration live in the consumer
-(e.g. `terminal_ui::tmux::client`), not here.
+Pane/layout integration and GPUI state live in consumers such as `termy_terminal_ui::tmux`.
+
+## Validation
+
+```sh
+cargo test -p tmux_control_core
+```
+
+## Forbidden Dependencies
+
+- `gpui`
+- `termy_terminal_ui`
+- `termy_ffi`
+- `termy` / `crates/desktop_app`

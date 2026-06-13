@@ -43,6 +43,25 @@ require_pattern() {
   fi
 }
 
+require_crate_readme_metadata() {
+  local crate_dir="$1"
+  local readme="$crate_dir/README.md"
+
+  require_path "$readme"
+  require_pattern '^## Owner$' \
+    "$readme" \
+    "$readme must document the crate owner boundary"
+  require_pattern '^## Validation$' \
+    "$readme" \
+    "$readme must document validation commands"
+  require_pattern '^cargo test -p ' \
+    "$readme" \
+    "$readme must document a cargo test command"
+  require_pattern '^## Forbidden Dependencies$' \
+    "$readme" \
+    "$readme must document forbidden dependencies"
+}
+
 require_path "crates/desktop_app/Cargo.toml"
 require_path "scripts/build-dmg.sh"
 require_path "scripts/build-setup.ps1"
@@ -54,7 +73,7 @@ require_path "docs/architecture/release-packaging.md"
 
 while IFS= read -r manifest; do
   crate_dir="$(dirname "$manifest")"
-  require_path "$crate_dir/README.md"
+  require_crate_readme_metadata "$crate_dir"
 done < <(find crates -mindepth 2 -maxdepth 2 -name Cargo.toml | sort)
 
 forbid_pattern 'macos/scripts|macos/dist' \

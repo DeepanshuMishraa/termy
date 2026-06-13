@@ -31,7 +31,7 @@ Termy is a Rust workspace split by ownership boundary, not by implementation con
 - `toast_sdk/` (`termy_toast`): small notification primitives.
 - `xtask/` (`xtask`): repository automation and generated-doc checks.
 
-Each crate has its own `README.md`. Update the local README when a crate gains or loses ownership of a responsibility.
+Each crate has its own `README.md` with `Owner`, `Validation`, and `Forbidden Dependencies` sections. Update the local README when a crate gains or loses ownership of a responsibility, changes its test command, or changes its dependency boundary.
 
 ## Dependency Rules
 
@@ -40,4 +40,4 @@ Each crate has its own `README.md`. Update the local README when a crate gains o
 - `termy_command_core` must stay independent of config parsing and UI presentation.
 - App-only behavior belongs in `desktop_app/` until another product surface needs it.
 
-Run `just check-boundaries` after changing crate dependencies, generated docs, command/keybind behavior, or config behavior.
+Run `just check-boundaries` after changing crate dependencies, crate README metadata, generated docs, command/keybind behavior, or config behavior.

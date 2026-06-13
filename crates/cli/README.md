@@ -2,12 +2,21 @@
 
 Command-line companion for Termy.
 
+## Owner
+
 This crate owns the `termy-cli` binary, including user-facing terminal commands, config inspection helpers, theme/config utilities, and install/update commands that belong outside the desktop app.
 
 Keep reusable install logic in `termy_cli_install_core`, release metadata logic in `termy_release_core`, and desktop UI actions in `crates/desktop_app/`.
 
-Validation:
+## Validation
 
 ```sh
 cargo test -p termy_cli
 ```
+
+## Forbidden Dependencies
+
+- `gpui`
+- `termy_terminal_ui`
+- `termy_ffi`
+- `termy` / `crates/desktop_app`

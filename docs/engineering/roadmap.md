@@ -52,11 +52,11 @@
 
 **Outcome:** `terminal_view/` stops growing; god-files shrink on a schedule.
 
-| ID | Initiative | Work | Exit criterion | Scorecard |
-|----|------------|------|----------------|-----------|
+| ID | Initiative | Work | Exit criterion | Scorecard | Status |
+|----|------------|------|----------------|-----------|--------|
 | E1.1 | File size policy | `scripts/check-file-sizes.sh` + CI | G6: no regressions; allowlist shrinks | G6 | Done (allowlist=10) |
-| E1.2 | Decomposition tranches | See [terminal-view-decomposition.md](terminal-view-decomposition.md) | `mod.rs` &lt; 1,500 lines; `render/` directory | G6 |
-| E1.3 | Complexity discipline | No new `#[allow(clippy::cognitive_complexity)]` without issue | Review guideline in CONTRIBUTING | — |
+| E1.2 | Decomposition tranches | See [terminal-view-decomposition.md](terminal-view-decomposition.md) | `mod.rs` &lt; 1,500 lines; `render/` directory | G6 | Planned |
+| E1.3 | Complexity discipline | No new `#[allow(clippy::cognitive_complexity)]` without issue | Review guideline in CONTRIBUTING | — | Planned |
 
 **Capacity:** One tranche per month maximum; never combine tranche 4 with a large product feature in the same PR.
 
@@ -66,14 +66,14 @@
 
 **Outcome:** Failures in tmux, FFI, and config surface in automation—not after release.
 
-| ID | Initiative | Work | Exit criterion | Scorecard |
-|----|------------|------|----------------|-----------|
+| ID | Initiative | Work | Exit criterion | Scorecard | Status |
+|----|------------|------|----------------|-----------|--------|
 | E2.1 | Tmux CI reliability | macOS job: `brew install tmux`; fail if &lt; 3.3; always run `just test-tmux-integration` | G7: job fails if tests fail, not skip silently | G7 | Done |
-| E2.2 | Test pyramid doc | `docs/engineering/testing.md`: unit → integration → manual | Linked from CONTRIBUTING | — |
-| E2.3 | FFI contract tests | Minimal C API round-trips in `crates/ffi` tests | Run on Linux + macOS in CI | — |
-| E2.4 | Swift config parity | Extend `test-macos-config` in PR checklist when touching config | Required path in `macos-native.yml` | G8 |
-| E2.5 | Ignore audit | Every `#[ignore]` has issue URL; quarterly cleanup | ≤10 ignored tests repo-wide | — |
-| E2.6 | Stress harness | Scripted tab storm + scrollback (product Phase 4) | Documented scenario; optional CI nightly | — |
+| E2.2 | Test pyramid doc | `docs/engineering/testing.md`: unit → integration → manual | Linked from CONTRIBUTING | — | Done |
+| E2.3 | FFI contract tests | Minimal C API round-trips in `crates/ffi` tests | Run on Linux + macOS in CI | — | Partial |
+| E2.4 | Swift config parity | Extend `test-macos-config` in PR checklist when touching config | Required path in `macos-native.yml` | G8 | Planned |
+| E2.5 | Ignore audit | Every `#[ignore]` has issue URL; quarterly cleanup | ≤10 ignored tests repo-wide | — | Planned |
+| E2.6 | Stress harness | Scripted tab storm + scrollback (product Phase 4) | Documented scenario; optional CI nightly | — | Planned |
 
 **Aligns with product roadmap Phase 4** (stress tests, scrollback validation).
 
@@ -83,24 +83,24 @@
 
 **Outcome:** Crashes and perf regressions are visible and attributable.
 
-| ID | Initiative | Work | Exit criterion | Scorecard |
-|----|------------|------|----------------|-----------|
-| E3.1 | Crash log on panic | File + path documented for support | G10 | G10 |
-| E3.2 | Startup error UI | Replace startup `.unwrap()` with dialog (product Phase 4) | No silent exit on window create failure | G10 |
-| E3.3 | Perf CI budgets | `macos-performance.yml` fails on regression % | G9: documented thresholds | G9 |
-| E3.4 | Render metrics smoke | Optional job: cursor-blink scenario, `full ≈ 0` | Documented in `docs/development.md` | — |
-| E3.5 | Dependency audit | `cargo deny` or license check in release workflow | Product Phase 5 item | — |
+| ID | Initiative | Work | Exit criterion | Scorecard | Status |
+|----|------------|------|----------------|-----------|--------|
+| E3.1 | Crash log on panic | File + path documented for support | G10 | G10 | Done |
+| E3.2 | Startup error UI | Replace startup `.unwrap()` with dialog (product Phase 4) | No silent exit on window create failure | G10 | Done |
+| E3.3 | Perf CI budgets | `macos-performance.yml` fails on regression % | G9: documented thresholds | G9 | Planned |
+| E3.4 | Render metrics smoke | Optional job: cursor-blink scenario, `full ≈ 0` | Documented in `docs/development.md` | — | Planned |
+| E3.5 | Dependency audit | `cargo deny` or license check in release workflow | Product Phase 5 item | — | Planned |
 
 ---
 
 ## Phase E4 — Scale the team (P3, post-v1 or high PR volume)
 
-| ID | Initiative | Work | Exit criterion |
-|----|------------|------|----------------|
-| E4.1 | ADRs | `docs/architecture/adr/` for GPUI pin, dual host, tmux model | Template + 3 ADRs |
-| E4.2 | CODEOWNERS | `terminal_view/`, `config_core/`, `ffi/`, `macos/` | Auto-review requests |
-| E4.3 | Crate onboarding | Each crate README: owner, test command, forbidden deps | 100% workspace members |
-| E4.4 | Issue taxonomy | Labels: `area/*`, `risk/*`, `quality-gate` | Used in roadmap reviews |
+| ID | Initiative | Work | Exit criterion | Status |
+|----|------------|------|----------------|--------|
+| E4.1 | ADRs | `docs/architecture/adr/` for GPUI pin, dual host, tmux model | Template + 3 ADRs | Planned |
+| E4.2 | CODEOWNERS | `terminal_view/`, `config_core/`, `ffi/`, `macos/` | Auto-review requests | Planned |
+| E4.3 | Crate onboarding | Each crate README: owner, test command, forbidden deps | 100% workspace members | Done |
+| E4.4 | Issue taxonomy | Labels: `area/*`, `risk/*`, `quality-gate` | Used in roadmap reviews | Planned |
 
 ---
 
