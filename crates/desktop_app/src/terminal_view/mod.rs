@@ -89,8 +89,8 @@ use command_palette::{CommandPaletteMode, CommandPaletteState, TmuxSessionIntent
 use constants::*;
 use inline_input::{InlineInputAlignment, InlineInputState};
 use interaction::{
-    MouseReportTargetCell, MouseReportingState, PendingKeyRelease, TabContextMenuState,
-    TerminalContextMenuState,
+    MouseReportTargetCell, MouseReportingState, PaneDropRegion, PaneMoveDragState,
+    PendingKeyRelease, TabContextMenuState, TerminalContextMenuState,
 };
 #[cfg(target_os = "macos")]
 pub(crate) use macos_file_drop::{NativeDropResult, install_native_file_drop};
@@ -324,34 +324,6 @@ struct HoveredPaneDivider {
     pane_id: String,
     axis: PaneResizeAxis,
     edge: PaneResizeEdge,
-}
-
-/// Where a dragged pane would land relative to the pane under the cursor:
-/// an edge half (insert as a split on that side) or the center (swap).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PaneDropRegion {
-    Left,
-    Right,
-    Top,
-    Bottom,
-    Center,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct PaneDropTarget {
-    pane_id: String,
-    region: PaneDropRegion,
-}
-
-#[derive(Clone, Debug)]
-struct PaneMoveDragState {
-    pane_id: String,
-    start_x: f32,
-    start_y: f32,
-    /// Set once the pointer travels past the drag threshold; the placement
-    /// overlay only renders for active drags so a modifier-click stays inert.
-    active: bool,
-    drop_target: Option<PaneDropTarget>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

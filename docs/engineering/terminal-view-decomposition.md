@@ -29,7 +29,7 @@
 
 Execute **one tranche per release** (or per month), each ≤500 lines moved, with `cargo test -p termy` green.
 
-**Progress (2026-06-13):** Extracted render/debug metrics into `terminal_view/metrics.rs`, background/chrome appearance helpers into `terminal_view/appearance.rs`, and several interaction/scrollbar state types into their owning modules; `mod.rs` is down to 4,988 lines.
+**Progress (2026-06-13):** Extracted render/debug metrics into `terminal_view/metrics.rs`, background/chrome appearance helpers into `terminal_view/appearance.rs`, pane move/drop state into `interaction/pane_move.rs`, and several other interaction/scrollbar state types into their owning modules; `mod.rs` is down to 4,960 lines.
 
 ### Tranche 1 — Session & window glue (E1 Q2)
 

@@ -8,6 +8,34 @@ const PANE_MOVE_DRAG_THRESHOLD_PX: f32 = 4.0;
 /// nearest edge wins and the drop becomes a split on that side.
 const PANE_MOVE_CENTER_FRACTION: f32 = 0.30;
 
+/// Pane move drop zone: an edge half (insert as a split on that side) or the
+/// center (swap).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::terminal_view) enum PaneDropRegion {
+    Left,
+    Right,
+    Top,
+    Bottom,
+    Center,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(in crate::terminal_view) struct PaneDropTarget {
+    pub(in crate::terminal_view) pane_id: String,
+    pub(in crate::terminal_view) region: PaneDropRegion,
+}
+
+#[derive(Clone, Debug)]
+pub(in crate::terminal_view) struct PaneMoveDragState {
+    pub(in crate::terminal_view) pane_id: String,
+    pub(in crate::terminal_view) start_x: f32,
+    pub(in crate::terminal_view) start_y: f32,
+    /// Set once the pointer travels past the drag threshold; the placement
+    /// overlay only renders for active drags so a modifier-click stays inert.
+    pub(in crate::terminal_view) active: bool,
+    pub(in crate::terminal_view) drop_target: Option<PaneDropTarget>,
+}
+
 impl TerminalView {
     /// Alt + the platform secondary modifier (Cmd on macOS, Ctrl elsewhere)
     /// starts a pane-move drag. Link clicks use secondary *without* alt and
