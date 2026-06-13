@@ -783,6 +783,17 @@ impl TerminalView {
         window: &Window,
         cx: &mut Context<Self>,
     ) {
+        if self.workspace_sidebar_resize_drag_active() {
+            if event.dragging() {
+                if self.update_workspace_sidebar_resize_drag(event.position.x.into()) {
+                    cx.notify();
+                }
+            } else if self.finish_workspace_sidebar_resize_drag() {
+                cx.notify();
+            }
+            return;
+        }
+
         if self.inspector_resize_drag_active() {
             if !event.dragging() {
                 let _ = self.finish_inspector_resize_drag();
@@ -840,6 +851,11 @@ impl TerminalView {
         event: &MouseUpEvent,
         cx: &mut Context<Self>,
     ) -> bool {
+        if event.button == MouseButton::Left && self.finish_workspace_sidebar_resize_drag() {
+            cx.notify();
+            return true;
+        }
+
         if event.button == MouseButton::Left && self.finish_inspector_resize_drag() {
             cx.notify();
             return true;
@@ -1025,6 +1041,18 @@ impl TerminalView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.workspace_sidebar_resize_drag_active() {
+            if event.dragging() {
+                if self.update_workspace_sidebar_resize_drag(event.position.x.into()) {
+                    cx.notify();
+                }
+            } else if self.finish_workspace_sidebar_resize_drag() {
+                cx.notify();
+            }
+            cx.stop_propagation();
+            return;
+        }
+
         if self.tab_strip.drag.is_some() && !event.dragging() {
             self.commit_tab_drag(cx);
         }
@@ -1132,6 +1160,12 @@ impl TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if event.button == MouseButton::Left && self.finish_workspace_sidebar_resize_drag() {
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
+
         if event.button == MouseButton::Right
             && Self::is_terminal_context_menu_passthrough(event.modifiers)
         {

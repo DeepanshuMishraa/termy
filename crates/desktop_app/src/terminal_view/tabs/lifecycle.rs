@@ -292,8 +292,7 @@ impl TerminalView {
     /// "+" button entry point: with browser tabs enabled it opens a dropdown
     /// to choose the tab kind; otherwise it creates a terminal tab directly.
     pub(crate) fn handle_new_tab_button(&mut self, anchor: (f32, f32), cx: &mut Context<Self>) {
-        let dropdown_features_enabled = self.browser_tabs_enabled || self.git_panel_enabled;
-        if dropdown_features_enabled && self.runtime_kind() == RuntimeKind::Native {
+        if self.browser_tabs_enabled && self.runtime_kind() == RuntimeKind::Native {
             self.toggle_new_tab_menu(anchor, cx);
         } else {
             self.add_tab(cx);

@@ -10,8 +10,8 @@ mod types;
 
 pub use color_keys::{ColorEntryError, apply_color_entry, canonical_color_key};
 pub use constants::{
-    DEFAULT_LINE_HEIGHT, MAX_LINE_HEIGHT, MIN_LINE_HEIGHT, SHELL_DECIDE_THEME_ID, VALID_ROOT_KEYS,
-    VALID_SECTIONS,
+    DEFAULT_LINE_HEIGHT, DEFAULT_SIDEBAR_WIDTH, MAX_LINE_HEIGHT, MAX_SIDEBAR_WIDTH,
+    MIN_LINE_HEIGHT, MIN_SIDEBAR_WIDTH, SHELL_DECIDE_THEME_ID, VALID_ROOT_KEYS, VALID_SECTIONS,
 };
 pub use diagnostics::{ConfigDiagnostic, ConfigDiagnosticKind, ConfigParseReport};
 pub use document::{

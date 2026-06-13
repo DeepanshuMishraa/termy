@@ -59,7 +59,6 @@ mod benchmark;
 mod browser;
 mod command_palette;
 mod constants;
-mod git_panel;
 mod inline_input;
 mod inspector;
 mod interaction;
@@ -1573,10 +1572,9 @@ pub struct TerminalView {
     active_workspace: usize,
     next_workspace_id: u64,
     workspace_sidebar_enabled: bool,
+    workspace_sidebar_width: f32,
+    workspace_sidebar_resize_drag: Option<workspaces::WorkspaceSidebarResizeDragState>,
     browser_tabs_enabled: bool,
-    git_panel_enabled: bool,
-    git_panel_open: bool,
-    git_panel: git_panel::GitPanelState,
     native_pane_zoom_snapshots: HashMap<TabId, NativePaneZoomSnapshot>,
     native_pane_layout_trees: HashMap<TabId, NativePaneLayoutTree>,
     next_tab_id: TabId,
@@ -3347,11 +3345,8 @@ impl TerminalView {
         TerminalContentRect::new(
             0.0,
             0.0,
-            (viewport_width
-                - self.effective_sidebar_width()
-                - self.workspace_sidebar_width()
-                - self.git_panel_width_px())
-            .max(0.0),
+            (viewport_width - self.effective_sidebar_width() - self.workspace_sidebar_width())
+                .max(0.0),
             viewport_height - self.terminal_content_top_inset() - self.inspector_bottom_inset(),
         )
     }
@@ -4026,10 +4021,9 @@ impl TerminalView {
             active_workspace: 0,
             next_workspace_id: 2,
             workspace_sidebar_enabled: config.sidebar_enabled,
+            workspace_sidebar_width: Self::clamp_workspace_sidebar_width(config.sidebar_width),
+            workspace_sidebar_resize_drag: None,
             browser_tabs_enabled: config.browser_tabs_enabled,
-            git_panel_enabled: config.git_panel_enabled,
-            git_panel_open: false,
-            git_panel: git_panel::GitPanelState::new(),
             native_pane_zoom_snapshots: HashMap::new(),
             native_pane_layout_trees: HashMap::new(),
             next_tab_id: 1,
@@ -4375,17 +4369,14 @@ impl TerminalView {
         let show_debug_overlay_changed = self.show_debug_overlay != config.show_debug_overlay;
         let simple_mode_changed = self.simple_mode != config.simple_mode;
         let auto_hide_tabbar_changed = self.auto_hide_tabbar != config.auto_hide_tabbar;
-        let workspace_sidebar_changed = self.workspace_sidebar_enabled != config.sidebar_enabled;
+        let workspace_sidebar_enabled_changed =
+            self.workspace_sidebar_enabled != config.sidebar_enabled;
+        let workspace_sidebar_width_changed =
+            self.sync_workspace_sidebar_width_from_config(config.sidebar_width);
+        let workspace_sidebar_changed =
+            workspace_sidebar_enabled_changed || workspace_sidebar_width_changed;
         self.workspace_sidebar_enabled = config.sidebar_enabled;
         self.browser_tabs_enabled = config.browser_tabs_enabled;
-        let git_panel_was_enabled = self.git_panel_enabled;
-        self.git_panel_enabled = config.git_panel_enabled;
-        if git_panel_was_enabled && !self.git_panel_enabled && self.git_panel_open {
-            self.git_panel_open = false;
-            self.git_panel.editing_commit = false;
-            self.mark_tab_strip_layout_dirty();
-            cx.notify();
-        }
         if !self.workspace_sidebar_enabled {
             // Stashed workspaces would be unreachable without the sidebar.
             self.collapse_workspaces_into_active();

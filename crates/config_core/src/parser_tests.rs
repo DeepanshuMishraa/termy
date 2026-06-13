@@ -376,8 +376,8 @@ fn bool_root_setting_value(config: &AppConfig, setting: RootSettingId) -> Option
         RootSettingId::TabSwitchModifierHints => Some(config.tab_switch_modifier_hints),
         RootSettingId::AutoHideTabbar => Some(config.auto_hide_tabbar),
         RootSettingId::SidebarEnabled => Some(config.sidebar_enabled),
+        RootSettingId::SidebarWidth => None,
         RootSettingId::BrowserTabsEnabled => Some(config.browser_tabs_enabled),
-        RootSettingId::GitPanelEnabled => Some(config.git_panel_enabled),
         RootSettingId::ShowTermyInTitlebar => Some(config.show_termy_in_titlebar),
         RootSettingId::CursorBlink => Some(config.cursor_blink),
         RootSettingId::BackgroundOpacityCells => Some(config.background_opacity_cells),
@@ -440,6 +440,7 @@ fn numeric_keys_parse_table_driven() {
     let positive_float_cases = [
         ("window_width", 1100.0, defaults.window_width),
         ("window_height", 700.0, defaults.window_height),
+        ("sidebar_width", 240.0, defaults.sidebar_width),
         ("font_size", 16.0, defaults.font_size),
     ];
     for (key, expected, fallback) in positive_float_cases {
@@ -447,6 +448,7 @@ fn numeric_keys_parse_table_driven() {
         let parsed = match key {
             "window_width" => valid.window_width,
             "window_height" => valid.window_height,
+            "sidebar_width" => valid.sidebar_width,
             "font_size" => valid.font_size,
             _ => unreachable!(),
         };
@@ -456,11 +458,21 @@ fn numeric_keys_parse_table_driven() {
         let parsed = match key {
             "window_width" => invalid.window_width,
             "window_height" => invalid.window_height,
+            "sidebar_width" => invalid.sidebar_width,
             "font_size" => invalid.font_size,
             _ => unreachable!(),
         };
         assert_eq!(parsed, fallback);
     }
+
+    assert_eq!(
+        parse("sidebar_width = 80\n").sidebar_width,
+        crate::constants::MIN_SIDEBAR_WIDTH
+    );
+    assert_eq!(
+        parse("sidebar_width = 999\n").sidebar_width,
+        crate::constants::MAX_SIDEBAR_WIDTH
+    );
 
     assert_eq!(parse("line_height = 0.8\n").line_height, 0.8);
     assert_eq!(parse("line_height = 1.25\n").line_height, 1.25);

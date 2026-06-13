@@ -41,7 +41,8 @@ impl SettingsWindow {
             | EditableField::TabTitleCommandFormat
             | EditableField::TabCloseVisibility
             | EditableField::TabWidthMode
-            | EditableField::TabBarPosition => self.apply_tabs_field(field, value),
+            | EditableField::TabBarPosition
+            | EditableField::SidebarWidth => self.apply_tabs_field(field, value),
             EditableField::WorkingDirectory
             | EditableField::WorkingDirFallback
             | EditableField::WindowWidth
@@ -569,6 +570,23 @@ impl SettingsWindow {
                 config::set_root_setting(
                     termy_config_core::RootSettingId::TabBarPosition,
                     canonical,
+                )
+            }
+            EditableField::SidebarWidth => {
+                let parsed = value
+                    .parse::<f32>()
+                    .map_err(|_| "Sidebar width must be a positive number".to_string())?;
+                if parsed <= 0.0 {
+                    return Err("Sidebar width must be greater than 0".to_string());
+                }
+                let width = parsed.clamp(
+                    termy_config_core::MIN_SIDEBAR_WIDTH,
+                    termy_config_core::MAX_SIDEBAR_WIDTH,
+                );
+                self.config.sidebar_width = width;
+                config::set_root_setting(
+                    termy_config_core::RootSettingId::SidebarWidth,
+                    &width.to_string(),
                 )
             }
             _ => unreachable!("invalid tabs field"),

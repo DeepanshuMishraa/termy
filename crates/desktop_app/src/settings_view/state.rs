@@ -41,6 +41,7 @@ pub(super) enum EditableField {
     TabCloseVisibility,
     TabWidthMode,
     TabBarPosition,
+    SidebarWidth,
     WorkingDirectory,
     WorkingDirFallback,
     WindowWidth,
@@ -442,7 +443,8 @@ impl SettingsWindow {
             | EditableField::TabTitleCommandFormat
             | EditableField::TabCloseVisibility
             | EditableField::TabWidthMode
-            | EditableField::TabBarPosition => Self::tabs_field_spec(field),
+            | EditableField::TabBarPosition
+            | EditableField::SidebarWidth => Self::tabs_field_spec(field),
             EditableField::WorkingDirectory
             | EditableField::WorkingDirFallback
             | EditableField::WindowWidth
@@ -616,6 +618,14 @@ impl SettingsWindow {
             }
             EditableField::TabWidthMode => Self::enum_field_spec(RootSettingId::TabWidthMode),
             EditableField::TabBarPosition => Self::enum_field_spec(RootSettingId::TabBarPosition),
+            EditableField::SidebarWidth => Self::numeric_field_spec(
+                RootSettingId::SidebarWidth,
+                NumericStepSpec {
+                    delta: 10.0,
+                    min: termy_config_core::MIN_SIDEBAR_WIDTH,
+                    max: termy_config_core::MAX_SIDEBAR_WIDTH,
+                },
+            ),
             _ => unreachable!("invalid tabs field"),
         }
     }
@@ -980,6 +990,9 @@ impl SettingsWindow {
                 termy_config_core::TabBarPosition::Right => "right",
             }
             .to_string(),
+            EditableField::SidebarWidth => {
+                format!("{}", self.config.sidebar_width.round() as i32)
+            }
             EditableField::WorkingDirectory => self.config.working_dir.clone().unwrap_or_default(),
             EditableField::WorkingDirFallback => match self.config.working_dir_fallback {
                 termy_config_core::WorkingDirFallback::Home => "home",
@@ -1119,6 +1132,15 @@ impl SettingsWindow {
                 config::set_root_setting(
                     termy_config_core::RootSettingId::PaneFocusStrength,
                     &format!("{next:.3}"),
+                )
+            }
+            EditableField::SidebarWidth => {
+                let next = (self.config.sidebar_width + (delta as f32 * step.delta))
+                    .clamp(step.min, step.max);
+                self.config.sidebar_width = next;
+                config::set_root_setting(
+                    termy_config_core::RootSettingId::SidebarWidth,
+                    &next.to_string(),
                 )
             }
             EditableField::WindowWidth => {
@@ -1286,6 +1308,7 @@ mod tests {
             EditableField::TabCloseVisibility,
             EditableField::TabWidthMode,
             EditableField::TabBarPosition,
+            EditableField::SidebarWidth,
             EditableField::WorkingDirectory,
             EditableField::WorkingDirFallback,
             EditableField::WindowWidth,
@@ -1350,6 +1373,7 @@ mod tests {
             EditableField::InactiveTabScrollback,
             EditableField::ScrollMultiplier,
             EditableField::PaneFocusStrength,
+            EditableField::SidebarWidth,
             EditableField::WindowWidth,
             EditableField::WindowHeight,
         ];

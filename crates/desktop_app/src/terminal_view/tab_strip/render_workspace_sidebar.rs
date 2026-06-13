@@ -21,11 +21,18 @@ impl TerminalView {
         let header = (self.tab_strip_orientation() == TabStripOrientation::Vertical)
             .then(|| self.render_workspace_sidebar_header(&palette, cx));
         let rows = self.render_workspace_sidebar_rows(&palette, font_family, cx);
+        let sidebar_width = self.workspace_sidebar_width();
+        let resize_active = self.workspace_sidebar_resize_drag_active();
+        let mut resize_handle_bg = palette.tab_stroke_color;
+        resize_handle_bg.a = if resize_active { 0.55 } else { 0.0 };
+        let mut resize_handle_hover_bg = palette.tab_stroke_color;
+        resize_handle_hover_bg.a = 0.45;
 
         div()
             .id("workspace-sidebar")
+            .relative()
             .flex_none()
-            .w(px(WORKSPACE_SIDEBAR_WIDTH))
+            .w(px(sidebar_width))
             .h_full()
             .flex()
             .flex_col()
@@ -41,6 +48,27 @@ impl TerminalView {
                     .overflow_y_scroll()
                     .child(rows),
             )
+            .child(
+                div()
+                    .id("workspace-sidebar-resize-handle")
+                    .absolute()
+                    .right_0()
+                    .top_0()
+                    .bottom_0()
+                    .w(px(WORKSPACE_SIDEBAR_RESIZE_HANDLE_WIDTH))
+                    .cursor_col_resize()
+                    .bg(resize_handle_bg)
+                    .hover(move |s| s.bg(resize_handle_hover_bg))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                            window.prevent_default();
+                            this.begin_workspace_sidebar_resize_drag(event.position.x.into());
+                            cx.stop_propagation();
+                            cx.notify();
+                        }),
+                    ),
+            )
             .into_any_element()
     }
 
@@ -53,13 +81,14 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let leading_inset = Self::titlebar_left_padding_for_platform();
+        let sidebar_width = self.workspace_sidebar_width();
         div()
             .id("workspace-sidebar-titlebar-actions")
             .absolute()
             .left(px(leading_inset))
             .top_0()
             .bottom_0()
-            .w(px((WORKSPACE_SIDEBAR_WIDTH - leading_inset).max(0.0)))
+            .w(px((sidebar_width - leading_inset).max(0.0)))
             .flex()
             .items_center()
             .gap(px(2.0))

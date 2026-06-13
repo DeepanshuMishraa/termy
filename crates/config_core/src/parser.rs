@@ -3,7 +3,8 @@ use std::collections::{BTreeMap, HashMap};
 use crate::color_keys::{ColorEntryError, apply_color_entry};
 use crate::constants::{
     MAX_LINE_HEIGHT, MAX_MOUSE_SCROLL_MULTIPLIER, MAX_PANE_FOCUS_STRENGTH, MAX_SCROLLBACK_HISTORY,
-    MIN_LINE_HEIGHT, MIN_MOUSE_SCROLL_MULTIPLIER, SHELL_DECIDE_THEME_ID, VALID_SECTIONS,
+    MAX_SIDEBAR_WIDTH, MIN_LINE_HEIGHT, MIN_MOUSE_SCROLL_MULTIPLIER, MIN_SIDEBAR_WIDTH,
+    SHELL_DECIDE_THEME_ID, VALID_SECTIONS,
 };
 use crate::diagnostics::{ConfigDiagnostic, ConfigDiagnosticKind, ConfigParseReport};
 use crate::schema::{RootSettingId, root_setting_from_key, root_setting_spec};
@@ -525,18 +526,18 @@ impl AppConfig {
                         config.sidebar_enabled = parsed;
                     }
                 }
+                RootSettingId::SidebarWidth => {
+                    if let Some(parsed) =
+                        parse_positive_f32_field(&mut diagnostics, line_number, key, value)
+                    {
+                        config.sidebar_width = parsed.clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
+                    }
+                }
                 RootSettingId::BrowserTabsEnabled => {
                     if let Some(parsed) =
                         parse_bool_field(&mut diagnostics, line_number, key, value)
                     {
                         config.browser_tabs_enabled = parsed;
-                    }
-                }
-                RootSettingId::GitPanelEnabled => {
-                    if let Some(parsed) =
-                        parse_bool_field(&mut diagnostics, line_number, key, value)
-                    {
-                        config.git_panel_enabled = parsed;
                     }
                 }
                 RootSettingId::ShowTermyInTitlebar => {

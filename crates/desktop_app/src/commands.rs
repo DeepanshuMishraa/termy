@@ -993,22 +993,6 @@ define_commands!(
         ))
     ),
     (
-        ToggleGitPanel,
-        TERMINAL_CONTEXT,
-        Some(palette(
-            "Toggle Git Panel",
-            "git panel changes commit stage diff vcs",
-            CommandPaletteVisibility::Always
-        )),
-        Some(menu(
-            MenuRoot::View,
-            0,
-            "Git Panel",
-            MenuVisibility::Always,
-            MenuActionRole::Normal
-        ))
-    ),
-    (
         ToggleInspector,
         TERMINAL_CONTEXT,
         Some(palette(
@@ -1382,7 +1366,6 @@ mod tests {
             tmux_runtime_active: false,
             install_cli_available: true,
             browser_tabs_enabled: true,
-            git_panel_enabled: true,
         };
         let availability = CommandAction::ResizePaneLeft.availability(caps);
         assert!(availability.enabled);

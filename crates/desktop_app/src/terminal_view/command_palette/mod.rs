@@ -23,7 +23,6 @@ fn command_icon_path(id: termy_command_core::CommandId) -> &'static str {
     match id {
         NewTab => "icons/command_palette/new-tab.svg",
         NewBrowserTab => "icons/command_palette/new-tab.svg",
-        ToggleGitPanel => "icons/command_palette/layout.svg",
         CloseTab | ClosePane | ClosePaneOrTab => "icons/command_palette/close-tab.svg",
         MoveTabLeft | SwitchTabLeft => "icons/command_palette/tab-left.svg",
         MoveTabRight | SwitchTabRight | CycleTabs => "icons/command_palette/tab-right.svg",
@@ -214,8 +213,7 @@ impl TerminalView {
         match reason {
             CommandUnavailableReason::RequiresTmuxRuntime => "tmux required",
             CommandUnavailableReason::InstallCliAlreadyInstalled => "Installed",
-            CommandUnavailableReason::BrowserTabsDisabled
-            | CommandUnavailableReason::GitPanelDisabled => "Disabled",
+            CommandUnavailableReason::BrowserTabsDisabled => "Disabled",
         }
     }
 
@@ -1451,9 +1449,6 @@ impl TerminalView {
             Some(CommandUnavailableReason::BrowserTabsDisabled) => {
                 "Enable Browser Tabs in Settings to use this command"
             }
-            Some(CommandUnavailableReason::GitPanelDisabled) => {
-                "Enable Git Panel in Settings to use this command"
-            }
             None => "Command is currently unavailable",
         }
     }
@@ -1510,7 +1505,6 @@ impl TerminalView {
             }
             CommandAction::NewTab => termy_toast::success("Opened new tab"),
             CommandAction::NewBrowserTab => termy_toast::success("Opened browser tab"),
-            CommandAction::ToggleGitPanel => {}
             CommandAction::CloseTab => termy_toast::info("Closed active tab"),
             CommandAction::ClosePaneOrTab => termy_toast::info("Closed active pane or tab"),
             CommandAction::ZoomIn => termy_toast::info("Zoomed in"),
@@ -1701,7 +1695,6 @@ mod tests {
             tmux_runtime_active: tmux_enabled,
             install_cli_available,
             browser_tabs_enabled: true,
-            git_panel_enabled: true,
         }
     }
 

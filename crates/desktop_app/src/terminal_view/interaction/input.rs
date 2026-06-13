@@ -153,13 +153,8 @@ fn overlay_owns_terminal_input_state(
     search_open: bool,
     renaming_tab: Option<usize>,
     browser_url_editing: bool,
-    git_commit_editing: bool,
 ) -> bool {
-    command_palette_open
-        || search_open
-        || renaming_tab.is_some()
-        || browser_url_editing
-        || git_commit_editing
+    command_palette_open || search_open || renaming_tab.is_some() || browser_url_editing
 }
 
 fn terminal_modifier_transition_events(
@@ -212,7 +207,6 @@ impl TerminalView {
             self.search_open,
             self.renaming_tab,
             self.browser_url_editing(),
-            self.git_commit_editing(),
         )
     }
 
@@ -663,21 +657,6 @@ impl TerminalView {
                     }
                     "escape" => {
                         self.cancel_browser_url_edit(cx);
-                        self.remember_consumed_key_release(key);
-                    }
-                    _ => {}
-                }
-                return;
-            }
-
-            if self.git_commit_editing() {
-                match key {
-                    "enter" => {
-                        self.git_panel_commit(cx);
-                        self.remember_consumed_key_release(key);
-                    }
-                    "escape" => {
-                        self.cancel_git_commit_edit(cx);
                         self.remember_consumed_key_release(key);
                     }
                     _ => {}
