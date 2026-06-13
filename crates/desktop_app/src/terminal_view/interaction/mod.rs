@@ -14,3 +14,5 @@ mod quit;
 mod scroll;
 mod selection;
 mod terminal;
+
+pub(super) use mouse_reporting::{MouseReportTargetCell, MouseReportingState};

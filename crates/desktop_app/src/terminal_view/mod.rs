@@ -84,6 +84,7 @@ use appearance::{
 use command_palette::{CommandPaletteMode, CommandPaletteState, TmuxSessionIntent};
 use constants::*;
 use inline_input::{InlineInputAlignment, InlineInputState};
+use interaction::{MouseReportTargetCell, MouseReportingState};
 #[cfg(target_os = "macos")]
 pub(crate) use macos_file_drop::{NativeDropResult, install_native_file_drop};
 use metrics::DebugOverlayStats;
@@ -420,23 +421,6 @@ impl TerminalScrollbarMarkerCache {
         self.key = None;
         self.marker_tops.clear();
     }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct MouseReportTargetCell {
-    pane_id: String,
-    col: usize,
-    row: usize,
-}
-
-#[derive(Clone, Debug, Default)]
-struct MouseReportingState {
-    left_button: Option<MouseReportTargetCell>,
-    middle_button: Option<MouseReportTargetCell>,
-    right_button: Option<MouseReportTargetCell>,
-    hover_target: Option<MouseReportTargetCell>,
-    scroll_accumulator_x: f32,
-    scroll_accumulator_y: f32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
