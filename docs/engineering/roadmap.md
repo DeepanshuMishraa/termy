@@ -89,7 +89,7 @@
 | E3.2 | Startup error UI | Replace startup `.unwrap()` with dialog (product Phase 4) | No silent exit on window create failure | G10 | Done |
 | E3.3 | Perf CI budgets | `macos-performance.yml` fails on regression % | G9: documented thresholds | G9 | Planned |
 | E3.4 | Render metrics smoke | Optional job: cursor-blink scenario, `full ≈ 0` | Documented in `docs/development.md` | — | Planned |
-| E3.5 | Dependency audit | `cargo deny` or license check in release workflow | Product Phase 5 item | — | Planned |
+| E3.5 | Dependency audit | `cargo deny` or license check in release workflow | Product Phase 5 item | — | Done |
 
 ---
 

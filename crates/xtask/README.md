@@ -14,6 +14,7 @@ Keep product runtime code out of this crate. If an automation command needs shar
 cargo test -p xtask
 cargo run -p xtask -- generate-keybindings-doc --check
 cargo run -p xtask -- generate-config-doc --check
+cargo run -p xtask -- check-dependency-policy
 ```
 
 ## Forbidden Dependencies
