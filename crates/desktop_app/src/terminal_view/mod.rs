@@ -84,7 +84,10 @@ use appearance::{
 use command_palette::{CommandPaletteMode, CommandPaletteState, TmuxSessionIntent};
 use constants::*;
 use inline_input::{InlineInputAlignment, InlineInputState};
-use interaction::{MouseReportTargetCell, MouseReportingState, PendingKeyRelease};
+use interaction::{
+    MouseReportTargetCell, MouseReportingState, PendingKeyRelease, TabContextMenuState,
+    TerminalContextMenuState,
+};
 #[cfg(target_os = "macos")]
 pub(crate) use macos_file_drop::{NativeDropResult, install_native_file_drop};
 use metrics::DebugOverlayStats;
@@ -385,21 +388,6 @@ struct TerminalScrollbarHit {
     local_y: f32,
     thumb_hit: bool,
     thumb_top: f32,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-struct TerminalContextMenuState {
-    anchor_position: gpui::Point<Pixels>,
-    buffer_position: Option<SelectionPos>,
-    can_copy: bool,
-    can_paste: bool,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-struct TabContextMenuState {
-    anchor_position: gpui::Point<Pixels>,
-    tab_id: TabId,
-    pinned: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

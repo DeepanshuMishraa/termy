@@ -2,6 +2,21 @@ use super::*;
 #[cfg(target_os = "macos")]
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
+#[derive(Clone, Debug, PartialEq)]
+pub(in crate::terminal_view) struct TerminalContextMenuState {
+    pub(in crate::terminal_view) anchor_position: gpui::Point<Pixels>,
+    pub(in crate::terminal_view) buffer_position: Option<SelectionPos>,
+    pub(in crate::terminal_view) can_copy: bool,
+    pub(in crate::terminal_view) can_paste: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(in crate::terminal_view) struct TabContextMenuState {
+    pub(in crate::terminal_view) anchor_position: gpui::Point<Pixels>,
+    pub(in crate::terminal_view) tab_id: TabId,
+    pub(in crate::terminal_view) pinned: bool,
+}
+
 impl TerminalView {
     fn terminal_context_menu_buffer_position(
         &self,
