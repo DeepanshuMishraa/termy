@@ -454,6 +454,24 @@ fn status_returning_exports_use_panic_guard() {
 }
 
 #[test]
+fn extern_c_exports_use_panic_guard() {
+    let exports = exported_fns(include_str!("../src/lib.rs"));
+    let mut missing = Vec::new();
+
+    for export in &exports {
+        if !export.body.contains("ffi_status_guard") && !export.body.contains("ffi_guard") {
+            missing.push(format!("{}:{}", export.line_number, export.name));
+        }
+    }
+
+    assert!(
+        missing.is_empty(),
+        "FFI exports must catch panics before they cross the C ABI: {missing:?}"
+    );
+    assert!(!exports.is_empty(), "expected exported Rust functions");
+}
+
+#[test]
 fn c_header_declares_all_rust_exports() {
     let rust_exports = exported_fns(include_str!("../src/lib.rs"))
         .into_iter()

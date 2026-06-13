@@ -538,6 +538,25 @@ fn ffi_status_guard(f: impl FnOnce() -> TermyFfiStatus) -> TermyFfiStatus {
     ffi_guard(TermyFfiStatus::Panicked, f)
 }
 
+fn ffi_default_size_fallback() -> TermyFfiSize {
+    TermyFfiSize {
+        cols: 80,
+        rows: 24,
+        cell_width: 9.0,
+        cell_height: 18.0,
+    }
+}
+
+fn ffi_default_size() -> TermyFfiSize {
+    let size = TerminalSize::default();
+    TermyFfiSize {
+        cols: size.cols,
+        rows: size.rows,
+        cell_width: size.cell_width,
+        cell_height: size.cell_height,
+    }
+}
+
 unsafe fn optional_utf8<'a>(ptr: *const u8, len: usize) -> Result<Option<&'a str>, TermyFfiStatus> {
     if ptr.is_null() || len == 0 {
         return Ok(None);
@@ -715,13 +734,7 @@ unsafe fn terminal_new_with_runtime_config(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn termy_size_default() -> TermyFfiSize {
-    let size = TerminalSize::default();
-    TermyFfiSize {
-        cols: size.cols,
-        rows: size.rows,
-        cell_width: size.cell_width,
-        cell_height: size.cell_height,
-    }
+    ffi_guard(ffi_default_size_fallback(), ffi_default_size)
 }
 
 #[unsafe(no_mangle)]
@@ -910,22 +923,26 @@ pub unsafe extern "C" fn termy_config_free(config: *mut TermyFfiConfig) -> Termy
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn termy_config_loaded_from_disk(config: *const TermyFfiConfig) -> bool {
-    if config.is_null() {
-        return false;
-    }
+    ffi_guard(false, || {
+        if config.is_null() {
+            return false;
+        }
 
-    unsafe { (*config).loaded.loaded_from_disk }
+        unsafe { (*config).loaded.loaded_from_disk }
+    })
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn termy_config_runtime_scrollback_history(
     config: *const TermyFfiConfig,
 ) -> usize {
-    if config.is_null() {
-        return 0;
-    }
+    ffi_guard(0, || {
+        if config.is_null() {
+            return 0;
+        }
 
-    unsafe { (*config).loaded.runtime_config.scrollback_history }
+        unsafe { (*config).loaded.runtime_config.scrollback_history }
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -951,11 +968,13 @@ pub unsafe extern "C" fn termy_config_runtime_inactive_tab_scrollback(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn termy_config_diagnostic_count(config: *const TermyFfiConfig) -> usize {
-    if config.is_null() {
-        return 0;
-    }
+    ffi_guard(0, || {
+        if config.is_null() {
+            return 0;
+        }
 
-    unsafe { (*config).loaded.diagnostics.len() }
+        unsafe { (*config).loaded.diagnostics.len() }
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -2381,9 +2400,11 @@ pub unsafe extern "C" fn termy_tmux_control_send(
 pub unsafe extern "C" fn termy_tmux_control_close(
     session: *mut tmux_control_core::session::ControlSession,
 ) {
-    if !session.is_null() {
-        drop(unsafe { Box::from_raw(session) });
-    }
+    ffi_guard((), || {
+        if !session.is_null() {
+            drop(unsafe { Box::from_raw(session) });
+        }
+    });
 }
 
 #[unsafe(no_mangle)]
@@ -3164,21 +3185,21 @@ pub unsafe extern "C" fn termy_buffer_free(bytes: TermyFfiBytes) -> TermyFfiStat
 
 #[unsafe(no_mangle)]
 pub extern "C" fn termy_null_buffer() -> TermyFfiBytes {
-    TermyFfiBytes {
+    ffi_guard(TermyFfiBytes::default(), || TermyFfiBytes {
         ptr: ptr::null_mut(),
         len: 0,
         capacity: 0,
-    }
+    })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn termy_runtime_config_default_scrollback() -> usize {
-    TerminalRuntimeConfig::default().scrollback_history
+    ffi_guard(0, || TerminalRuntimeConfig::default().scrollback_history)
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn termy_terminal_options_default_scrollback() -> usize {
-    TerminalOptions::default().scrollback_history
+    ffi_guard(0, || TerminalOptions::default().scrollback_history)
 }
 
 #[unsafe(no_mangle)]
