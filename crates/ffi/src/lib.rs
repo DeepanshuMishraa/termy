@@ -38,6 +38,8 @@ pub enum TermyFfiStatus {
 
 #[cfg(test)]
 static PANIC_NEXT_FEED_OUTPUT: AtomicBool = AtomicBool::new(false);
+#[cfg(test)]
+static PANIC_NEXT_RESIZE: AtomicBool = AtomicBool::new(false);
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -729,7 +731,7 @@ pub unsafe extern "C" fn termy_terminal_new(
     startup_command_len: usize,
     out_terminal: *mut *mut TermyFfiTerminal,
 ) -> TermyFfiStatus {
-    unsafe {
+    ffi_status_guard(|| unsafe {
         terminal_new_with_runtime_config(
             size,
             &TerminalRuntimeConfig::default(),
@@ -739,7 +741,7 @@ pub unsafe extern "C" fn termy_terminal_new(
             startup_command_len,
             out_terminal,
         )
-    }
+    })
 }
 
 /// Create a display-only terminal: a grid with no PTY/shell, fed via
@@ -750,18 +752,20 @@ pub unsafe extern "C" fn termy_display_terminal_new(
     size: TermyFfiSize,
     out_terminal: *mut *mut TermyFfiTerminal,
 ) -> TermyFfiStatus {
-    if out_terminal.is_null() {
-        return TermyFfiStatus::Null;
-    }
-    let terminal = Terminal::new_display(size.into(), None);
-    unsafe {
-        *out_terminal = Box::into_raw(Box::new(TermyFfiTerminal {
-            terminal,
-            wakeups_tx: None,
-            wakeups_rx: None,
-        }));
-    }
-    TermyFfiStatus::Ok
+    ffi_status_guard(|| {
+        if out_terminal.is_null() {
+            return TermyFfiStatus::Null;
+        }
+        let terminal = Terminal::new_display(size.into(), None);
+        unsafe {
+            *out_terminal = Box::into_raw(Box::new(TermyFfiTerminal {
+                terminal,
+                wakeups_tx: None,
+                wakeups_rx: None,
+            }));
+        }
+        TermyFfiStatus::Ok
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -772,23 +776,25 @@ pub unsafe extern "C" fn termy_terminal_new_with_config(
     startup_command_len: usize,
     out_terminal: *mut *mut TermyFfiTerminal,
 ) -> TermyFfiStatus {
-    if config.is_null() {
-        return TermyFfiStatus::Null;
-    }
+    ffi_status_guard(|| {
+        if config.is_null() {
+            return TermyFfiStatus::Null;
+        }
 
-    unsafe {
-        let tab_title_shell_integration =
-            tab_title_shell_integration_from_config(&(*config).loaded.app_config);
-        terminal_new_with_runtime_config(
-            size,
-            &(*config).loaded.runtime_config,
-            Some(&tab_title_shell_integration),
-            None,
-            startup_command_ptr,
-            startup_command_len,
-            out_terminal,
-        )
-    }
+        unsafe {
+            let tab_title_shell_integration =
+                tab_title_shell_integration_from_config(&(*config).loaded.app_config);
+            terminal_new_with_runtime_config(
+                size,
+                &(*config).loaded.runtime_config,
+                Some(&tab_title_shell_integration),
+                None,
+                startup_command_ptr,
+                startup_command_len,
+                out_terminal,
+            )
+        }
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -797,54 +803,56 @@ pub unsafe extern "C" fn termy_terminal_new_with_options(
     options: *const TermyFfiTerminalOptions,
     out_terminal: *mut *mut TermyFfiTerminal,
 ) -> TermyFfiStatus {
-    if options.is_null() || out_terminal.is_null() {
-        return TermyFfiStatus::Null;
-    }
+    ffi_status_guard(|| {
+        if options.is_null() || out_terminal.is_null() {
+            return TermyFfiStatus::Null;
+        }
 
-    let options = unsafe { *options };
-    let (mut runtime_config, tab_title_shell_integration) = if options.config.is_null() {
-        (TerminalRuntimeConfig::default(), None)
-    } else {
+        let options = unsafe { *options };
+        let (mut runtime_config, tab_title_shell_integration) = if options.config.is_null() {
+            (TerminalRuntimeConfig::default(), None)
+        } else {
+            unsafe {
+                (
+                    (*options.config).loaded.runtime_config.clone(),
+                    Some(tab_title_shell_integration_from_config(
+                        &(*options.config).loaded.app_config,
+                    )),
+                )
+            }
+        };
+        let working_directory = match unsafe {
+            optional_utf8(options.working_directory_ptr, options.working_directory_len)
+        } {
+            Ok(value) => value,
+            Err(status) => return status,
+        };
+        let environment =
+            match unsafe { env_vars_from_ffi(options.env_vars_ptr, options.env_vars_len) } {
+                Ok(value) => value,
+                Err(status) => return status,
+            };
+        runtime_config.environment.extend(environment);
+
         unsafe {
-            (
-                (*options.config).loaded.runtime_config.clone(),
-                Some(tab_title_shell_integration_from_config(
-                    &(*options.config).loaded.app_config,
-                )),
+            terminal_new_with_runtime_config(
+                size,
+                &runtime_config,
+                tab_title_shell_integration.as_ref(),
+                working_directory,
+                options.startup_command_ptr,
+                options.startup_command_len,
+                out_terminal,
             )
         }
-    };
-    let working_directory = match unsafe {
-        optional_utf8(options.working_directory_ptr, options.working_directory_len)
-    } {
-        Ok(value) => value,
-        Err(status) => return status,
-    };
-    let environment = match unsafe { env_vars_from_ffi(options.env_vars_ptr, options.env_vars_len) }
-    {
-        Ok(value) => value,
-        Err(status) => return status,
-    };
-    runtime_config.environment.extend(environment);
-
-    unsafe {
-        terminal_new_with_runtime_config(
-            size,
-            &runtime_config,
-            tab_title_shell_integration.as_ref(),
-            working_directory,
-            options.startup_command_ptr,
-            options.startup_command_len,
-            out_terminal,
-        )
-    }
+    })
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn termy_config_load_default(
     out_config: *mut *mut TermyFfiConfig,
 ) -> TermyFfiStatus {
-    leak_loaded_config(load_config_from_default_path(), out_config)
+    ffi_status_guard(|| leak_loaded_config(load_config_from_default_path(), out_config))
 }
 
 #[unsafe(no_mangle)]
@@ -853,11 +861,13 @@ pub unsafe extern "C" fn termy_config_load_path(
     path_len: usize,
     out_config: *mut *mut TermyFfiConfig,
 ) -> TermyFfiStatus {
-    let path = match unsafe { required_utf8(path_ptr, path_len) } {
-        Ok(path) => path,
-        Err(status) => return status,
-    };
-    leak_loaded_config(load_config_from_path(Path::new(path)), out_config)
+    ffi_status_guard(|| {
+        let path = match unsafe { required_utf8(path_ptr, path_len) } {
+            Ok(path) => path,
+            Err(status) => return status,
+        };
+        leak_loaded_config(load_config_from_path(Path::new(path)), out_config)
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -866,32 +876,36 @@ pub unsafe extern "C" fn termy_config_from_contents(
     contents_len: usize,
     out_config: *mut *mut TermyFfiConfig,
 ) -> TermyFfiStatus {
-    if out_config.is_null() {
-        return TermyFfiStatus::Null;
-    }
+    ffi_status_guard(|| {
+        if out_config.is_null() {
+            return TermyFfiStatus::Null;
+        }
 
-    let contents = match unsafe { contents_utf8(contents_ptr, contents_len) } {
-        Ok(contents) => contents,
-        Err(status) => return status,
-    };
+        let contents = match unsafe { contents_utf8(contents_ptr, contents_len) } {
+            Ok(contents) => contents,
+            Err(status) => return status,
+        };
 
-    let loaded = load_config_from_contents(contents);
-    unsafe {
-        *out_config = Box::into_raw(Box::new(TermyFfiConfig { loaded }));
-    }
-    TermyFfiStatus::Ok
+        let loaded = load_config_from_contents(contents);
+        unsafe {
+            *out_config = Box::into_raw(Box::new(TermyFfiConfig { loaded }));
+        }
+        TermyFfiStatus::Ok
+    })
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn termy_config_free(config: *mut TermyFfiConfig) -> TermyFfiStatus {
-    if config.is_null() {
-        return TermyFfiStatus::Null;
-    }
+    ffi_status_guard(|| {
+        if config.is_null() {
+            return TermyFfiStatus::Null;
+        }
 
-    unsafe {
-        drop(Box::from_raw(config));
-    }
-    TermyFfiStatus::Ok
+        unsafe {
+            drop(Box::from_raw(config));
+        }
+        TermyFfiStatus::Ok
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -920,16 +934,19 @@ pub unsafe extern "C" fn termy_config_runtime_inactive_tab_scrollback(
     out_enabled: *mut bool,
     out_value: *mut usize,
 ) -> TermyFfiStatus {
-    if config.is_null() || out_enabled.is_null() || out_value.is_null() {
-        return TermyFfiStatus::Null;
-    }
+    ffi_status_guard(|| {
+        if config.is_null() || out_enabled.is_null() || out_value.is_null() {
+            return TermyFfiStatus::Null;
+        }
 
-    let inactive_tab_scrollback = unsafe { (*config).loaded.app_config.inactive_tab_scrollback };
-    unsafe {
-        *out_enabled = inactive_tab_scrollback.is_some();
-        *out_value = inactive_tab_scrollback.unwrap_or_default();
-    }
-    TermyFfiStatus::Ok
+        let inactive_tab_scrollback =
+            unsafe { (*config).loaded.app_config.inactive_tab_scrollback };
+        unsafe {
+            *out_enabled = inactive_tab_scrollback.is_some();
+            *out_value = inactive_tab_scrollback.unwrap_or_default();
+        }
+        TermyFfiStatus::Ok
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -947,16 +964,18 @@ pub unsafe extern "C" fn termy_config_window_size(
     out_width: *mut f32,
     out_height: *mut f32,
 ) -> TermyFfiStatus {
-    if config.is_null() || out_width.is_null() || out_height.is_null() {
-        return TermyFfiStatus::Null;
-    }
+    ffi_status_guard(|| {
+        if config.is_null() || out_width.is_null() || out_height.is_null() {
+            return TermyFfiStatus::Null;
+        }
 
-    let app_config = unsafe { &(*config).loaded.app_config };
-    unsafe {
-        *out_width = app_config.window_width;
-        *out_height = app_config.window_height;
-    }
-    TermyFfiStatus::Ok
+        let app_config = unsafe { &(*config).loaded.app_config };
+        unsafe {
+            *out_width = app_config.window_width;
+            *out_height = app_config.window_height;
+        }
+        TermyFfiStatus::Ok
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -964,19 +983,21 @@ pub unsafe extern "C" fn termy_config_working_directory(
     config: *const TermyFfiConfig,
     out_working_directory: *mut TermyFfiBytes,
 ) -> TermyFfiStatus {
-    if config.is_null() || out_working_directory.is_null() {
-        return TermyFfiStatus::Null;
-    }
+    ffi_status_guard(|| {
+        if config.is_null() || out_working_directory.is_null() {
+            return TermyFfiStatus::Null;
+        }
 
-    let working_directory = unsafe { (*config).loaded.app_config.working_dir.as_ref() };
-    let bytes = working_directory.map_or_else(
-        || termy_null_buffer(),
-        |working_directory| ffi_bytes_from_string(working_directory.clone()),
-    );
-    unsafe {
-        *out_working_directory = bytes;
-    }
-    TermyFfiStatus::Ok
+        let working_directory = unsafe { (*config).loaded.app_config.working_dir.as_ref() };
+        let bytes = working_directory.map_or_else(
+            || termy_null_buffer(),
+            |working_directory| ffi_bytes_from_string(working_directory.clone()),
+        );
+        unsafe {
+            *out_working_directory = bytes;
+        }
+        TermyFfiStatus::Ok
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -984,18 +1005,20 @@ pub unsafe extern "C" fn termy_config_safety(
     config: *const TermyFfiConfig,
     out_safety: *mut TermyFfiSafetyConfig,
 ) -> TermyFfiStatus {
-    if config.is_null() || out_safety.is_null() {
-        return TermyFfiStatus::Null;
-    }
+    ffi_status_guard(|| {
+        if config.is_null() || out_safety.is_null() {
+            return TermyFfiStatus::Null;
+        }
 
-    let app_config = unsafe { &(*config).loaded.app_config };
-    unsafe {
-        *out_safety = TermyFfiSafetyConfig {
-            warn_on_quit: app_config.warn_on_quit,
-            warn_on_quit_with_running_process: app_config.warn_on_quit_with_running_process,
-        };
-    }
-    TermyFfiStatus::Ok
+        let app_config = unsafe { &(*config).loaded.app_config };
+        unsafe {
+            *out_safety = TermyFfiSafetyConfig {
+                warn_on_quit: app_config.warn_on_quit,
+                warn_on_quit_with_running_process: app_config.warn_on_quit_with_running_process,
+            };
+        }
+        TermyFfiStatus::Ok
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -1003,52 +1026,54 @@ pub unsafe extern "C" fn termy_config_native(
     config: *const TermyFfiConfig,
     out_native: *mut TermyFfiNativeConfig,
 ) -> TermyFfiStatus {
-    if config.is_null() || out_native.is_null() {
-        return TermyFfiStatus::Null;
-    }
+    ffi_status_guard(|| {
+        if config.is_null() || out_native.is_null() {
+            return TermyFfiStatus::Null;
+        }
 
-    let app_config = unsafe { &(*config).loaded.app_config };
-    unsafe {
-        *out_native = TermyFfiNativeConfig {
-            auto_update: app_config.auto_update,
-            tmux_enabled: app_config.tmux_enabled,
-            tmux_persistence: app_config.tmux_persistence,
-            tmux_show_active_pane_border: app_config.tmux_show_active_pane_border,
-            simple_mode: app_config.simple_mode,
-            native_tab_persistence: app_config.native_tab_persistence,
-            native_layout_autosave: app_config.native_layout_autosave,
-            native_buffer_persistence: app_config.native_buffer_persistence,
-            show_debug_overlay: app_config.show_debug_overlay,
-            onboarding_complete: app_config.onboarding_complete,
-            tab_close_visibility: match app_config.tab_close_visibility {
-                cfg::TabCloseVisibility::ActiveHover => 0,
-                cfg::TabCloseVisibility::Hover => 1,
-                cfg::TabCloseVisibility::Always => 2,
-            },
-            tab_width_mode: match app_config.tab_width_mode {
-                cfg::TabWidthMode::Stable => 0,
-                cfg::TabWidthMode::ActiveGrow => 1,
-                cfg::TabWidthMode::ActiveGrowSticky => 2,
-                cfg::TabWidthMode::Uniform => 3,
-            },
-            tab_bar_position: match app_config.tab_bar_position {
-                cfg::TabBarPosition::Top => 0,
-                cfg::TabBarPosition::Right => 1,
-            },
-            tab_switch_modifier_hints: app_config.tab_switch_modifier_hints,
-            chrome_contrast: app_config.chrome_contrast,
-            command_palette_show_keybinds: app_config.command_palette_show_keybinds,
-            app_icon: match app_config.app_icon {
-                cfg::AppIcon::TermyDefault => 0,
-                cfg::AppIcon::TermyOld => 1,
-            },
-            shell_integration_enabled: app_config.shell_integration_enabled,
-            progress_indicator_enabled: app_config.progress_indicator_enabled,
-            auto_hide_tabbar: app_config.auto_hide_tabbar,
-            show_termy_in_titlebar: app_config.show_termy_in_titlebar,
-        };
-    }
-    TermyFfiStatus::Ok
+        let app_config = unsafe { &(*config).loaded.app_config };
+        unsafe {
+            *out_native = TermyFfiNativeConfig {
+                auto_update: app_config.auto_update,
+                tmux_enabled: app_config.tmux_enabled,
+                tmux_persistence: app_config.tmux_persistence,
+                tmux_show_active_pane_border: app_config.tmux_show_active_pane_border,
+                simple_mode: app_config.simple_mode,
+                native_tab_persistence: app_config.native_tab_persistence,
+                native_layout_autosave: app_config.native_layout_autosave,
+                native_buffer_persistence: app_config.native_buffer_persistence,
+                show_debug_overlay: app_config.show_debug_overlay,
+                onboarding_complete: app_config.onboarding_complete,
+                tab_close_visibility: match app_config.tab_close_visibility {
+                    cfg::TabCloseVisibility::ActiveHover => 0,
+                    cfg::TabCloseVisibility::Hover => 1,
+                    cfg::TabCloseVisibility::Always => 2,
+                },
+                tab_width_mode: match app_config.tab_width_mode {
+                    cfg::TabWidthMode::Stable => 0,
+                    cfg::TabWidthMode::ActiveGrow => 1,
+                    cfg::TabWidthMode::ActiveGrowSticky => 2,
+                    cfg::TabWidthMode::Uniform => 3,
+                },
+                tab_bar_position: match app_config.tab_bar_position {
+                    cfg::TabBarPosition::Top => 0,
+                    cfg::TabBarPosition::Right => 1,
+                },
+                tab_switch_modifier_hints: app_config.tab_switch_modifier_hints,
+                chrome_contrast: app_config.chrome_contrast,
+                command_palette_show_keybinds: app_config.command_palette_show_keybinds,
+                app_icon: match app_config.app_icon {
+                    cfg::AppIcon::TermyDefault => 0,
+                    cfg::AppIcon::TermyOld => 1,
+                },
+                shell_integration_enabled: app_config.shell_integration_enabled,
+                progress_indicator_enabled: app_config.progress_indicator_enabled,
+                auto_hide_tabbar: app_config.auto_hide_tabbar,
+                show_termy_in_titlebar: app_config.show_termy_in_titlebar,
+            };
+        }
+        TermyFfiStatus::Ok
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -1056,15 +1081,17 @@ pub unsafe extern "C" fn termy_config_tmux_binary(
     config: *const TermyFfiConfig,
     out_binary: *mut TermyFfiBytes,
 ) -> TermyFfiStatus {
-    if config.is_null() || out_binary.is_null() {
-        return TermyFfiStatus::Null;
-    }
+    ffi_status_guard(|| {
+        if config.is_null() || out_binary.is_null() {
+            return TermyFfiStatus::Null;
+        }
 
-    let binary = unsafe { (*config).loaded.app_config.tmux_binary.clone() };
-    unsafe {
-        *out_binary = ffi_bytes_from_string(binary);
-    }
-    TermyFfiStatus::Ok
+        let binary = unsafe { (*config).loaded.app_config.tmux_binary.clone() };
+        unsafe {
+            *out_binary = ffi_bytes_from_string(binary);
+        }
+        TermyFfiStatus::Ok
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -1072,15 +1099,17 @@ pub unsafe extern "C" fn termy_config_ui_font_family(
     config: *const TermyFfiConfig,
     out_font_family: *mut TermyFfiBytes,
 ) -> TermyFfiStatus {
-    if config.is_null() || out_font_family.is_null() {
-        return TermyFfiStatus::Null;
-    }
+    ffi_status_guard(|| {
+        if config.is_null() || out_font_family.is_null() {
+            return TermyFfiStatus::Null;
+        }
 
-    let font_family = unsafe { (*config).loaded.app_config.ui_font_family.clone() };
-    unsafe {
-        *out_font_family = ffi_bytes_from_string(font_family);
-    }
-    TermyFfiStatus::Ok
+        let font_family = unsafe { (*config).loaded.app_config.ui_font_family.clone() };
+        unsafe {
+            *out_font_family = ffi_bytes_from_string(font_family);
+        }
+        TermyFfiStatus::Ok
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -1088,19 +1117,21 @@ pub unsafe extern "C" fn termy_config_path(
     config: *const TermyFfiConfig,
     out_path: *mut TermyFfiBytes,
 ) -> TermyFfiStatus {
-    if config.is_null() || out_path.is_null() {
-        return TermyFfiStatus::Null;
-    }
+    ffi_status_guard(|| {
+        if config.is_null() || out_path.is_null() {
+            return TermyFfiStatus::Null;
+        }
 
-    let path = unsafe { (*config).loaded.path.as_ref() };
-    let bytes = path.map_or_else(
-        || termy_null_buffer(),
-        |path| ffi_bytes_from_string(path.to_string_lossy().into_owned()),
-    );
-    unsafe {
-        *out_path = bytes;
-    }
-    TermyFfiStatus::Ok
+        let path = unsafe { (*config).loaded.path.as_ref() };
+        let bytes = path.map_or_else(
+            || termy_null_buffer(),
+            |path| ffi_bytes_from_string(path.to_string_lossy().into_owned()),
+        );
+        unsafe {
+            *out_path = bytes;
+        }
+        TermyFfiStatus::Ok
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -1108,31 +1139,33 @@ pub unsafe extern "C" fn termy_config_tasks_json(
     config: *const TermyFfiConfig,
     out_json: *mut TermyFfiBytes,
 ) -> TermyFfiStatus {
-    if config.is_null() || out_json.is_null() {
-        return TermyFfiStatus::Null;
-    }
+    ffi_status_guard(|| {
+        if config.is_null() || out_json.is_null() {
+            return TermyFfiStatus::Null;
+        }
 
-    let tasks = unsafe { &(*config).loaded.app_config.tasks };
-    let Ok(json) = serde_json::to_string(
-        &tasks
-            .iter()
-            .map(|task| {
-                serde_json::json!({
-                    "name": task.name,
-                    "command": task.command,
-                    "layout": task.layout,
-                    "working_dir": task.working_dir,
+        let tasks = unsafe { &(*config).loaded.app_config.tasks };
+        let Ok(json) = serde_json::to_string(
+            &tasks
+                .iter()
+                .map(|task| {
+                    serde_json::json!({
+                        "name": task.name,
+                        "command": task.command,
+                        "layout": task.layout,
+                        "working_dir": task.working_dir,
+                    })
                 })
-            })
-            .collect::<Vec<_>>(),
-    ) else {
-        return TermyFfiStatus::SerializeFailed;
-    };
+                .collect::<Vec<_>>(),
+        ) else {
+            return TermyFfiStatus::SerializeFailed;
+        };
 
-    unsafe {
-        *out_json = ffi_bytes_from_string(json);
-    }
-    TermyFfiStatus::Ok
+        unsafe {
+            *out_json = ffi_bytes_from_string(json);
+        }
+        TermyFfiStatus::Ok
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -1140,42 +1173,45 @@ pub unsafe extern "C" fn termy_config_keybinds_json(
     config: *const TermyFfiConfig,
     out_json: *mut TermyFfiBytes,
 ) -> TermyFfiStatus {
-    if config.is_null() || out_json.is_null() {
-        return TermyFfiStatus::Null;
-    }
+    ffi_status_guard(|| {
+        if config.is_null() || out_json.is_null() {
+            return TermyFfiStatus::Null;
+        }
 
-    let keybind_lines = unsafe { &(*config).loaded.app_config.keybind_lines };
-    let line_refs = keybind_lines
-        .iter()
-        .map(|line| termy_command_core::KeybindLineRef {
-            line_number: line.line_number,
-            value: line.value.as_str(),
-        });
-    let (directives, _warnings) = termy_command_core::parse_keybind_directives_from_iter(line_refs);
-    let resolved = termy_command_core::resolve_keybinds(
-        termy_command_core::default_resolved_keybinds_for_platform(
-            termy_command_core::KeybindPlatform::MacOs,
-        ),
-        &directives,
-    );
-    let Ok(json) = serde_json::to_string(
-        &resolved
+        let keybind_lines = unsafe { &(*config).loaded.app_config.keybind_lines };
+        let line_refs = keybind_lines
             .iter()
-            .map(|keybind| {
-                serde_json::json!({
-                    "trigger": keybind.trigger,
-                    "action": keybind.action.config_name(),
+            .map(|line| termy_command_core::KeybindLineRef {
+                line_number: line.line_number,
+                value: line.value.as_str(),
+            });
+        let (directives, _warnings) =
+            termy_command_core::parse_keybind_directives_from_iter(line_refs);
+        let resolved = termy_command_core::resolve_keybinds(
+            termy_command_core::default_resolved_keybinds_for_platform(
+                termy_command_core::KeybindPlatform::MacOs,
+            ),
+            &directives,
+        );
+        let Ok(json) = serde_json::to_string(
+            &resolved
+                .iter()
+                .map(|keybind| {
+                    serde_json::json!({
+                        "trigger": keybind.trigger,
+                        "action": keybind.action.config_name(),
+                    })
                 })
-            })
-            .collect::<Vec<_>>(),
-    ) else {
-        return TermyFfiStatus::SerializeFailed;
-    };
+                .collect::<Vec<_>>(),
+        ) else {
+            return TermyFfiStatus::SerializeFailed;
+        };
 
-    unsafe {
-        *out_json = ffi_bytes_from_string(json);
-    }
-    TermyFfiStatus::Ok
+        unsafe {
+            *out_json = ffi_bytes_from_string(json);
+        }
+        TermyFfiStatus::Ok
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -1183,54 +1219,58 @@ pub unsafe extern "C" fn termy_config_diagnostics(
     config: *const TermyFfiConfig,
     out_batch: *mut TermyFfiConfigDiagnosticBatch,
 ) -> TermyFfiStatus {
-    if config.is_null() || out_batch.is_null() {
-        return TermyFfiStatus::Null;
-    }
+    ffi_status_guard(|| {
+        if config.is_null() || out_batch.is_null() {
+            return TermyFfiStatus::Null;
+        }
 
-    let diagnostics = unsafe {
-        (*config)
-            .loaded
-            .diagnostics
-            .clone()
-            .into_iter()
-            .map(ffi_config_diagnostic_from_diagnostic)
-            .collect::<Vec<_>>()
-    };
-    let (diagnostics_ptr, diagnostics_len, diagnostics_capacity) = leak_vec(diagnostics);
-
-    unsafe {
-        *out_batch = TermyFfiConfigDiagnosticBatch {
-            diagnostics_ptr,
-            diagnostics_len,
-            diagnostics_capacity,
+        let diagnostics = unsafe {
+            (*config)
+                .loaded
+                .diagnostics
+                .clone()
+                .into_iter()
+                .map(ffi_config_diagnostic_from_diagnostic)
+                .collect::<Vec<_>>()
         };
-    }
-    TermyFfiStatus::Ok
+        let (diagnostics_ptr, diagnostics_len, diagnostics_capacity) = leak_vec(diagnostics);
+
+        unsafe {
+            *out_batch = TermyFfiConfigDiagnosticBatch {
+                diagnostics_ptr,
+                diagnostics_len,
+                diagnostics_capacity,
+            };
+        }
+        TermyFfiStatus::Ok
+    })
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn termy_config_diagnostics_free(
     batch: *mut TermyFfiConfigDiagnosticBatch,
 ) -> TermyFfiStatus {
-    if batch.is_null() {
-        return TermyFfiStatus::Null;
-    }
-
-    let batch = unsafe { &mut *batch };
-    if !batch.diagnostics_ptr.is_null() {
-        let diagnostics = unsafe {
-            Vec::from_raw_parts(
-                batch.diagnostics_ptr,
-                batch.diagnostics_len,
-                batch.diagnostics_capacity,
-            )
-        };
-        for diagnostic in diagnostics {
-            free_bytes(diagnostic.message);
+    ffi_status_guard(|| {
+        if batch.is_null() {
+            return TermyFfiStatus::Null;
         }
-    }
-    *batch = TermyFfiConfigDiagnosticBatch::default();
-    TermyFfiStatus::Ok
+
+        let batch = unsafe { &mut *batch };
+        if !batch.diagnostics_ptr.is_null() {
+            let diagnostics = unsafe {
+                Vec::from_raw_parts(
+                    batch.diagnostics_ptr,
+                    batch.diagnostics_len,
+                    batch.diagnostics_capacity,
+                )
+            };
+            for diagnostic in diagnostics {
+                free_bytes(diagnostic.message);
+            }
+        }
+        *batch = TermyFfiConfigDiagnosticBatch::default();
+        TermyFfiStatus::Ok
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -1238,7 +1278,9 @@ pub unsafe extern "C" fn termy_config_render_config(
     config: *const TermyFfiConfig,
     out_render_config: *mut TermyFfiRenderConfig,
 ) -> TermyFfiStatus {
-    unsafe { termy_config_render_config_for_appearance(config, 1, out_render_config) }
+    ffi_status_guard(|| unsafe {
+        termy_config_render_config_for_appearance(config, 1, out_render_config)
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -1247,82 +1289,86 @@ pub unsafe extern "C" fn termy_config_render_config_for_appearance(
     system_appearance: u32,
     out_render_config: *mut TermyFfiRenderConfig,
 ) -> TermyFfiStatus {
-    if config.is_null() || out_render_config.is_null() {
-        return TermyFfiStatus::Null;
-    }
+    ffi_status_guard(|| {
+        if config.is_null() || out_render_config.is_null() {
+            return TermyFfiStatus::Null;
+        }
 
-    let loaded = unsafe { &(*config).loaded };
-    let system_appearance = match system_appearance {
-        0 => termy_core::SystemAppearance::Light,
-        _ => termy_core::SystemAppearance::Dark,
-    };
-    let app_config = &loaded.app_config;
-    let cell_metrics = termy_core::measure_cell_from_config(app_config);
-    let theme_colors = termy_core::resolve_theme_colors_from_app_config(
-        app_config,
-        loaded.path.as_deref(),
-        system_appearance,
-    );
-    unsafe {
-        *out_render_config = TermyFfiRenderConfig {
-            font_family: ffi_bytes_from_string(app_config.font_family.clone()),
-            active_theme: ffi_bytes_from_string(theme_colors.active_theme),
-            foreground: theme_colors.foreground.into(),
-            background: theme_colors.background.into(),
-            cursor: theme_colors.cursor.into(),
-            font_size: app_config.font_size,
-            line_height: app_config.line_height,
-            padding_x: app_config.padding_x,
-            padding_y: app_config.padding_y,
-            background_opacity: app_config.background_opacity,
-            background_opacity_cells: app_config.background_opacity_cells,
-            cursor_blink: app_config.cursor_blink,
-            cursor_style: match app_config.cursor_style {
-                termy_core::AppConfigCursorStyle::Line => 1,
-                termy_core::AppConfigCursorStyle::Block => 2,
-            },
-            cell_width: cell_metrics.cell_width,
-            cell_height: cell_metrics.cell_height,
-            background_blur: app_config.background_blur,
-            mouse_scroll_multiplier: app_config.mouse_scroll_multiplier,
-            scrollbar_visibility: match app_config.terminal_scrollbar_visibility {
-                cfg::TerminalScrollbarVisibility::Off => 0,
-                cfg::TerminalScrollbarVisibility::Always => 1,
-                cfg::TerminalScrollbarVisibility::OnScroll => 2,
-            },
-            scrollbar_style: match app_config.terminal_scrollbar_style {
-                cfg::TerminalScrollbarStyle::Neutral => 0,
-                cfg::TerminalScrollbarStyle::MutedTheme => 1,
-                cfg::TerminalScrollbarStyle::Theme => 2,
-            },
-            copy_on_select: app_config.copy_on_select,
-            copy_on_select_toast: app_config.copy_on_select_toast,
-            pane_focus_effect: match app_config.pane_focus_effect {
-                cfg::PaneFocusEffect::Off => 0,
-                cfg::PaneFocusEffect::SoftSpotlight => 1,
-                cfg::PaneFocusEffect::Cinematic => 2,
-                cfg::PaneFocusEffect::Minimal => 3,
-            },
-            pane_focus_strength: app_config.pane_focus_strength,
-            chrome_contrast: app_config.chrome_contrast,
+        let loaded = unsafe { &(*config).loaded };
+        let system_appearance = match system_appearance {
+            0 => termy_core::SystemAppearance::Light,
+            _ => termy_core::SystemAppearance::Dark,
         };
-    }
-    TermyFfiStatus::Ok
+        let app_config = &loaded.app_config;
+        let cell_metrics = termy_core::measure_cell_from_config(app_config);
+        let theme_colors = termy_core::resolve_theme_colors_from_app_config(
+            app_config,
+            loaded.path.as_deref(),
+            system_appearance,
+        );
+        unsafe {
+            *out_render_config = TermyFfiRenderConfig {
+                font_family: ffi_bytes_from_string(app_config.font_family.clone()),
+                active_theme: ffi_bytes_from_string(theme_colors.active_theme),
+                foreground: theme_colors.foreground.into(),
+                background: theme_colors.background.into(),
+                cursor: theme_colors.cursor.into(),
+                font_size: app_config.font_size,
+                line_height: app_config.line_height,
+                padding_x: app_config.padding_x,
+                padding_y: app_config.padding_y,
+                background_opacity: app_config.background_opacity,
+                background_opacity_cells: app_config.background_opacity_cells,
+                cursor_blink: app_config.cursor_blink,
+                cursor_style: match app_config.cursor_style {
+                    termy_core::AppConfigCursorStyle::Line => 1,
+                    termy_core::AppConfigCursorStyle::Block => 2,
+                },
+                cell_width: cell_metrics.cell_width,
+                cell_height: cell_metrics.cell_height,
+                background_blur: app_config.background_blur,
+                mouse_scroll_multiplier: app_config.mouse_scroll_multiplier,
+                scrollbar_visibility: match app_config.terminal_scrollbar_visibility {
+                    cfg::TerminalScrollbarVisibility::Off => 0,
+                    cfg::TerminalScrollbarVisibility::Always => 1,
+                    cfg::TerminalScrollbarVisibility::OnScroll => 2,
+                },
+                scrollbar_style: match app_config.terminal_scrollbar_style {
+                    cfg::TerminalScrollbarStyle::Neutral => 0,
+                    cfg::TerminalScrollbarStyle::MutedTheme => 1,
+                    cfg::TerminalScrollbarStyle::Theme => 2,
+                },
+                copy_on_select: app_config.copy_on_select,
+                copy_on_select_toast: app_config.copy_on_select_toast,
+                pane_focus_effect: match app_config.pane_focus_effect {
+                    cfg::PaneFocusEffect::Off => 0,
+                    cfg::PaneFocusEffect::SoftSpotlight => 1,
+                    cfg::PaneFocusEffect::Cinematic => 2,
+                    cfg::PaneFocusEffect::Minimal => 3,
+                },
+                pane_focus_strength: app_config.pane_focus_strength,
+                chrome_contrast: app_config.chrome_contrast,
+            };
+        }
+        TermyFfiStatus::Ok
+    })
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn termy_render_config_free(
     render_config: *mut TermyFfiRenderConfig,
 ) -> TermyFfiStatus {
-    if render_config.is_null() {
-        return TermyFfiStatus::Null;
-    }
+    ffi_status_guard(|| {
+        if render_config.is_null() {
+            return TermyFfiStatus::Null;
+        }
 
-    let render_config = unsafe { &mut *render_config };
-    free_bytes(render_config.font_family);
-    free_bytes(render_config.active_theme);
-    *render_config = TermyFfiRenderConfig::default();
-    TermyFfiStatus::Ok
+        let render_config = unsafe { &mut *render_config };
+        free_bytes(render_config.font_family);
+        free_bytes(render_config.active_theme);
+        *render_config = TermyFfiRenderConfig::default();
+        TermyFfiStatus::Ok
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1975,16 +2021,18 @@ pub unsafe extern "C" fn termy_settings_schema_json(
     config: *const TermyFfiConfig,
     out_bytes: *mut TermyFfiBytes,
 ) -> TermyFfiStatus {
-    if config.is_null() || out_bytes.is_null() {
-        return TermyFfiStatus::Null;
-    }
+    ffi_status_guard(|| {
+        if config.is_null() || out_bytes.is_null() {
+            return TermyFfiStatus::Null;
+        }
 
-    let loaded = unsafe { &(*config).loaded };
-    let json = settings_schema_json(loaded);
-    unsafe {
-        *out_bytes = ffi_bytes_from_string(json);
-    }
-    TermyFfiStatus::Ok
+        let loaded = unsafe { &(*config).loaded };
+        let json = settings_schema_json(loaded);
+        unsafe {
+            *out_bytes = ffi_bytes_from_string(json);
+        }
+        TermyFfiStatus::Ok
+    })
 }
 
 unsafe fn settings_set_root_inner(
@@ -2007,10 +2055,12 @@ pub unsafe extern "C" fn termy_settings_set_root(
     value_ptr: *const u8,
     value_len: usize,
 ) -> TermyFfiStatus {
-    match unsafe { settings_set_root_inner(key_ptr, key_len, value_ptr, value_len) } {
-        Ok(()) => TermyFfiStatus::Ok,
-        Err(status) => status,
-    }
+    ffi_status_guard(|| {
+        match unsafe { settings_set_root_inner(key_ptr, key_len, value_ptr, value_len) } {
+            Ok(()) => TermyFfiStatus::Ok,
+            Err(status) => status,
+        }
+    })
 }
 
 unsafe fn settings_reset_root_inner(
@@ -2028,10 +2078,12 @@ pub unsafe extern "C" fn termy_settings_reset_root(
     key_ptr: *const u8,
     key_len: usize,
 ) -> TermyFfiStatus {
-    match unsafe { settings_reset_root_inner(key_ptr, key_len) } {
-        Ok(()) => TermyFfiStatus::Ok,
-        Err(status) => status,
-    }
+    ffi_status_guard(
+        || match unsafe { settings_reset_root_inner(key_ptr, key_len) } {
+            Ok(()) => TermyFfiStatus::Ok,
+            Err(status) => status,
+        },
+    )
 }
 
 unsafe fn settings_set_color_inner(
@@ -2057,10 +2109,12 @@ pub unsafe extern "C" fn termy_settings_set_color(
     hex_ptr: *const u8,
     hex_len: usize,
 ) -> TermyFfiStatus {
-    match unsafe { settings_set_color_inner(key_ptr, key_len, hex_ptr, hex_len) } {
-        Ok(()) => TermyFfiStatus::Ok,
-        Err(status) => status,
-    }
+    ffi_status_guard(|| {
+        match unsafe { settings_set_color_inner(key_ptr, key_len, hex_ptr, hex_len) } {
+            Ok(()) => TermyFfiStatus::Ok,
+            Err(status) => status,
+        }
+    })
 }
 
 unsafe fn settings_set_keybinds_inner(
@@ -2082,10 +2136,12 @@ pub unsafe extern "C" fn termy_settings_set_keybinds(
     text_ptr: *const u8,
     text_len: usize,
 ) -> TermyFfiStatus {
-    match unsafe { settings_set_keybinds_inner(text_ptr, text_len) } {
-        Ok(()) => TermyFfiStatus::Ok,
-        Err(status) => status,
-    }
+    ffi_status_guard(
+        || match unsafe { settings_set_keybinds_inner(text_ptr, text_len) } {
+            Ok(()) => TermyFfiStatus::Ok,
+            Err(status) => status,
+        },
+    )
 }
 
 #[unsafe(no_mangle)]
@@ -2093,14 +2149,16 @@ pub unsafe extern "C" fn termy_settings_install_theme(
     slug_ptr: *const u8,
     slug_len: usize,
 ) -> TermyFfiStatus {
-    let slug = match unsafe { required_utf8(slug_ptr, slug_len) } {
-        Ok(slug) => slug,
-        Err(status) => return status,
-    };
-    match settings_install_theme_from_registry(slug) {
-        Ok(()) => TermyFfiStatus::Ok,
-        Err(status) => status,
-    }
+    ffi_status_guard(|| {
+        let slug = match unsafe { required_utf8(slug_ptr, slug_len) } {
+            Ok(slug) => slug,
+            Err(status) => return status,
+        };
+        match settings_install_theme_from_registry(slug) {
+            Ok(()) => TermyFfiStatus::Ok,
+            Err(status) => status,
+        }
+    })
 }
 
 /// Installs the bundled `termy-cli` shim (symlink into a PATH dir + shell PATH
@@ -2112,29 +2170,31 @@ pub unsafe extern "C" fn termy_cli_install(
     shell_len: usize,
     out_message: *mut TermyFfiBytes,
 ) -> TermyFfiStatus {
-    let shell = if shell_ptr.is_null() || shell_len == 0 {
-        None
-    } else {
-        match unsafe { required_utf8(shell_ptr, shell_len) } {
-            Ok(value) => Some(value),
-            Err(status) => return status,
-        }
-    };
-    match termy_cli_install_core::install_cli(shell) {
-        Ok(result) => {
-            if !out_message.is_null() {
-                let message = format!("Installed CLI to {}", result.install_path.display());
-                unsafe { *out_message = ffi_bytes_from_string(message) };
+    ffi_status_guard(|| {
+        let shell = if shell_ptr.is_null() || shell_len == 0 {
+            None
+        } else {
+            match unsafe { required_utf8(shell_ptr, shell_len) } {
+                Ok(value) => Some(value),
+                Err(status) => return status,
             }
-            TermyFfiStatus::Ok
-        }
-        Err(error) => {
-            if !out_message.is_null() {
-                unsafe { *out_message = ffi_bytes_from_string(error) };
+        };
+        match termy_cli_install_core::install_cli(shell) {
+            Ok(result) => {
+                if !out_message.is_null() {
+                    let message = format!("Installed CLI to {}", result.install_path.display());
+                    unsafe { *out_message = ffi_bytes_from_string(message) };
+                }
+                TermyFfiStatus::Ok
             }
-            TermyFfiStatus::WriteFailed
+            Err(error) => {
+                if !out_message.is_null() {
+                    unsafe { *out_message = ffi_bytes_from_string(error) };
+                }
+                TermyFfiStatus::WriteFailed
+            }
         }
-    }
+    })
 }
 
 // MARK: - tmux control mode (unix only)
@@ -2198,28 +2258,30 @@ pub unsafe extern "C" fn termy_tmux_control_open(
     session_len: usize,
     out_session: *mut *mut tmux_control_core::session::ControlSession,
 ) -> TermyFfiStatus {
-    if out_session.is_null() {
-        return TermyFfiStatus::Null;
-    }
-    let binary = match unsafe { required_utf8(binary_ptr, binary_len) } {
-        Ok(value) => value,
-        Err(status) => return status,
-    };
-    let socket = match unsafe { required_utf8(socket_ptr, socket_len) } {
-        Ok(value) => value,
-        Err(status) => return status,
-    };
-    let session_name = match unsafe { required_utf8(session_ptr, session_len) } {
-        Ok(value) => value,
-        Err(status) => return status,
-    };
-    match tmux_control_core::session::ControlSession::launch(binary, socket, session_name) {
-        Ok(session) => {
-            unsafe { *out_session = Box::into_raw(Box::new(session)) };
-            TermyFfiStatus::Ok
+    ffi_status_guard(|| {
+        if out_session.is_null() {
+            return TermyFfiStatus::Null;
         }
-        Err(_) => TermyFfiStatus::SpawnFailed,
-    }
+        let binary = match unsafe { required_utf8(binary_ptr, binary_len) } {
+            Ok(value) => value,
+            Err(status) => return status,
+        };
+        let socket = match unsafe { required_utf8(socket_ptr, socket_len) } {
+            Ok(value) => value,
+            Err(status) => return status,
+        };
+        let session_name = match unsafe { required_utf8(session_ptr, session_len) } {
+            Ok(value) => value,
+            Err(status) => return status,
+        };
+        match tmux_control_core::session::ControlSession::launch(binary, socket, session_name) {
+            Ok(session) => {
+                unsafe { *out_session = Box::into_raw(Box::new(session)) };
+                TermyFfiStatus::Ok
+            }
+            Err(_) => TermyFfiStatus::SpawnFailed,
+        }
+    })
 }
 
 /// Drains pending control notifications into `out_batch`; free with
@@ -2230,24 +2292,26 @@ pub unsafe extern "C" fn termy_tmux_control_poll(
     session: *mut tmux_control_core::session::ControlSession,
     out_batch: *mut TermyFfiTmuxNotificationBatch,
 ) -> TermyFfiStatus {
-    if session.is_null() || out_batch.is_null() {
-        return TermyFfiStatus::Null;
-    }
-    let session = unsafe { &*session };
-    let notifications: Vec<TermyFfiTmuxNotification> = session
-        .poll()
-        .into_iter()
-        .map(ffi_tmux_notification)
-        .collect();
-    let (ptr, len, capacity) = leak_vec(notifications);
-    unsafe {
-        *out_batch = TermyFfiTmuxNotificationBatch {
-            notifications_ptr: ptr,
-            notifications_len: len,
-            notifications_capacity: capacity,
-        };
-    }
-    TermyFfiStatus::Ok
+    ffi_status_guard(|| {
+        if session.is_null() || out_batch.is_null() {
+            return TermyFfiStatus::Null;
+        }
+        let session = unsafe { &*session };
+        let notifications: Vec<TermyFfiTmuxNotification> = session
+            .poll()
+            .into_iter()
+            .map(ffi_tmux_notification)
+            .collect();
+        let (ptr, len, capacity) = leak_vec(notifications);
+        unsafe {
+            *out_batch = TermyFfiTmuxNotificationBatch {
+                notifications_ptr: ptr,
+                notifications_len: len,
+                notifications_capacity: capacity,
+            };
+        }
+        TermyFfiStatus::Ok
+    })
 }
 
 #[cfg(unix)]
@@ -2255,27 +2319,29 @@ pub unsafe extern "C" fn termy_tmux_control_poll(
 pub unsafe extern "C" fn termy_tmux_control_notifications_free(
     batch: *mut TermyFfiTmuxNotificationBatch,
 ) -> TermyFfiStatus {
-    if batch.is_null() {
-        return TermyFfiStatus::Null;
-    }
-    let batch = unsafe { &mut *batch };
-    if !batch.notifications_ptr.is_null() {
-        let notifications = unsafe {
-            Vec::from_raw_parts(
-                batch.notifications_ptr,
-                batch.notifications_len,
-                batch.notifications_capacity,
-            )
-        };
-        for notification in notifications {
-            free_bytes(notification.pane_id);
-            free_bytes(notification.data);
+    ffi_status_guard(|| {
+        if batch.is_null() {
+            return TermyFfiStatus::Null;
         }
-        batch.notifications_ptr = std::ptr::null_mut();
-        batch.notifications_len = 0;
-        batch.notifications_capacity = 0;
-    }
-    TermyFfiStatus::Ok
+        let batch = unsafe { &mut *batch };
+        if !batch.notifications_ptr.is_null() {
+            let notifications = unsafe {
+                Vec::from_raw_parts(
+                    batch.notifications_ptr,
+                    batch.notifications_len,
+                    batch.notifications_capacity,
+                )
+            };
+            for notification in notifications {
+                free_bytes(notification.pane_id);
+                free_bytes(notification.data);
+            }
+            batch.notifications_ptr = std::ptr::null_mut();
+            batch.notifications_len = 0;
+            batch.notifications_capacity = 0;
+        }
+        TermyFfiStatus::Ok
+    })
 }
 
 /// Runs a tmux command over the control channel; writes its output to
@@ -2288,23 +2354,25 @@ pub unsafe extern "C" fn termy_tmux_control_send(
     command_len: usize,
     out_output: *mut TermyFfiBytes,
 ) -> TermyFfiStatus {
-    if session.is_null() {
-        return TermyFfiStatus::Null;
-    }
-    let command = match unsafe { required_utf8(command_ptr, command_len) } {
-        Ok(value) => value,
-        Err(status) => return status,
-    };
-    let session = unsafe { &*session };
-    match session.send_command(command) {
-        Ok(output) => {
-            if !out_output.is_null() {
-                unsafe { *out_output = ffi_bytes_from_string(output) };
-            }
-            TermyFfiStatus::Ok
+    ffi_status_guard(|| {
+        if session.is_null() {
+            return TermyFfiStatus::Null;
         }
-        Err(_) => TermyFfiStatus::WriteFailed,
-    }
+        let command = match unsafe { required_utf8(command_ptr, command_len) } {
+            Ok(value) => value,
+            Err(status) => return status,
+        };
+        let session = unsafe { &*session };
+        match session.send_command(command) {
+            Ok(output) => {
+                if !out_output.is_null() {
+                    unsafe { *out_output = ffi_bytes_from_string(output) };
+                }
+                TermyFfiStatus::Ok
+            }
+            Err(_) => TermyFfiStatus::WriteFailed,
+        }
+    })
 }
 
 /// Closes and frees a control session handle from `termy_tmux_control_open`.
@@ -2320,48 +2388,54 @@ pub unsafe extern "C" fn termy_tmux_control_close(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn termy_settings_prettify_config() -> TermyFfiStatus {
-    let contents = settings_read_contents();
-    let prettified = cfg::prettify_config_contents(&contents);
-    match settings_write_contents(&prettified) {
-        Ok(()) => TermyFfiStatus::Ok,
-        Err(status) => status,
-    }
+    ffi_status_guard(|| {
+        let contents = settings_read_contents();
+        let prettified = cfg::prettify_config_contents(&contents);
+        match settings_write_contents(&prettified) {
+            Ok(()) => TermyFfiStatus::Ok,
+            Err(status) => status,
+        }
+    })
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn termy_terminal_reload_default_config_colors(
     terminal: *mut TermyFfiTerminal,
 ) -> TermyFfiStatus {
-    if terminal.is_null() {
-        return TermyFfiStatus::Null;
-    }
+    ffi_status_guard(|| {
+        if terminal.is_null() {
+            return TermyFfiStatus::Null;
+        }
 
-    let Ok(loaded) = load_config_from_default_path() else {
-        return TermyFfiStatus::ConfigLoadFailed;
-    };
-    let query_colors = termy_core::terminal_query_colors_from_resolved_theme(
-        &termy_core::resolve_theme_colors_from_app_config(
-            &loaded.app_config,
-            loaded.path.as_deref(),
-            termy_core::SystemAppearance::Dark,
-        ),
-    );
-    unsafe {
-        (*terminal).terminal.set_query_colors(query_colors);
-    }
-    TermyFfiStatus::Ok
+        let Ok(loaded) = load_config_from_default_path() else {
+            return TermyFfiStatus::ConfigLoadFailed;
+        };
+        let query_colors = termy_core::terminal_query_colors_from_resolved_theme(
+            &termy_core::resolve_theme_colors_from_app_config(
+                &loaded.app_config,
+                loaded.path.as_deref(),
+                termy_core::SystemAppearance::Dark,
+            ),
+        );
+        unsafe {
+            (*terminal).terminal.set_query_colors(query_colors);
+        }
+        TermyFfiStatus::Ok
+    })
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn termy_terminal_free(terminal: *mut TermyFfiTerminal) -> TermyFfiStatus {
-    if terminal.is_null() {
-        return TermyFfiStatus::Null;
-    }
+    ffi_status_guard(|| {
+        if terminal.is_null() {
+            return TermyFfiStatus::Null;
+        }
 
-    unsafe {
-        drop(Box::from_raw(terminal));
-    }
-    TermyFfiStatus::Ok
+        unsafe {
+            drop(Box::from_raw(terminal));
+        }
+        TermyFfiStatus::Ok
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -2522,14 +2596,21 @@ pub unsafe extern "C" fn termy_terminal_resize(
     terminal: *mut TermyFfiTerminal,
     size: TermyFfiSize,
 ) -> TermyFfiStatus {
-    if terminal.is_null() {
-        return TermyFfiStatus::Null;
-    }
+    ffi_status_guard(|| {
+        if terminal.is_null() {
+            return TermyFfiStatus::Null;
+        }
 
-    unsafe {
-        (*terminal).terminal.resize(size.into());
-    }
-    TermyFfiStatus::Ok
+        #[cfg(test)]
+        if PANIC_NEXT_RESIZE.swap(false, Ordering::SeqCst) {
+            panic!("test-only resize panic");
+        }
+
+        unsafe {
+            (*terminal).terminal.resize(size.into());
+        }
+        TermyFfiStatus::Ok
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -2537,14 +2618,16 @@ pub unsafe extern "C" fn termy_terminal_set_wakeup_enabled(
     terminal: *mut TermyFfiTerminal,
     enabled: bool,
 ) -> TermyFfiStatus {
-    if terminal.is_null() {
-        return TermyFfiStatus::Null;
-    }
+    ffi_status_guard(|| {
+        if terminal.is_null() {
+            return TermyFfiStatus::Null;
+        }
 
-    unsafe {
-        (*terminal).terminal.set_wakeup_enabled(enabled);
-    }
-    TermyFfiStatus::Ok
+        unsafe {
+            (*terminal).terminal.set_wakeup_enabled(enabled);
+        }
+        TermyFfiStatus::Ok
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -2553,48 +2636,52 @@ pub unsafe extern "C" fn termy_terminal_wait_for_wakeup(
     timeout_ms: u64,
     out_woke: *mut bool,
 ) -> TermyFfiStatus {
-    if terminal.is_null() || out_woke.is_null() {
-        return TermyFfiStatus::Null;
-    }
-
-    let receiver = unsafe { (*terminal).wakeups_rx.as_ref() };
-    let woke = match receiver {
-        Some(receiver) => {
-            let received = if timeout_ms == 0 {
-                receiver.try_recv().is_ok()
-            } else {
-                receiver
-                    .recv_timeout(Duration::from_millis(timeout_ms))
-                    .is_ok()
-            };
-            if received {
-                while receiver.try_recv().is_ok() {}
-                true
-            } else {
-                false
-            }
+    ffi_status_guard(|| {
+        if terminal.is_null() || out_woke.is_null() {
+            return TermyFfiStatus::Null;
         }
-        None => false,
-    };
 
-    unsafe {
-        *out_woke = woke;
-    }
-    TermyFfiStatus::Ok
+        let receiver = unsafe { (*terminal).wakeups_rx.as_ref() };
+        let woke = match receiver {
+            Some(receiver) => {
+                let received = if timeout_ms == 0 {
+                    receiver.try_recv().is_ok()
+                } else {
+                    receiver
+                        .recv_timeout(Duration::from_millis(timeout_ms))
+                        .is_ok()
+                };
+                if received {
+                    while receiver.try_recv().is_ok() {}
+                    true
+                } else {
+                    false
+                }
+            }
+            None => false,
+        };
+
+        unsafe {
+            *out_woke = woke;
+        }
+        TermyFfiStatus::Ok
+    })
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn termy_terminal_notify_wakeup(
     terminal: *mut TermyFfiTerminal,
 ) -> TermyFfiStatus {
-    if terminal.is_null() {
-        return TermyFfiStatus::Null;
-    }
+    ffi_status_guard(|| {
+        if terminal.is_null() {
+            return TermyFfiStatus::Null;
+        }
 
-    if let Some(sender) = unsafe { (*terminal).wakeups_tx.as_ref() } {
-        let _ = sender.try_send(());
-    }
-    TermyFfiStatus::Ok
+        if let Some(sender) = unsafe { (*terminal).wakeups_tx.as_ref() } {
+            let _ = sender.try_send(());
+        }
+        TermyFfiStatus::Ok
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -2603,14 +2690,16 @@ pub unsafe extern "C" fn termy_terminal_scroll_display(
     delta_lines: i32,
     out_changed: *mut bool,
 ) -> TermyFfiStatus {
-    if terminal.is_null() || out_changed.is_null() {
-        return TermyFfiStatus::Null;
-    }
+    ffi_status_guard(|| {
+        if terminal.is_null() || out_changed.is_null() {
+            return TermyFfiStatus::Null;
+        }
 
-    unsafe {
-        *out_changed = (*terminal).terminal.scroll_display(delta_lines);
-    }
-    TermyFfiStatus::Ok
+        unsafe {
+            *out_changed = (*terminal).terminal.scroll_display(delta_lines);
+        }
+        TermyFfiStatus::Ok
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -2618,14 +2707,16 @@ pub unsafe extern "C" fn termy_terminal_scroll_to_bottom(
     terminal: *mut TermyFfiTerminal,
     out_changed: *mut bool,
 ) -> TermyFfiStatus {
-    if terminal.is_null() || out_changed.is_null() {
-        return TermyFfiStatus::Null;
-    }
+    ffi_status_guard(|| {
+        if terminal.is_null() || out_changed.is_null() {
+            return TermyFfiStatus::Null;
+        }
 
-    unsafe {
-        *out_changed = (*terminal).terminal.scroll_to_bottom();
-    }
-    TermyFfiStatus::Ok
+        unsafe {
+            *out_changed = (*terminal).terminal.scroll_to_bottom();
+        }
+        TermyFfiStatus::Ok
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -2633,14 +2724,16 @@ pub unsafe extern "C" fn termy_terminal_clear_scrollback(
     terminal: *mut TermyFfiTerminal,
     out_changed: *mut bool,
 ) -> TermyFfiStatus {
-    if terminal.is_null() || out_changed.is_null() {
-        return TermyFfiStatus::Null;
-    }
+    ffi_status_guard(|| {
+        if terminal.is_null() || out_changed.is_null() {
+            return TermyFfiStatus::Null;
+        }
 
-    unsafe {
-        *out_changed = (*terminal).terminal.clear_scrollback();
-    }
-    TermyFfiStatus::Ok
+        unsafe {
+            *out_changed = (*terminal).terminal.clear_scrollback();
+        }
+        TermyFfiStatus::Ok
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -2648,16 +2741,18 @@ pub unsafe extern "C" fn termy_terminal_set_scrollback_history(
     terminal: *mut TermyFfiTerminal,
     scrollback_history: usize,
 ) -> TermyFfiStatus {
-    if terminal.is_null() {
-        return TermyFfiStatus::Null;
-    }
+    ffi_status_guard(|| {
+        if terminal.is_null() {
+            return TermyFfiStatus::Null;
+        }
 
-    unsafe {
-        (*terminal)
-            .terminal
-            .set_scrollback_history(scrollback_history);
-    }
-    TermyFfiStatus::Ok
+        unsafe {
+            (*terminal)
+                .terminal
+                .set_scrollback_history(scrollback_history);
+        }
+        TermyFfiStatus::Ok
+    })
 }
 
 /// Writes whether the terminal currently has bracketed-paste mode enabled into
@@ -2669,14 +2764,16 @@ pub unsafe extern "C" fn termy_terminal_bracketed_paste_mode(
     terminal: *mut TermyFfiTerminal,
     out_enabled: *mut bool,
 ) -> TermyFfiStatus {
-    if terminal.is_null() || out_enabled.is_null() {
-        return TermyFfiStatus::Null;
-    }
+    ffi_status_guard(|| {
+        if terminal.is_null() || out_enabled.is_null() {
+            return TermyFfiStatus::Null;
+        }
 
-    unsafe {
-        *out_enabled = (*terminal).terminal.bracketed_paste_mode();
-    }
-    TermyFfiStatus::Ok
+        unsafe {
+            *out_enabled = (*terminal).terminal.bracketed_paste_mode();
+        }
+        TermyFfiStatus::Ok
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -2716,22 +2813,24 @@ pub unsafe extern "C" fn termy_terminal_snapshot(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn termy_frame_free(frame: *mut TermyFfiFrame) -> TermyFfiStatus {
-    if frame.is_null() {
-        return TermyFfiStatus::Null;
-    }
-
-    let frame = unsafe { &mut *frame };
-    if !frame.cells_ptr.is_null() {
-        unsafe {
-            drop(Vec::from_raw_parts(
-                frame.cells_ptr,
-                frame.cells_len,
-                frame.cells_capacity,
-            ));
+    ffi_status_guard(|| {
+        if frame.is_null() {
+            return TermyFfiStatus::Null;
         }
-    }
-    *frame = TermyFfiFrame::default();
-    TermyFfiStatus::Ok
+
+        let frame = unsafe { &mut *frame };
+        if !frame.cells_ptr.is_null() {
+            unsafe {
+                drop(Vec::from_raw_parts(
+                    frame.cells_ptr,
+                    frame.cells_len,
+                    frame.cells_capacity,
+                ));
+            }
+        }
+        *frame = TermyFfiFrame::default();
+        TermyFfiStatus::Ok
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -2757,31 +2856,33 @@ pub unsafe extern "C" fn termy_terminal_take_frame_update(
 pub unsafe extern "C" fn termy_frame_update_free(
     update: *mut TermyFfiFrameUpdate,
 ) -> TermyFfiStatus {
-    if update.is_null() {
-        return TermyFfiStatus::Null;
-    }
+    ffi_status_guard(|| {
+        if update.is_null() {
+            return TermyFfiStatus::Null;
+        }
 
-    let update = unsafe { &mut *update };
-    if !update.cells_ptr.is_null() {
-        unsafe {
-            drop(Vec::from_raw_parts(
-                update.cells_ptr,
-                update.cells_len,
-                update.cells_capacity,
-            ));
+        let update = unsafe { &mut *update };
+        if !update.cells_ptr.is_null() {
+            unsafe {
+                drop(Vec::from_raw_parts(
+                    update.cells_ptr,
+                    update.cells_len,
+                    update.cells_capacity,
+                ));
+            }
         }
-    }
-    if !update.spans_ptr.is_null() {
-        unsafe {
-            drop(Vec::from_raw_parts(
-                update.spans_ptr,
-                update.spans_len,
-                update.spans_capacity,
-            ));
+        if !update.spans_ptr.is_null() {
+            unsafe {
+                drop(Vec::from_raw_parts(
+                    update.spans_ptr,
+                    update.spans_len,
+                    update.spans_capacity,
+                ));
+            }
         }
-    }
-    *update = TermyFfiFrameUpdate::default();
-    TermyFfiStatus::Ok
+        *update = TermyFfiFrameUpdate::default();
+        TermyFfiStatus::Ok
+    })
 }
 
 /// Look up the OSC 8 hyperlink under a viewport cell. Sets `out_found` and,
@@ -2820,16 +2921,18 @@ pub unsafe extern "C" fn termy_terminal_hyperlink_at(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn termy_hyperlink_free(link: *mut TermyFfiHyperlink) -> TermyFfiStatus {
-    if link.is_null() {
-        return TermyFfiStatus::Null;
-    }
+    ffi_status_guard(|| {
+        if link.is_null() {
+            return TermyFfiStatus::Null;
+        }
 
-    let link = unsafe { &mut *link };
-    if !link.uri.ptr.is_null() {
-        free_bytes(link.uri);
-    }
-    *link = TermyFfiHyperlink::default();
-    TermyFfiStatus::Ok
+        let link = unsafe { &mut *link };
+        if !link.uri.ptr.is_null() {
+            free_bytes(link.uri);
+        }
+        *link = TermyFfiHyperlink::default();
+        TermyFfiStatus::Ok
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -2883,22 +2986,24 @@ pub unsafe extern "C" fn termy_terminal_take_damage(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn termy_damage_free(damage: *mut TermyFfiDamage) -> TermyFfiStatus {
-    if damage.is_null() {
-        return TermyFfiStatus::Null;
-    }
-
-    let damage = unsafe { &mut *damage };
-    if !damage.spans_ptr.is_null() {
-        unsafe {
-            drop(Vec::from_raw_parts(
-                damage.spans_ptr,
-                damage.spans_len,
-                damage.spans_capacity,
-            ));
+    ffi_status_guard(|| {
+        if damage.is_null() {
+            return TermyFfiStatus::Null;
         }
-    }
-    *damage = TermyFfiDamage::default();
-    TermyFfiStatus::Ok
+
+        let damage = unsafe { &mut *damage };
+        if !damage.spans_ptr.is_null() {
+            unsafe {
+                drop(Vec::from_raw_parts(
+                    damage.spans_ptr,
+                    damage.spans_len,
+                    damage.spans_capacity,
+                ));
+            }
+        }
+        *damage = TermyFfiDamage::default();
+        TermyFfiStatus::Ok
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -2932,21 +3037,23 @@ pub unsafe extern "C" fn termy_terminal_drain_events(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn termy_event_batch_free(batch: *mut TermyFfiEventBatch) -> TermyFfiStatus {
-    if batch.is_null() {
-        return TermyFfiStatus::Null;
-    }
-
-    let batch = unsafe { &mut *batch };
-    if !batch.events_ptr.is_null() {
-        let events = unsafe {
-            Vec::from_raw_parts(batch.events_ptr, batch.events_len, batch.events_capacity)
-        };
-        for event in events {
-            free_bytes(event.payload);
+    ffi_status_guard(|| {
+        if batch.is_null() {
+            return TermyFfiStatus::Null;
         }
-    }
-    *batch = TermyFfiEventBatch::default();
-    TermyFfiStatus::Ok
+
+        let batch = unsafe { &mut *batch };
+        if !batch.events_ptr.is_null() {
+            let events = unsafe {
+                Vec::from_raw_parts(batch.events_ptr, batch.events_len, batch.events_capacity)
+            };
+            for event in events {
+                free_bytes(event.payload);
+            }
+        }
+        *batch = TermyFfiEventBatch::default();
+        TermyFfiStatus::Ok
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -3014,21 +3121,23 @@ pub unsafe extern "C" fn termy_terminal_search_with_options(
 pub unsafe extern "C" fn termy_search_batch_free(
     batch: *mut TermyFfiSearchBatch,
 ) -> TermyFfiStatus {
-    if batch.is_null() {
-        return TermyFfiStatus::Null;
-    }
-
-    let batch = unsafe { &mut *batch };
-    if !batch.matches_ptr.is_null() {
-        let matches = unsafe {
-            Vec::from_raw_parts(batch.matches_ptr, batch.matches_len, batch.matches_capacity)
-        };
-        for search_match in matches {
-            free_bytes(search_match.line);
+    ffi_status_guard(|| {
+        if batch.is_null() {
+            return TermyFfiStatus::Null;
         }
-    }
-    *batch = TermyFfiSearchBatch::default();
-    TermyFfiStatus::Ok
+
+        let batch = unsafe { &mut *batch };
+        if !batch.matches_ptr.is_null() {
+            let matches = unsafe {
+                Vec::from_raw_parts(batch.matches_ptr, batch.matches_len, batch.matches_capacity)
+            };
+            for search_match in matches {
+                free_bytes(search_match.line);
+            }
+        }
+        *batch = TermyFfiSearchBatch::default();
+        TermyFfiStatus::Ok
+    })
 }
 
 fn free_bytes(bytes: TermyFfiBytes) {
@@ -3043,12 +3152,14 @@ fn free_bytes(bytes: TermyFfiBytes) {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn termy_buffer_free(bytes: TermyFfiBytes) -> TermyFfiStatus {
-    if bytes.ptr.is_null() {
-        return TermyFfiStatus::Null;
-    }
+    ffi_status_guard(|| {
+        if bytes.ptr.is_null() {
+            return TermyFfiStatus::Null;
+        }
 
-    free_bytes(bytes);
-    TermyFfiStatus::Ok
+        free_bytes(bytes);
+        TermyFfiStatus::Ok
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -3074,20 +3185,22 @@ pub extern "C" fn termy_terminal_options_default_scrollback() -> usize {
 pub unsafe extern "C" fn termy_query_color_default_foreground(
     out_color: *mut TermyFfiColor,
 ) -> TermyFfiStatus {
-    if out_color.is_null() {
-        return TermyFfiStatus::Null;
-    }
+    ffi_status_guard(|| {
+        if out_color.is_null() {
+            return TermyFfiStatus::Null;
+        }
 
-    let color = TerminalQueryColors::default().foreground;
-    unsafe {
-        *out_color = TermyFfiColor {
-            r: color.r,
-            g: color.g,
-            b: color.b,
-            a: 255,
-        };
-    }
-    TermyFfiStatus::Ok
+        let color = TerminalQueryColors::default().foreground;
+        unsafe {
+            *out_color = TermyFfiColor {
+                r: color.r,
+                g: color.g,
+                b: color.b,
+                a: 255,
+            };
+        }
+        TermyFfiStatus::Ok
+    })
 }
 
 #[cfg(test)]
@@ -3726,6 +3839,29 @@ mod tests {
         let bytes = b"x";
         assert_eq!(
             unsafe { termy_terminal_feed_output(terminal, bytes.as_ptr(), bytes.len()) },
+            TermyFfiStatus::Panicked
+        );
+        assert!(!terminal.is_null());
+        assert_eq!(unsafe { termy_terminal_free(terminal) }, TermyFfiStatus::Ok);
+    }
+
+    #[test]
+    fn terminal_resize_panic_returns_status() {
+        let size = TermyFfiSize {
+            cols: 8,
+            rows: 2,
+            cell_width: 9.0,
+            cell_height: 18.0,
+        };
+        let mut terminal = ptr::null_mut();
+        assert_eq!(
+            unsafe { termy_display_terminal_new(size, &mut terminal) },
+            TermyFfiStatus::Ok
+        );
+
+        PANIC_NEXT_RESIZE.store(true, Ordering::SeqCst);
+        assert_eq!(
+            unsafe { termy_terminal_resize(terminal, size) },
             TermyFfiStatus::Panicked
         );
         assert!(!terminal.is_null());
