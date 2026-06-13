@@ -1,6 +1,6 @@
 # `terminal_view/` decomposition plan
 
-**Problem:** `crates/desktop_app/src/terminal_view/mod.rs` (~5.1k lines) and `render.rs` (~4k lines) concentrate behavior, review cost, and merge conflicts.
+**Problem:** `crates/desktop_app/src/terminal_view/mod.rs` (~5.0k lines) and `render.rs` (~4k lines) concentrate behavior, review cost, and merge conflicts.
 
 **Goal:** No file above **1,500** lines by v1.0; no new file above **800** lines without an ADR. Median tab/render PR touches ≤3 files.
 
@@ -29,7 +29,7 @@
 
 Execute **one tranche per release** (or per month), each ≤500 lines moved, with `cargo test -p termy` green.
 
-**Progress (2026-06-13):** Extracted render/debug metrics into `terminal_view/metrics.rs` and background/chrome appearance helpers into `terminal_view/appearance.rs`; `mod.rs` is down to 5,057 lines.
+**Progress (2026-06-13):** Extracted render/debug metrics into `terminal_view/metrics.rs`, background/chrome appearance helpers into `terminal_view/appearance.rs`, and several interaction/scrollbar state types into their owning modules; `mod.rs` is down to 4,988 lines.
 
 ### Tranche 1 — Session & window glue (E1 Q2)
 
