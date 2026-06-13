@@ -7,6 +7,7 @@ struct TerminalKeyboardInputView: NSViewRepresentable {
     var renderConfig: TerminalRenderConfig
     var isFocused: Bool
     var isInputEnabled: Bool
+    var isSearchVisible: Bool
     var canCopy: Bool
     var onFocus: () -> Void
     var onBytes: ([UInt8]) -> Void
@@ -22,12 +23,16 @@ struct TerminalKeyboardInputView: NSViewRepresentable {
     var onClosePaneIfSplit: () -> Bool
     var onFocusNextPane: () -> Void
     var onShowSearch: () -> Void
+    var onDismissSearch: () -> Void
     var onSelectionChanged: (TerminalSelection?) -> Void
     var onSelectWord: (TerminalGridPosition) -> Void
     var onSelectLine: (TerminalGridPosition) -> Void
+    var onSelectAll: () -> Void
     var onHoverProbe: (TerminalGridPosition?) -> Bool
     var onOpenLink: (TerminalGridPosition) -> Bool
     var onCopy: () -> Bool
+    var onPaste: (String) -> Void
+    var onMarkedTextChanged: (String) -> Void = { _ in }
 
     func makeNSView(context: Context) -> KeyboardCaptureView {
         let view = KeyboardCaptureView()
@@ -52,6 +57,7 @@ final class KeyboardCaptureView: NSView {
     var renderConfig = TerminalRenderConfig.default
     var isTerminalFocused = false
     var isInputEnabled = true
+    var isSearchVisible = false
     var canCopy = false
     var onFocus: () -> Void = {}
     var onBytes: ([UInt8]) -> Void = { _ in }
@@ -67,18 +73,28 @@ final class KeyboardCaptureView: NSView {
     var onClosePaneIfSplit: () -> Bool = { false }
     var onFocusNextPane: () -> Void = {}
     var onShowSearch: () -> Void = {}
+    var onDismissSearch: () -> Void = {}
     var onSelectionChanged: (TerminalSelection?) -> Void = { _ in }
     var onSelectWord: (TerminalGridPosition) -> Void = { _ in }
     var onSelectLine: (TerminalGridPosition) -> Void = { _ in }
+    var onSelectAll: () -> Void = {}
     var onHoverProbe: (TerminalGridPosition?) -> Bool = { _ in false }
     var onOpenLink: (TerminalGridPosition) -> Bool = { _ in false }
     var onCopy: () -> Bool = { false }
+    var onPaste: (String) -> Void = { _ in }
+    var onMarkedTextChanged: (String) -> Void = { _ in }
 
     private var selectionAnchor: TerminalGridPosition?
     private var didDragSelection = false
     private var preciseScrollRemainder: CGFloat = 0
     private var preciseHorizontalScrollRemainder: CGFloat = 0
     private var activeMouseButton: TerminalMouseButton?
+
+    // IME composition state. `markedText` holds the in-progress composition;
+    // the two flags let `insertText` tell an IME commit apart from a plain key.
+    private var markedText = ""
+    private var composingBeforeEvent = false
+    private var imeCommitted = false
 
     override var acceptsFirstResponder: Bool {
         true
@@ -130,7 +146,7 @@ final class KeyboardCaptureView: NSView {
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        guard isInputEnabled else {
+        guard isInputEnabled || isSearchVisible else {
             return nil
         }
         return bounds.contains(point) ? self : nil
@@ -157,12 +173,26 @@ final class KeyboardCaptureView: NSView {
 
     private func handleMouseDown(_ event: NSEvent, button: TerminalMouseButton) {
         guard isInputEnabled else {
+            if isSearchVisible {
+                onFocus()
+                onDismissSearch()
+                focus()
+                return
+            }
             super.mouseDown(with: event)
             return
         }
         onFocus()
         focus()
         didDragSelection = false
+
+        if button == .left,
+           event.modifierFlags.contains(.control) {
+            activeMouseButton = nil
+            selectionAnchor = nil
+            showTerminalContextMenu(for: event)
+            return
+        }
 
         // ⌘-click opens a URL under the pointer.
         if button == .left,
@@ -210,6 +240,13 @@ final class KeyboardCaptureView: NSView {
         focus()
         didDragSelection = false
 
+        if event.modifierFlags.contains(.control) {
+            activeMouseButton = nil
+            selectionAnchor = nil
+            showTerminalContextMenu(for: event)
+            return
+        }
+
         if sendMouse(kind: .press, button: .right, event: event) {
             activeMouseButton = .right
             selectionAnchor = nil
@@ -246,8 +283,11 @@ final class KeyboardCaptureView: NSView {
         guard let anchor = selectionAnchor else {
             return
         }
+        guard let selection = Self.dragSelection(anchor: anchor, active: gridPosition(for: event)) else {
+            return
+        }
         didDragSelection = true
-        onSelectionChanged(TerminalSelection(anchor: anchor, active: gridPosition(for: event)))
+        onSelectionChanged(selection)
     }
 
     override func mouseUp(with event: NSEvent) {
@@ -286,7 +326,7 @@ final class KeyboardCaptureView: NSView {
             return
         }
 
-        onSelectionChanged(TerminalSelection(anchor: anchor, active: gridPosition(for: event)))
+        onSelectionChanged(Self.dragSelection(anchor: anchor, active: gridPosition(for: event)))
     }
 
     override func mouseMoved(with event: NSEvent) {
@@ -310,8 +350,24 @@ final class KeyboardCaptureView: NSView {
         }
         onFocus()
 
+        if isSearchVisible, event.keyCode == MacKeyCode.escape.rawValue {
+            onDismissSearch()
+            return
+        }
+
         if handleHostCommand(event) || handleCopy(event) || handlePaste(event) {
             return
+        }
+
+        // Let the input context compose IME/dead-key input. Routed only while
+        // composing, or for plain/shift keys — `option` stays meta and `command`
+        // stays a shortcut. Non-IME keys produce no marked text and fall through
+        // to the terminal encoder below unchanged.
+        let flags = event.modifierFlags
+        if hasMarkedText() || !flags.contains(.command) && !flags.contains(.option) {
+            if processIMEKeyDown(event) {
+                return
+            }
         }
 
         if event.modifierFlags.contains(.command) {
@@ -339,6 +395,25 @@ final class KeyboardCaptureView: NSView {
 
         super.keyDown(with: event)
     }
+
+    /// Feeds an event to the input context. Returns true when the IME consumed
+    /// it (composing, committed, or canceled a composition); false means it was
+    /// a plain key the terminal encoder should handle.
+    private func processIMEKeyDown(_ event: NSEvent) -> Bool {
+        composingBeforeEvent = hasMarkedText()
+        imeCommitted = false
+        inputContext?.handleEvent(event)
+        if hasMarkedText() || imeCommitted {
+            return true
+        }
+        // True only if a composition just ended (e.g. Escape canceled it), so
+        // the cancel key isn't also sent to the terminal.
+        return composingBeforeEvent
+    }
+
+    // Special keys are encoded by the terminal path, not AppKit's text-editing
+    // command selectors; swallowing them keeps the input context from beeping.
+    override func doCommand(by selector: Selector) {}
 
     private func isLineEditingKeyCode(_ keyCode: MacKeyCode) -> Bool {
         switch keyCode {
@@ -494,7 +569,7 @@ final class KeyboardCaptureView: NSView {
             return false
         }
 
-        onBytes(Array(text.utf8))
+        onPaste(text)
         return true
     }
 
@@ -502,7 +577,7 @@ final class KeyboardCaptureView: NSView {
         guard let text = NSPasteboard.general.string(forType: .string), !text.isEmpty else {
             return
         }
-        onBytes(Array(text.utf8))
+        onPaste(text)
     }
 
     private func showTerminalContextMenu(for event: NSEvent) {
@@ -520,6 +595,18 @@ final class KeyboardCaptureView: NSView {
 
     @objc func pasteFromTerminalContextMenu(_ sender: Any?) {
         pasteFromPasteboard()
+    }
+
+    @objc func selectAllFromTerminalContextMenu(_ sender: Any?) {
+        onSelectAll()
+    }
+
+    @objc func splitRightFromTerminalContextMenu(_ sender: Any?) {
+        onSplitRight()
+    }
+
+    @objc func splitDownFromTerminalContextMenu(_ sender: Any?) {
+        onSplitDown()
     }
 
     @objc func clearBufferFromTerminalContextMenu(_ sender: Any?) {
@@ -567,63 +654,53 @@ final class KeyboardCaptureView: NSView {
     }
 
     private func terminalKeyInput(for event: NSEvent) -> TerminalKeyInput? {
-        guard let keyCode = MacKeyCode(rawValue: event.keyCode) else {
+        guard let special = Self.specialKey(for: event.keyCode) else {
             return characterKeyInput(for: event)
         }
+        return keyInput(
+            special.key,
+            event: event,
+            keyChar: special.usesCharacter ? event.characters : nil,
+            function: special.function
+        )
+    }
 
+    /// Maps a macOS keyCode to the terminal key name, the function-key flag, and
+    /// whether the typed character should ride along. Returns nil for keys that
+    /// are encoded by their character instead.
+    nonisolated static func specialKey(
+        for keyCode: UInt16
+    ) -> (key: String, function: Bool, usesCharacter: Bool)? {
+        guard let keyCode = MacKeyCode(rawValue: keyCode) else {
+            return nil
+        }
         switch keyCode {
-        case .returnKey, .keypadEnter:
-            return keyInput("enter", event: event)
-        case .tab:
-            return keyInput("tab", event: event)
-        case .deleteBackward:
-            return keyInput("backspace", event: event)
-        case .escape:
-            return keyInput("escape", event: event)
-        case .home:
-            return keyInput("home", event: event)
-        case .end:
-            return keyInput("end", event: event)
-        case .pageUp:
-            return keyInput("pageup", event: event)
-        case .pageDown:
-            return keyInput("pagedown", event: event)
-        case .forwardDelete:
-            return keyInput("delete", event: event)
-        case .leftArrow:
-            return keyInput("left", event: event)
-        case .rightArrow:
-            return keyInput("right", event: event)
-        case .downArrow:
-            return keyInput("down", event: event)
-        case .upArrow:
-            return keyInput("up", event: event)
-        case .f1:
-            return keyInput("f1", event: event, function: true)
-        case .f2:
-            return keyInput("f2", event: event, function: true)
-        case .f3:
-            return keyInput("f3", event: event, function: true)
-        case .f4:
-            return keyInput("f4", event: event, function: true)
-        case .f5:
-            return keyInput("f5", event: event, function: true)
-        case .f6:
-            return keyInput("f6", event: event, function: true)
-        case .f7:
-            return keyInput("f7", event: event, function: true)
-        case .f8:
-            return keyInput("f8", event: event, function: true)
-        case .f9:
-            return keyInput("f9", event: event, function: true)
-        case .f10:
-            return keyInput("f10", event: event, function: true)
-        case .f11:
-            return keyInput("f11", event: event, function: true)
-        case .f12:
-            return keyInput("f12", event: event, function: true)
-        case .space:
-            return keyInput("space", event: event, keyChar: event.characters)
+        case .returnKey, .keypadEnter: return ("enter", false, false)
+        case .tab: return ("tab", false, false)
+        case .deleteBackward: return ("backspace", false, false)
+        case .escape: return ("escape", false, false)
+        case .home: return ("home", false, false)
+        case .end: return ("end", false, false)
+        case .pageUp: return ("pageup", false, false)
+        case .pageDown: return ("pagedown", false, false)
+        case .forwardDelete: return ("delete", false, false)
+        case .leftArrow: return ("left", false, false)
+        case .rightArrow: return ("right", false, false)
+        case .downArrow: return ("down", false, false)
+        case .upArrow: return ("up", false, false)
+        case .f1: return ("f1", true, false)
+        case .f2: return ("f2", true, false)
+        case .f3: return ("f3", true, false)
+        case .f4: return ("f4", true, false)
+        case .f5: return ("f5", true, false)
+        case .f6: return ("f6", true, false)
+        case .f7: return ("f7", true, false)
+        case .f8: return ("f8", true, false)
+        case .f9: return ("f9", true, false)
+        case .f10: return ("f10", true, false)
+        case .f11: return ("f11", true, false)
+        case .f12: return ("f12", true, false)
+        case .space: return ("space", false, true)
         }
     }
 
@@ -668,6 +745,16 @@ final class KeyboardCaptureView: NSView {
         return TerminalGridPosition(col: col, row: row)
     }
 
+    nonisolated static func dragSelection(
+        anchor: TerminalGridPosition,
+        active: TerminalGridPosition
+    ) -> TerminalSelection? {
+        guard anchor != active else {
+            return nil
+        }
+        return TerminalSelection(anchor: anchor, active: active)
+    }
+
 }
 
 private enum MacKeyCode: UInt16 {
@@ -700,6 +787,77 @@ private enum MacKeyCode: UInt16 {
     case space = 49
 }
 
+// AppKit calls NSTextInputClient on the main thread, so the conformance is
+// isolated to the main actor (matching this @MainActor NSView subclass).
+extension KeyboardCaptureView: @MainActor NSTextInputClient {
+    func insertText(_ string: Any, replacementRange: NSRange) {
+        markedText = ""
+        onMarkedTextChanged("")
+        // A plain keystroke (no active composition) is left to the terminal
+        // encoder in keyDown; only emit text that came from an IME commit.
+        guard composingBeforeEvent || hasMarkedText() else {
+            return
+        }
+        let text = Self.plainString(from: string)
+        if !text.isEmpty {
+            onBytes(Array(text.utf8))
+        }
+        imeCommitted = true
+    }
+
+    func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
+        markedText = Self.plainString(from: string)
+        onMarkedTextChanged(markedText)
+    }
+
+    func unmarkText() {
+        markedText = ""
+        onMarkedTextChanged("")
+    }
+
+    func selectedRange() -> NSRange {
+        NSRange(location: NSNotFound, length: 0)
+    }
+
+    func markedRange() -> NSRange {
+        markedText.isEmpty
+            ? NSRange(location: NSNotFound, length: 0)
+            : NSRange(location: 0, length: markedText.utf16.count)
+    }
+
+    func hasMarkedText() -> Bool {
+        !markedText.isEmpty
+    }
+
+    func attributedSubstring(forProposedRange range: NSRange, actualRange: NSRangePointer?) -> NSAttributedString? {
+        nil
+    }
+
+    func validAttributesForMarkedText() -> [NSAttributedString.Key] {
+        []
+    }
+
+    func firstRect(forCharacterRange range: NSRange, actualRange: NSRangePointer?) -> NSRect {
+        // Anchors the candidate window to the view; exact cursor placement is a
+        // later refinement once the cursor cell is plumbed through.
+        guard let window else {
+            return .zero
+        }
+        return window.convertToScreen(convert(bounds, to: nil))
+    }
+
+    func characterIndex(for point: NSPoint) -> Int {
+        NSNotFound
+    }
+
+    private static func plainString(from value: Any) -> String {
+        if let attributed = value as? NSAttributedString {
+            return attributed.string
+        }
+        return value as? String ?? ""
+    }
+}
+
 private extension KeyboardCaptureView {
     func apply(configuration: TerminalKeyboardInputView) {
         cols = configuration.cols
@@ -707,6 +865,7 @@ private extension KeyboardCaptureView {
         renderConfig = configuration.renderConfig
         isTerminalFocused = configuration.isFocused
         isInputEnabled = configuration.isInputEnabled
+        isSearchVisible = configuration.isSearchVisible
         canCopy = configuration.canCopy
         onFocus = configuration.onFocus
         onBytes = configuration.onBytes
@@ -722,11 +881,15 @@ private extension KeyboardCaptureView {
         onClosePaneIfSplit = configuration.onClosePaneIfSplit
         onFocusNextPane = configuration.onFocusNextPane
         onShowSearch = configuration.onShowSearch
+        onDismissSearch = configuration.onDismissSearch
         onSelectionChanged = configuration.onSelectionChanged
         onSelectWord = configuration.onSelectWord
         onSelectLine = configuration.onSelectLine
+        onSelectAll = configuration.onSelectAll
         onHoverProbe = configuration.onHoverProbe
         onOpenLink = configuration.onOpenLink
         onCopy = configuration.onCopy
+        onPaste = configuration.onPaste
+        onMarkedTextChanged = configuration.onMarkedTextChanged
     }
 }

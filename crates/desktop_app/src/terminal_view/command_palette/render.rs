@@ -192,9 +192,23 @@ impl TerminalView {
                 style.muted_text
             };
 
+            let selection_accent = is_selected.then(|| {
+                div()
+                    .absolute()
+                    .left_0()
+                    .top(px(COMMAND_PALETTE_SELECTED_ACCENT_INSET_Y))
+                    .w(px(COMMAND_PALETTE_SELECTED_ACCENT_WIDTH))
+                    .h(px((COMMAND_PALETTE_ROW_HEIGHT
+                        - (COMMAND_PALETTE_SELECTED_ACCENT_INSET_Y * 2.0))
+                        .max(0.0)))
+                    .rounded_full()
+                    .bg(style.selected_accent)
+            });
+
             rows.push(
                 div()
                     .id(("command-palette-item", index))
+                    .relative()
                     .w_full()
                     .h(px(COMMAND_PALETTE_ROW_HEIGHT))
                     .px(px(COMMAND_PALETTE_ROW_PADDING_X))
@@ -204,6 +218,7 @@ impl TerminalView {
                     } else {
                         transparent
                     })
+                    .children(selection_accent)
                     .when(is_enabled, |row| row.cursor_pointer())
                     .on_mouse_move(cx.listener(move |this, _event, _window, cx| {
                         if this.command_palette.set_selected_filtered_index(index) {
@@ -256,8 +271,6 @@ impl TerminalView {
                                             .justify_center()
                                             .rounded(px(COMMAND_PALETTE_SHORTCUT_RADIUS))
                                             .bg(style.shortcut_bg)
-                                            .border_1()
-                                            .border_color(style.shortcut_border)
                                             .text_size(px(10.0))
                                             .text_color(style.muted_text)
                                             .child(label)
@@ -272,8 +285,6 @@ impl TerminalView {
                                             .justify_center()
                                             .rounded(px(COMMAND_PALETTE_SHORTCUT_RADIUS))
                                             .bg(style.shortcut_bg)
-                                            .border_1()
-                                            .border_color(style.shortcut_border)
                                             .text_size(px(10.0))
                                             .text_color(shortcut_text)
                                             .child(label)
@@ -323,41 +334,57 @@ impl TerminalView {
             },
             CommandPaletteMode::AppInfo => "App Info".to_string(),
         };
-        let footer_hint = match self.command_palette.mode() {
-            CommandPaletteMode::Commands => "Enter: Run  Esc: Close  Up/Down: Navigate",
-            CommandPaletteMode::Themes => "Enter: Apply Theme  Esc: Back  Up/Down: Navigate",
+        // (keycap, action) pairs for the footer bar. An empty keycap renders the
+        // action as a plain note instead of a key hint.
+        let footer_hints: &[(&str, &str)] = match self.command_palette.mode() {
+            CommandPaletteMode::Commands => &[("↵", "Run"), ("esc", "Close"), ("↑↓", "Navigate")],
+            CommandPaletteMode::Themes => {
+                &[("↵", "Apply Theme"), ("esc", "Back"), ("↑↓", "Navigate")]
+            }
             CommandPaletteMode::TmuxSessions => match self.command_palette.tmux_session_intent() {
-                TmuxSessionIntent::AttachOrSwitch => {
-                    "Enter: Open/Create/Manage Session  Esc: Back  Up/Down: Navigate"
-                }
+                TmuxSessionIntent::AttachOrSwitch => &[
+                    ("↵", "Open/Create/Manage Session"),
+                    ("esc", "Back"),
+                    ("↑↓", "Navigate"),
+                ],
                 TmuxSessionIntent::RenameSelect => {
-                    "Enter: Select Session  Esc: Back  Up/Down: Navigate"
+                    &[("↵", "Select Session"), ("esc", "Back"), ("↑↓", "Navigate")]
                 }
                 TmuxSessionIntent::RenameInput => {
-                    "Enter: Rename Session  Esc: Back  Up/Down: Navigate"
+                    &[("↵", "Rename Session"), ("esc", "Back"), ("↑↓", "Navigate")]
                 }
-                TmuxSessionIntent::Kill => "Enter: Kill Session  Esc: Back  Up/Down: Navigate",
+                TmuxSessionIntent::Kill => {
+                    &[("↵", "Kill Session"), ("esc", "Back"), ("↑↓", "Navigate")]
+                }
             },
             CommandPaletteMode::Layouts => match self.command_palette.saved_layout_intent() {
-                SavedLayoutIntent::Browse => {
-                    "Enter: Load/Save/Manage Layout  Esc: Back  Up/Down: Navigate"
+                SavedLayoutIntent::Browse => &[
+                    ("↵", "Load/Save/Manage Layout"),
+                    ("esc", "Back"),
+                    ("↑↓", "Navigate"),
+                ],
+                SavedLayoutIntent::SaveInput => {
+                    &[("↵", "Save Layout"), ("esc", "Back"), ("↑↓", "Navigate")]
                 }
-                SavedLayoutIntent::SaveInput => "Enter: Save Layout  Esc: Back  Up/Down: Navigate",
                 SavedLayoutIntent::RenameSelect => {
-                    "Enter: Select Layout  Esc: Back  Up/Down: Navigate"
+                    &[("↵", "Select Layout"), ("esc", "Back"), ("↑↓", "Navigate")]
                 }
                 SavedLayoutIntent::RenameInput => {
-                    "Enter: Rename Layout  Esc: Back  Up/Down: Navigate"
+                    &[("↵", "Rename Layout"), ("esc", "Back"), ("↑↓", "Navigate")]
                 }
-                SavedLayoutIntent::Delete => "Enter: Delete Layout  Esc: Back  Up/Down: Navigate",
+                SavedLayoutIntent::Delete => {
+                    &[("↵", "Delete Layout"), ("esc", "Back"), ("↑↓", "Navigate")]
+                }
             },
             CommandPaletteMode::Tasks => match self.command_palette.task_intent() {
-                TaskIntent::Browse => "Enter: Run Task  Esc: Back  Up/Down: Navigate",
-                TaskIntent::CreateGlobalInput | TaskIntent::CreateLayoutInput => {
-                    "Format: name: command  Enter: Save Task  Esc: Back"
-                }
+                TaskIntent::Browse => &[("↵", "Run Task"), ("esc", "Back"), ("↑↓", "Navigate")],
+                TaskIntent::CreateGlobalInput | TaskIntent::CreateLayoutInput => &[
+                    ("", "Format: name: command"),
+                    ("↵", "Save Task"),
+                    ("esc", "Back"),
+                ],
             },
-            CommandPaletteMode::AppInfo => "Enter: Copy  Esc: Back  Up/Down: Navigate",
+            CommandPaletteMode::AppInfo => &[("↵", "Copy"), ("esc", "Back"), ("↑↓", "Navigate")],
         };
         let style = CommandPaletteStyle::resolve(self);
         let input_font = Font {
@@ -393,12 +420,23 @@ impl TerminalView {
         let list = if item_count == 0 {
             div()
                 .w_full()
+                .py(px(28.0))
+                .px(px(24.0))
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(10.0))
+                .child(
+                    gpui::svg()
+                        .path(gpui::SharedString::from("icons/settings/search.svg"))
+                        .size(px(20.0))
+                        .text_color(style.muted_text),
+                )
                 .child(
                     div()
-                        .px(px(10.0))
-                        .py(px(8.0))
                         .text_size(px(12.0))
                         .text_color(style.muted_text)
+                        .text_center()
                         .child(empty_state_message),
                 )
                 .into_any_element()
@@ -503,8 +541,6 @@ impl TerminalView {
                         .px(px(8.0))
                         .rounded(px(COMMAND_PALETTE_SHORTCUT_RADIUS))
                         .bg(style.shortcut_bg)
-                        .border_1()
-                        .border_color(style.shortcut_border)
                         .text_size(px(10.0))
                         .text_color(style.muted_text)
                         .flex()
@@ -540,6 +576,62 @@ impl TerminalView {
             ))
             .children(mode_chip);
 
+        let result_counter = format!(
+            "{item_count} {}",
+            if item_count == 1 { "item" } else { "items" }
+        );
+        let footer = div()
+            .w_full()
+            .h(px(COMMAND_PALETTE_FOOTER_HEIGHT))
+            .px(px(COMMAND_PALETTE_ROW_PADDING_X))
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(px(10.0))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(14.0))
+                    .min_w(px(0.0))
+                    .overflow_hidden()
+                    .children(footer_hints.iter().map(|(key, action)| {
+                        div()
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .gap(px(5.0))
+                            .children((!key.is_empty()).then(|| {
+                                div()
+                                    .flex_none()
+                                    .h(px(16.0))
+                                    .px(px(5.0))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded(px(COMMAND_PALETTE_SHORTCUT_RADIUS))
+                                    .bg(style.shortcut_bg)
+                                    .text_size(px(10.0))
+                                    .text_color(style.shortcut_text)
+                                    .child(*key)
+                            }))
+                            .child(
+                                div()
+                                    .text_size(px(11.0))
+                                    .text_color(style.muted_text)
+                                    .whitespace_nowrap()
+                                    .child(*action),
+                            )
+                    })),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .text_size(px(11.0))
+                    .text_color(style.muted_text)
+                    .child(result_counter),
+            );
+
         let panel = div()
             .id("command-palette-panel")
             .w(px(COMMAND_PALETTE_WIDTH))
@@ -547,6 +639,7 @@ impl TerminalView {
             .bg(style.panel_bg)
             .border_1()
             .border_color(style.panel_border)
+            .shadow_lg()
             .overflow_hidden()
             .flex()
             .flex_col()
@@ -558,13 +651,9 @@ impl TerminalView {
             )
             .child(input_head)
             .child(div().h(px(1.0)).w_full().bg(divider))
-            .child(div().w_full().px(px(6.0)).py(px(6.0)).child(list));
-
-        let footer = div()
-            .pt(px(10.0))
-            .text_size(px(11.0))
-            .text_color(style.muted_text)
-            .child(footer_hint);
+            .child(div().w_full().px(px(6.0)).py(px(6.0)).child(list))
+            .child(div().h(px(1.0)).w_full().bg(divider))
+            .child(footer);
 
         let scrollbar_drag_active = self.command_palette_scrollbar_drag.is_some();
         div()
@@ -619,14 +708,7 @@ impl TerminalView {
                     .flex_col()
                     .items_center()
                     .pt(px(COMMAND_PALETTE_TOP_OFFSET))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .items_center()
-                            .child(panel)
-                            .child(footer),
-                    ),
+                    .child(panel),
             )
             .into_any()
     }

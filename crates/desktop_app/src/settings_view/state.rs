@@ -232,6 +232,12 @@ impl SettingsWindow {
             return cfg!(target_os = "macos");
         }
 
+        // Inspector height is remembered UI state (saved when the inspector
+        // pane is resized), not a setting with a dedicated row.
+        if matches!(setting, RootSettingId::InspectorHeight) {
+            return false;
+        }
+
         if cfg!(target_os = "windows") {
             return !matches!(
                 setting,

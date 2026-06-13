@@ -305,7 +305,15 @@ impl TerminalView {
         let button_text = overlay_style.panel_foreground(SEARCH_BUTTON_TEXT_ALPHA);
         let button_hover_bg = overlay_style.chrome_panel_cursor(SEARCH_BUTTON_HOVER_BG_ALPHA);
         let button_active_bg = overlay_style.chrome_panel_cursor(0.28);
+        let button_pressed_bg = overlay_style.chrome_panel_cursor(0.36);
         let strong_text = overlay_style.panel_foreground(0.92);
+        let divider_color = overlay_style.panel_foreground(0.08);
+        let transparent = gpui::Rgba {
+            r: 0.0,
+            g: 0.0,
+            b: 0.0,
+            a: 0.0,
+        };
 
         let (current, total) = self.search_state.results().position().unwrap_or((0, 0));
         let counter_label =
@@ -335,8 +343,8 @@ impl TerminalView {
             .shadow_lg()
             .flex()
             .items_center()
-            .px(px(8.0))
-            .gap(px(6.0))
+            .px(px(6.0))
+            .gap(px(5.0))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|_this, _event, _window, cx| {
@@ -346,7 +354,7 @@ impl TerminalView {
             .child(
                 div()
                     .flex_1()
-                    .h(px(30.0))
+                    .h(px(28.0))
                     .min_w(px(0.0))
                     .relative()
                     .overflow_hidden()
@@ -354,10 +362,25 @@ impl TerminalView {
                     .bg(input_bg)
                     .border_1()
                     .border_color(if has_error { error_color } else { input_border })
-                    .pl(px(10.0))
-                    .pr(px(10.0))
+                    .pl(px(32.0))
+                    .pr(px(if counter_label.is_some() { 58.0 } else { 10.0 }))
                     .flex()
                     .items_center()
+                    .child(
+                        div()
+                            .absolute()
+                            .left(px(10.0))
+                            .top_0()
+                            .bottom_0()
+                            .flex()
+                            .items_center()
+                            .child(
+                                gpui::svg()
+                                    .path(gpui::SharedString::from("icons/settings/search.svg"))
+                                    .size(px(13.0))
+                                    .text_color(button_text),
+                            ),
+                    )
                     .child(self.render_inline_input_layer(
                         Font {
                             family: self.ui_font_family.clone(),
@@ -372,48 +395,49 @@ impl TerminalView {
                         },
                         InlineInputAlignment::Left,
                         cx,
-                    )),
+                    ))
+                    .children(counter_label.map(|label| {
+                        div()
+                            .absolute()
+                            .right(px(6.0))
+                            .top(px(4.0))
+                            .bottom(px(4.0))
+                            .min_w(px(42.0))
+                            .px(px(6.0))
+                            .rounded(px(5.0))
+                            .bg(if has_error {
+                                let mut bg = error_color;
+                                bg.a = 0.14;
+                                bg
+                            } else {
+                                overlay_style.panel_foreground(0.06)
+                            })
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_size(px(10.0))
+                            .text_color(if has_error { error_color } else { counter_text })
+                            .child(label)
+                    })),
             )
-            .children(counter_label.map(|label| {
-                div()
-                    .w(px(46.0))
-                    .h(px(26.0))
-                    .rounded(px(SEARCH_OVERLAY_GEOMETRY.control_radius))
-                    .bg(if has_error {
-                        let mut bg = error_color;
-                        bg.a = 0.14;
-                        bg
-                    } else {
-                        input_bg
-                    })
-                    .border_1()
-                    .border_color(if has_error { error_color } else { input_border })
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_size(px(11.0))
-                    .text_color(if has_error { error_color } else { counter_text })
-                    .flex_none()
-                    .child(label)
-            }))
+            .child(div().w(px(1.0)).h(px(20.0)).bg(divider_color).flex_none())
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(2.0))
+                    .gap(px(1.0))
                     .child(
                         div()
                             .id("search-prev")
-                            .w(px(24.0))
-                            .h(px(24.0))
+                            .w(px(26.0))
+                            .h(px(26.0))
                             .rounded(px(SEARCH_OVERLAY_GEOMETRY.control_radius))
                             .flex()
                             .items_center()
                             .justify_center()
-                            .text_size(px(14.0))
                             .text_color(button_text)
                             .hover(|style| style.bg(button_hover_bg))
-                            .active(|style| style.bg(button_active_bg))
+                            .active(move |style| style.bg(button_pressed_bg))
                             .cursor_pointer()
                             .on_mouse_down(
                                 MouseButton::Left,
@@ -422,21 +446,25 @@ impl TerminalView {
                                     cx.stop_propagation();
                                 }),
                             )
-                            .child("<"),
+                            .child(
+                                gpui::svg()
+                                    .path(gpui::SharedString::from("icons/settings/chevron-up.svg"))
+                                    .size(px(13.0))
+                                    .text_color(button_text),
+                            ),
                     )
                     .child(
                         div()
                             .id("search-next")
-                            .w(px(24.0))
-                            .h(px(24.0))
+                            .w(px(26.0))
+                            .h(px(26.0))
                             .rounded(px(SEARCH_OVERLAY_GEOMETRY.control_radius))
                             .flex()
                             .items_center()
                             .justify_center()
-                            .text_size(px(14.0))
                             .text_color(button_text)
                             .hover(|style| style.bg(button_hover_bg))
-                            .active(|style| style.bg(button_active_bg))
+                            .active(move |style| style.bg(button_pressed_bg))
                             .cursor_pointer()
                             .on_mouse_down(
                                 MouseButton::Left,
@@ -445,19 +473,26 @@ impl TerminalView {
                                     cx.stop_propagation();
                                 }),
                             )
-                            .child(">"),
+                            .child(
+                                gpui::svg()
+                                    .path(gpui::SharedString::from(
+                                        "icons/settings/chevron-down.svg",
+                                    ))
+                                    .size(px(13.0))
+                                    .text_color(button_text),
+                            ),
                     ),
             )
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(2.0))
+                    .gap(px(1.0))
                     .child(
                         div()
                             .id("search-case-sensitive")
-                            .w(px(28.0))
-                            .h(px(24.0))
+                            .w(px(30.0))
+                            .h(px(26.0))
                             .rounded(px(SEARCH_OVERLAY_GEOMETRY.control_radius))
                             .flex()
                             .items_center()
@@ -471,15 +506,10 @@ impl TerminalView {
                             .bg(if case_sensitive {
                                 button_active_bg
                             } else {
-                                gpui::Rgba {
-                                    r: 0.0,
-                                    g: 0.0,
-                                    b: 0.0,
-                                    a: 0.0,
-                                }
+                                transparent
                             })
                             .hover(|style| style.bg(button_hover_bg))
-                            .active(|style| style.bg(button_active_bg))
+                            .active(move |style| style.bg(button_pressed_bg))
                             .cursor_pointer()
                             .on_mouse_down(
                                 MouseButton::Left,
@@ -496,8 +526,8 @@ impl TerminalView {
                     .child(
                         div()
                             .id("search-regex")
-                            .w(px(28.0))
-                            .h(px(24.0))
+                            .w(px(30.0))
+                            .h(px(26.0))
                             .rounded(px(SEARCH_OVERLAY_GEOMETRY.control_radius))
                             .flex()
                             .items_center()
@@ -507,15 +537,10 @@ impl TerminalView {
                             .bg(if regex_mode {
                                 button_active_bg
                             } else {
-                                gpui::Rgba {
-                                    r: 0.0,
-                                    g: 0.0,
-                                    b: 0.0,
-                                    a: 0.0,
-                                }
+                                transparent
                             })
                             .hover(|style| style.bg(button_hover_bg))
-                            .active(|style| style.bg(button_active_bg))
+                            .active(move |style| style.bg(button_pressed_bg))
                             .cursor_pointer()
                             .on_mouse_down(
                                 MouseButton::Left,
@@ -533,16 +558,15 @@ impl TerminalView {
             .child(
                 div()
                     .id("search-close")
-                    .w(px(24.0))
-                    .h(px(24.0))
+                    .w(px(26.0))
+                    .h(px(26.0))
                     .rounded(px(SEARCH_OVERLAY_GEOMETRY.control_radius))
                     .flex()
                     .items_center()
                     .justify_center()
-                    .text_size(px(14.0))
                     .text_color(button_text)
                     .hover(|style| style.bg(button_hover_bg))
-                    .active(|style| style.bg(button_active_bg))
+                    .active(move |style| style.bg(button_pressed_bg))
                     .cursor_pointer()
                     .on_mouse_down(
                         MouseButton::Left,
@@ -551,7 +575,12 @@ impl TerminalView {
                             cx.stop_propagation();
                         }),
                     )
-                    .child("x"),
+                    .child(
+                        gpui::svg()
+                            .path(gpui::SharedString::from("icons/tab_strip/x.svg"))
+                            .size(px(11.0))
+                            .text_color(button_text),
+                    ),
             )
             .into_any()
     }

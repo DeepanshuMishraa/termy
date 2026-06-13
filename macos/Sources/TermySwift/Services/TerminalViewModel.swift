@@ -10,17 +10,39 @@ final class TerminalViewModel: ObservableObject {
     @Published private(set) var title = "Shell"
     @Published private(set) var progress = TerminalProgress.clear
     @Published private(set) var isExited = false
+    @Published private(set) var hasVisibleContent = false
+    @Published private(set) var frameMetadata = TerminalFrameMetadata.empty
+    @Published private(set) var canCopySelection = false
     @Published private(set) var currentWorkingDirectory: String?
     @Published private(set) var searchMatches: [TerminalSearchMatch] = []
     @Published private(set) var activeSearchMatchIndex = 0
     @Published private(set) var hoveredLink: TerminalFrameLink?
     @Published private(set) var debugMetrics = TerminalDebugMetrics.empty
-    @Published private(set) var nativeRenderMetrics = NativeRenderMetricsSnapshot()
     /// Bumped whenever the cached render plan changes, so the grid view redraws.
     /// The plan itself lives in `renderPlanCache` (not `@Published`) to avoid
     /// diffing large arrays on every frame.
     @Published private(set) var renderRevision = 0
     @Published private(set) var renderDamage = TerminalDamage.full
+    /// Bumped on each terminal bell so the surface view can flash a visual bell.
+    @Published private(set) var bellPulse = 0
+    /// In-progress IME composition text, rendered inline at the cursor.
+    @Published private(set) var markedText = ""
+    /// Absolute scrollback rows where shell prompts started (OSC 133;A), shown
+    /// as command marks in the scrollbar.
+    @Published private(set) var commandMarkRows: [Int] = []
+    /// Marks are exact only while history stays below the scrollback cap; once
+    /// the buffer fills, eviction would drift them, so tracking stops.
+    private var commandMarkTrackingActive = true
+
+    func setMarkedText(_ text: String) {
+        markedText = text
+    }
+
+    /// Host-driven cursor blink visibility; the grid view skips the cursor
+    /// while this is `false`. Ticked from the refresh driver in
+    /// `pollAndPresent()` so blinking follows the active/idle cadence and
+    /// pauses with suspended (occluded) tabs.
+    @Published private(set) var cursorBlinkVisible = true
     @Published var selection: TerminalSelection?
 
     /// The flattened paint instructions for the current frame, rebuilt
@@ -31,6 +53,13 @@ final class TerminalViewModel: ObservableObject {
     private let nativeRenderMetricsRecorder = NativeRenderMetricsRecorder()
 
     private var terminal: LibTermyTerminal?
+    private var cursorBlinkPhase = TerminalCursorBlinkPhase()
+    /// Whether the hosting pane is focused (pushed in by the surface view).
+    /// Unfocused panes never draw a cursor, so they skip blink ticking and idle
+    /// at the slower inert cadence instead of the blink interval.
+    private var isPaneFocused = true
+    private var baseRenderConfig = TerminalRenderConfig.default
+    private var fontSizeDelta: CGFloat = 0
     private var refreshDriver: DisplaySyncedRefreshDriver?
     private var cadence: RefreshCadence = .active
     private var lastActivityAt = Date()
@@ -41,8 +70,13 @@ final class TerminalViewModel: ObservableObject {
     private var lastResizeRefreshAt: Date?
     private var isSuspended = false
     private static let resizeRefreshInterval: TimeInterval = 1.0 / 60.0
-    private var settingsObserver: NSObjectProtocol?
-    private var appearanceObserver: NSObjectProtocol?
+    /// Owns the settings/appearance notification observers. Removing them in
+    /// `stop()` covers the normal teardown, but a window closing can deallocate
+    /// the view model without routing through `stop()`; the bag's own `deinit`
+    /// then removes the observers, so they don't accumulate for the process
+    /// lifetime. (A nonisolated `deinit` on this `@MainActor` class can't touch
+    /// these non-Sendable tokens directly, hence the separate bag.)
+    private let observers = NotificationObserverBag()
     private var startupRefreshUntil: Date?
     private let initialWorkingDirectory: String?
     private let startupCommand: String?
@@ -52,11 +86,14 @@ final class TerminalViewModel: ObservableObject {
     private var activeSearchOptions = TerminalSearchOptions()
     private var lastSearchRefreshAt: Date?
     private var lastAutoCopiedSelectionText: String?
+    private var pendingWakeupPoll = false
     private var renderedFrameCount = 0
     private var skippedPresentCount = 0
     private var fullRebuildCount = 0
     private var partialRebuildCount = 0
     private var lastDebugSample = ProcessUsageSample.capture()
+    private var cachedLinkRowsRevision: Int?
+    private var cachedLinkRows: [Int: [TerminalFrameLink]] = [:]
 
     init(
         workingDirectory: String? = nil,
@@ -71,6 +108,9 @@ final class TerminalViewModel: ObservableObject {
             let previewFrame = TerminalFrame.plainTextPreview(restoredBufferText)
             frameStore.reset(to: previewFrame)
             frame = previewFrame
+            hasVisibleContent = frameStore.hasVisibleContent
+            frameMetadata = TerminalFrameMetadata(frame: previewFrame)
+            canCopySelection = previewFrame.hasSelectedText(for: selection)
             renderPlanCache.update(
                 frame: previewFrame,
                 renderConfig: renderConfig,
@@ -94,43 +134,56 @@ final class TerminalViewModel: ObservableObject {
                 startupCommand: effectiveStartupCommand
             )
             self.terminal = terminal
-            renderConfig = terminal.renderConfig
+            terminal.startWakeupMonitor { [weak self] in
+                self?.handleTerminalWakeup()
+            }
+            applyBaseRenderConfig(terminal.renderConfig)
             currentWorkingDirectory = initialWorkingDirectory
             isExited = false
             startupRefreshUntil = Date().addingTimeInterval(2)
             pollAndPresent(force: true)
             startRefreshDriver(.active)
-            settingsObserver = NotificationCenter.default.addObserver(
-                forName: .termySettingsChanged,
-                object: nil,
-                queue: .main
-            ) { [weak self] _ in
-                Task { @MainActor in
-                    self?.reloadConfiguration()
-                }
-            }
-            appearanceObserver = DistributedNotificationCenter.default().addObserver(
-                forName: Notification.Name("AppleInterfaceThemeChangedNotification"),
-                object: nil,
-                queue: .main
-            ) { [weak self] _ in
-                Task { @MainActor in
-                    self?.reloadAppearance()
-                }
-            }
+            observers.add(
+                NotificationCenter.default.addObserver(
+                    forName: .termySettingsChanged,
+                    object: nil,
+                    queue: .main
+                ) { [weak self] _ in
+                    Task { @MainActor in
+                        self?.reloadConfiguration()
+                    }
+                },
+                center: .default
+            )
+            observers.add(
+                DistributedNotificationCenter.default().addObserver(
+                    forName: Notification.Name("AppleInterfaceThemeChangedNotification"),
+                    object: nil,
+                    queue: .main
+                ) { [weak self] _ in
+                    Task { @MainActor in
+                        self?.reloadAppearance()
+                    }
+                },
+                center: DistributedNotificationCenter.default()
+            )
         } catch {
             report(error)
         }
     }
 
-    /// Drives polling from display refresh boundaries: up to 60 Hz while the
-    /// terminal is actively producing output or receiving input, backing off to
-    /// 15 Hz once idle to save CPU/battery. Multiple core updates between ticks
-    /// coalesce into one frame update before presentation.
+    /// Drives presentation from display refresh boundaries while active, then
+    /// backs off to a low-rate idle timer for cursor blink. PTY output uses the
+    /// FFI wake channel to schedule an immediate poll while idle, so visible
+    /// terminals do not need to keep polling for changes.
     private func startRefreshDriver(_ cadence: RefreshCadence) {
         self.cadence = cadence
         if let refreshDriver {
-            refreshDriver.cadence = cadence
+            guard refreshDriver.cadence != cadence else {
+                return
+            }
+            refreshDriver.stop()
+            refreshDriver.start(cadence: cadence)
             return
         }
         let driver = DisplaySyncedRefreshDriver { [weak self] in
@@ -138,6 +191,26 @@ final class TerminalViewModel: ObservableObject {
         }
         refreshDriver = driver
         driver.start(cadence: cadence)
+    }
+
+    private func handleTerminalWakeup() {
+        // The wake channel only needs to rouse an *idle* terminal: while active,
+        // the display link is already polling at 60 Hz, so a per-PTY-chunk
+        // wakeup poll is redundant. Without this guard, streaming output (`yes`,
+        // `cat bigfile`) schedules an extra full poll per chunk on top of the
+        // 60 Hz link — `pendingWakeupPoll` only coalesces within a single
+        // runloop turn, so the effective poll rate is otherwise unbounded.
+        guard terminal != nil, !isSuspended, cadence != .active, !pendingWakeupPoll else {
+            return
+        }
+        pendingWakeupPoll = true
+        Task { @MainActor [weak self] in
+            guard let self else {
+                return
+            }
+            self.pendingWakeupPoll = false
+            self.pollAndPresent()
+        }
     }
 
     private func noteActivity() {
@@ -148,12 +221,49 @@ final class TerminalViewModel: ObservableObject {
     }
 
     private func adaptCadenceWhenIdle() {
-        guard cadence == .active,
-              Date().timeIntervalSince(lastActivityAt) > Self.idleCadenceThreshold
-        else {
+        let idleCadence = Self.idleCadence(
+            cursorBlink: renderConfig.cursorBlink,
+            paneFocused: isPaneFocused
+        )
+        if cadence == .active {
+            guard Date().timeIntervalSince(lastActivityAt) > Self.idleCadenceThreshold else {
+                return
+            }
+            startRefreshDriver(idleCadence)
             return
         }
-        startRefreshDriver(.idle)
+        // Already idle, but the blink relevance may have changed (focus moved,
+        // config reloaded) — switch between the blink and inert idle cadences.
+        if cadence != idleCadence {
+            startRefreshDriver(idleCadence)
+        }
+    }
+
+    /// The idle cadence for the current blink relevance: panes that animate a
+    /// blinking cursor poll at the blink interval; panes with nothing to animate
+    /// (blink disabled, or unfocused — no cursor is drawn) only need the slow
+    /// safety poll, as output wakes them through the FFI wake channel.
+    nonisolated static func idleCadence(cursorBlink: Bool, paneFocused: Bool) -> RefreshCadence {
+        cursorBlink && paneFocused ? .idle : .idleInert
+    }
+
+    /// Pushed by the surface view when pane focus changes. Restores a solid
+    /// cursor on focus gain and re-evaluates the idle cadence either way.
+    func setPaneFocused(_ focused: Bool) {
+        guard focused != isPaneFocused else {
+            return
+        }
+        isPaneFocused = focused
+        if focused {
+            resetCursorBlinkPhase()
+        }
+        guard terminal != nil, !isSuspended, cadence != .active else {
+            return
+        }
+        startRefreshDriver(Self.idleCadence(
+            cursorBlink: renderConfig.cursorBlink,
+            paneFocused: focused
+        ))
     }
 
     /// Pauses refresh polling without tearing down the PTY, so the terminal core
@@ -165,8 +275,10 @@ final class TerminalViewModel: ObservableObject {
             return
         }
         isSuspended = true
+        applyConfiguredScrollbackLimit()
         refreshDriver?.stop()
         refreshDriver = nil
+        terminal?.stopWakeupMonitor()
         pendingResizeRefresh?.cancel()
         pendingResizeRefresh = nil
     }
@@ -178,6 +290,10 @@ final class TerminalViewModel: ObservableObject {
             return
         }
         isSuspended = false
+        applyConfiguredScrollbackLimit()
+        terminal?.startWakeupMonitor { [weak self] in
+            self?.handleTerminalWakeup()
+        }
         startRefreshDriver(.active)
         pollAndPresent(force: true)
     }
@@ -185,17 +301,12 @@ final class TerminalViewModel: ObservableObject {
     func stop() {
         refreshDriver?.stop()
         refreshDriver = nil
+        terminal?.stopWakeupMonitor()
         pendingResizeRefresh?.cancel()
         pendingResizeRefresh = nil
+        pendingWakeupPoll = false
         isSuspended = false
-        if let settingsObserver {
-            NotificationCenter.default.removeObserver(settingsObserver)
-            self.settingsObserver = nil
-        }
-        if let appearanceObserver {
-            DistributedNotificationCenter.default().removeObserver(appearanceObserver)
-            self.appearanceObserver = nil
-        }
+        observers.removeAll()
         terminal = nil
         isExited = true
         progress = .clear
@@ -207,7 +318,7 @@ final class TerminalViewModel: ObservableObject {
     /// reloaded theme palette so existing cells recolor.
     private func reloadAppearance() {
         do {
-            renderConfig = try LibTermyTerminal.loadRenderConfig()
+            applyBaseRenderConfig(try LibTermyTerminal.loadRenderConfig())
             try terminal?.reloadColors()
             pollAndPresent(force: true)
         } catch {
@@ -217,10 +328,25 @@ final class TerminalViewModel: ObservableObject {
 
     private func reloadConfiguration() {
         configuration = TermyConfigurationStore.shared.reload()
+        applyConfiguredScrollbackLimit()
         if !configuration.native.progressIndicatorEnabled {
             progress = .clear
         }
         reloadAppearance()
+    }
+
+    private func applyConfiguredScrollbackLimit() {
+        guard terminal != nil else {
+            return
+        }
+        let limit = isSuspended
+            ? configuration.inactiveTabScrollback ?? configuration.scrollbackHistory
+            : configuration.scrollbackHistory
+        do {
+            try terminal?.setScrollbackHistory(max(0, limit))
+        } catch {
+            report(error)
+        }
     }
 
     func sendControlC() {
@@ -251,21 +377,63 @@ final class TerminalViewModel: ObservableObject {
         }
     }
 
+    /// Pastes clipboard text into the terminal. When the foreground program has
+    /// enabled bracketed-paste mode the payload is wrapped in `ESC[200~`/
+    /// `ESC[201~` so the program treats it as inert data instead of typed input;
+    /// any embedded end-marker is stripped first so the paste cannot break out
+    /// of the brackets and inject commands. This is the standard mitigation for
+    /// clipboard-injection (e.g. a copied blob ending in `; rm -rf …\n`): without
+    /// it, embedded newlines execute line-by-line on paste.
+    func paste(_ text: String) {
+        guard !text.isEmpty else {
+            return
+        }
+
+        let bracketed = (try? terminal?.bracketedPasteMode()) ?? false
+        guard bracketed else {
+            send(bytes: Array(text.utf8))
+            return
+        }
+
+        // Strip any embedded paste terminator so the payload can't close the
+        // bracket early. `\u{1b}[201~` is the only sequence that ends a paste.
+        let sanitized = text.replacingOccurrences(of: "\u{1b}[201~", with: "")
+        var bytes = Array("\u{1b}[200~".utf8)
+        bytes.append(contentsOf: sanitized.utf8)
+        bytes.append(contentsOf: Array("\u{1b}[201~".utf8))
+        send(bytes: bytes)
+    }
+
     func send(bytes: [UInt8]) {
         guard !bytes.isEmpty else {
             return
         }
 
-        selection = nil
+        updateSelection(nil)
         if frame.displayOffset > 0 {
             scrollToBottom()
         }
         do {
             try terminal?.write(bytes)
             noteActivity()
-            pollAndPresent(force: true)
+            resetCursorBlinkPhase()
+            // Don't force a full-grid frame on input: `noteActivity()` keeps the
+            // display link at the active 60 Hz cadence, and the echo arrives as
+            // ordinary partial damage. Forcing here serialized the entire grid
+            // across the FFI (three full copies) and repainted the whole window
+            // on every keystroke and scroll-wheel tick.
+            pollAndPresent()
         } catch {
             report(error)
+        }
+    }
+
+    /// Forces the cursor solid and restarts the blink interval, e.g. on input
+    /// or when the pane gains focus.
+    func resetCursorBlinkPhase() {
+        cursorBlinkPhase.noteInput()
+        if !cursorBlinkVisible {
+            cursorBlinkVisible = true
         }
     }
 
@@ -296,13 +464,43 @@ final class TerminalViewModel: ObservableObject {
     }
 
     func clearScrollback() {
+        commandMarkRows.removeAll()
+        commandMarkTrackingActive = true
         refreshIfChanged {
             try terminal?.clearScrollback() == true
         }
     }
 
+    func increaseFontSize() {
+        adjustFontSize(by: 1)
+    }
+
+    func decreaseFontSize() {
+        adjustFontSize(by: -1)
+    }
+
+    func resetFontSize() {
+        guard fontSizeDelta != 0 else {
+            return
+        }
+        fontSizeDelta = 0
+        applyRenderConfig(baseRenderConfig, forceFullRebuild: true)
+    }
+
+    private func adjustFontSize(by delta: CGFloat) {
+        let currentFontSize = baseRenderConfig.fontSize + fontSizeDelta
+        let nextFontSize = Self.clampedFontSize(currentFontSize + delta)
+        let nextDelta = nextFontSize - baseRenderConfig.fontSize
+        guard nextDelta != fontSizeDelta else {
+            return
+        }
+        fontSizeDelta = nextDelta
+        applyRenderConfig(zoomedRenderConfig(from: baseRenderConfig), forceFullRebuild: true)
+    }
+
     func updateSelection(_ selection: TerminalSelection?) {
         self.selection = selection
+        canCopySelection = frame.hasSelectedText(for: selection)
         guard renderConfig.copyOnSelect,
               let text = frame.selectedText(for: selection),
               !text.isEmpty
@@ -331,13 +529,42 @@ final class TerminalViewModel: ObservableObject {
         updateSelection(frame.lineSelection(at: position))
     }
 
+    func selectAll() {
+        guard frame.cols > 0, frame.rows > 0 else {
+            updateSelection(nil)
+            return
+        }
+        updateSelection(TerminalSelection(
+            anchor: TerminalGridPosition(col: 0, row: 0),
+            active: TerminalGridPosition(col: frame.cols - 1, row: frame.rows - 1)
+        ))
+    }
+
     /// The link under `position`: an OSC 8 hyperlink reported by the core when
     /// present, otherwise heuristic text detection on the frame.
     private func link(at position: TerminalGridPosition) -> TerminalFrameLink? {
         if let link = terminal?.hyperlink(atRow: position.row, col: position.col) {
             return link
         }
-        return frame.link(at: position)
+        return links(inRow: position.row).first {
+            position.col >= $0.startCol && position.col <= $0.endCol
+        }
+    }
+
+    private func links(inRow row: Int) -> [TerminalFrameLink] {
+        guard row >= 0, row < frame.rows else {
+            return []
+        }
+        if cachedLinkRowsRevision != renderRevision {
+            cachedLinkRowsRevision = renderRevision
+            cachedLinkRows.removeAll(keepingCapacity: true)
+        }
+        if let links = cachedLinkRows[row] {
+            return links
+        }
+        let links = frame.links(inRow: row)
+        cachedLinkRows[row] = links
+        return links
     }
 
     /// Updates the link highlighted under the pointer. Returns true when a link
@@ -352,8 +579,14 @@ final class TerminalViewModel: ObservableObject {
     }
 
     /// Opens the link under `position` (⌘-click). Returns true if one was opened.
+    /// The target is validated against a scheme allowlist first: an OSC 8
+    /// hyperlink's target comes straight from (attacker-influenced) terminal
+    /// output, so a disguised `file://` or custom-scheme URL must not reach
+    /// `NSWorkspace.open`.
     func openLink(at position: TerminalGridPosition) -> Bool {
-        guard let link = link(at: position), let url = URL(string: link.target) else {
+        guard let link = link(at: position),
+              let url = TerminalFrameLink.openableURL(for: link.target)
+        else {
             return false
         }
         return NSWorkspace.shared.open(url)
@@ -443,6 +676,12 @@ final class TerminalViewModel: ObservableObject {
                 cellWidth: resize.cellWidth,
                 cellHeight: resize.cellHeight
             )
+            guard !isSuspended else {
+                return
+            }
+            // Resizing is user activity: keep the refresh driver at the active
+            // cadence so reflowed output arriving mid-drag presents at 60 Hz.
+            noteActivity()
             scheduleResizeRefresh()
         } catch {
             report(error)
@@ -481,7 +720,6 @@ final class TerminalViewModel: ObservableObject {
         do {
             let events = try terminal?.drainEvents() ?? []
             handle(events)
-            let hasEvents = !events.isEmpty
             let forceFull = force || shouldForceStartupRefresh()
             let update = try terminal?.frameUpdate(forceFull: forceFull)
             let applyResult = update.map(frameStore.apply)
@@ -493,41 +731,91 @@ final class TerminalViewModel: ObservableObject {
             if let update {
                 nativeRenderMetricsRecorder.recordFrameUpdate(update, applyResult: applyResult)
             }
-            let hasDamage = applyResult.effectiveDamage.hasChanges
-
-            if hasEvents || hasDamage {
+            if Self.hasCadenceActivity(
+                events: events,
+                patchedCellCount: applyResult.patchedCellCount,
+                forceFull: forceFull,
+                changed: applyResult.changed
+            ) {
                 noteActivity()
             } else {
                 adaptCadenceWhenIdle()
             }
 
+            // Only the focused pane draws a cursor, so only it animates blink;
+            // unfocused panes settle to a solid (visible) phase.
+            let blinkToggled = cursorBlinkPhase.tick(
+                blinkEnabled: renderConfig.cursorBlink && isPaneFocused
+            )
+            if blinkToggled {
+                cursorBlinkVisible = cursorBlinkPhase.isVisible
+            }
+
             guard forceFull || applyResult.changed else {
+                presentCursorBlink(toggled: blinkToggled)
                 updateDebugMetrics(renderedFrame: false)
                 return
             }
 
             guard update != nil else {
+                presentCursorBlink(toggled: blinkToggled)
                 updateDebugMetrics(renderedFrame: false)
                 return
             }
 
-            frame = frameStore.frame
+            publishFrameState()
+            // Once the scrollback fills, eviction would drift recorded marks, so
+            // stop tracking and drop them rather than show stale positions.
+            if commandMarkTrackingActive,
+               configuration.scrollbackHistory > 0,
+               frame.historySize >= configuration.scrollbackHistory {
+                commandMarkTrackingActive = false
+                commandMarkRows.removeAll()
+            }
             errorMessage = nil
             let effectiveDamage = forceFull ? .full : applyResult.effectiveDamage
-            renderDamage = effectiveDamage
+            // Fold the cursor cell into the published damage on a blink toggle
+            // so the grid view repaints the cursor row alongside the frame's
+            // own dirty rows. The plan cache below keeps the narrower
+            // `effectiveDamage`: a blink changes no cell content.
+            if blinkToggled, let cursor = frame.cursor {
+                renderDamage = effectiveDamage.union(
+                    TerminalDirtySpan(row: cursor.row, leftCol: cursor.col, rightCol: cursor.col)
+                )
+            } else {
+                renderDamage = effectiveDamage
+            }
             renderPlanCache.update(
                 frame: frame,
                 renderConfig: renderConfig,
                 damage: effectiveDamage
             )
             nativeRenderMetricsRecorder.recordPresentedFrame(planStats: renderPlanCache.stats)
-            nativeRenderMetrics = nativeRenderMetricsRecorder.snapshot
             renderRevision &+= 1
             updateDebugMetrics(renderedFrame: true)
             refreshSearchMatches(resetActive: false, revealActive: false, force: false)
         } catch {
             report(error)
         }
+    }
+
+    /// Publishes a cursor-cell-only damage span when a blink toggle happens on
+    /// a tick that presented no new frame, so the grid view repaints just the
+    /// cursor row instead of re-applying stale (possibly full) damage.
+    private func presentCursorBlink(toggled: Bool) {
+        guard toggled, let cursor = frame.cursor, frame.displayOffset == 0 else {
+            return
+        }
+        renderDamage = .partial([
+            TerminalDirtySpan(row: cursor.row, leftCol: cursor.col, rightCol: cursor.col)
+        ])
+    }
+
+    private func publishFrameState() {
+        frame = frameStore.frame
+        hasVisibleContent = frameStore.hasVisibleContent
+        frameMetadata = TerminalFrameMetadata(frame: frame)
+        canCopySelection = frame.hasSelectedText(for: selection)
     }
 
     private func shouldForceStartupRefresh() -> Bool {
@@ -555,12 +843,63 @@ final class TerminalViewModel: ObservableObject {
         errorMessage = String(describing: error)
     }
 
+    private func applyBaseRenderConfig(_ config: TerminalRenderConfig) {
+        baseRenderConfig = config
+        fontSizeDelta = Self.clampedFontSize(config.fontSize + fontSizeDelta) - config.fontSize
+        applyRenderConfig(zoomedRenderConfig(from: config), forceFullRebuild: true)
+    }
+
+    private func zoomedRenderConfig(from config: TerminalRenderConfig) -> TerminalRenderConfig {
+        let nextFontSize = Self.clampedFontSize(config.fontSize + fontSizeDelta)
+        guard nextFontSize != config.fontSize else {
+            return config
+        }
+
+        var nextConfig = config
+        let scale = nextFontSize / config.fontSize
+        nextConfig.fontSize = nextFontSize
+        nextConfig.measuredCellWidth = max(1, config.measuredCellWidth * scale)
+        nextConfig.measuredCellHeight = max(1, nextFontSize * config.lineHeight)
+        return nextConfig
+    }
+
+    private func applyRenderConfig(_ config: TerminalRenderConfig, forceFullRebuild: Bool) {
+        guard config != renderConfig else {
+            return
+        }
+
+        renderConfig = config
+        guard forceFullRebuild else {
+            return
+        }
+
+        renderDamage = .full
+        renderPlanCache.update(
+            frame: frame,
+            renderConfig: config,
+            damage: .full
+        )
+        renderRevision &+= 1
+    }
+
+    private static func clampedFontSize(_ fontSize: CGFloat) -> CGFloat {
+        min(72, max(6, fontSize))
+    }
+
     private func copy(_ text: String) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
     }
 
     private func updateDebugMetrics(renderedFrame: Bool) {
+        // `debugMetrics` only has a consumer while the debug overlay is shown.
+        // Skipping this when it's off avoids a `getrusage` + `task_info` syscall
+        // pair (and counter bookkeeping) on every refresh tick — 60 Hz active,
+        // and otherwise pure idle cost.
+        guard configuration.native.showDebugOverlay else {
+            return
+        }
+
         if renderedFrame {
             renderedFrameCount += 1
             if renderPlanCache.stats.wasFullRebuild {
@@ -571,7 +910,6 @@ final class TerminalViewModel: ObservableObject {
         } else {
             skippedPresentCount += 1
             nativeRenderMetricsRecorder.recordSkippedPresent()
-            nativeRenderMetrics = nativeRenderMetricsRecorder.snapshot
         }
 
         let nextSample = ProcessUsageSample.capture()
@@ -652,6 +990,58 @@ final class TerminalViewModel: ObservableObject {
         scrollDisplay(deltaLines: clampedOffset - frame.displayOffset)
     }
 
+    /// Rings the system bell and pulses the visual-bell signal.
+    private func handleBell() {
+        NSSound.beep()
+        bellPulse &+= 1
+    }
+
+    /// Records a command mark at the prompt's absolute row. Only while shell
+    /// integration is on and history is below the scrollback cap (so the
+    /// absolute row can't have been shifted by eviction).
+    /// Absolute scrollback row of a prompt at the given history/cursor position.
+    nonisolated static func commandMarkAbsoluteRow(historySize: Int, cursorRow: Int) -> Int {
+        historySize + cursorRow
+    }
+
+    /// Marks are exact only below the scrollback cap (eviction starts at the cap
+    /// and would otherwise shift their absolute rows).
+    nonisolated static func canTrackCommandMark(historySize: Int, scrollbackCap: Int) -> Bool {
+        scrollbackCap > 0 && historySize < scrollbackCap
+    }
+
+    nonisolated static func hasActivityEvents(_ events: [TerminalRuntimeEvent]) -> Bool {
+        events.contains { !$0.isPlainWakeup }
+    }
+
+    nonisolated static func hasCadenceActivity(
+        events: [TerminalRuntimeEvent],
+        patchedCellCount: Int,
+        forceFull: Bool,
+        changed: Bool
+    ) -> Bool {
+        hasActivityEvents(events) || patchedCellCount > 0 || (forceFull && changed)
+    }
+
+    private func recordCommandMark() {
+        guard configuration.native.shellIntegrationEnabled,
+              commandMarkTrackingActive,
+              Self.canTrackCommandMark(
+                  historySize: frame.historySize,
+                  scrollbackCap: configuration.scrollbackHistory
+              )
+        else {
+            return
+        }
+        commandMarkRows.append(Self.commandMarkAbsoluteRow(
+            historySize: frame.historySize,
+            cursorRow: frame.cursor?.row ?? 0
+        ))
+        if commandMarkRows.count > 200 {
+            commandMarkRows.removeFirst(commandMarkRows.count - 200)
+        }
+    }
+
     private func handle(_ events: [TerminalRuntimeEvent]) {
         guard !events.isEmpty else {
             return
@@ -680,9 +1070,11 @@ final class TerminalViewModel: ObservableObject {
                 if !text.isEmpty {
                     copy(text)
                 }
+            case .bell:
+                handleBell()
+            case .shellPromptStart:
+                recordCommandMark()
             case .wakeup,
-                 .bell,
-                 .shellPromptStart,
                  .shellCommandStart,
                  .shellCommandExecuting,
                  .shellCommandFinished(_):
@@ -767,8 +1159,53 @@ private struct ProcessUsageSample {
         return ProcessUsageSample(
             timestamp: Date(),
             cpuTime: userCPU + systemCPU,
-            memoryMegabytes: Double(max(0, usage.ru_maxrss)) / 1_048_576
+            memoryMegabytes: Self.currentResidentMemoryMegabytes()
         )
+    }
+
+    private static func currentResidentMemoryMegabytes() -> Double {
+        var info = mach_task_basic_info()
+        var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.stride / MemoryLayout<natural_t>.stride)
+        let status = withUnsafeMutablePointer(to: &info) { pointer in
+            pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { rebound in
+                task_info(
+                    mach_task_self_,
+                    task_flavor_t(MACH_TASK_BASIC_INFO),
+                    rebound,
+                    &count
+                )
+            }
+        }
+        guard status == KERN_SUCCESS else {
+            return 0
+        }
+        return Double(info.resident_size) / 1_048_576
+    }
+}
+
+/// Holds NotificationCenter observer tokens and removes them on `removeAll()`
+/// or when the bag is deallocated. Being a plain (non–`@MainActor`) class, its
+/// `deinit` can access the stored non-Sendable tokens, which a `@MainActor`
+/// owner's nonisolated `deinit` cannot. `removeObserver` is thread-safe, and in
+/// practice all access happens on the main actor, so `@unchecked Sendable` is
+/// sound. `DistributedNotificationCenter` is a `NotificationCenter` subclass,
+/// so a single token list covers both.
+private final class NotificationObserverBag: @unchecked Sendable {
+    private var entries: [(center: NotificationCenter, token: any NSObjectProtocol)] = []
+
+    func add(_ token: any NSObjectProtocol, center: NotificationCenter) {
+        entries.append((center, token))
+    }
+
+    func removeAll() {
+        for entry in entries {
+            entry.center.removeObserver(entry.token)
+        }
+        entries.removeAll()
+    }
+
+    deinit {
+        removeAll()
     }
 }
 
@@ -782,13 +1219,19 @@ private struct TerminalResize: Equatable {
 enum RefreshCadence {
     case active
     case idle
+    /// Idle with no cursor blink to animate (blink disabled or pane unfocused):
+    /// the only remaining job is a slow safety poll, since PTY output wakes the
+    /// terminal immediately through the FFI wake channel.
+    case idleInert
 
     var interval: TimeInterval {
         switch self {
         case .active:
             return 1.0 / 60.0
         case .idle:
-            return 1.0 / 15.0
+            return TerminalCursorBlinkPhase.interval
+        case .idleInert:
+            return 2.0
         }
     }
 }

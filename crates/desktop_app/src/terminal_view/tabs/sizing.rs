@@ -117,7 +117,7 @@ impl TerminalView {
                 }
 
                 let max_scroll = self.tab_strip_scroll_max_y();
-                let mut tab_top = 0.0;
+                let mut tab_top = SIDEBAR_TAB_PADDING_Y;
                 for index in 0..self.tabs.len() {
                     let tab_bottom = tab_top + SIDEBAR_TAB_ROW_HEIGHT;
                     if index == self.active_tab {
@@ -151,7 +151,9 @@ impl TerminalView {
         if rows == 0 {
             return 0.0;
         }
-        (rows as f32 * SIDEBAR_TAB_ROW_HEIGHT) + (SIDEBAR_TAB_ROW_GAP * (rows - 1) as f32)
+        (rows as f32 * SIDEBAR_TAB_ROW_HEIGHT)
+            + (SIDEBAR_TAB_ROW_GAP * (rows - 1) as f32)
+            + (SIDEBAR_TAB_PADDING_Y * 2.0)
     }
 
     pub(crate) fn tab_strip_scroll_max_y(&self) -> f32 {
@@ -268,10 +270,8 @@ impl TerminalView {
         } else {
             0.0
         };
-        let base_width = (TAB_TEXT_PADDING_X * 2.0)
-            + TAB_LEADING_ICON_SLOT_WIDTH
-            + text_width
-            + close_slot_width;
+        let base_width =
+            (TAB_TEXT_PADDING_X * 2.0) + TAB_LEADING_SLOT_WIDTH + text_width + close_slot_width;
         let slack_start = TAB_MIN_WIDTH - TAB_TITLE_LAYOUT_SLACK_PX;
         let slack_end = TAB_MIN_WIDTH + TAB_TITLE_LAYOUT_SLACK_PX;
         let slack_span = (slack_end - slack_start).max(f32::EPSILON);
@@ -525,7 +525,7 @@ mod tests {
             TAB_MAX_WIDTH * 2.0,
         );
         let expected_long = (TAB_TEXT_PADDING_X * 2.0)
-            + TAB_LEADING_ICON_SLOT_WIDTH
+            + TAB_LEADING_SLOT_WIDTH
             + long_text_width
             + TAB_CLOSE_SLOT_WIDTH;
         assert_eq!(long_width, expected_long);
@@ -536,7 +536,7 @@ mod tests {
             TAB_MAX_WIDTH * 2.0,
         );
         let short_base = (TAB_TEXT_PADDING_X * 2.0)
-            + TAB_LEADING_ICON_SLOT_WIDTH
+            + TAB_LEADING_SLOT_WIDTH
             + short_text_width
             + TAB_CLOSE_SLOT_WIDTH;
         assert!(short_width > short_base);

@@ -9,6 +9,7 @@ mod install_cli;
 mod mouse;
 mod mouse_reporting;
 mod native_panes;
+mod pane_move;
 mod quit;
 mod scroll;
 mod selection;

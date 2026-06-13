@@ -24,6 +24,7 @@ impl TerminalView {
     }
 
     pub(crate) fn clear_tab_hover_state(&mut self) -> bool {
+        self.tab_strip.clear_unhover_animation();
         Self::clear_tab_hover_fields(
             &mut self.tab_strip.hovered_tab,
             &mut self.tab_strip.hovered_tab_close,

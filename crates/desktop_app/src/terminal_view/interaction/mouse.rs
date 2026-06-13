@@ -783,6 +783,17 @@ impl TerminalView {
         window: &Window,
         cx: &mut Context<Self>,
     ) {
+        if self.inspector_resize_drag_active() {
+            if !event.dragging() {
+                let _ = self.finish_inspector_resize_drag();
+                return;
+            }
+            if self.update_inspector_resize_drag(event.position.y.into()) {
+                cx.notify();
+            }
+            return;
+        }
+
         match Self::global_tab_drag_pointer_action(self.tab_strip.drag.is_some(), event.dragging())
         {
             GlobalTabDragPointerAction::None => {}
@@ -829,6 +840,18 @@ impl TerminalView {
         event: &MouseUpEvent,
         cx: &mut Context<Self>,
     ) -> bool {
+        if event.button == MouseButton::Left && self.finish_inspector_resize_drag() {
+            cx.notify();
+            return true;
+        }
+
+        if event.button == MouseButton::Left
+            && self.pane_move_drag.is_some()
+            && self.finish_pane_move_drag(cx)
+        {
+            return true;
+        }
+
         if event.button == MouseButton::Left && self.tab_strip.drag.is_some() {
             self.commit_tab_drag(cx);
             return true;
@@ -896,6 +919,16 @@ impl TerminalView {
                 let _ = self.focus_pane_target(pane_id.as_str(), cx);
             }
             self.open_terminal_context_menu_for_window(event.position, window, cx);
+            cx.stop_propagation();
+            return;
+        }
+
+        // Pane-move drags take priority over app mouse reporting so the
+        // modifier combo always works, even inside fullscreen TUI apps.
+        if event.button == MouseButton::Left
+            && Self::is_pane_move_modifier(event.modifiers)
+            && self.try_begin_pane_move_drag(event.position, window, cx)
+        {
             cx.stop_propagation();
             return;
         }
@@ -1021,6 +1054,17 @@ impl TerminalView {
                 return;
             }
         }
+        if self.pane_move_drag.is_some() {
+            if event.dragging() {
+                self.update_pane_move_drag(event.position, window, cx);
+            } else {
+                // The matching mouse-up was missed (e.g. released outside the
+                // window); resolve the drag now.
+                let _ = self.finish_pane_move_drag(cx);
+            }
+            cx.stop_propagation();
+            return;
+        }
         if self.pane_resize_drag.is_some() {
             if event.dragging() {
                 if self.apply_pane_resize_drag(event.position) {
@@ -1103,6 +1147,11 @@ impl TerminalView {
         if event.button == MouseButton::Left && self.finish_terminal_scrollbar_drag(cx) {
             cx.stop_propagation();
             cx.notify();
+            return;
+        }
+        if event.button == MouseButton::Left && self.pane_move_drag.is_some() {
+            let _ = self.finish_pane_move_drag(cx);
+            cx.stop_propagation();
             return;
         }
         if event.button == MouseButton::Left && self.pane_resize_drag.take().is_some() {

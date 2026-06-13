@@ -1,32 +1,20 @@
 ---
-title: Command Palette
-description: Search every action, theme, and setting.
+title: Command palette
+description: Search actions, themes, settings, and tasks.
 ---
 
-Open with `secondary-p` (Cmd on macOS, Ctrl elsewhere).
+Open with `secondary-p` (`Cmd P` / `Ctrl P`).
 
-## What's in it
+Includes every [action](/docs/reference/actions), theme (preview on hover), setting, [task](/docs/using-termy/tasks-layouts), and tmux session when `tmux_enabled = true`.
 
-- Every configurable [action](/docs/reference/actions)
-- Every theme — instant preview on hover
-- Every setting from [Customize](/docs/customize)
-- Named [tasks](/docs/using-termy/tasks-layouts)
-- tmux session management when `tmux_enabled = true`
-
-## Shortcut badges
-
-Each entry shows its current keybind. Toggle with:
+Hide shortcut badges:
 
 ```txt
 command_palette_show_keybinds = false
 ```
 
-## Simple mode
+Disable the palette and open the raw config from Settings instead:
 
-`simple_mode = true` disables the command palette entirely and routes Settings to opening the raw config file.
-
-## Related
-
-- [Keybindings](/docs/customize/keybindings)
-- [Tasks and Layouts](/docs/using-termy/tasks-layouts)
-- [Bindable actions](/docs/reference/actions)
+```txt
+simple_mode = true
+```

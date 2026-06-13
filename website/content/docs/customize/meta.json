@@ -8,8 +8,7 @@
     "colors",
     "themes",
     "keybindings",
-    "keybinding-examples",
     "advanced"
   ],
-  "defaultOpen": true
+  "defaultOpen": false
 }

@@ -31,6 +31,17 @@ impl TerminalView {
         self.has_active_inline_input()
     }
 
+    /// Single source for runtime command gating so the palette, menus, and
+    /// execution path all apply the same capability rules.
+    pub(in super::super) fn command_capabilities(&self) -> CommandCapabilities {
+        CommandCapabilities {
+            tmux_runtime_active: self.runtime_uses_tmux(),
+            install_cli_available: self.install_cli_available(),
+            browser_tabs_enabled: self.browser_tabs_enabled,
+            git_panel_enabled: self.git_panel_enabled,
+        }
+    }
+
     fn maybe_suppress_tab_switch_hint_for_action(
         &mut self,
         action: CommandAction,
@@ -65,10 +76,7 @@ impl TerminalView {
 
         // Keep runtime command gating aligned with command_core so every UI surface
         // and execution path applies the same capability rules.
-        let availability = action.availability(CommandCapabilities {
-            tmux_runtime_active: self.runtime_uses_tmux(),
-            install_cli_available: self.install_cli_available(),
-        });
+        let availability = action.availability(self.command_capabilities());
         if !availability.enabled {
             match availability.reason {
                 Some(CommandUnavailableReason::RequiresTmuxRuntime) => {
@@ -78,6 +86,16 @@ impl TerminalView {
                 }
                 Some(CommandUnavailableReason::InstallCliAlreadyInstalled) => {
                     termy_toast::info("CLI is already installed");
+                    self.notify_overlay(cx);
+                    return;
+                }
+                Some(CommandUnavailableReason::BrowserTabsDisabled) => {
+                    termy_toast::info("Enable Browser Tabs in Settings to use this command");
+                    self.notify_overlay(cx);
+                    return;
+                }
+                Some(CommandUnavailableReason::GitPanelDisabled) => {
+                    termy_toast::info("Enable Git Panel in Settings to use this command");
                     self.notify_overlay(cx);
                     return;
                 }
@@ -140,6 +158,12 @@ impl TerminalView {
                     cx.notify();
                 }
             }
+            CommandAction::ToggleGitPanel => {
+                self.toggle_git_panel(cx);
+            }
+            CommandAction::ToggleInspector => {
+                self.toggle_inspector(cx);
+            }
             _ if shortcuts_suspended => {}
             CommandAction::OpenConfig
             | CommandAction::PrettifyConfig
@@ -154,6 +178,7 @@ impl TerminalView {
             }
             CommandAction::RenameTab
             | CommandAction::NewTab
+            | CommandAction::NewBrowserTab
             | CommandAction::CloseTab
             | CommandAction::ClosePaneOrTab
             | CommandAction::MoveTabLeft
@@ -290,6 +315,15 @@ impl TerminalView {
         self.execute_command_action(CommandAction::ToggleTabBarVisibility, true, window, cx);
     }
 
+    pub(in super::super) fn handle_toggle_inspector_action(
+        &mut self,
+        _: &commands::ToggleInspector,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.execute_command_action(CommandAction::ToggleInspector, true, window, cx);
+    }
+
     pub(in super::super) fn handle_new_tab_action(
         &mut self,
         _: &commands::NewTab,
@@ -317,11 +351,11 @@ impl TerminalView {
     ) {
         let _ = window;
         self.add_tab_with_working_dir(working_dir, cx);
-        if let Some(command) = command.filter(|value| is_safe_deeplink_terminal_input(value))
+        if let Some(command_input) = command.and_then(deeplink_command_terminal_input)
             && let Some(tab) = self.tabs.get(self.active_tab)
             && let Some(terminal) = tab.active_terminal()
         {
-            terminal.write_input(command.as_bytes());
+            terminal.write_input(command_input.as_bytes());
             cx.notify();
         }
     }
@@ -745,6 +779,17 @@ fn is_safe_deeplink_terminal_input(value: &str) -> bool {
     !value.is_empty() && value.len() <= 4096 && !value.bytes().any(|byte| byte.is_ascii_control())
 }
 
+fn deeplink_command_terminal_input(value: &str) -> Option<String> {
+    let mut input = value.trim().to_string();
+    if !is_safe_deeplink_terminal_input(&input) {
+        return None;
+    }
+    if !input.ends_with('\n') {
+        input.push('\n');
+    }
+    Some(input)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -806,5 +851,18 @@ mod tests {
         assert!(!TerminalView::simple_mode_blocks_command_action(
             CommandAction::OpenConfig
         ));
+    }
+
+    #[test]
+    fn deeplink_command_input_appends_newline() {
+        assert_eq!(
+            deeplink_command_terminal_input("git status").as_deref(),
+            Some("git status\n")
+        );
+    }
+
+    #[test]
+    fn deeplink_command_input_rejects_control_characters() {
+        assert_eq!(deeplink_command_terminal_input("git\nstatus"), None);
     }
 }

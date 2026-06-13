@@ -1,7 +1,7 @@
 use super::super::*;
 use super::hints::TabSwitchHintState;
 use super::render_palette::TabStripPalette;
-use super::render_tab_item::{TabItemRenderInput, TabItemStrokeRects};
+use super::render_tab_item::TabItemRenderInput;
 use super::state::TabStripOrientation;
 
 impl TerminalView {
@@ -114,13 +114,21 @@ impl TerminalView {
                 cx,
                 |this, cx| this.toggle_sidebar_collapsed(cx),
             ))
-            .child(self.sidebar_icon_button(
-                "sidebar-new-tab-button",
-                "icons/tab_strip/plus.svg",
-                palette,
-                cx,
-                |this, cx| this.add_tab(cx),
-            ))
+            .child({
+                // Anchor the new-tab kind dropdown just below the header,
+                // right-aligned within the sidebar column.
+                let menu_anchor = (
+                    (self.last_viewport_width - NEW_TAB_MENU_WIDTH - 8.0).max(4.0),
+                    self.terminal_content_top_inset() + SIDEBAR_HEADER_HEIGHT + 2.0,
+                );
+                self.sidebar_icon_button(
+                    "sidebar-new-tab-button",
+                    "icons/tab_strip/plus.svg",
+                    palette,
+                    cx,
+                    move |this, cx| this.handle_new_tab_button(menu_anchor, cx),
+                )
+            })
             .into_any_element()
     }
 
@@ -146,7 +154,7 @@ impl TerminalView {
             .flex()
             .items_center()
             .justify_center()
-            .rounded(px(0.0))
+            .rounded(px(TAB_ITEM_RADIUS))
             .bg(button_bg)
             .text_color(icon_color)
             .hover(move |style| style.bg(button_hover_bg))
@@ -178,11 +186,14 @@ impl TerminalView {
     ) -> AnyElement {
         let font_family_key = font_family.as_ref();
         let now = Instant::now();
+        let tab_row_width = SIDEBAR_WIDTH - (SIDEBAR_TAB_MARGIN_X * 2.0);
         let mut content = div()
             .id("sidebar-tabs-content")
             .flex()
             .flex_col()
             .w_full()
+            .px(px(SIDEBAR_TAB_MARGIN_X))
+            .py(px(SIDEBAR_TAB_PADDING_Y))
             .gap(px(SIDEBAR_TAB_ROW_GAP))
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
                 this.on_tabs_content_mouse_move(TabStripOrientation::Vertical, event, window, cx);
@@ -191,7 +202,11 @@ impl TerminalView {
         for index in 0..self.tabs.len() {
             let (tab_title, pinned, progress_state) = {
                 let tab = &self.tabs[index];
-                (tab.title.clone(), tab.pinned, tab.progress_state)
+                (
+                    tab.title.clone(),
+                    tab.pinned,
+                    tab.aggregate_progress_state(),
+                )
             };
             let is_active = index == self.active_tab;
             let is_drag_source = self
@@ -227,7 +242,7 @@ impl TerminalView {
             let icon_slot_width = if is_renaming {
                 0.0
             } else {
-                TAB_LEADING_ICON_SLOT_WIDTH
+                TAB_LEADING_SLOT_WIDTH
             };
             let reserves_close_slot = Self::tab_reserves_close_slot_for_layout(
                 self.tab_width_mode,
@@ -243,7 +258,7 @@ impl TerminalView {
                 close_slot_width
             };
             let available_text_px = Self::tab_title_text_area_width(
-                SIDEBAR_WIDTH,
+                tab_row_width,
                 text_reserve_slot_width + icon_slot_width,
             );
             let label = Self::format_tab_label_for_render_measured(
@@ -259,13 +274,7 @@ impl TerminalView {
                     orientation: TabStripOrientation::Vertical,
                     index,
                     tab_primary_extent: SIDEBAR_TAB_ROW_HEIGHT,
-                    tab_cross_extent: SIDEBAR_WIDTH,
-                    tab_strokes: TabItemStrokeRects {
-                        top: None,
-                        bottom: None,
-                        left: None,
-                        right: None,
-                    },
+                    tab_cross_extent: tab_row_width,
                     label,
                     switch_hint_label,
                     is_active,
@@ -276,11 +285,9 @@ impl TerminalView {
                     close_slot_width,
                     text_padding_x: TAB_TEXT_PADDING_X,
                     label_centered: false,
-                    trailing_divider_cover: None,
                     drop_marker_side: self.tab_drop_marker_side(index),
                     open_anim_progress: None,
                     hover_progress: self.tab_strip.hover_progress(index, now),
-                    press_progress: self.tab_strip.press_progress(index, now),
                     progress_state,
                 },
                 font_family,

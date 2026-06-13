@@ -13,6 +13,7 @@ members = [
   "crates/theme_core",
   "crates/themes",
   "crates/terminal_ui",
+  "crates/tmux_control_core",
   "crates/toast_sdk",
   "crates/search",
   "crates/xtask",

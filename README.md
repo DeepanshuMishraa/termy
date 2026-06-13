@@ -2,6 +2,8 @@
 
 A fast, minimal terminal emulator built with [GPUI](https://gpui.rs) and [alacritty_terminal](https://alacritty.org).
 
+![Termy on macOS with Tokyo Night theme and appearance settings](assets/termy-landing.png)
+
 [Docs](https://termy.sh/docs) · [Download](https://termy.sh/download) · [Contribute](CONTRIBUTING.md)
 
 ## Sponsors

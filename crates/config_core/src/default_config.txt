@@ -65,6 +65,12 @@ tab_bar_position = top
 tab_switch_modifier_hints = true
 # Hide the tab bar when only one tab is open
 auto_hide_tabbar = true
+# Show the left sidebar for grouping tabs into workspaces
+sidebar_enabled = false
+# Enable embedded browser tabs (macOS only)
+browser_tabs_enabled = false
+# Enable the git changes panel docked to the right
+git_panel_enabled = false
 # Show or hide the termy branding in the titlebar
 show_termy_in_titlebar = true
 # Preset shell used for new sessions on Windows
@@ -79,6 +85,8 @@ colorterm = truecolor
 window_width = 1280
 # Default startup window height in pixels
 window_height = 820
+# Remembered height in pixels of the developer inspector panel
+inspector_height = 280
 # Font family used in terminal UI
 font_family = JetBrains Mono
 # Font family used for tabs, command palette, and settings UI (not the terminal cells)
@@ -108,9 +116,9 @@ scrollbar_visibility = on_scroll
 # Terminal scrollbar color style
 scrollbar_style = neutral
 # Lines retained in terminal scrollback
-scrollback_history = 2000
+scrollback_history = 1000
 # Scrollback limit for inactive tabs
-# inactive_tab_scrollback = none
+# inactive_tab_scrollback = 250
 # How inactive panes are visually dimmed when a pane is active
 pane_focus_effect = soft_spotlight
 # Strength of active pane emphasis (0.0 to 2.0)

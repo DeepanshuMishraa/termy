@@ -44,9 +44,6 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) {
         self.disarm_titlebar_window_move();
-        self.tab_strip
-            .start_press_animation(tab_index, Instant::now());
-        self.schedule_tab_interaction_animation(cx);
         self.switch_tab(tab_index, cx);
         self.begin_tab_drag(tab_index, orientation);
         if Self::should_begin_tab_rename(orientation, click_count) {
@@ -58,15 +55,35 @@ impl TerminalView {
         click_count == 2
     }
 
-    pub(crate) fn on_tab_close_mouse_move(&mut self, tab_index: usize, cx: &mut Context<Self>) {
-        let mut hover_changed = false;
-        if self.tab_strip.hovered_tab != Some(tab_index) {
-            self.tab_strip.hovered_tab = Some(tab_index);
-            self.tab_strip
-                .start_hover_animation(tab_index, Instant::now());
-            self.schedule_tab_interaction_animation(cx);
-            hover_changed = true;
+    fn set_hovered_tab(&mut self, tab_index: usize, cx: &mut Context<Self>) -> bool {
+        if self.tab_strip.hovered_tab == Some(tab_index) {
+            return false;
         }
+        let now = Instant::now();
+        if let Some(previous) = self.tab_strip.hovered_tab {
+            self.tab_strip.start_unhover_animation(previous, now);
+        }
+        self.tab_strip.hovered_tab = Some(tab_index);
+        self.tab_strip.start_hover_animation(tab_index, now);
+        self.schedule_tab_interaction_animation(cx);
+        true
+    }
+
+    // Clears tab hover with a fade-out, unlike the instant clear_tab_hover_state
+    // used by hard interaction resets.
+    fn clear_tab_hover_state_animated(&mut self, cx: &mut Context<Self>) -> bool {
+        let previous = self.tab_strip.hovered_tab;
+        let changed = self.clear_tab_hover_state();
+        if let Some(previous) = previous {
+            self.tab_strip
+                .start_unhover_animation(previous, Instant::now());
+            self.schedule_tab_interaction_animation(cx);
+        }
+        changed
+    }
+
+    pub(crate) fn on_tab_close_mouse_move(&mut self, tab_index: usize, cx: &mut Context<Self>) {
+        let mut hover_changed = self.set_hovered_tab(tab_index, cx);
         if self.tab_strip.hovered_tab_close != Some(tab_index) {
             self.tab_strip.hovered_tab_close = Some(tab_index);
             hover_changed = true;
@@ -84,15 +101,7 @@ impl TerminalView {
         window: &Window,
         cx: &mut Context<Self>,
     ) {
-        let mut hovered_changed = if self.tab_strip.hovered_tab != Some(tab_index) {
-            self.tab_strip.hovered_tab = Some(tab_index);
-            self.tab_strip
-                .start_hover_animation(tab_index, Instant::now());
-            self.schedule_tab_interaction_animation(cx);
-            true
-        } else {
-            false
-        };
+        let mut hovered_changed = self.set_hovered_tab(tab_index, cx);
         if self.tab_strip.hovered_tab_close.take().is_some() {
             hovered_changed = true;
         }
@@ -121,7 +130,7 @@ impl TerminalView {
         window: &Window,
         cx: &mut Context<Self>,
     ) {
-        let hovered_changed = self.clear_tab_hover_state();
+        let hovered_changed = self.clear_tab_hover_state_animated(cx);
         let drag_changed = if event.dragging() {
             if self.tab_strip.drag.is_some() {
                 self.disarm_titlebar_window_move();
@@ -151,7 +160,7 @@ impl TerminalView {
         window: &Window,
         cx: &mut Context<Self>,
     ) {
-        let hovered_changed = self.clear_tab_hover_state();
+        let hovered_changed = self.clear_tab_hover_state_animated(cx);
         if !event.dragging() {
             if hovered_changed {
                 cx.notify();

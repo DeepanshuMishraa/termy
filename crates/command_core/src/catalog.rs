@@ -3,6 +3,8 @@ macro_rules! termy_command_catalog {
     ($visitor:ident) => {
         $visitor! {
             (NewTab, "new_tab"),
+            (NewBrowserTab, "new_browser_tab"),
+            (ToggleGitPanel, "toggle_git_panel"),
             (CloseTab, "close_tab"),
             (ClosePaneOrTab, "close_pane_or_tab"),
             (MoveTabLeft, "move_tab_left"),
@@ -61,6 +63,7 @@ macro_rules! termy_command_catalog {
             (ToggleSearchRegex, "toggle_search_regex"),
             (InstallCli, "install_cli"),
             (ToggleTabBarVisibility, "toggle_tab_bar_visibility"),
+            (ToggleInspector, "toggle_inspector"),
         }
     };
 }

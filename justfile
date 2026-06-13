@@ -9,7 +9,7 @@ run:
 
 # Build and run the experimental native macOS SwiftUI host (macos/)
 run-macos *args:
-    ./macos/script/build_and_run.sh {{ args }}
+    cargo macos {{ args }}
 
 # Run native macOS Swift config/schema parity tests
 test-macos-config:

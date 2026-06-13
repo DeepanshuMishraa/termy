@@ -5,35 +5,39 @@ use flume::{Receiver, RecvTimeoutError, Sender};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use std::io::{Read, Write};
 #[cfg(test)]
-use super::command::split_control_completion_token;
-use super::command::{
+use tmux_control_core::command::split_control_completion_token;
+use tmux_control_core::command::{
     SEND_INPUT_BULK_HEX_BYTES, SEND_INPUT_CHUNKED_HEX_BYTES, SendInputMode, choose_send_input_mode,
     next_control_completion_token, send_keys_hex_command, tmux_command_line,
     tmux_control_command_line,
 };
-use super::control::{ControlRequest, NotificationCoalescer, try_enqueue_control_request};
-use std::io::{Read, Write};
-
-use super::control::{
-    FATAL_EXIT_QUEUE_BOUND, NOTIFICATION_QUEUE_BOUND, PENDING_QUEUE_BOUND, REQUEST_QUEUE_BOUND,
-    spawn_control_threads,
+use tmux_control_core::control::{
+    ControlRequest, NotificationCoalescer, try_enqueue_control_request,
 };
+
 #[cfg(unix)]
 use super::launch::spawn_tmux_control_mode;
 use super::launch::{
     SessionLaunchPlan, append_working_dir_args, managed_session_window_option_override_commands,
 };
-use super::payload::{capture_full_pane_args, sanitize_tmux_payload, unescape_tmux_payload};
 use super::session::{self, run_tmux_command_with_socket};
 use super::shutdown::{
     is_tmux_missing_client_error, is_tmux_no_server_error, normalize_shutdown_teardown_result,
     run_shutdown_actions,
 };
 use super::snapshot::{PANE_SNAPSHOT_FORMAT, WINDOW_SNAPSHOT_FORMAT, parse_snapshot};
+use tmux_control_core::control::{
+    FATAL_EXIT_QUEUE_BOUND, NOTIFICATION_QUEUE_BOUND, PENDING_QUEUE_BOUND, REQUEST_QUEUE_BOUND,
+    spawn_control_threads,
+};
+use tmux_control_core::payload::{
+    capture_full_pane_args, sanitize_tmux_payload, unescape_tmux_payload,
+};
 #[cfg(unix)]
-use super::types::TmuxLaunchTarget;
-use super::types::{
+use tmux_control_core::types::TmuxLaunchTarget;
+use tmux_control_core::types::{
     TmuxControlError, TmuxNotification, TmuxRuntimeConfig, TmuxSessionSummary, TmuxShutdownMode,
     TmuxSnapshot, TmuxSocketTarget,
 };
@@ -619,7 +623,7 @@ impl TmuxClient {
         &self,
         command: &str,
         timeout: Duration,
-    ) -> Result<super::control::ControlCommandResult> {
+    ) -> Result<tmux_control_core::control::ControlCommandResult> {
         let (response_tx, response_rx) = flume::bounded(1);
         self.enqueue_control_request(ControlRequest {
             command: command.to_string(),
@@ -646,7 +650,7 @@ impl TmuxClient {
     fn send_control_command_wait(
         &self,
         command: &str,
-    ) -> Result<super::control::ControlCommandResult> {
+    ) -> Result<tmux_control_core::control::ControlCommandResult> {
         const CONTROL_COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
         self.send_control_command_wait_with_timeout(command, CONTROL_COMMAND_TIMEOUT)
     }
@@ -774,9 +778,9 @@ impl Drop for TmuxClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tmux::control::coalescer::signal_fatal_exit;
     use anyhow::anyhow;
     use std::cell::Cell;
+    use tmux_control_core::control::coalescer::signal_fatal_exit;
 
     fn test_tmux_client(shutdown_mode_on_drop: TmuxShutdownMode) -> TmuxClient {
         let (request_tx, _request_rx) = flume::bounded::<ControlRequest>(1);

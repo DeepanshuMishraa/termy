@@ -71,7 +71,7 @@ impl Default for WorkingDirFallback {
     }
 }
 
-const DEFAULT_SCROLLBACK_HISTORY: usize = 2000;
+const DEFAULT_SCROLLBACK_HISTORY: usize = 1000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum WindowsShell {
@@ -715,12 +715,11 @@ fn normalized_dirty_span(
     damage: LineDamageBounds,
     rows: usize,
     cols: usize,
-    display_offset: usize,
 ) -> Option<TerminalDirtySpan> {
-    // Alacritty line damage is tracked in terminal-space line coordinates and can straddle
-    // wide characters. Expand by one column on both sides so partial updates never split
-    // a multi-cell glyph and leave stale spacer artifacts.
-    if rows == 0 || cols == 0 || display_offset != 0 {
+    // Alacritty line damage can straddle wide characters. Expand by one column
+    // on both sides so partial updates never split a multi-cell glyph and
+    // leave stale spacer artifacts.
+    if rows == 0 || cols == 0 {
         return None;
     }
     if damage.line >= rows {
@@ -776,29 +775,24 @@ fn searchable_grid_line<T: EventListener>(term: &Term<T>, line: Line, cols: usiz
 pub fn take_term_damage_snapshot<T: EventListener>(term: &mut Term<T>) -> TerminalDamageSnapshot {
     let rows = term.grid().screen_lines();
     let cols = term.grid().columns();
-    let display_offset = term.grid().display_offset();
     let snapshot = match term.damage() {
         TermDamage::Full => TerminalDamageSnapshot::Full,
         TermDamage::Partial(damage_iter) => {
-            let mut damage_iter = damage_iter.peekable();
-            if display_offset != 0 {
-                // While viewing history, partial damage coordinates are difficult to map
-                // correctly across viewport-relative lines. Only force a full rebuild when
-                // alacritty actually reports damaged lines, otherwise keep this as a no-op.
-                if damage_iter.peek().is_some() {
-                    TerminalDamageSnapshot::Full
-                } else {
-                    TerminalDamageSnapshot::Partial(Vec::new())
+            // Alacritty reports partial damage in viewport coordinates with
+            // off-viewport lines already filtered out (`TermDamageIterator`
+            // shifts live-grid rows by `display_offset` and slices away the
+            // rest), and it marks the whole terminal damaged for any
+            // content-shifting scroll. The spans are therefore valid as-is
+            // even while scrolled into history — collapsing them to a full
+            // rebuild would force a whole-grid repaint for every cursor or
+            // cell update during scrollback viewing.
+            let mut spans = Vec::with_capacity(rows.min(64));
+            for damage in damage_iter {
+                if let Some(span) = normalized_dirty_span(damage, rows, cols) {
+                    spans.push(span);
                 }
-            } else {
-                let mut spans = Vec::with_capacity(rows.min(64));
-                for damage in damage_iter {
-                    if let Some(span) = normalized_dirty_span(damage, rows, cols, display_offset) {
-                        spans.push(span);
-                    }
-                }
-                TerminalDamageSnapshot::Partial(spans)
             }
+            TerminalDamageSnapshot::Partial(spans)
         }
     };
     term.reset_damage();
@@ -876,7 +870,10 @@ impl EventListener for JsonEventListener {
     }
 }
 
-const NATIVE_EVENT_LOOP_READ_BUFFER_SIZE: usize = 0x10_0000;
+/// Sized at 2× `NATIVE_EVENT_LOOP_MAX_LOCKED_READ`: enough to keep
+/// accumulating PTY output while the UI holds the terminal lock, without
+/// dirtying a full megabyte of stack per session thread.
+const NATIVE_EVENT_LOOP_READ_BUFFER_SIZE: usize = 0x2_0000;
 const NATIVE_EVENT_LOOP_MAX_LOCKED_READ: usize = u16::MAX as usize;
 #[cfg(not(target_os = "windows"))]
 const NATIVE_EVENT_LOOP_READ_WRITE_TOKEN: usize = 0;
@@ -1063,9 +1060,16 @@ impl NativeEventLoop {
         let mut terminal = None;
 
         loop {
+            // Whether this iteration pulled new bytes off the PTY. When the
+            // PTY is dry and the terminal lock is contended, looping back to
+            // read() would hot-spin a core; block on the lock instead.
+            let mut read_progressed = false;
             match self.pty.reader().read(&mut buf[unprocessed..]) {
                 Ok(0) if unprocessed == 0 => break,
-                Ok(got) => unprocessed += got,
+                Ok(got) => {
+                    read_progressed = got > 0;
+                    unprocessed += got;
+                }
                 Err(err) => match err.kind() {
                     ErrorKind::Interrupted | ErrorKind::WouldBlock => {
                         if unprocessed == 0 {
@@ -1079,7 +1083,9 @@ impl NativeEventLoop {
             let terminal = match &mut terminal {
                 Some(terminal) => terminal,
                 None => terminal.insert(match self.terminal.try_lock_unfair() {
-                    None if unprocessed >= NATIVE_EVENT_LOOP_READ_BUFFER_SIZE => {
+                    None if !read_progressed
+                        || unprocessed >= NATIVE_EVENT_LOOP_READ_BUFFER_SIZE =>
+                    {
                         self.terminal.lock_unfair()
                     }
                     None => continue,
@@ -1288,14 +1294,19 @@ pub struct Terminal {
     listener: JsonEventListener,
     /// Parser used for buffer rehydration without writing to the PTY.
     parser: FairMutex<ansi::Processor>,
-    /// Channel to send input to the PTY
-    pty_tx: EventLoopSender,
+    /// Channel to send input to the PTY. `None` for display-only terminals
+    /// (e.g. tmux control-mode panes) that are fed via `feed_output` and have
+    /// no backing shell.
+    pty_tx: Option<EventLoopSender>,
     /// Channel to receive events from the native PTY loop
     events_rx: Receiver<RuntimeEvent>,
     /// Current terminal size
     size: TerminalSize,
     /// Colors returned to child processes that probe terminal palette state.
     query_colors: TerminalQueryColors,
+    /// Default cursor style from runtime config, reapplied when live terminal
+    /// options change for memory management.
+    default_cursor_style: TerminalCursorStyle,
     /// Shell process id backing this PTY.
     child_pid: Option<u32>,
 }
@@ -1361,12 +1372,50 @@ impl Terminal {
             term,
             listener,
             parser: FairMutex::new(ansi::Processor::new()),
-            pty_tx,
+            pty_tx: Some(pty_tx),
             events_rx,
             size,
             query_colors: runtime_config.query_colors,
+            default_cursor_style: runtime_config.default_cursor_style,
             child_pid,
         })
+    }
+
+    /// Create a display-only terminal: a grid + parser with no PTY/shell. Its
+    /// content is supplied with [`Terminal::feed_output`] (e.g. tmux `%output`).
+    /// All rendering, sizing, and event draining work as for a normal terminal;
+    /// input (`write`) is a no-op since there is no child process.
+    pub fn new_display(size: TerminalSize, runtime_config: Option<&TerminalRuntimeConfig>) -> Self {
+        let (events_tx, events_rx) = unbounded();
+        let runtime_config = runtime_config.cloned().unwrap_or_default();
+        let term_config = runtime_config.term_options().term_config();
+        let listener = JsonEventListener::new(events_tx, None);
+        let term = Term::new(term_config, &size, listener.clone());
+        let term = Arc::new(FairMutex::new(term));
+
+        Self {
+            term,
+            listener,
+            parser: FairMutex::new(ansi::Processor::new()),
+            pty_tx: None,
+            events_rx,
+            size,
+            query_colors: runtime_config.query_colors,
+            default_cursor_style: runtime_config.default_cursor_style,
+            child_pid: None,
+        }
+    }
+
+    /// Advance the grid with output bytes without involving a PTY. Used by
+    /// display-only terminals (tmux `%output`); damage is recorded so the next
+    /// render picks up the change.
+    pub fn feed_output(&self, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
+        let mut parser = self.parser.lock();
+        let mut term = self.term.lock();
+        parser.advance(&mut *term, bytes);
     }
 
     pub fn child_pid(&self) -> Option<u32> {
@@ -1377,9 +1426,11 @@ impl Terminal {
         self.listener.set_wakeup_enabled(enabled);
     }
 
-    /// Write bytes to the PTY (user input)
+    /// Write bytes to the PTY (user input). No-op for display-only terminals.
     pub fn write(&self, input: &[u8]) {
-        let _ = self.pty_tx.send(EventLoopMsg::Input(input.to_vec().into()));
+        if let Some(pty_tx) = &self.pty_tx {
+            let _ = pty_tx.send(EventLoopMsg::Input(input.to_vec().into()));
+        }
     }
 
     /// Rehydrate saved terminal output into the in-memory grid without sending input to the PTY.
@@ -1404,8 +1455,15 @@ impl Terminal {
     /// Resize the terminal
     pub fn resize(&mut self, new_size: TerminalSize) {
         self.size = new_size;
-        let _ = self.pty_tx.send(EventLoopMsg::Resize(new_size.into()));
-        self.term.lock().resize(new_size);
+        if let Some(pty_tx) = &self.pty_tx {
+            let _ = pty_tx.send(EventLoopMsg::Resize(new_size.into()));
+        }
+        let mut term = self.term.lock();
+        term.resize(new_size);
+        // Keep content bottom-anchored like Ghostty/Kitty: reflow can strand
+        // the prompt mid-screen above blank rows while the start of the
+        // output sits in scrollback — pull it back in.
+        crate::resize_anchor::restore_bottom_anchor(&mut term, new_size);
     }
 
     /// Re-send the current size to the PTY without touching the term grid.
@@ -1413,7 +1471,9 @@ impl Terminal {
     /// (e.g. lazygit) to refresh their display after an alternate-screen
     /// transition even though the actual dimensions have not changed.
     pub fn nudge_resize(&self) {
-        let _ = self.pty_tx.send(EventLoopMsg::Resize(self.size.into()));
+        if let Some(pty_tx) = &self.pty_tx {
+            let _ = pty_tx.send(EventLoopMsg::Resize(self.size.into()));
+        }
     }
 
     /// Get the current terminal size
@@ -1557,7 +1617,15 @@ impl Terminal {
 
     /// Sync live term options derived from the current runtime configuration.
     pub fn set_term_options(&self, options: TerminalOptions) {
-        self.with_term_mut(|term| term.set_options(options.term_config()));
+        self.with_term_mut(|term| apply_term_config(term, options.term_config()));
+    }
+
+    /// Change only the live scrollback cap, preserving cursor defaults.
+    pub fn set_scrollback_history(&self, scrollback_history: usize) {
+        self.set_term_options(TerminalOptions {
+            scrollback_history,
+            default_cursor_style: self.default_cursor_style,
+        });
     }
 
     /// Check if bracketed paste mode is enabled
@@ -1581,6 +1649,18 @@ impl Terminal {
     pub fn alternate_screen_mode(&self) -> bool {
         let term = self.term.lock();
         term.mode().contains(TermMode::ALT_SCREEN)
+    }
+}
+
+/// Apply a new term config, releasing the memory of any scrollback rows the
+/// new cap evicts. alacritty's history shrink keeps up to 1000 spare rows
+/// allocated (`Storage::MAX_CACHE_SIZE`), so lowering the cap — e.g. the
+/// inactive-tab scrollback limit — would otherwise free nothing.
+fn apply_term_config<L: EventListener>(term: &mut Term<L>, config: TermConfig) {
+    let shrinks_history = config.scrolling_history < term.grid().history_size();
+    term.set_options(config);
+    if shrinks_history {
+        term.grid_mut().truncate();
     }
 }
 
@@ -1691,7 +1771,9 @@ fn terminal_event_from_osc(event: OscEvent) -> TerminalEvent {
 impl Drop for Terminal {
     fn drop(&mut self) {
         // Ensure the PTY event loop exits so PTY drop can terminate/reap the child process.
-        let _ = self.pty_tx.send(EventLoopMsg::Shutdown);
+        if let Some(pty_tx) = &self.pty_tx {
+            let _ = pty_tx.send(EventLoopMsg::Shutdown);
+        }
     }
 }
 
@@ -1703,11 +1785,12 @@ mod tests {
         DEFAULT_TERM, GHOSTTY_COMPAT_TERM_PROGRAM, GHOSTTY_COMPAT_TERM_PROGRAM_VERSION,
         JsonEventListener, RuntimeEvent, TERMY_TERM_PROGRAM, TerminalCursorState,
         TerminalCursorStyle, TerminalDamageSnapshot, TerminalEvent, TerminalRuntimeConfig,
-        TerminalSize, WindowsShell, WorkingDirFallback, cursor_position_from_term,
-        cursor_state_from_term, default_shell_launch, drain_runtime_events,
-        normalize_working_directory_candidate, pty_env_overrides, resolve_launch_working_directory,
-        resolve_shell_path, search_term_buffer, take_term_damage_snapshot, terminal_event_from_osc,
-        termmode_to_terminal_mouse_mode, user_home_dir,
+        TerminalSize, WindowsShell, WorkingDirFallback, apply_term_config,
+        cursor_position_from_term, cursor_state_from_term, default_shell_launch,
+        drain_runtime_events, normalize_working_directory_candidate, pty_env_overrides,
+        resolve_launch_working_directory, resolve_shell_path, search_term_buffer,
+        take_term_damage_snapshot, terminal_event_from_osc, termmode_to_terminal_mouse_mode,
+        user_home_dir,
     };
     use crate::keyboard::{
         Keystroke, Modifiers, TerminalKeyEventKind, TerminalKeyboardMode, keystroke_to_input,
@@ -2229,7 +2312,7 @@ mod tests {
     }
 
     #[test]
-    fn take_term_damage_snapshot_while_scrolled_returns_full_for_visible_damage() {
+    fn take_term_damage_snapshot_while_scrolled_maps_damage_to_viewport_rows() {
         let size = TerminalSize {
             cols: 12,
             rows: 4,
@@ -2247,22 +2330,61 @@ mod tests {
         let _ = take_term_damage_snapshot(&mut term);
         let _ = take_term_damage_snapshot(&mut term);
 
+        // Damage on live row 0 must surface shifted down by the display
+        // offset (viewport row 1), as a partial span — not a full rebuild.
         ansi::Handler::goto(&mut term, 0, 0);
-        assert!(matches!(
-            take_term_damage_snapshot(&mut term),
-            TerminalDamageSnapshot::Full
-        ));
+        match take_term_damage_snapshot(&mut term) {
+            TerminalDamageSnapshot::Partial(spans) => {
+                assert!(spans.iter().any(|span| span.row == 1), "spans: {spans:?}");
+                assert!(spans.iter().all(|span| span.row < 4), "spans: {spans:?}");
+            }
+            TerminalDamageSnapshot::Full => {
+                panic!("visible damage while scrolled should stay partial")
+            }
+        }
+    }
+
+    #[test]
+    fn take_term_damage_snapshot_while_scrolled_drops_damage_below_viewport() {
+        let size = TerminalSize {
+            cols: 12,
+            rows: 4,
+            cell_width: 9.0,
+            cell_height: 18.0,
+        };
+        let mut term: Term<VoidListener> = Term::new(TermConfig::default(), &size, VoidListener);
+        let _ = take_term_damage_snapshot(&mut term);
+
+        let mut parser: ansi::Processor = ansi::Processor::new();
+        parser.advance(&mut term, b"1\n2\n3\n4\n5\n6\n");
+        let _ = take_term_damage_snapshot(&mut term);
+
+        term.scroll_display(Scroll::Delta(3));
+        let _ = take_term_damage_snapshot(&mut term);
+        let _ = take_term_damage_snapshot(&mut term);
+
+        // Writing on the bottom live row (shifted past the viewport by the
+        // offset) must not repaint anything the user can see.
+        parser.advance(&mut term, b"x");
+        match take_term_damage_snapshot(&mut term) {
+            TerminalDamageSnapshot::Partial(spans) => {
+                assert!(spans.iter().all(|span| span.row < 4), "spans: {spans:?}");
+            }
+            TerminalDamageSnapshot::Full => {
+                panic!("invisible damage while scrolled should stay partial")
+            }
+        }
     }
 
     #[test]
     fn normalized_dirty_span_expands_and_clamps_column_bounds() {
-        let span = super::normalized_dirty_span(LineDamageBounds::new(1, 1, 2), 4, 4, 0)
+        let span = super::normalized_dirty_span(LineDamageBounds::new(1, 1, 2), 4, 4)
             .expect("dirty span should normalize");
         assert_eq!(span.row, 1);
         assert_eq!(span.left_col, 0);
         assert_eq!(span.right_col, 3);
 
-        let span = super::normalized_dirty_span(LineDamageBounds::new(0, 0, 0), 4, 4, 0)
+        let span = super::normalized_dirty_span(LineDamageBounds::new(0, 0, 0), 4, 4)
             .expect("left edge should clamp");
         assert_eq!(span.left_col, 0);
         assert_eq!(span.right_col, 1);
@@ -2833,6 +2955,37 @@ mod tests {
 
         assert_eq!(term.grid().history_size(), 8);
         assert_eq!(term.cursor_style().shape, CursorShape::Beam);
+    }
+
+    #[test]
+    fn shrinking_scrollback_trims_history_and_keeps_terminal_usable() {
+        let size = test_terminal_size();
+        let initial = TerminalRuntimeConfig {
+            scrollback_history: 256,
+            ..TerminalRuntimeConfig::default()
+        };
+        let mut term: Term<VoidListener> =
+            Term::new(initial.term_options().term_config(), &size, VoidListener);
+
+        let mut parser: ansi::Processor = ansi::Processor::new();
+        let output = (0..300)
+            .map(|index| format!("line-{index}\r\n"))
+            .collect::<String>();
+        parser.advance(&mut term, output.as_bytes());
+        assert_eq!(term.grid().history_size(), 256);
+
+        // Shrink (the inactive-tab path), which must also trim the raw buffer.
+        let inactive = TerminalRuntimeConfig {
+            scrollback_history: 16,
+            ..initial.clone()
+        };
+        apply_term_config(&mut term, inactive.term_options().term_config());
+        assert_eq!(term.grid().history_size(), 16);
+
+        // Grow back (tab reactivated) and keep scrolling: storage must regrow.
+        apply_term_config(&mut term, initial.term_options().term_config());
+        parser.advance(&mut term, output.as_bytes());
+        assert_eq!(term.grid().history_size(), 256);
     }
 
     #[test]

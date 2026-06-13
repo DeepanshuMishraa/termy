@@ -18,6 +18,8 @@ typedef enum {
   TERMY_FFI_UNKNOWN_KEY = 5,
   TERMY_FFI_WRITE_FAILED = 6,
   TERMY_FFI_SERIALIZE_FAILED = 7,
+  /* A Rust panic was caught before it could unwind across the C ABI. */
+  TERMY_FFI_PANICKED = 8,
 } TermyFfiStatus;
 
 typedef enum {
@@ -286,6 +288,9 @@ TermyFfiStatus termy_terminal_new_with_options(
     TermyFfiSize size,
     const TermyFfiTerminalOptions *options,
     TermyFfiTerminal **out_terminal);
+TermyFfiStatus termy_display_terminal_new(
+    TermyFfiSize size,
+    TermyFfiTerminal **out_terminal);
 TermyFfiStatus termy_config_load_default(TermyFfiConfig **out_config);
 TermyFfiStatus termy_config_load_path(
     const uint8_t *path_ptr,
@@ -298,6 +303,10 @@ TermyFfiStatus termy_config_from_contents(
 TermyFfiStatus termy_config_free(TermyFfiConfig *config);
 bool termy_config_loaded_from_disk(const TermyFfiConfig *config);
 size_t termy_config_runtime_scrollback_history(const TermyFfiConfig *config);
+TermyFfiStatus termy_config_runtime_inactive_tab_scrollback(
+    const TermyFfiConfig *config,
+    bool *out_enabled,
+    size_t *out_value);
 size_t termy_config_diagnostic_count(const TermyFfiConfig *config);
 TermyFfiStatus termy_config_window_size(
     const TermyFfiConfig *config,
@@ -358,10 +367,56 @@ TermyFfiStatus termy_settings_set_color(
 TermyFfiStatus termy_settings_set_keybinds(
     const uint8_t *text_ptr,
     size_t text_len);
+TermyFfiStatus termy_settings_install_theme(
+    const uint8_t *slug_ptr,
+    size_t slug_len);
+TermyFfiStatus termy_cli_install(
+    const uint8_t *shell_ptr,
+    size_t shell_len,
+    TermyFfiBytes *out_message);
+
+typedef struct {
+  uint32_t kind;
+  TermyFfiBytes pane_id;
+  TermyFfiBytes data;
+} TermyFfiTmuxNotification;
+
+typedef struct {
+  TermyFfiTmuxNotification *notifications_ptr;
+  size_t notifications_len;
+  size_t notifications_capacity;
+} TermyFfiTmuxNotificationBatch;
+
+typedef struct TermyFfiTmuxControl TermyFfiTmuxControl;
+
+TermyFfiStatus termy_tmux_control_open(
+    const uint8_t *binary_ptr,
+    size_t binary_len,
+    const uint8_t *socket_ptr,
+    size_t socket_len,
+    const uint8_t *session_ptr,
+    size_t session_len,
+    TermyFfiTmuxControl **out_session);
+TermyFfiStatus termy_tmux_control_poll(
+    TermyFfiTmuxControl *session,
+    TermyFfiTmuxNotificationBatch *out_batch);
+TermyFfiStatus termy_tmux_control_notifications_free(
+    TermyFfiTmuxNotificationBatch *batch);
+TermyFfiStatus termy_tmux_control_send(
+    TermyFfiTmuxControl *session,
+    const uint8_t *command_ptr,
+    size_t command_len,
+    TermyFfiBytes *out_output);
+void termy_tmux_control_close(TermyFfiTmuxControl *session);
+
 TermyFfiStatus termy_settings_prettify_config(void);
 TermyFfiStatus termy_terminal_reload_default_config_colors(TermyFfiTerminal *terminal);
 TermyFfiStatus termy_terminal_free(TermyFfiTerminal *terminal);
 TermyFfiStatus termy_terminal_write(
+    TermyFfiTerminal *terminal,
+    const uint8_t *bytes_ptr,
+    size_t bytes_len);
+TermyFfiStatus termy_terminal_feed_output(
     TermyFfiTerminal *terminal,
     const uint8_t *bytes_ptr,
     size_t bytes_len);
@@ -377,6 +432,11 @@ TermyFfiStatus termy_terminal_resize(TermyFfiTerminal *terminal, TermyFfiSize si
 TermyFfiStatus termy_terminal_set_wakeup_enabled(
     TermyFfiTerminal *terminal,
     bool enabled);
+TermyFfiStatus termy_terminal_wait_for_wakeup(
+    TermyFfiTerminal *terminal,
+    uint64_t timeout_ms,
+    bool *out_woke);
+TermyFfiStatus termy_terminal_notify_wakeup(TermyFfiTerminal *terminal);
 TermyFfiStatus termy_terminal_scroll_display(
     TermyFfiTerminal *terminal,
     int32_t delta_lines,
@@ -387,6 +447,12 @@ TermyFfiStatus termy_terminal_scroll_to_bottom(
 TermyFfiStatus termy_terminal_clear_scrollback(
     TermyFfiTerminal *terminal,
     bool *out_changed);
+TermyFfiStatus termy_terminal_set_scrollback_history(
+    TermyFfiTerminal *terminal,
+    size_t scrollback_history);
+TermyFfiStatus termy_terminal_bracketed_paste_mode(
+    TermyFfiTerminal *terminal,
+    bool *out_enabled);
 TermyFfiStatus termy_terminal_snapshot(
     TermyFfiTerminal *terminal,
     TermyFfiFrame *out_frame);

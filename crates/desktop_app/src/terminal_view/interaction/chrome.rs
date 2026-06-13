@@ -32,7 +32,9 @@ impl TerminalView {
         let x: f32 = position.x.into();
         let y: f32 = position.y.into();
         (
-            x,
+            // The left workspace sidebar shifts the terminal surface right,
+            // so window x maps to surface x minus that inset.
+            x - self.workspace_sidebar_width(),
             Self::window_y_to_terminal_content_y(y, self.terminal_content_top_inset()),
         )
     }

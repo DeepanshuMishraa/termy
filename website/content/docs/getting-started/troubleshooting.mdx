@@ -1,0 +1,16 @@
+---
+title: Troubleshooting
+description: Common install and launch issues.
+---
+
+## macOS: app won't open
+
+Termy is not notarized yet. After downloading, macOS may show that the app is damaged or refuse to open it.
+
+Remove the quarantine attribute, then launch again:
+
+```bash
+sudo xattr -d com.apple.quarantine /Applications/Termy.app
+```
+
+If you installed Termy somewhere else, use that path instead of `/Applications/Termy.app`.

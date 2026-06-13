@@ -107,6 +107,11 @@ Platform note: the Agent Sidebar/Workspace is currently unavailable on Windows b
 - Show active tmux pane border highlight in managed sessions
 - Group: `TMUX`
 
+`git_panel_enabled`
+- Default: `false`
+- Enable the git changes panel docked to the right
+- Group: `GIT`
+
 `windows_shell`
 - Default: `cmd`
 - Preset shell used for new sessions on Windows
@@ -153,13 +158,13 @@ Platform note: the Agent Sidebar/Workspace is currently unavailable on Windows b
 - Group: `SCROLLING`
 
 `scrollback_history`
-- Default: `2000`
+- Default: `1000`
 - Aliases: `scrollback`
 - Lines retained in terminal scrollback
 - Group: `SCROLLING`
 
 `inactive_tab_scrollback`
-- Default: unset
+- Default: `250`
 - Scrollback limit for inactive tabs
 - Group: `SCROLLING`
 
@@ -260,6 +265,16 @@ Platform note: the Agent Sidebar/Workspace is currently unavailable on Windows b
 - Hide the tab bar when only one tab is open
 - Group: `TAB STRIP`
 
+`sidebar_enabled`
+- Default: `false`
+- Show the left sidebar for grouping tabs into workspaces
+- Group: `SIDEBAR`
+
+`browser_tabs_enabled`
+- Default: `false`
+- Enable embedded browser tabs (macOS only)
+- Group: `BROWSER`
+
 `show_termy_in_titlebar`
 - Default: `true`
 - Show or hide the termy branding in the titlebar
@@ -332,6 +347,11 @@ Platform note: the Agent Sidebar/Workspace is currently unavailable on Windows b
 - Default: `820`
 - Default startup window height in pixels
 - Group: `WINDOW`
+
+`inspector_height`
+- Default: `280`
+- Remembered height in pixels of the developer inspector panel
+- Group: `UI`
 
 ## Keybindings
 

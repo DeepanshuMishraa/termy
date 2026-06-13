@@ -91,24 +91,25 @@ impl TerminalView {
 
     // Axis-agnostic 1D drop-slot mapping: given each tab's extent along the
     // primary axis (widths for horizontal, row heights for vertical), the
-    // pointer position on that axis, and the scroll offset, return the insertion
-    // slot. The leading inset (TAB_HORIZONTAL_PADDING) and inter-tab gap
-    // (TAB_ITEM_GAP) are both 0, so the same math serves both orientations.
-    fn tab_drop_slot_from_pointer_primary_axis_for_horizontal_widths(
-        tab_widths: impl IntoIterator<Item = f32>,
+    // pointer position on that axis, the scroll offset, and the strip's leading
+    // inset / inter-tab gap on that axis, return the insertion slot.
+    fn tab_drop_slot_from_pointer_primary_axis_for_extents(
+        tab_extents: impl IntoIterator<Item = f32>,
         pointer_primary_axis: f32,
-        scroll_offset_x: f32,
+        scroll_offset: f32,
+        leading_inset: f32,
+        tab_gap: f32,
     ) -> usize {
-        let mut left = TAB_HORIZONTAL_PADDING + scroll_offset_x;
+        let mut leading_edge = leading_inset + scroll_offset;
         let mut slot = 0;
 
-        for width in tab_widths {
-            let midpoint_x = left + (width * 0.5);
-            if pointer_primary_axis < midpoint_x {
+        for extent in tab_extents {
+            let midpoint = leading_edge + (extent * 0.5);
+            if pointer_primary_axis < midpoint {
                 return slot;
             }
 
-            left += width + TAB_ITEM_GAP;
+            leading_edge += extent + tab_gap;
             slot += 1;
         }
 
@@ -124,18 +125,22 @@ impl TerminalView {
             TabStripOrientation::Horizontal => {
                 let scroll_offset_x: f32 =
                     self.tab_strip.horizontal_scroll_handle.offset().x.into();
-                Self::tab_drop_slot_from_pointer_primary_axis_for_horizontal_widths(
+                Self::tab_drop_slot_from_pointer_primary_axis_for_extents(
                     self.tabs.iter().map(|tab| tab.display_width),
                     pointer_primary_axis,
                     scroll_offset_x,
+                    TAB_HORIZONTAL_PADDING,
+                    TAB_ITEM_GAP,
                 )
             }
             TabStripOrientation::Vertical => {
                 let scroll_offset_y: f32 = self.tab_strip.vertical_scroll_handle.offset().y.into();
-                Self::tab_drop_slot_from_pointer_primary_axis_for_horizontal_widths(
+                Self::tab_drop_slot_from_pointer_primary_axis_for_extents(
                     std::iter::repeat_n(SIDEBAR_TAB_ROW_HEIGHT, self.tabs.len()),
                     pointer_primary_axis,
                     scroll_offset_y,
+                    SIDEBAR_TAB_PADDING_Y,
+                    SIDEBAR_TAB_ROW_GAP,
                 )
             }
         }
@@ -326,26 +331,26 @@ mod tests {
     fn horizontal_drop_slot_respects_midpoints() {
         let widths = [100.0, 100.0, 100.0];
         assert_eq!(
-            TerminalView::tab_drop_slot_from_pointer_primary_axis_for_horizontal_widths(
-                widths, 40.0, 0.0,
+            TerminalView::tab_drop_slot_from_pointer_primary_axis_for_extents(
+                widths, 40.0, 0.0, 0.0, 0.0,
             ),
             0
         );
         assert_eq!(
-            TerminalView::tab_drop_slot_from_pointer_primary_axis_for_horizontal_widths(
-                widths, 70.0, 0.0,
+            TerminalView::tab_drop_slot_from_pointer_primary_axis_for_extents(
+                widths, 70.0, 0.0, 0.0, 0.0,
             ),
             1
         );
         assert_eq!(
-            TerminalView::tab_drop_slot_from_pointer_primary_axis_for_horizontal_widths(
-                widths, 170.0, 0.0,
+            TerminalView::tab_drop_slot_from_pointer_primary_axis_for_extents(
+                widths, 170.0, 0.0, 0.0, 0.0,
             ),
             2
         );
         assert_eq!(
-            TerminalView::tab_drop_slot_from_pointer_primary_axis_for_horizontal_widths(
-                widths, 270.0, 0.0,
+            TerminalView::tab_drop_slot_from_pointer_primary_axis_for_extents(
+                widths, 270.0, 0.0, 0.0, 0.0,
             ),
             3
         );
@@ -355,16 +360,41 @@ mod tests {
     fn horizontal_drop_slot_respects_scroll_offset() {
         let widths = [100.0, 100.0];
         assert_eq!(
-            TerminalView::tab_drop_slot_from_pointer_primary_axis_for_horizontal_widths(
-                widths, 40.0, 0.0,
+            TerminalView::tab_drop_slot_from_pointer_primary_axis_for_extents(
+                widths, 40.0, 0.0, 0.0, 0.0,
             ),
             0
         );
         assert_eq!(
-            TerminalView::tab_drop_slot_from_pointer_primary_axis_for_horizontal_widths(
-                widths, 40.0, -30.0,
+            TerminalView::tab_drop_slot_from_pointer_primary_axis_for_extents(
+                widths, 40.0, -30.0, 0.0, 0.0,
             ),
             1
+        );
+    }
+
+    #[test]
+    fn drop_slot_respects_leading_inset_and_gap() {
+        let extents = [100.0, 100.0];
+        // First midpoint sits at inset (6) + 50 = 56.
+        assert_eq!(
+            TerminalView::tab_drop_slot_from_pointer_primary_axis_for_extents(
+                extents, 55.0, 0.0, 6.0, 4.0,
+            ),
+            0
+        );
+        assert_eq!(
+            TerminalView::tab_drop_slot_from_pointer_primary_axis_for_extents(
+                extents, 57.0, 0.0, 6.0, 4.0,
+            ),
+            1
+        );
+        // Second midpoint sits at 6 + 100 + 4 + 50 = 160.
+        assert_eq!(
+            TerminalView::tab_drop_slot_from_pointer_primary_axis_for_extents(
+                extents, 161.0, 0.0, 6.0, 4.0,
+            ),
+            2
         );
     }
 
@@ -401,18 +431,22 @@ mod tests {
 
         let first_midpoint = TAB_HORIZONTAL_PADDING + (widths[0] * 0.5);
         assert_eq!(
-            TerminalView::tab_drop_slot_from_pointer_primary_axis_for_horizontal_widths(
+            TerminalView::tab_drop_slot_from_pointer_primary_axis_for_extents(
                 widths,
                 first_midpoint - 1.0,
                 0.0,
+                TAB_HORIZONTAL_PADDING,
+                TAB_ITEM_GAP,
             ),
             0
         );
         assert_eq!(
-            TerminalView::tab_drop_slot_from_pointer_primary_axis_for_horizontal_widths(
+            TerminalView::tab_drop_slot_from_pointer_primary_axis_for_extents(
                 widths,
                 first_midpoint + 1.0,
                 0.0,
+                TAB_HORIZONTAL_PADDING,
+                TAB_ITEM_GAP,
             ),
             1
         );

@@ -351,6 +351,22 @@ define_commands!(
             MenuActionRole::Normal
         ))
     ),
+    (
+        NewBrowserTab,
+        TERMINAL_CONTEXT,
+        Some(palette(
+            "New Browser Tab",
+            "create browser web tab",
+            CommandPaletteVisibility::Always
+        )),
+        Some(menu(
+            MenuRoot::File,
+            0,
+            "New Browser Tab",
+            MenuVisibility::Always,
+            MenuActionRole::Normal
+        ))
+    ),
     (CloseTab, TERMINAL_CONTEXT, None, None),
     (
         ClosePaneOrTab,
@@ -976,6 +992,38 @@ define_commands!(
             MenuActionRole::Normal
         ))
     ),
+    (
+        ToggleGitPanel,
+        TERMINAL_CONTEXT,
+        Some(palette(
+            "Toggle Git Panel",
+            "git panel changes commit stage diff vcs",
+            CommandPaletteVisibility::Always
+        )),
+        Some(menu(
+            MenuRoot::View,
+            0,
+            "Git Panel",
+            MenuVisibility::Always,
+            MenuActionRole::Normal
+        ))
+    ),
+    (
+        ToggleInspector,
+        TERMINAL_CONTEXT,
+        Some(palette(
+            "Toggle Inspector",
+            "open show close hide inspector developer debug devtools terminal state keyboard render",
+            CommandPaletteVisibility::Always
+        )),
+        Some(menu(
+            MenuRoot::View,
+            0,
+            "Inspector",
+            MenuVisibility::Always,
+            MenuActionRole::Normal
+        ))
+    ),
 );
 
 termy_command_core::termy_command_catalog!(impl_command_action_id_mapping);
@@ -1192,9 +1240,9 @@ mod tests {
             .map(|entry| entry.section)
             .collect::<Vec<_>>();
         #[cfg(not(target_os = "windows"))]
-        assert_eq!(sections, [0, 0, 1, 1, 1, 1, 1]);
+        assert_eq!(sections, [0, 0, 0, 1, 1, 1, 1, 1]);
         #[cfg(target_os = "windows")]
-        assert_eq!(sections, [0, 0, 1]);
+        assert_eq!(sections, [0, 0, 0, 1]);
     }
 
     #[test]
@@ -1333,6 +1381,8 @@ mod tests {
         let caps = CommandCapabilities {
             tmux_runtime_active: false,
             install_cli_available: true,
+            browser_tabs_enabled: true,
+            git_panel_enabled: true,
         };
         let availability = CommandAction::ResizePaneLeft.availability(caps);
         assert!(availability.enabled);

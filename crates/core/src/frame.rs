@@ -1,6 +1,7 @@
 use alacritty_terminal::{
     event::EventListener,
     grid::Dimensions,
+    index::{Column, Line},
     term::{
         Term,
         cell::{Cell, Flags},
@@ -176,9 +177,16 @@ pub(crate) fn snapshot_from_term<T: EventListener>(
     let rows = usize::from(size.rows);
     let live_colors = term.colors();
     let mut cells = Vec::with_capacity(cols.saturating_mul(rows));
+    // Resolving the default fg/bg colors costs several palette lookups per
+    // call; stamp coordinates onto one template instead of resolving per cell.
+    let template = default_cell(0, 0, live_colors, query_colors);
     for row in 0..rows {
         for col in 0..cols {
-            cells.push(default_cell(col, row, live_colors, query_colors));
+            cells.push(TermyCell {
+                col,
+                row,
+                ..template.clone()
+            });
         }
     }
 
@@ -240,6 +248,7 @@ pub(crate) fn snapshot_update_from_term<T: EventListener>(
         TerminalDamageSnapshot::Partial(spans) => {
             let mut update_spans = Vec::new();
             let mut cells = Vec::new();
+            let template = default_cell(0, 0, live_colors, query_colors);
 
             for span in spans {
                 if span.row >= rows || cols == 0 {
@@ -258,35 +267,23 @@ pub(crate) fn snapshot_update_from_term<T: EventListener>(
                     base_index,
                 });
                 for col in left_col..=right_col {
-                    cells.push(default_cell(col, span.row, live_colors, query_colors));
+                    cells.push(TermyCell {
+                        col,
+                        row: span.row,
+                        ..template.clone()
+                    });
                 }
             }
 
-            let content = term.renderable_content();
-            for indexed_cell in content.display_iter {
-                let row = indexed_cell.point.line.0 + content.display_offset as i32;
-                if row < 0 {
-                    continue;
+            let display_offset = grid.display_offset() as i32;
+            for span in &update_spans {
+                let line = Line(span.row as i32 - display_offset);
+                for col in span.left_col..=span.right_col {
+                    let index = span.base_index + (col - span.left_col);
+                    let cell = &grid[line][Column(col)];
+                    cells[index] =
+                        cell_from_renderable_cell(col, span.row, cell, live_colors, query_colors);
                 }
-                let row = row as usize;
-                let col = indexed_cell.point.column.0;
-                if row >= rows || col >= cols {
-                    continue;
-                }
-                let Some(span) = update_spans
-                    .iter()
-                    .find(|span| span.row == row && col >= span.left_col && col <= span.right_col)
-                else {
-                    continue;
-                };
-                let index = span.base_index + (col - span.left_col);
-                cells[index] = cell_from_renderable_cell(
-                    col,
-                    row,
-                    indexed_cell.cell,
-                    live_colors,
-                    query_colors,
-                );
             }
 
             let spans = update_spans
@@ -521,6 +518,73 @@ mod tests {
         assert_eq!(
             update.cells.iter().map(|cell| cell.col).collect::<Vec<_>>(),
             vec![1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn snapshot_update_partial_reads_only_clipped_dirty_cells() {
+        let size = TerminalSize {
+            cols: 5,
+            rows: 3,
+            cell_width: 9.0,
+            cell_height: 18.0,
+        };
+        let mut term = Term::new(TermConfig::default(), &size, VoidListener);
+        let mut parser: ansi::Processor = ansi::Processor::new();
+        parser.advance(&mut term, b"abcde\r\nfghij\r\nklmno");
+
+        let update = snapshot_update_from_term(
+            &term,
+            size,
+            TerminalQueryColors::default(),
+            TerminalDamageSnapshot::Partial(vec![
+                TerminalDirtySpan {
+                    row: 0,
+                    left_col: 1,
+                    right_col: 3,
+                },
+                TerminalDirtySpan {
+                    row: 1,
+                    left_col: 2,
+                    right_col: 99,
+                },
+                TerminalDirtySpan {
+                    row: 99,
+                    left_col: 0,
+                    right_col: 4,
+                },
+            ]),
+        );
+
+        assert_eq!(
+            update.damage,
+            TerminalDamageSnapshot::Partial(vec![
+                TerminalDirtySpan {
+                    row: 0,
+                    left_col: 1,
+                    right_col: 3,
+                },
+                TerminalDirtySpan {
+                    row: 1,
+                    left_col: 2,
+                    right_col: 4,
+                },
+            ])
+        );
+        assert_eq!(
+            update
+                .cells
+                .iter()
+                .map(|cell| (cell.row, cell.col, cell.char))
+                .collect::<Vec<_>>(),
+            vec![
+                (0, 1, 'b'),
+                (0, 2, 'c'),
+                (0, 3, 'd'),
+                (1, 2, 'h'),
+                (1, 3, 'i'),
+                (1, 4, 'j'),
+            ]
         );
     }
 }

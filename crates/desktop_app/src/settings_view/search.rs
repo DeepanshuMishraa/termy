@@ -930,11 +930,7 @@ impl SettingsWindow {
         let search_content = self.search_input_content(&query_text, has_query, is_active, cx);
         let input = self.search_input_container(search_content, is_active, cx);
 
-        let mut search_container = div()
-            .id("settings-sidebar-search")
-            .px_3()
-            .pb_3()
-            .child(input);
+        let mut search_container = div().id("settings-sidebar-search").child(input);
         if has_query {
             search_container = search_container.child(self.search_results_preview(
                 all_results,
@@ -962,9 +958,11 @@ impl SettingsWindow {
         let text_secondary = self.text_secondary();
         let icon_path = Self::section_icon_path(section);
         let icon_tint = self.icon_color(is_active);
+        let selection_accent = self.accent_with_alpha(0.95);
 
         div()
             .id(SharedString::from(label))
+            .relative()
             .h(px(SIDEBAR_ITEM_HEIGHT))
             .px_2()
             .rounded(px(SIDEBAR_ITEM_RADIUS))
@@ -983,6 +981,20 @@ impl SettingsWindow {
                 }
             })
             .hover(|s| s.bg(hover_bg))
+            .when(is_active, |s| {
+                s.child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .top(px(SIDEBAR_SELECTED_ACCENT_INSET_Y))
+                        .w(px(SIDEBAR_SELECTED_ACCENT_WIDTH))
+                        .h(px((SIDEBAR_ITEM_HEIGHT
+                            - (SIDEBAR_SELECTED_ACCENT_INSET_Y * 2.0))
+                            .max(0.0)))
+                        .rounded_full()
+                        .bg(selection_accent),
+                )
+            })
             .child(
                 svg()
                     .path(SharedString::from(icon_path))

@@ -49,18 +49,20 @@ require_cmd awk
 
 echo "==> Checking native bundle identifiers"
 if grep -R -n -E 'com\.example|PRODUCT_BUNDLE_IDENTIFIER *= *com\.example' \
-  "$MACOS_DIR/Sources" "$MACOS_DIR/script" "$MACOS_DIR/scripts" >/dev/null; then
+  "$MACOS_DIR/Sources" "$MACOS_DIR/script" "$MACOS_DIR/scripts" "$REPO_ROOT/crates/xtask/src" >/dev/null; then
   grep -R -n -E 'com\.example|PRODUCT_BUNDLE_IDENTIFIER *= *com\.example' \
-    "$MACOS_DIR/Sources" "$MACOS_DIR/script" "$MACOS_DIR/scripts" >&2
+    "$MACOS_DIR/Sources" "$MACOS_DIR/script" "$MACOS_DIR/scripts" "$REPO_ROOT/crates/xtask/src" >&2
   fail "placeholder bundle identifier found in native macOS sources or scripts"
 fi
 
 source_bundle_id="$(awk -F'"' '/static let bundleIdentifier/ { print $2; exit }' "$MACOS_DIR/Sources/TermySwift/App/TermySwiftApp.swift")"
 run_bundle_id="$(awk -F'"' '/^BUNDLE_ID=/ { print $2; exit }' "$MACOS_DIR/script/build_and_run.sh")"
+xtask_bundle_id="$(awk -F'"' '/const BUNDLE_ID: &str =/ { print $2; exit }' "$REPO_ROOT/crates/xtask/src/macos.rs")"
 dmg_bundle_id="$(awk -F'"' '/^BUNDLE_ID=/ { print $2; exit }' "$MACOS_DIR/scripts/build-dmg.sh")"
 
 [[ -n "$source_bundle_id" ]] || fail "could not read AppMetadata.bundleIdentifier"
 [[ "$source_bundle_id" == "$run_bundle_id" ]] || fail "build_and_run.sh bundle ID ($run_bundle_id) differs from source ($source_bundle_id)"
+[[ "$source_bundle_id" == "$xtask_bundle_id" ]] || fail "xtask macos bundle ID ($xtask_bundle_id) differs from source ($source_bundle_id)"
 [[ "$source_bundle_id" == "$dmg_bundle_id" ]] || fail "build-dmg.sh bundle ID ($dmg_bundle_id) differs from source ($source_bundle_id)"
 [[ "$source_bundle_id" =~ ^[A-Za-z0-9][A-Za-z0-9-]*(\.[A-Za-z0-9][A-Za-z0-9-]*)+$ ]] || fail "bundle ID is not reverse-DNS-like: $source_bundle_id"
 
@@ -84,7 +86,7 @@ if [[ -n "$APP_PATH" ]]; then
   echo "==> Checking staged native app bundle"
   [[ -d "$APP_PATH" ]] || fail "app bundle not found: $APP_PATH"
   info_plist="$APP_PATH/Contents/Info.plist"
-  app_binary="$APP_PATH/Contents/MacOS/TermyAlpha"
+  app_binary="$APP_PATH/Contents/MacOS/Termy"
   ffi_dylib="$APP_PATH/Contents/Frameworks/libtermy_ffi.dylib"
   [[ -f "$info_plist" ]] || fail "missing Info.plist: $info_plist"
   [[ -x "$app_binary" ]] || fail "missing executable app binary: $app_binary"

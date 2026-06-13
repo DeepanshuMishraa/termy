@@ -57,7 +57,7 @@ while IFS= read -r manifest; do
   require_path "$crate_dir/README.md"
 done < <(find crates -mindepth 2 -maxdepth 2 -name Cargo.toml | sort)
 
-forbid_pattern 'macos/scripts|macos/dist|TermyAlpha' \
+forbid_pattern 'macos/scripts|macos/dist' \
   ".github/workflows/release.yml" \
   "release workflow must use the current scripts/ packaging paths and Termy artifact names"
 

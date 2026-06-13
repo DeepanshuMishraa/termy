@@ -2,8 +2,8 @@ import AppKit
 import SwiftUI
 
 private enum AppMetadata {
-    static let displayName = "TermyAlpha"
-    static let bundleIdentifier = "com.lassevestergaard.TermyAlpha"
+    static let displayName = "Termy"
+    static let bundleIdentifier = "com.lassevestergaard.termy"
 }
 
 @MainActor
@@ -22,6 +22,7 @@ enum TermyNativeAppActions {
             }
             return NSWorkspace.shared.open(url)
         } catch {
+            TermyErrorPresenter.present("Couldn't open the config file", error: error)
             return false
         }
     }
@@ -33,12 +34,22 @@ enum TermyNativeAppActions {
             NotificationCenter.default.post(name: .termySettingsChanged, object: nil)
             return true
         } catch {
+            TermyErrorPresenter.present("Couldn't prettify the config file", error: error)
             return false
         }
     }
 
     static func showAppInfo() {
         NSApp.orderFrontStandardAboutPanel(nil)
+    }
+
+    static func installCLI() {
+        do {
+            let message = try SettingsBridge.installCLI()
+            TermyToastCenter.shared.show(message, kind: .success)
+        } catch {
+            TermyErrorPresenter.present("Couldn't install the command line tool", error: error)
+        }
     }
 
     static func restartApp() {
@@ -52,11 +63,7 @@ enum TermyNativeAppActions {
     }
 
     static func toggleNativeTabBarVisibility(for window: NSWindow?) -> Bool {
-        guard let window = window ?? NSApp.keyWindow ?? NSApp.mainWindow else {
-            return false
-        }
-        NSApp.sendAction(#selector(NSWindow.toggleTabBar(_:)), to: nil, from: window)
-        return true
+        NativeTabWindowManager.shared.showNativeTabBar(for: window)
     }
 }
 
@@ -66,17 +73,34 @@ struct TermySwiftApp: App {
     @FocusedValue(\.terminalCommands) private var terminalCommands
     @StateObject private var configurationStore = TermyConfigurationStore.shared
 
+    init() {
+        // Runs the headless render benchmark and exits when `--benchmark` is
+        // passed, before any window is created.
+        TermyBenchmarkRunner.runIfRequested()
+    }
+
+    private var effectiveTerminalCommands: TerminalCommandSet? {
+        terminalCommands ?? TerminalCommandRouter.shared.focusedCommandSet()
+    }
+
     var body: some Scene {
         WindowGroup(AppMetadata.displayName) {
             TerminalWorkspaceView()
                 .termyUIFont()
                 .frame(minWidth: 760, minHeight: 480)
                 .background(WindowConfigurator())
+                .handlesSettingsOpenRequests()
+                .onOpenURL { url in
+                    TermyDeeplinkRouter.handle(url)
+                }
         }
         .commands {
             CommandGroup(after: .appInfo) {
                 Button("Check for Updates…") {
                     Task { await AppUpdater.shared.checkForUpdates(userInitiated: true) }
+                }
+                Button("Install Command Line Tool…") {
+                    TermyNativeAppActions.installCLI()
                 }
             }
 
@@ -86,8 +110,8 @@ struct TermySwiftApp: App {
 
             CommandGroup(replacing: .newItem) {
                 Button("New Tab") {
-                    if let terminalCommands {
-                        terminalCommands.execute(.newTab)
+                    if let effectiveTerminalCommands {
+                        effectiveTerminalCommands.execute(.newTab)
                     } else {
                         NativeTabWindowManager.shared.openNativeTab()
                     }
@@ -105,105 +129,143 @@ struct TermySwiftApp: App {
 
                 Divider()
 
+                Button("Previous Tab") {
+                    NativeTabWindowManager.shared.selectRelativeNativeTab(offset: -1)
+                }
+
+                Button("Next Tab") {
+                    NativeTabWindowManager.shared.selectRelativeNativeTab(offset: 1)
+                }
+
+                Button("Move Tab Left") {
+                    NativeTabWindowManager.shared.moveSelectedNativeTab(offset: -1)
+                }
+
+                Button("Move Tab Right") {
+                    NativeTabWindowManager.shared.moveSelectedNativeTab(offset: 1)
+                }
+
+                Divider()
+
                 Button("Split Right") {
                     if !TerminalCommandRouter.shared.splitFocused(.horizontal) {
-                        terminalCommands?.execute(.splitPaneVertical)
+                        effectiveTerminalCommands?.execute(.splitPaneVertical)
                     }
                 }
                 .keyboardShortcut("d", modifiers: [.command])
-                .disabled(terminalCommands == nil)
+                .disabled(effectiveTerminalCommands == nil)
 
                 Button("Split Down") {
                     if !TerminalCommandRouter.shared.splitFocused(.vertical) {
-                        terminalCommands?.execute(.splitPaneHorizontal)
+                        effectiveTerminalCommands?.execute(.splitPaneHorizontal)
                     }
                 }
                 .keyboardShortcut("d", modifiers: [.command, .shift])
-                .disabled(terminalCommands == nil)
+                .disabled(effectiveTerminalCommands == nil)
 
                 Divider()
 
                 Button("Close Pane or Tab") {
-                    terminalCommands?.execute(.closePaneOrTab)
+                    effectiveTerminalCommands?.execute(.closePaneOrTab)
                 }
                 .keyboardShortcut("w", modifiers: [.command])
-                .disabled(terminalCommands == nil)
+                .disabled(effectiveTerminalCommands == nil)
 
                 Button("Close Pane") {
-                    terminalCommands?.execute(.closePane)
+                    effectiveTerminalCommands?.execute(.closePane)
                 }
                 .keyboardShortcut("w", modifiers: [.command, .shift])
-                .disabled(terminalCommands == nil)
+                .disabled(effectiveTerminalCommands == nil)
 
                 Divider()
 
                 Button("Next Pane") {
-                    terminalCommands?.execute(.focusPaneNext)
+                    effectiveTerminalCommands?.execute(.focusPaneNext)
                 }
                 .keyboardShortcut("o", modifiers: [.command])
-                .disabled(terminalCommands == nil)
+                .disabled(effectiveTerminalCommands == nil)
 
                 Button("Previous Pane") {
-                    terminalCommands?.execute(.focusPanePrevious)
+                    effectiveTerminalCommands?.execute(.focusPanePrevious)
                 }
                 .keyboardShortcut("o", modifiers: [.command, .shift])
-                .disabled(terminalCommands == nil)
+                .disabled(effectiveTerminalCommands == nil)
 
                 Button("Focus Pane Left") {
-                    terminalCommands?.execute(.focusPane(.left))
+                    effectiveTerminalCommands?.execute(.focusPane(.left))
                 }
                 .keyboardShortcut(.leftArrow, modifiers: [.command, .option])
-                .disabled(terminalCommands == nil)
+                .disabled(effectiveTerminalCommands == nil)
 
                 Button("Focus Pane Right") {
-                    terminalCommands?.execute(.focusPane(.right))
+                    effectiveTerminalCommands?.execute(.focusPane(.right))
                 }
                 .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
-                .disabled(terminalCommands == nil)
+                .disabled(effectiveTerminalCommands == nil)
 
                 Button("Focus Pane Up") {
-                    terminalCommands?.execute(.focusPane(.up))
+                    effectiveTerminalCommands?.execute(.focusPane(.up))
                 }
                 .keyboardShortcut(.upArrow, modifiers: [.command, .option])
-                .disabled(terminalCommands == nil)
+                .disabled(effectiveTerminalCommands == nil)
 
                 Button("Focus Pane Down") {
-                    terminalCommands?.execute(.focusPane(.down))
+                    effectiveTerminalCommands?.execute(.focusPane(.down))
                 }
                 .keyboardShortcut(.downArrow, modifiers: [.command, .option])
-                .disabled(terminalCommands == nil)
+                .disabled(effectiveTerminalCommands == nil)
 
                 Divider()
 
                 Button("Resize Pane Left") {
-                    terminalCommands?.execute(.resizePane(.left))
+                    effectiveTerminalCommands?.execute(.resizePane(.left))
                 }
                 .keyboardShortcut(.leftArrow, modifiers: [.command, .option, .shift])
-                .disabled(terminalCommands == nil)
+                .disabled(effectiveTerminalCommands == nil)
 
                 Button("Resize Pane Right") {
-                    terminalCommands?.execute(.resizePane(.right))
+                    effectiveTerminalCommands?.execute(.resizePane(.right))
                 }
                 .keyboardShortcut(.rightArrow, modifiers: [.command, .option, .shift])
-                .disabled(terminalCommands == nil)
+                .disabled(effectiveTerminalCommands == nil)
 
                 Button("Resize Pane Up") {
-                    terminalCommands?.execute(.resizePane(.up))
+                    effectiveTerminalCommands?.execute(.resizePane(.up))
                 }
                 .keyboardShortcut(.upArrow, modifiers: [.command, .option, .shift])
-                .disabled(terminalCommands == nil)
+                .disabled(effectiveTerminalCommands == nil)
 
                 Button("Resize Pane Down") {
-                    terminalCommands?.execute(.resizePane(.down))
+                    effectiveTerminalCommands?.execute(.resizePane(.down))
                 }
                 .keyboardShortcut(.downArrow, modifiers: [.command, .option, .shift])
-                .disabled(terminalCommands == nil)
+                .disabled(effectiveTerminalCommands == nil)
 
                 Button("Toggle Pane Zoom") {
-                    terminalCommands?.execute(.togglePaneZoom)
+                    effectiveTerminalCommands?.execute(.togglePaneZoom)
                 }
                 .keyboardShortcut(.return, modifiers: [.command])
-                .disabled(terminalCommands == nil)
+                .disabled(effectiveTerminalCommands == nil)
+
+                Divider()
+
+                Button("Increase Font Size") {
+                    effectiveTerminalCommands?.execute(.increaseFontSize)
+                }
+                .keyboardShortcut("=", modifiers: [.command])
+                .disabled(effectiveTerminalCommands == nil)
+
+                Button("Decrease Font Size") {
+                    effectiveTerminalCommands?.execute(.decreaseFontSize)
+                }
+                .keyboardShortcut("-", modifiers: [.command])
+                .disabled(effectiveTerminalCommands == nil)
+
+                Button("Reset Font Size") {
+                    effectiveTerminalCommands?.execute(.resetFontSize)
+                }
+                .keyboardShortcut("0", modifiers: [.command])
+                .disabled(effectiveTerminalCommands == nil)
 
                 Divider()
 
@@ -220,48 +282,48 @@ struct TermySwiftApp: App {
                 }
 
                 Button("Send Interrupt") {
-                    terminalCommands?.execute(.sendInterrupt)
+                    effectiveTerminalCommands?.execute(.sendInterrupt)
                 }
                 .keyboardShortcut("c", modifiers: [.control])
-                .disabled(terminalCommands == nil)
+                .disabled(effectiveTerminalCommands == nil)
             }
 
             CommandGroup(after: .textEditing) {
                 Button("Find") {
-                    terminalCommands?.execute(.openSearch)
+                    effectiveTerminalCommands?.execute(.openSearch)
                 }
                 .keyboardShortcut("f", modifiers: [.command])
-                .disabled(terminalCommands == nil)
+                .disabled(effectiveTerminalCommands == nil)
 
                 Button("Find Next") {
-                    terminalCommands?.execute(.searchNext)
+                    effectiveTerminalCommands?.execute(.searchNext)
                 }
                 .keyboardShortcut("g", modifiers: [.command])
-                .disabled(terminalCommands == nil)
+                .disabled(effectiveTerminalCommands == nil)
 
                 Button("Find Previous") {
-                    terminalCommands?.execute(.searchPrevious)
+                    effectiveTerminalCommands?.execute(.searchPrevious)
                 }
                 .keyboardShortcut("g", modifiers: [.command, .shift])
-                .disabled(terminalCommands == nil)
+                .disabled(effectiveTerminalCommands == nil)
 
                 Button("Case Sensitive") {
-                    terminalCommands?.execute(.toggleSearchCaseSensitive)
+                    effectiveTerminalCommands?.execute(.toggleSearchCaseSensitive)
                 }
                 .keyboardShortcut("c", modifiers: [.command, .option])
-                .disabled(terminalCommands == nil)
+                .disabled(effectiveTerminalCommands == nil)
 
                 Button("Regex") {
-                    terminalCommands?.execute(.toggleSearchRegex)
+                    effectiveTerminalCommands?.execute(.toggleSearchRegex)
                 }
                 .keyboardShortcut("r", modifiers: [.command, .option])
-                .disabled(terminalCommands == nil)
+                .disabled(effectiveTerminalCommands == nil)
 
                 Button("Close Search") {
-                    terminalCommands?.execute(.closeSearch)
+                    effectiveTerminalCommands?.execute(.closeSearch)
                 }
                 .keyboardShortcut(.escape, modifiers: [])
-                .disabled(terminalCommands == nil)
+                .disabled(effectiveTerminalCommands == nil)
             }
         }
 
@@ -296,6 +358,33 @@ private struct OpenSettingsButton: View {
     }
 }
 
+private struct SettingsOpenRequestHandler: ViewModifier {
+    @Environment(\.openWindow) private var openWindow
+    @ObservedObject private var configurationStore = TermyConfigurationStore.shared
+
+    func body(content: Content) -> some View {
+        content.onReceive(NotificationCenter.default.publisher(for: .termyOpenSettingsRequested)) { _ in
+            openSettings()
+        }
+    }
+
+    private func openSettings() {
+        if configurationStore.configuration.native.simpleMode,
+           TermyNativeAppActions.openConfigFileInEditor() {
+            NSApp.activate(ignoringOtherApps: true)
+        } else {
+            openWindow(id: TermySwiftApp.settingsWindowID)
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+}
+
+private extension View {
+    func handlesSettingsOpenRequests() -> some View {
+        modifier(SettingsOpenRequestHandler())
+    }
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var closePaneEventMonitor: LocalEventMonitor?
@@ -320,6 +409,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if let monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: { event in
             if ConfiguredKeybindRouter.shared.handle(event) {
+                return nil
+            }
+
+            if Self.handleDefaultFontZoomShortcut(event) {
                 return nil
             }
 
@@ -366,6 +459,66 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func newWindowForTab(_ sender: Any?) {
         NativeTabWindowManager.shared.openNativeTab()
     }
+
+    private static func handleDefaultFontZoomShortcut(_ event: NSEvent) -> Bool {
+        let flags = event.modifierFlags
+        guard flags.contains(.command),
+              !flags.contains(.control),
+              !flags.contains(.option)
+        else {
+            return false
+        }
+
+        guard let terminal = TerminalCommandRouter.shared.focusedStore(for: event)?.focusedTerminal else {
+            return false
+        }
+
+        switch fontZoomShortcut(for: event) {
+        case .increase:
+            terminal.increaseFontSize()
+        case .decrease:
+            terminal.decreaseFontSize()
+        case .reset:
+            terminal.resetFontSize()
+        case nil:
+            return false
+        }
+        return true
+    }
+
+    private enum FontZoomShortcut {
+        case increase
+        case decrease
+        case reset
+    }
+
+    private static func fontZoomShortcut(for event: NSEvent) -> FontZoomShortcut? {
+        let characters = [
+            event.characters,
+            event.charactersIgnoringModifiers
+        ].compactMap { $0?.lowercased() }
+
+        if characters.contains("+") || characters.contains("=") {
+            return .increase
+        }
+        if characters.contains("-") {
+            return .decrease
+        }
+        if characters.contains("0") {
+            return .reset
+        }
+
+        switch event.keyCode {
+        case 24, 69:
+            return .increase
+        case 27, 78:
+            return .decrease
+        case 29, 82:
+            return .reset
+        default:
+            return nil
+        }
+    }
 }
 
 @MainActor
@@ -395,36 +548,46 @@ private final class ConfiguredKeybindRouter {
             return false
         }
 
-        return execute(action: keybind.action, event: event)
+        return execute(keybind.keybindAction, event: event)
     }
 
-    private func execute(action: String, event: NSEvent) -> Bool {
+    /// Runs `body` against the window's focused store, reporting whether a store
+    /// was present (i.e. whether the keybind was handled).
+    private func withFocusedStore(_ event: NSEvent, _ body: (TerminalWorkspaceStore) -> Void) -> Bool {
+        guard let store = TerminalCommandRouter.shared.focusedStore(for: event) else {
+            return false
+        }
+        body(store)
+        return true
+    }
+
+    private func execute(_ action: TerminalKeybindAction, event: NSEvent) -> Bool {
         switch action {
-        case "app_info":
+        case .appInfo:
             TermyNativeAppActions.showAppInfo()
             return true
-        case "restart_app":
+        case .restartApp:
             TermyNativeAppActions.restartApp()
             return true
-        case "open_config":
+        case .openConfig:
             return TermyNativeAppActions.openConfigFileInEditor()
-        case "prettify_config":
+        case .prettifyConfig:
             return TermyNativeAppActions.prettifyConfig()
-        case "toggle_tab_bar_visibility":
+        case .toggleTabBarVisibility:
             return TermyNativeAppActions.toggleNativeTabBarVisibility(for: event.window)
-        case "move_tab_left":
+        case .moveTabLeft:
             NativeTabWindowManager.shared.moveSelectedNativeTab(offset: -1)
             return true
-        case "move_tab_right":
+        case .moveTabRight:
             NativeTabWindowManager.shared.moveSelectedNativeTab(offset: 1)
             return true
-        case "switch_tab_left":
+        case .switchTabLeft:
             NativeTabWindowManager.shared.selectRelativeNativeTab(offset: -1)
             return true
-        case "switch_tab_right", "cycle_tabs":
+        case .switchTabRight:
             NativeTabWindowManager.shared.selectRelativeNativeTab(offset: 1)
             return true
-        case "toggle_command_palette":
+        case .toggleCommandPalette:
             guard let store = TerminalCommandRouter.shared.focusedStore(for: event),
                   !configuration.native.simpleMode
             else {
@@ -432,128 +595,75 @@ private final class ConfiguredKeybindRouter {
             }
             store.toggleCommandPalette()
             return true
-        case "new_tab":
+        case .newTab:
             NativeTabWindowManager.shared.openNativeTab()
             return true
-        case "close_tab":
+        case .closeTab:
             (event.window ?? NSApp.keyWindow)?.performClose(nil)
             return true
-        case "close_pane_or_tab":
+        case .closePaneOrTab:
             if TerminalCommandRouter.shared.closeFocusedPaneIfSplit(for: event) {
                 return true
             }
             (event.window ?? NSApp.keyWindow)?.performClose(nil)
             return true
-        case "close_pane":
-            guard let store = TerminalCommandRouter.shared.focusedStore(for: event) else {
-                return false
-            }
-            store.closeFocusedPane()
-            return true
-        case "split_pane_vertical":
+        case .closePane:
+            return withFocusedStore(event) { $0.closeFocusedPane() }
+        case .splitPaneVertical:
             return TerminalCommandRouter.shared.splitFocused(.horizontal, for: event.window)
-        case "split_pane_horizontal":
+        case .splitPaneHorizontal:
             return TerminalCommandRouter.shared.splitFocused(.vertical, for: event.window)
-        case "focus_pane_next":
-            guard let store = TerminalCommandRouter.shared.focusedStore(for: event) else {
-                return false
-            }
-            store.focusNextPane()
-            return true
-        case "focus_pane_previous":
-            guard let store = TerminalCommandRouter.shared.focusedStore(for: event) else {
-                return false
-            }
-            store.focusPreviousPane()
-            return true
-        case "focus_pane_left":
-            return TerminalCommandRouter.shared.focusedStore(for: event)?.focusPane(in: .left) ?? false
-        case "focus_pane_right":
-            return TerminalCommandRouter.shared.focusedStore(for: event)?.focusPane(in: .right) ?? false
-        case "focus_pane_up":
-            return TerminalCommandRouter.shared.focusedStore(for: event)?.focusPane(in: .up) ?? false
-        case "focus_pane_down":
-            return TerminalCommandRouter.shared.focusedStore(for: event)?.focusPane(in: .down) ?? false
-        case "resize_pane_left":
-            return TerminalCommandRouter.shared.focusedStore(for: event)?.resizeFocusedPane(in: .left) ?? false
-        case "resize_pane_right":
-            return TerminalCommandRouter.shared.focusedStore(for: event)?.resizeFocusedPane(in: .right) ?? false
-        case "resize_pane_up":
-            return TerminalCommandRouter.shared.focusedStore(for: event)?.resizeFocusedPane(in: .up) ?? false
-        case "resize_pane_down":
-            return TerminalCommandRouter.shared.focusedStore(for: event)?.resizeFocusedPane(in: .down) ?? false
-        case "toggle_pane_zoom":
-            guard let store = TerminalCommandRouter.shared.focusedStore(for: event) else {
-                return false
-            }
-            store.toggleFocusedPaneZoom()
-            return true
-        case "copy":
+        case .focusPaneNext:
+            return withFocusedStore(event) { $0.focusNextPane() }
+        case .focusPanePrevious:
+            return withFocusedStore(event) { $0.focusPreviousPane() }
+        case .focusPane(let direction):
+            return TerminalCommandRouter.shared.focusedStore(for: event)?.focusPane(in: direction) ?? false
+        case .resizePane(let direction):
+            return TerminalCommandRouter.shared.focusedStore(for: event)?.resizeFocusedPane(in: direction) ?? false
+        case .togglePaneZoom:
+            return withFocusedStore(event) { $0.toggleFocusedPaneZoom() }
+        case .increaseFontSize:
+            return withFocusedStore(event) { $0.focusedTerminal?.increaseFontSize() }
+        case .decreaseFontSize:
+            return withFocusedStore(event) { $0.focusedTerminal?.decreaseFontSize() }
+        case .resetFontSize:
+            return withFocusedStore(event) { $0.focusedTerminal?.resetFontSize() }
+        case .copy:
             return TerminalCommandRouter.shared.focusedStore(for: event)?.focusedTerminal?.copySelection() ?? false
-        case "paste":
+        case .paste:
             guard let text = NSPasteboard.general.string(forType: .string) else {
                 return false
             }
             TerminalCommandRouter.shared.focusedStore(for: event)?.focusedTerminal?.send(bytes: Array(text.utf8))
             return true
-        case "open_search":
-            guard let store = TerminalCommandRouter.shared.focusedStore(for: event) else {
-                return false
-            }
-            store.showSearch()
-            return true
-        case "close_search":
-            guard let store = TerminalCommandRouter.shared.focusedStore(for: event) else {
-                return false
-            }
-            store.hideSearch()
-            return true
-        case "search_next":
+        case .openSearch:
+            return withFocusedStore(event) { $0.showSearch() }
+        case .closeSearch:
+            return withFocusedStore(event) { $0.hideSearch() }
+        case .searchNext:
             TerminalCommandRouter.shared.focusedStore(for: event)?.focusedTerminal?.selectNextSearchMatch()
             return true
-        case "search_previous":
+        case .searchPrevious:
             TerminalCommandRouter.shared.focusedStore(for: event)?.focusedTerminal?.selectPreviousSearchMatch()
             return true
-        case "toggle_search_case_sensitive":
+        case .toggleSearchCaseSensitive:
             TerminalCommandRouter.shared.focusedStore(for: event)?.toggleSearchCaseSensitive()
             return true
-        case "toggle_search_regex":
+        case .toggleSearchRegex:
             TerminalCommandRouter.shared.focusedStore(for: event)?.toggleSearchRegex()
             return true
-        case "switch_to_tab_1":
-            NativeTabWindowManager.shared.selectNativeTab(number: 1)
+        case .switchToTab(let number):
+            NativeTabWindowManager.shared.selectNativeTab(number: number)
             return true
-        case "switch_to_tab_2":
-            NativeTabWindowManager.shared.selectNativeTab(number: 2)
-            return true
-        case "switch_to_tab_3":
-            NativeTabWindowManager.shared.selectNativeTab(number: 3)
-            return true
-        case "switch_to_tab_4":
-            NativeTabWindowManager.shared.selectNativeTab(number: 4)
-            return true
-        case "switch_to_tab_5":
-            NativeTabWindowManager.shared.selectNativeTab(number: 5)
-            return true
-        case "switch_to_tab_6":
-            NativeTabWindowManager.shared.selectNativeTab(number: 6)
-            return true
-        case "switch_to_tab_7":
-            NativeTabWindowManager.shared.selectNativeTab(number: 7)
-            return true
-        case "switch_to_tab_8":
-            NativeTabWindowManager.shared.selectNativeTab(number: 8)
-            return true
-        case "switch_to_tab_9":
-            NativeTabWindowManager.shared.selectNativeTab(number: 9)
-            return true
-        case "minimize_window":
+        case .minimizeWindow:
             (event.window ?? NSApp.keyWindow)?.miniaturize(nil)
             return true
-        case "quit":
+        case .quit:
             NSApp.terminate(nil)
             return true
-        default:
+        case .clearScrollback, .sendInterrupt, .runTask, .unknown:
+            // Not bound as keybinds (palette-only or task payload required).
             return false
         }
     }
@@ -659,6 +769,8 @@ struct NativeTabDescriptor: Identifiable {
     var index: Int
     var title: String
     var isSelected: Bool
+    var isPinned: Bool
+    var hasManualTitle: Bool
     fileprivate weak var window: NSWindow?
 }
 
@@ -669,22 +781,36 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
     private var retainedWindows: [NSWindow] = []
     private var configuredWindowIDs = Set<ObjectIdentifier>()
     private let tabbingIdentifier = "\(AppMetadata.bundleIdentifier).native-tabs"
+    private var entranceTabID: ObjectIdentifier?
+    private var entranceIncludesBar = false
+    private var entranceDeadline = Date.distantPast
 
     func configure(_ window: NSWindow) {
-        window.titlebarAppearsTransparent = true
         window.tabbingMode = .preferred
         window.tabbingIdentifier = tabbingIdentifier
         window.collectionBehavior.insert(.fullScreenPrimary)
 
         let identifier = ObjectIdentifier(window)
         guard !configuredWindowIDs.contains(identifier) else {
+            showSystemTabBarIfNeeded(for: window)
+            applyFocusedTerminalChrome(for: window)
             return
         }
         configuredWindowIDs.insert(identifier)
         if window.title.isEmpty || window.title == "Window" {
             window.title = AppMetadata.displayName
         }
-        hideSystemTabBarIfNeeded(for: window)
+        TerminalWindowChromeApplier.applyFocusedChrome(
+            TerminalWindowChromeState(
+                title: window.title,
+                isFocused: true,
+                background: TerminalRenderConfig.default.background,
+                backgroundOpacity: TerminalRenderConfig.default.backgroundOpacity,
+                backgroundBlur: TerminalRenderConfig.default.backgroundBlur
+            ),
+            to: window
+        )
+        showSystemTabBarIfNeeded(for: window)
         window.setContentSize(TermyConfigurationStore.shared.configuration.windowSize)
         window.center()
         postTabsChanged()
@@ -694,15 +820,47 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
         let window = makeWindow(startupTask: startupTask)
         retainedWindows.append(window)
 
-        if let currentWindow = NSApp.keyWindow ?? NSApp.mainWindow {
+        let anchorWindow = NSApp.keyWindow ?? NSApp.mainWindow
+        noteTabEntrance(for: window, anchorWindow: anchorWindow)
+        if let currentWindow = anchorWindow {
             configure(currentWindow)
             currentWindow.addTabbedWindow(window, ordered: .above)
         }
 
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        hideSystemTabBarIfNeeded(for: window)
+        showSystemTabBarIfNeeded(for: window)
+        applyFocusedTerminalChrome(for: window)
         postTabsChanged()
+    }
+
+    /// Marks a freshly opened tab so the chrome can play its entrance
+    /// animation. Each native tab is its own window with its own chrome view,
+    /// so opening a tab swaps to a freshly mounted chrome where a plain
+    /// SwiftUI insertion transition never fires — the marker travels with the
+    /// tab instead and expires shortly after the open.
+    func noteTabEntrance(for window: NSWindow, anchorWindow: NSWindow?) {
+        entranceTabID = ObjectIdentifier(window)
+        let previousTabCount = anchorWindow.map { nativeTabWindows(for: $0).count } ?? 0
+        let autoHideTabbar = TermyConfigurationStore.shared.configuration.native.autoHideTabbar
+        entranceIncludesBar = autoHideTabbar && previousTabCount <= 1
+        entranceDeadline = Date().addingTimeInterval(0.8)
+    }
+
+    /// Whether `tabID` was just opened and its chrome should animate it in.
+    func shouldAnimateTabEntrance(for tabID: ObjectIdentifier) -> Bool {
+        tabID == entranceTabID && Date() < entranceDeadline
+    }
+
+    /// Whether the whole tab bar should slide in on `window`: only when the
+    /// just-opened tab made the auto-hidden bar visible for the first time.
+    func shouldAnimateBarEntrance(for window: NSWindow?) -> Bool {
+        guard let window else {
+            return false
+        }
+        return entranceIncludesBar
+            && ObjectIdentifier(window) == entranceTabID
+            && Date() < entranceDeadline
     }
 
     func tabDescriptors(for sourceWindow: NSWindow?) -> [NativeTabDescriptor] {
@@ -714,12 +872,15 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
 
         let selectedWindow = NSApp.keyWindow ?? NSApp.mainWindow
         return nativeTabWindows(for: sourceWindow).enumerated().map { index, window in
-            let trimmedTitle = window.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            let store = TerminalCommandRouter.shared.store(forWindow: window)
+            let trimmedTitle = (store?.tabDisplayTitle ?? window.title).trimmingCharacters(in: .whitespacesAndNewlines)
             return NativeTabDescriptor(
                 id: ObjectIdentifier(window),
                 index: index,
                 title: trimmedTitle.isEmpty ? AppMetadata.displayName : trimmedTitle,
                 isSelected: window === selectedWindow,
+                isPinned: store?.tabPinned ?? false,
+                hasManualTitle: store?.tabManualTitle != nil,
                 window: window
             )
         }
@@ -734,12 +895,46 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
         }
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        hideSystemTabBarIfNeeded(for: window)
+        showSystemTabBarIfNeeded(for: window)
+        applyFocusedTerminalChrome(for: window)
         postTabsChanged()
     }
 
     func closeNativeTab(_ descriptor: NativeTabDescriptor) {
         descriptor.window?.performClose(nil)
+        postTabsChanged()
+    }
+
+    func setNativeTabPinned(_ descriptor: NativeTabDescriptor, pinned: Bool) {
+        guard let window = descriptor.window,
+              let store = TerminalCommandRouter.shared.store(forWindow: window)
+        else {
+            return
+        }
+        store.setTabPinned(pinned)
+        postTabsChanged()
+    }
+
+    func renameNativeTab(_ descriptor: NativeTabDescriptor, title: String) {
+        guard let window = descriptor.window,
+              let store = TerminalCommandRouter.shared.store(forWindow: window)
+        else {
+            return
+        }
+        store.renameTab(title)
+        window.title = store.tabDisplayTitle
+        postTabsChanged()
+    }
+
+    /// Brings a tabbed window to the front, restoring it if miniaturized.
+    private func activateTabbedWindow(_ window: NSWindow) {
+        if window.isMiniaturized {
+            window.deminiaturize(nil)
+        }
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        showSystemTabBarIfNeeded(for: window)
+        applyFocusedTerminalChrome(for: window)
         postTabsChanged()
     }
 
@@ -756,14 +951,7 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
             return
         }
 
-        let targetWindow = tabbedWindows[index]
-        if targetWindow.isMiniaturized {
-            targetWindow.deminiaturize(nil)
-        }
-        targetWindow.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-        hideSystemTabBarIfNeeded(for: targetWindow)
-        postTabsChanged()
+        activateTabbedWindow(tabbedWindows[index])
     }
 
     func selectRelativeNativeTab(offset: Int) {
@@ -781,14 +969,7 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
         let selectedWindow = NSApp.keyWindow ?? NSApp.mainWindow
         let currentIndex = tabbedWindows.firstIndex { $0 === selectedWindow } ?? 0
         let targetIndex = (currentIndex + offset + tabbedWindows.count) % tabbedWindows.count
-        let targetWindow = tabbedWindows[targetIndex]
-        if targetWindow.isMiniaturized {
-            targetWindow.deminiaturize(nil)
-        }
-        targetWindow.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-        hideSystemTabBarIfNeeded(for: targetWindow)
-        postTabsChanged()
+        activateTabbedWindow(tabbedWindows[targetIndex])
     }
 
     func moveSelectedNativeTab(offset: Int) {
@@ -816,8 +997,46 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
         let anchorWindow = tabbedWindows[targetIndex]
         anchorWindow.addTabbedWindow(movingWindow, ordered: offset < 0 ? .below : .above)
         movingWindow.makeKeyAndOrderFront(nil)
-        hideSystemTabBarIfNeeded(for: movingWindow)
+        showSystemTabBarIfNeeded(for: movingWindow)
+        applyFocusedTerminalChrome(for: movingWindow)
         postTabsChanged()
+    }
+
+    /// Moves a specific tab to `targetIndex`, used by drag-to-reorder in the
+    /// custom tab chrome.
+    func moveNativeTab(_ descriptor: NativeTabDescriptor, toIndex targetIndex: Int) {
+        guard let movingWindow = descriptor.window,
+              let sourceWindow = nativeTabSourceWindow()
+        else {
+            return
+        }
+
+        let tabbedWindows = nativeTabWindows(for: sourceWindow)
+        guard let currentIndex = tabbedWindows.firstIndex(where: { $0 === movingWindow }) else {
+            return
+        }
+        let clamped = max(0, min(tabbedWindows.count - 1, targetIndex))
+        guard clamped != currentIndex else {
+            return
+        }
+
+        let anchorWindow = tabbedWindows[clamped]
+        anchorWindow.addTabbedWindow(movingWindow, ordered: clamped < currentIndex ? .below : .above)
+        movingWindow.makeKeyAndOrderFront(nil)
+        showSystemTabBarIfNeeded(for: movingWindow)
+        applyFocusedTerminalChrome(for: movingWindow)
+        postTabsChanged()
+    }
+
+    func showNativeTabBar(for window: NSWindow?) -> Bool {
+        guard let window = window ?? NSApp.keyWindow ?? NSApp.mainWindow,
+              isNativeTerminalTabWindow(window)
+        else {
+            return false
+        }
+        showSystemTabBarIfNeeded(for: window)
+        applyFocusedTerminalChrome(for: window)
+        return true
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -830,6 +1049,10 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
     }
 
     func windowDidBecomeKey(_ notification: Notification) {
+        if let window = notification.object as? NSWindow {
+            showSystemTabBarIfNeeded(for: window)
+            applyFocusedTerminalChrome(for: window)
+        }
         postTabsChanged()
     }
 
@@ -884,11 +1107,40 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
         window.tabbingIdentifier == tabbingIdentifier
     }
 
-    private func hideSystemTabBarIfNeeded(for window: NSWindow) {
-        guard window.tabGroup?.isTabBarVisible == true else {
+    private func showSystemTabBarIfNeeded(for window: NSWindow) {
+        guard isNativeTerminalTabWindow(window),
+              nativeTabWindows(for: window).count > 1,
+              window.tabGroup?.isTabBarVisible == false
+        else {
             return
         }
         window.toggleTabBar(nil)
+    }
+
+    @discardableResult
+    func applyFocusedTerminalChrome(for window: NSWindow?) -> Bool {
+        guard let window,
+              isNativeTerminalTabWindow(window),
+              let store = TerminalCommandRouter.shared.store(forWindow: window),
+              let renderConfig = store.focusedTerminal?.renderConfig
+        else {
+            return false
+        }
+
+        let titleChanged = TerminalWindowChromeApplier.applyFocusedChrome(
+            TerminalWindowChromeState(
+                title: store.tabDisplayTitle,
+                isFocused: true,
+                background: renderConfig.background,
+                backgroundOpacity: renderConfig.backgroundOpacity,
+                backgroundBlur: renderConfig.backgroundBlur
+            ),
+            to: window
+        )
+        if titleChanged {
+            postTabsChanged()
+        }
+        return true
     }
 
     private func postTabsChanged() {

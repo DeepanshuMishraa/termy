@@ -21,6 +21,7 @@ mod terminal_view;
 mod text_input;
 mod theme_store;
 mod ui;
+mod workspace_store;
 
 use commands::{OpenConfig, OpenSettings};
 use deeplink::{DeepLinkArgument, DeepLinkRoute};

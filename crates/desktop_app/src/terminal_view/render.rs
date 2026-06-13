@@ -1762,11 +1762,7 @@ impl TerminalView {
             let _ = cx.update(|cx| {
                 this.update(cx, |view, cx| {
                     view.progress_indicator_animation_scheduled = false;
-                    if view
-                        .tabs
-                        .get(view.active_tab)
-                        .is_some_and(|tab| tab.progress_state.is_indeterminate())
-                    {
+                    if view.active_tab_has_indeterminate_progress() {
                         cx.notify();
                     }
                 })
@@ -1775,21 +1771,19 @@ impl TerminalView {
         .detach();
     }
 
-    fn render_terminal_progress_loader(
-        &mut self,
-        _now: Instant,
-        cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
-        if !self.progress_indicator_enabled {
-            return None;
-        }
+    fn active_tab_has_indeterminate_progress(&self) -> bool {
+        self.tabs.get(self.active_tab).is_some_and(|tab| {
+            tab.panes
+                .iter()
+                .any(|pane| pane.progress_state.is_indeterminate())
+        })
+    }
 
-        let state = self.tabs.get(self.active_tab)?.progress_state;
-        if !state.is_active() {
+    /// Thin progress bar pinned to the top edge of a single pane, driven by
+    /// that pane's own OSC 9;4 state.
+    fn pane_progress_loader_element(&self, state: ProgressState) -> Option<AnyElement> {
+        if !self.progress_indicator_enabled || !state.is_active() {
             return None;
-        }
-        if state.is_indeterminate() {
-            self.schedule_progress_indicator_animation(cx);
         }
 
         let elapsed_ms = std::time::SystemTime::now()
@@ -1809,7 +1803,6 @@ impl TerminalView {
 
         Some(
             div()
-                .id("terminal-progress-loader")
                 .absolute()
                 .top_0()
                 .left_0()
@@ -2023,6 +2016,108 @@ impl TerminalView {
                     .into_any_element(),
             )
         }
+    }
+
+    /// Dropdown under the tab strip's "+" button offering the tab kind.
+    /// Rendered only when browser tabs are enabled (plain "+" otherwise
+    /// creates a terminal tab directly).
+    fn render_new_tab_menu_overlay(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (menu_x, menu_y) = self.new_tab_menu_anchor?;
+        let overlay_style = self.overlay_style();
+        let row_height = 30.0;
+        let panel_bg = overlay_style.chrome_panel_background(0.98);
+        let panel_border = overlay_style.chrome_panel_neutral(0.22);
+        let text_color = overlay_style.panel_foreground(0.95);
+        let hover_bg = overlay_style.chrome_panel_cursor(0.22);
+
+        let menu_row = |id: &'static str,
+                        label: &'static str,
+                        cx: &mut Context<Self>,
+                        on_select: fn(&mut Self, &mut Context<Self>)| {
+            div()
+                .id(id)
+                .h(px(row_height))
+                .px(px(10.0))
+                .flex()
+                .items_center()
+                .text_size(px(13.0))
+                .text_color(text_color)
+                .cursor_pointer()
+                .hover(move |style| style.bg(hover_bg))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |view, _event: &MouseDownEvent, _window, cx| {
+                        let _ = view.close_new_tab_menu(cx);
+                        on_select(view, cx);
+                        cx.stop_propagation();
+                    }),
+                )
+                .child(label)
+        };
+
+        Some(
+            div()
+                .id("new-tab-menu-overlay")
+                .absolute()
+                .top_0()
+                .left_0()
+                .right_0()
+                .bottom_0()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|view, _event: &MouseDownEvent, _window, cx| {
+                        let _ = view.close_new_tab_menu(cx);
+                        cx.stop_propagation();
+                    }),
+                )
+                .child(
+                    div()
+                        .id("new-tab-menu-panel")
+                        .absolute()
+                        .left(px(menu_x))
+                        .top(px(menu_y))
+                        .w(px(NEW_TAB_MENU_WIDTH))
+                        .py(px(4.0))
+                        .bg(panel_bg)
+                        .border_1()
+                        .border_color(panel_border)
+                        .rounded(px(8.0))
+                        .shadow_lg()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|_view, _event: &MouseDownEvent, _window, cx| {
+                                cx.stop_propagation();
+                            }),
+                        )
+                        .child(menu_row(
+                            "new-tab-menu-terminal",
+                            "New Terminal Tab",
+                            cx,
+                            |view, cx| view.add_tab(cx),
+                        ))
+                        .when(self.browser_tabs_enabled, |panel| {
+                            panel.child(menu_row(
+                                "new-tab-menu-browser",
+                                "New Browser Tab",
+                                cx,
+                                |view, cx| view.add_browser_tab(cx),
+                            ))
+                        })
+                        .when(self.git_panel_enabled, |panel| {
+                            panel.child(menu_row(
+                                "new-tab-menu-git-panel",
+                                if self.git_panel_open {
+                                    "Hide Git Panel"
+                                } else {
+                                    "Show Git Panel"
+                                },
+                                cx,
+                                |view, cx| view.toggle_git_panel(cx),
+                            ))
+                        }),
+                )
+                .into_any_element(),
+        )
     }
 
     fn render_tab_context_menu_overlay(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -2276,6 +2371,7 @@ impl TerminalView {
             });
         let context_menu_overlay = self.render_terminal_context_menu_overlay(cx);
         let tab_context_menu_overlay = self.render_tab_context_menu_overlay(cx);
+        let new_tab_menu_overlay = self.render_new_tab_menu_overlay(cx);
         let toast_overlay = self.render_toast_overlay(&colors, cx);
         let link_preview_overlay = self.render_link_preview_overlay();
         let resize_overlay = self
@@ -2409,6 +2505,7 @@ impl TerminalView {
             .children(terminal_overlay)
             .children(context_menu_overlay)
             .children(tab_context_menu_overlay)
+            .children(new_tab_menu_overlay)
             .children(resize_overlay)
             .children(debug_overlay)
             .children(toast_overlay)
@@ -2465,6 +2562,8 @@ impl Render for TerminalView {
         let mut pane_dividers = Vec::<AnyElement>::new();
         let mut pane_resize_handles = Vec::<AnyElement>::new();
         let mut pane_focus_accents = Vec::<AnyElement>::new();
+        let mut pane_drag_handles = Vec::<AnyElement>::new();
+        let mut pane_drop_overlays = Vec::<AnyElement>::new();
         #[cfg(debug_assertions)]
         let mut render_pass_cache_counts = RenderPassCacheStrategyCounts::default();
 
@@ -2480,6 +2579,10 @@ impl Render for TerminalView {
             .unwrap_or_default();
         for pane_font_size in active_pane_font_sizes.iter().copied() {
             let _ = self.calculate_cell_size_for_font_size(pane_font_size, window, cx);
+        }
+
+        if self.progress_indicator_enabled && self.active_tab_has_indeterminate_progress() {
+            self.schedule_progress_indicator_animation(cx);
         }
 
         if let Some(active_tab) = self.tabs.get(self.active_tab)
@@ -2645,6 +2748,7 @@ impl Render for TerminalView {
                 let pane_height = pane_layout.content_frame.height;
 
                 let link_hovered = is_active_pane && self.hovered_link.is_some();
+                let pane_progress_loader = self.pane_progress_loader_element(pane.progress_state);
                 pane_layers.push(
                     div()
                         .id(pane.cached_element_ids.pane.clone())
@@ -2656,6 +2760,7 @@ impl Render for TerminalView {
                         .cursor_text()
                         .when(link_hovered, |el| el.cursor_pointer())
                         .child(terminal_grid)
+                        .children(pane_progress_loader)
                         .into_any_element(),
                 );
 
@@ -2699,6 +2804,149 @@ impl Render for TerminalView {
                             .border_color(degraded_accent)
                             .into_any_element(),
                     );
+                }
+
+                if multi_pane && self.runtime_kind() == RuntimeKind::Native {
+                    // Grab handle at the pane's top center: drag it to move
+                    // the pane (modifier-free entry into the pane-move drag).
+                    // Chromeless — just three grip dots that fade in when the
+                    // pointer is over the handle area (or during a drag).
+                    let is_drag_source = self
+                        .pane_move_drag
+                        .as_ref()
+                        .is_some_and(|drag| drag.pane_id == pane.id);
+                    let handle_width = PANE_DRAG_HANDLE_WIDTH.min(pane_frame_width * 0.5);
+                    let handle_left = pane_frame_left + (pane_frame_width - handle_width) * 0.5;
+                    let handle_top = pane_frame_top + PANE_DRAG_HANDLE_INSET_Y;
+                    let mut grip_color = colors.foreground;
+                    grip_color.a = self.scaled_chrome_alpha(0.55);
+                    let idle_grip_color = if is_drag_source {
+                        grip_color
+                    } else {
+                        gpui::Rgba {
+                            a: 0.0,
+                            ..grip_color
+                        }
+                    };
+                    let group_name = pane.cached_element_ids.drag_handle.clone();
+                    let drag_pane_id = pane.id.clone();
+                    pane_drag_handles.push(
+                        div()
+                            .id(pane.cached_element_ids.drag_handle.clone())
+                            .group(group_name.clone())
+                            .absolute()
+                            .left(px(handle_left))
+                            .top(px(handle_top))
+                            .w(px(handle_width))
+                            .h(px(PANE_DRAG_HANDLE_HEIGHT))
+                            .cursor(gpui::CursorStyle::OpenHand)
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .gap(px(3.0))
+                            .children((0..3).map(|_| {
+                                let group_name = group_name.clone();
+                                div()
+                                    .w(px(2.5))
+                                    .h(px(2.5))
+                                    .rounded_full()
+                                    .bg(idle_grip_color)
+                                    .group_hover(group_name, move |style| style.bg(grip_color))
+                            }))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |view, event: &MouseDownEvent, _window, cx| {
+                                    view.begin_pane_move_drag_from_handle(
+                                        drag_pane_id.clone(),
+                                        event.position,
+                                        cx,
+                                    );
+                                    cx.stop_propagation();
+                                }),
+                            )
+                            .into_any_element(),
+                    );
+                }
+
+                if let Some(drag) = self.pane_move_drag.as_ref().filter(|drag| drag.active) {
+                    if drag.pane_id == pane.id {
+                        // Mark the pane being dragged so its origin stays
+                        // readable while the pointer roams.
+                        let mut source_border = colors.foreground;
+                        source_border.a = self.scaled_chrome_alpha(0.45);
+                        let mut source_fill = colors.foreground;
+                        source_fill.a = self.scaled_chrome_alpha(0.05);
+                        pane_drop_overlays.push(
+                            div()
+                                .absolute()
+                                .left(px(pane_frame_left))
+                                .top(px(pane_frame_top))
+                                .w(px(pane_frame_width))
+                                .h(px(pane_frame_height))
+                                .bg(source_fill)
+                                .border_1()
+                                .border_color(source_border)
+                                .into_any_element(),
+                        );
+                    }
+                    if let Some(target) = drag
+                        .drop_target
+                        .as_ref()
+                        .filter(|target| target.pane_id == pane.id)
+                    {
+                        // Placement preview: the half (split) or whole pane
+                        // (swap) the dragged pane would occupy on drop.
+                        let (region_left, region_top, region_width, region_height) =
+                            match target.region {
+                                PaneDropRegion::Center => (
+                                    pane_frame_left,
+                                    pane_frame_top,
+                                    pane_frame_width,
+                                    pane_frame_height,
+                                ),
+                                PaneDropRegion::Left => (
+                                    pane_frame_left,
+                                    pane_frame_top,
+                                    pane_frame_width * 0.5,
+                                    pane_frame_height,
+                                ),
+                                PaneDropRegion::Right => (
+                                    pane_frame_left + pane_frame_width * 0.5,
+                                    pane_frame_top,
+                                    pane_frame_width * 0.5,
+                                    pane_frame_height,
+                                ),
+                                PaneDropRegion::Top => (
+                                    pane_frame_left,
+                                    pane_frame_top,
+                                    pane_frame_width,
+                                    pane_frame_height * 0.5,
+                                ),
+                                PaneDropRegion::Bottom => (
+                                    pane_frame_left,
+                                    pane_frame_top + pane_frame_height * 0.5,
+                                    pane_frame_width,
+                                    pane_frame_height * 0.5,
+                                ),
+                            };
+                        let mut placement_fill = colors.cursor;
+                        placement_fill.a = self.scaled_chrome_accent_alpha(0.16);
+                        let mut placement_outline = colors.cursor;
+                        placement_outline.a = self.scaled_chrome_accent_alpha(0.78);
+                        pane_drop_overlays.push(
+                            div()
+                                .absolute()
+                                .left(px(region_left))
+                                .top(px(region_top))
+                                .w(px(region_width))
+                                .h(px(region_height))
+                                .rounded(px(4.0))
+                                .bg(placement_fill)
+                                .border_1()
+                                .border_color(placement_outline)
+                                .into_any_element(),
+                        );
+                    }
                 }
             }
 
@@ -2816,6 +3064,19 @@ impl Render for TerminalView {
             .then(|| self.render_tab_strip(window, &colors, &ui_font_family, tabbar_bg, cx));
         let tab_sidebar = (vertical_tabs && show_tab_strip_chrome)
             .then(|| self.render_tab_sidebar(window, &colors, &ui_font_family, tabbar_bg, cx));
+        let workspace_sidebar = self
+            .workspace_sidebar_visible()
+            .then(|| self.render_workspace_sidebar(&colors, &ui_font_family, tabbar_bg, cx));
+        self.sync_browser_tab_titles();
+        self.sync_browser_webviews(window);
+        self.apply_git_panel_updates();
+        self.schedule_git_panel_poll(cx);
+        let git_panel = self
+            .git_panel_visible()
+            .then(|| self.render_git_panel(&colors, &ui_font_family, cx));
+        let browser_chrome = self
+            .active_tab_is_browser()
+            .then(|| self.render_browser_chrome(&colors, &ui_font_family, cx));
         let hidden_titlebar_branding = Self::should_render_hidden_titlebar_branding(
             self.auto_hide_tabbar,
             self.tabs.len(),
@@ -2845,7 +3106,6 @@ impl Render for TerminalView {
         let terminal_scrollbar_overlay = terminal_scrollbar_layout.and_then(|(surface, layout)| {
             self.render_terminal_scrollbar_overlay(surface, layout, terminal_display_offset > 0)
         });
-        let terminal_progress_loader = self.render_terminal_progress_loader(now, cx);
         let terminal_grid_layer = div()
             .relative()
             .w_full()
@@ -2854,7 +3114,10 @@ impl Render for TerminalView {
             .children(pane_dividers)
             .children(pane_resize_handles)
             .children(pane_focus_accents)
+            .children(pane_drag_handles)
+            .children(pane_drop_overlays)
             .into_any_element();
+        let inspector_panel = self.render_inspector_panel(cx);
         let has_active_inline = self.has_active_inline_input();
         let ime_focus_handle = self.focus_handle.clone();
         let ime_view = cx.entity();
@@ -3039,6 +3302,7 @@ impl Render for TerminalView {
                         s.on_action(cx.listener(Self::handle_install_cli_action))
                     })
                     .on_action(cx.listener(Self::handle_toggle_tab_bar_visibility_action))
+                    .on_action(cx.listener(Self::handle_toggle_inspector_action))
                     .on_action(cx.listener(Self::handle_inline_backspace_action))
                     .on_action(cx.listener(Self::handle_inline_delete_action))
                     .on_action(cx.listener(Self::handle_inline_move_left_action))
@@ -3065,6 +3329,7 @@ impl Render for TerminalView {
                             .flex()
                             .w_full()
                             .h_full()
+                            .children(workspace_sidebar)
                             .child(
                                 div()
                                     .id("terminal-pane")
@@ -3073,6 +3338,7 @@ impl Render for TerminalView {
                                     .flex_1()
                                     .h_full()
                                     .overflow_hidden()
+                                    .children(browser_chrome)
                                     .child(
                                         div()
                                             .id("terminal-surface")
@@ -3124,16 +3390,20 @@ impl Render for TerminalView {
                                                     }
                                                 },
                                             )
+                                            .when(self.pane_move_drag_active(), |s| {
+                                                s.cursor(gpui::CursorStyle::ClosedHand)
+                                            })
                                             .font_family(font_family)
                                             .text_size(font_size)
                                             .child(ime_input_layer)
                                             .child(terminal_grid_layer)
                                             .children(ime_preedit_overlay)
-                                            .children(terminal_scrollbar_overlay)
-                                            .children(terminal_progress_loader),
-                                    ),
+                                            .children(terminal_scrollbar_overlay),
+                                    )
+                                    .children(inspector_panel),
                             )
-                            .children(tab_sidebar),
+                            .children(tab_sidebar)
+                            .children(git_panel),
                     ),
             )
             .child(overlay_view);
@@ -3314,6 +3584,7 @@ mod tests {
             height: rows,
             pane_zoom_steps: 0,
             degraded: false,
+            progress_state: ProgressState::default(),
             terminal: Terminal::new_tmux(
                 size,
                 TerminalOptions {

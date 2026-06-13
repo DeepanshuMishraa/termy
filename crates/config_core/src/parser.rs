@@ -518,6 +518,27 @@ impl AppConfig {
                         config.auto_hide_tabbar = parsed;
                     }
                 }
+                RootSettingId::SidebarEnabled => {
+                    if let Some(parsed) =
+                        parse_bool_field(&mut diagnostics, line_number, key, value)
+                    {
+                        config.sidebar_enabled = parsed;
+                    }
+                }
+                RootSettingId::BrowserTabsEnabled => {
+                    if let Some(parsed) =
+                        parse_bool_field(&mut diagnostics, line_number, key, value)
+                    {
+                        config.browser_tabs_enabled = parsed;
+                    }
+                }
+                RootSettingId::GitPanelEnabled => {
+                    if let Some(parsed) =
+                        parse_bool_field(&mut diagnostics, line_number, key, value)
+                    {
+                        config.git_panel_enabled = parsed;
+                    }
+                }
                 RootSettingId::ShowTermyInTitlebar => {
                     if let Some(parsed) =
                         parse_bool_field(&mut diagnostics, line_number, key, value)
@@ -567,6 +588,13 @@ impl AppConfig {
                         parse_positive_f32_field(&mut diagnostics, line_number, key, value)
                     {
                         config.window_height = parsed;
+                    }
+                }
+                RootSettingId::InspectorHeight => {
+                    if let Some(parsed) =
+                        parse_positive_f32_field(&mut diagnostics, line_number, key, value)
+                    {
+                        config.inspector_height = parsed;
                     }
                 }
                 RootSettingId::FontFamily => {

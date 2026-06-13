@@ -62,6 +62,10 @@ impl TerminalView {
                 self.add_tab(cx);
                 true
             }
+            CommandAction::NewBrowserTab => {
+                self.add_browser_tab(cx);
+                true
+            }
             CommandAction::CloseTab => {
                 self.request_active_tab_close(window, cx);
                 true
@@ -285,6 +289,35 @@ impl TerminalView {
         self.add_tab_with_working_dir(None, cx);
     }
 
+    /// "+" button entry point: with browser tabs enabled it opens a dropdown
+    /// to choose the tab kind; otherwise it creates a terminal tab directly.
+    pub(crate) fn handle_new_tab_button(&mut self, anchor: (f32, f32), cx: &mut Context<Self>) {
+        let dropdown_features_enabled = self.browser_tabs_enabled || self.git_panel_enabled;
+        if dropdown_features_enabled && self.runtime_kind() == RuntimeKind::Native {
+            self.toggle_new_tab_menu(anchor, cx);
+        } else {
+            self.add_tab(cx);
+        }
+    }
+
+    pub(crate) fn toggle_new_tab_menu(&mut self, anchor: (f32, f32), cx: &mut Context<Self>) {
+        if self.new_tab_menu_anchor.take().is_none() {
+            self.new_tab_menu_anchor = Some(anchor);
+        }
+        cx.notify();
+        self.notify_overlay(cx);
+    }
+
+    pub(crate) fn close_new_tab_menu(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.new_tab_menu_anchor.take().is_some() {
+            cx.notify();
+            self.notify_overlay(cx);
+            true
+        } else {
+            false
+        }
+    }
+
     pub(crate) fn add_tab_with_working_dir(
         &mut self,
         working_dir: Option<&str>,
@@ -385,6 +418,11 @@ impl TerminalView {
         };
 
         if self.tabs.len() <= 1 {
+            // Closing the last tab of a workspace closes the workspace when
+            // others remain; the window-close path handles the final tab.
+            if self.has_other_workspaces() {
+                self.close_active_workspace(cx);
+            }
             return;
         }
 
@@ -495,6 +533,10 @@ impl TerminalView {
         if index >= self.tabs.len() || index == self.active_tab {
             return;
         }
+
+        // Leaving a browser tab mid-edit abandons the edit; the address bar
+        // shows the live page URL again when the tab is next activated.
+        self.cancel_active_browser_url_edit_quietly();
 
         match self.runtime_kind() {
             RuntimeKind::Tmux => self.tmux_switch_tab(index, cx),
@@ -836,7 +878,7 @@ impl TerminalView {
         }
     }
 
-    fn clear_native_zoom_snapshot_for_active_tab(&mut self) {
+    pub(in super::super) fn clear_native_zoom_snapshot_for_active_tab(&mut self) {
         if let Some(tab) = self.tabs.get(self.active_tab) {
             self.clear_native_zoom_snapshot_for_tab_id(tab.id);
         }
@@ -1119,6 +1161,7 @@ impl TerminalView {
             height: split_size.3,
             pane_zoom_steps,
             degraded: false,
+            progress_state: ProgressState::default(),
             terminal,
             render_cache: RefCell::new(TerminalPaneRenderCache::default()),
             last_alternate_screen: Cell::new(false),
@@ -1315,7 +1358,10 @@ impl TerminalView {
         }
     }
 
-    fn native_close_expand_neighbors(panes: &mut [TerminalPane], removed: &TerminalPane) {
+    pub(in super::super) fn native_close_expand_neighbors(
+        panes: &mut [TerminalPane],
+        removed: &TerminalPane,
+    ) {
         if panes.is_empty() {
             return;
         }
@@ -1652,6 +1698,7 @@ mod tests {
             height,
             pane_zoom_steps: 0,
             degraded: false,
+            progress_state: ProgressState::default(),
             terminal: test_terminal(),
             render_cache: RefCell::new(TerminalPaneRenderCache::default()),
             last_alternate_screen: Cell::new(false),

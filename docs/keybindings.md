@@ -42,6 +42,7 @@ Termy keybindings use Ghostty-style trigger overrides via repeated `keybind` lin
 - `secondary-f` -> `open_search`
 - `secondary-g` -> `search_next`
 - `secondary-shift-g` -> `search_previous`
+- `secondary-alt-i` -> `toggle_inspector`
 - `secondary-m` -> `minimize_window`
 - `secondary-c` -> `copy`
 - `secondary-v` -> `paste`
@@ -82,6 +83,7 @@ Termy keybindings use Ghostty-style trigger overrides via repeated `keybind` lin
 - `secondary-f` -> `open_search`
 - `secondary-g` -> `search_next`
 - `secondary-shift-g` -> `search_previous`
+- `secondary-alt-i` -> `toggle_inspector`
 - `secondary-c` -> `copy`
 - `secondary-v` -> `paste`
 
@@ -121,6 +123,7 @@ Termy keybindings use Ghostty-style trigger overrides via repeated `keybind` lin
 - `secondary-f` -> `open_search`
 - `secondary-g` -> `search_next`
 - `secondary-shift-g` -> `search_previous`
+- `secondary-alt-i` -> `toggle_inspector`
 - `ctrl-shift-c` -> `copy`
 - `ctrl-shift-v` -> `paste`
 
@@ -160,6 +163,7 @@ Termy keybindings use Ghostty-style trigger overrides via repeated `keybind` lin
 - `secondary-f` -> `open_search`
 - `secondary-g` -> `search_next`
 - `secondary-shift-g` -> `search_previous`
+- `secondary-alt-i` -> `toggle_inspector`
 - `ctrl-shift-c` -> `copy`
 - `ctrl-shift-v` -> `paste`
 
@@ -188,6 +192,8 @@ Related UI option:
 ## Configurable Actions
 
 - `new_tab`
+- `new_browser_tab`
+- `toggle_git_panel`
 - `close_tab`
 - `close_pane_or_tab`
 - `move_tab_left`
@@ -246,6 +252,7 @@ Related UI option:
 - `toggle_search_regex`
 - `install_cli`
 - `toggle_tab_bar_visibility`
+- `toggle_inspector`
 
 ## Customization Examples
 

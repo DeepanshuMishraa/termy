@@ -312,7 +312,7 @@ impl CommandPaletteState {
         self.show_keybinds = show_keybinds;
     }
 
-    pub(super) fn show_keybinds(&self) -> bool {
+    pub(in super::super) fn show_keybinds(&self) -> bool {
         self.show_keybinds
     }
 
@@ -629,44 +629,6 @@ pub(super) fn command_palette_next_scroll_y(
     } else {
         next_y
     }
-}
-
-/// Resolves the user's full login shell PATH, cached for the process lifetime.
-/// On macOS GUI apps launched from Finder/Dock, the process inherits a minimal
-/// PATH (`/usr/bin:/bin:/usr/sbin:/sbin`). This function runs the user's login
-/// shell to get their real PATH including `~/.local/bin`, `~/.cargo/bin`,
-/// nvm paths, homebrew, etc.
-pub(super) fn prewarm_user_path_resolution() {
-    std::thread::spawn(|| {
-        let _ = resolve_user_path();
-    });
-}
-
-fn resolve_user_path() -> String {
-    use std::sync::OnceLock;
-    static CACHED: OnceLock<String> = OnceLock::new();
-    CACHED
-        .get_or_init(|| {
-            resolve_user_path_from_shell()
-                .unwrap_or_else(|| std::env::var("PATH").unwrap_or_default())
-        })
-        .clone()
-}
-
-fn resolve_user_path_from_shell() -> Option<String> {
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
-    let output = std::process::Command::new(&shell)
-        .args(["-l", "-i", "-c", "echo $PATH"])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if path.is_empty() { None } else { Some(path) }
 }
 
 #[cfg(test)]

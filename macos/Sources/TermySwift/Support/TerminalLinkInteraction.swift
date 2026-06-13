@@ -9,6 +9,27 @@ struct TerminalFrameLink: Equatable, Identifiable {
     var startCol: Int
     var endCol: Int
     var target: String
+
+    /// Schemes we are willing to hand to `NSWorkspace`. Terminal output is
+    /// attacker-influenced (anything a remote server prints flows through it),
+    /// so links — whether heuristically detected or declared via an OSC 8
+    /// hyperlink escape — must clear this allowlist before being opened.
+    /// Deliberately excludes `file` (opening a file:// URL can launch an app
+    /// bundle or a vulnerable document handler) and any custom/app scheme.
+    static let openableSchemes: Set<String> = ["http", "https", "ftp", "mailto"]
+
+    /// Validates `target` against `openableSchemes` and returns a `URL` only if
+    /// it is safe to open. Returns `nil` for unparseable URLs, scheme-less URLs,
+    /// and disallowed schemes (`file`, `javascript`, custom app schemes, …).
+    static func openableURL(for target: String) -> URL? {
+        guard let url = URL(string: target),
+              let scheme = url.scheme?.lowercased(),
+              openableSchemes.contains(scheme)
+        else {
+            return nil
+        }
+        return url
+    }
 }
 
 /// Detects clickable URLs in a line of terminal text using the system data
@@ -19,7 +40,6 @@ private final class TerminalLinkDetector: @unchecked Sendable {
     private let detector = try? NSDataDetector(
         types: NSTextCheckingResult.CheckingType.link.rawValue
     )
-    private static let allowedSchemes: Set<String> = ["http", "https", "ftp", "mailto", "file"]
 
     func matches(in line: String) -> [(range: NSRange, target: String)] {
         guard let detector, !line.isEmpty else {
@@ -29,7 +49,7 @@ private final class TerminalLinkDetector: @unchecked Sendable {
         return detector.matches(in: line, options: [], range: range).compactMap { result in
             guard let url = result.url,
                   let scheme = url.scheme?.lowercased(),
-                  Self.allowedSchemes.contains(scheme)
+                  TerminalFrameLink.openableSchemes.contains(scheme)
             else {
                 return nil
             }

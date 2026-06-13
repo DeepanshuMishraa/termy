@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, anyhow};
 use std::collections::HashMap;
 
-use super::types::{TmuxPaneState, TmuxSessionSummary, TmuxSnapshot, TmuxWindowState};
+use tmux_control_core::types::{TmuxPaneState, TmuxSessionSummary, TmuxSnapshot, TmuxWindowState};
 
 const SNAPSHOT_FIELD_SEP: char = '\u{1f}';
 const SESSION_SNAPSHOT_FORMAT: &str = concat!(

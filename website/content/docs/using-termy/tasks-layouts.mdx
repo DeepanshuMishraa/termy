@@ -1,36 +1,22 @@
 ---
-title: Tasks and Layouts
-description: Named commands you can launch in new tabs.
+title: Tasks and layouts
+description: Named commands launched from the palette.
 ---
 
-Tasks are configured with repeatable keys using the pattern `task.<name>.<field>`.
-
-## Fields
+Pattern: `task.<name>.<field>`
 
 | Field | Required | Description |
 | ----- | -------- | ----------- |
-| `command` | yes | Shell command to run in a new tab. |
-| `layout` | no | Only show the task when that saved layout is active. |
-| `working_dir` | no | Working directory for the launched tab. |
-
-## Example
+| `command` | yes | Shell command for a new tab |
+| `layout` | no | Only show when this saved layout is active |
+| `working_dir` | no | Working directory |
 
 ```txt
 task.build.command     = cargo build
 task.build.working_dir = crates/cli
 
-task.dev_server.layout      = dashboard
-task.dev_server.command     = cargo run
+task.dev_server.layout  = dashboard
+task.dev_server.command = cargo run
 ```
 
-Tasks appear in the command palette under **Run Task**. Bind one to a shortcut with:
-
-```txt
-keybind = cmd-shift-b=run_task
-```
-
-## Related
-
-- [Command Palette](/docs/using-termy/command-palette)
-- [Tmux Sessions](/docs/using-termy/tmux-sessions)
-- [Keybindings](/docs/customize/keybindings)
+Run from the palette (**Run Task**) or bind `run_task` to a key.
