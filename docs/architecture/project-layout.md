@@ -26,7 +26,7 @@ Termy is a single repository with several product surfaces. Keep changes in the 
 - `termy_toast` owns tiny notification primitives.
 - `xtask` owns repository automation such as generated docs.
 
-Each crate should have a local `README.md` that explains its owner boundary, allowed dependencies, and common validation command.
+Each crate should have a local `README.md` with `Owner`, `Validation`, and `Forbidden Dependencies` sections.
 The `crates/README.md` file is the workspace crate index.
 
 ## Boundary Rules
@@ -41,6 +41,6 @@ The `crates/README.md` file is the workspace crate index.
 
 ## Validation
 
-Use `just check-boundaries` after changing crate dependencies, generated docs, command/keybind behavior, or config behavior. Use `cargo check --workspace` after moving modules or changing cross-crate contracts.
+Use `just check-boundaries` after changing crate dependencies, crate README metadata, generated docs, dependency policy, command/keybind behavior, or config behavior. Use `cargo check --workspace` after moving modules or changing cross-crate contracts.
 
 For release planning and codebase quality gates, see [ROADMAP.md](../../ROADMAP.md) and [docs/engineering/](../engineering/).

@@ -15,13 +15,13 @@ just check            # cargo check --workspace
 just test             # desktop app tests (release)
 just test-workspace   # all workspace crate tests (release) — matches CI
 just fmt-check        # cargo fmt --all -- --check
-just check-boundaries # crate dependency boundary checks
+just check-boundaries # crate boundaries, README metadata, generated docs, dependency policy, file sizes
 just validate         # full local gate: check + fmt + tests + boundaries + clippy -D warnings
 ```
 
 Single test: `cargo test -p <crate> <test_name>` (e.g. `cargo test -p termy_config_core`).
 
-Use the smallest validation pass that proves a change: `cargo check -p termy` for UI tweaks, `cargo test -p <crate>` for domain logic, `just check-boundaries` after changing crate dependencies, generated docs, command/keybind behavior, or config behavior, `just validate` before large PRs.
+Use the smallest validation pass that proves a change: `cargo check -p termy` for UI tweaks, `cargo test -p <crate>` for domain logic, `just check-boundaries` after changing crate dependencies, crate README metadata, generated docs, dependency policy, command/keybind behavior, or config behavior, `just validate` before large PRs.
 
 tmux integration tests (require tmux ≥ 3.3, ignored by default): `just test-tmux-integration`.
 
@@ -54,7 +54,7 @@ Pure domain crates (no GPUI, no app presentation): `command_core` (command IDs/k
 
 Release/install/support: `release_core`, `auto_update`, `auto_update_ui`, `cli_install_core`, `toast_sdk`, `xtask` (repo automation, generated-doc checks, render benchmarks).
 
-Each crate has a local `README.md` describing its boundary; update it when ownership changes. `crates/README.md` is the workspace index.
+Each crate has a local `README.md` with `Owner`, `Validation`, and `Forbidden Dependencies` sections; update it when ownership, test commands, or dependency boundaries change. `crates/README.md` is the workspace index.
 
 ## Cross-cutting change recipes
 
@@ -74,4 +74,5 @@ Debug-only render churn metrics: `RUST_LOG=info TERMY_RENDER_METRICS=1 cargo run
 
 - Prefer small, explicit code paths over clever abstractions.
 - Clippy is strict in `just validate` (`-D warnings`); workspace lints in root `Cargo.toml` warn on `dbg!`, `todo!`, `unimplemented!`, redundant clones, uninlined format args, etc.
+- Do not add `#[allow(clippy::cognitive_complexity)]` unless the same line links the tracking issue.
 - Avoid unrelated drive-by changes in the same PR.
