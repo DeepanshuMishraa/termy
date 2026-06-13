@@ -90,7 +90,8 @@ use constants::*;
 use inline_input::{InlineInputAlignment, InlineInputState};
 use interaction::{
     MouseReportTargetCell, MouseReportingState, PaneDropRegion, PaneMoveDragState,
-    PendingKeyRelease, TabContextMenuState, TerminalContextMenuState,
+    PendingCursorMoveClick, PendingCursorMovePreview, PendingKeyRelease, TabContextMenuState,
+    TerminalContextMenuState,
 };
 #[cfg(target_os = "macos")]
 pub(crate) use macos_file_drop::{NativeDropResult, install_native_file_drop};
@@ -331,21 +332,6 @@ enum PaneResizeResult {
     Applied,
     BlockedByMinimum,
     NoChange,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct PendingCursorMoveClick {
-    pane_id: String,
-    selection_start: SelectionPos,
-    start_cell: CellPos,
-    target: CellPos,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct PendingCursorMovePreview {
-    pane_id: String,
-    target: CellPos,
-    style: TerminalCursorStyle,
 }
 
 #[allow(clippy::large_enum_variant)]

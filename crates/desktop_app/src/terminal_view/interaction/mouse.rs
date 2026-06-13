@@ -3,6 +3,21 @@ use super::*;
 const SELECTION_DRAG_AUTOSCROLL_MAX_LINES: i32 = 3;
 const CURSOR_MOVE_PREVIEW_MS: u64 = 75;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(in crate::terminal_view) struct PendingCursorMoveClick {
+    pub(in crate::terminal_view) pane_id: String,
+    pub(in crate::terminal_view) selection_start: SelectionPos,
+    pub(in crate::terminal_view) start_cell: CellPos,
+    pub(in crate::terminal_view) target: CellPos,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(in crate::terminal_view) struct PendingCursorMovePreview {
+    pub(in crate::terminal_view) pane_id: String,
+    pub(in crate::terminal_view) target: CellPos,
+    pub(in crate::terminal_view) style: TerminalCursorStyle,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum GlobalTabDragPointerAction {
     None,
