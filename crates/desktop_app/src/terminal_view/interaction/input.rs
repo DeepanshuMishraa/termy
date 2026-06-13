@@ -1,6 +1,12 @@
 use super::*;
 use std::env;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(in crate::terminal_view) enum PendingKeyRelease {
+    Consumed,
+    Terminal { pane_id: String },
+}
+
 fn should_defer_key_down_to_ime(keystroke: &gpui::Keystroke) -> bool {
     let key = keystroke.key.as_str();
     keystroke.key_char.is_some()

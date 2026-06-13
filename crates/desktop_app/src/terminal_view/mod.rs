@@ -84,7 +84,7 @@ use appearance::{
 use command_palette::{CommandPaletteMode, CommandPaletteState, TmuxSessionIntent};
 use constants::*;
 use inline_input::{InlineInputAlignment, InlineInputState};
-use interaction::{MouseReportTargetCell, MouseReportingState};
+use interaction::{MouseReportTargetCell, MouseReportingState, PendingKeyRelease};
 #[cfg(target_os = "macos")]
 pub(crate) use macos_file_drop::{NativeDropResult, install_native_file_drop};
 use metrics::DebugOverlayStats;
@@ -421,12 +421,6 @@ impl TerminalScrollbarMarkerCache {
         self.key = None;
         self.marker_tops.clear();
     }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum PendingKeyRelease {
-    Consumed,
-    Terminal { pane_id: String },
 }
 
 #[allow(clippy::large_enum_variant)]
