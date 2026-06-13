@@ -74,6 +74,10 @@ mod update_toasts;
 mod workspaces;
 
 use self::benchmark::{BENCHMARK_SAMPLE_INTERVAL, BenchmarkConfig, BenchmarkSession};
+use self::scrollbar::{
+    TerminalScrollbarDragState, TerminalScrollbarHit, TerminalScrollbarMarkerCache,
+    TerminalScrollbarMarkerCacheKey, TerminalScrollbarTrackHoldState,
+};
 pub(crate) use appearance::initial_window_background_appearance;
 use appearance::{
     BackgroundSupportContext, BlurFallbackReason, OverlayStyleBuilder, PaneFocusPreset,
@@ -291,17 +295,6 @@ fn cell_ranges_overlap(start_a: u32, end_a: u32, start_b: u32, end_b: u32) -> bo
     start_a < end_b && start_b < end_a
 }
 
-#[derive(Clone, Copy, Debug)]
-struct TerminalScrollbarDragState {
-    thumb_grab_offset: f32,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct TerminalScrollbarTrackHoldState {
-    local_y: f32,
-    track_height: f32,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PaneResizeAxis {
     Horizontal,
@@ -381,34 +374,6 @@ struct PendingCursorMovePreview {
     pane_id: String,
     target: CellPos,
     style: TerminalCursorStyle,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct TerminalScrollbarHit {
-    local_y: f32,
-    thumb_hit: bool,
-    thumb_top: f32,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct TerminalScrollbarMarkerCacheKey {
-    results_revision: u64,
-    history_size: usize,
-    viewport_rows: usize,
-    marker_top_limit_bucket: i32,
-}
-
-#[derive(Clone, Debug, Default)]
-struct TerminalScrollbarMarkerCache {
-    key: Option<TerminalScrollbarMarkerCacheKey>,
-    marker_tops: Vec<f32>,
-}
-
-impl TerminalScrollbarMarkerCache {
-    fn clear(&mut self) {
-        self.key = None;
-        self.marker_tops.clear();
-    }
 }
 
 #[allow(clippy::large_enum_variant)]
