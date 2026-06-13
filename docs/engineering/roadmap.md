@@ -56,7 +56,7 @@
 |----|------------|------|----------------|-----------|--------|
 | E1.1 | File size policy | `scripts/check-file-sizes.sh` + CI | G6: no regressions; allowlist shrinks | G6 | Done (allowlist=10) |
 | E1.2 | Decomposition tranches | See [terminal-view-decomposition.md](terminal-view-decomposition.md) | `mod.rs` &lt; 1,500 lines; `render/` directory | G6 | Planned |
-| E1.3 | Complexity discipline | No new `#[allow(clippy::cognitive_complexity)]` without issue | Review guideline in CONTRIBUTING | — | Planned |
+| E1.3 | Complexity discipline | No new `#[allow(clippy::cognitive_complexity)]` without issue | Review guideline in CONTRIBUTING | — | Done |
 
 **Capacity:** One tranche per month maximum; never combine tranche 4 with a large product feature in the same PR.
 

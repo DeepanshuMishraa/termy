@@ -43,6 +43,26 @@ require_pattern() {
   fi
 }
 
+require_issue_url_for_pattern() {
+  local pattern="$1"
+  local path="$2"
+  local message="$3"
+  local matches
+  local violations
+
+  matches="$(rg -n "$pattern" "$path" || true)"
+  if [[ -z "$matches" ]]; then
+    return
+  fi
+
+  violations="$(printf '%s\n' "$matches" | rg -v 'https://github\.com/.*/issues/[0-9]+' || true)"
+  if [[ -n "$violations" ]]; then
+    echo "Boundary check failed: $message" >&2
+    printf '%s\n' "$violations" >&2
+    exit 1
+  fi
+}
+
 require_crate_readme_metadata() {
   local crate_dir="$1"
   local readme="$crate_dir/README.md"
@@ -95,6 +115,11 @@ check_forbidden_dep "termy_cli" "gpui"
 check_forbidden_dep "termy_core" "gpui"
 check_forbidden_dep "termy_ffi" "gpui"
 check_forbidden_dep "termy_ffi" "termy_terminal_ui"
+
+require_issue_url_for_pattern \
+  'clippy::cognitive_complexity' \
+  "crates" \
+  "clippy::cognitive_complexity allows must link a tracking issue on the same line"
 
 cargo run -p xtask -- generate-keybindings-doc --check
 cargo run -p xtask -- generate-config-doc --check
