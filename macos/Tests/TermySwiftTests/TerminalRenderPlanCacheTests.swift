@@ -50,6 +50,43 @@ final class TerminalRenderPlanCacheTests: XCTestCase {
         XCTAssertEqual(partialCache.plan, fullCache.plan)
     }
 
+    func testTextSegmentsCarryStableLineCacheKeys() {
+        let cache = TerminalRenderPlanCache()
+        cache.update(frame: frame("aaa\nbbb\nccc"), renderConfig: config, damage: .full)
+
+        let firstSegment = cache.plan.rows[0].textSegments.first
+
+        cache.update(
+            frame: frame("aaa\nbbb\nccc"),
+            renderConfig: config,
+            damage: .partial([TerminalDirtySpan(row: 0, leftCol: 0, rightCol: 2)])
+        )
+
+        XCTAssertEqual(cache.plan.rows[0].textSegments.first?.lineCacheKey, firstSegment?.lineCacheKey)
+    }
+
+    func testTextLineCacheKeysIncludeStyleColorAndBoundedCost() {
+        let plain = TextLineCacheKey(bold: false, foregroundPackedValue: 1, text: "abc")
+        let bold = TextLineCacheKey(bold: true, foregroundPackedValue: 1, text: "abc")
+        let colored = TextLineCacheKey(bold: false, foregroundPackedValue: 2, text: "abc")
+        let longer = TextLineCacheKey(bold: false, foregroundPackedValue: 1, text: String(repeating: "x", count: 200))
+
+        XCTAssertNotEqual(plain, bold)
+        XCTAssertNotEqual(plain, colored)
+        XCTAssertGreaterThanOrEqual(plain.estimatedCost, 64)
+        XCTAssertGreaterThan(longer.estimatedCost, plain.estimatedCost)
+    }
+
+    func testTextSegmentsTrackCellSpanForDirtyRectClipping() {
+        let cache = TerminalRenderPlanCache()
+        cache.update(frame: frame("abc", cols: 3, rows: 1), renderConfig: config, damage: .full)
+
+        let segment = cache.plan.textSegments.first
+        XCTAssertEqual(segment?.startCol, 0)
+        XCTAssertEqual(segment?.cols, 3)
+        XCTAssertEqual(segment?.text, "abc")
+    }
+
     func testConfigChangeForcesFullRebuildDespitePartialDamage() {
         let cache = TerminalRenderPlanCache()
         cache.update(frame: frame("aaa\nbbb\nccc"), renderConfig: config, damage: .full)

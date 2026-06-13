@@ -20,25 +20,74 @@ struct TerminalBackgroundRun: Equatable {
 struct TerminalTextSegment: Equatable {
     var row: Int
     var startCol: Int
+    var cols: Int
     var text: String
     var foreground: TerminalRGBA
     var bold: Bool
+    var lineCacheKey: TextLineCacheKey
 }
 
-/// The flattened paint instructions for a whole frame: the grid view draws these
-/// directly without re-deriving them from cells.
-struct TerminalRenderPlan: Equatable {
-    var backgroundRuns: [TerminalBackgroundRun]
-    var textSegments: [TerminalTextSegment]
+struct TextLineCacheKey: Hashable {
+    var bold: Bool
+    var foregroundPackedValue: UInt32
+    var text: String
 
-    static let empty = TerminalRenderPlan(backgroundRuns: [], textSegments: [])
+    var estimatedCost: Int {
+        max(64, text.utf16.count * 2)
+    }
+}
+
+/// A block-element or box-drawing cell drawn as pixel-snapped rects instead of
+/// a font glyph so adjacent cells tile without seams.
+struct TerminalBlockGlyph: Equatable {
+    var row: Int
+    var col: Int
+    var rects: [TerminalBlockRect]
+    var foreground: TerminalRGBA
+}
+
+/// A box-drawing cell that can't be expressed as axis-aligned rects (rounded
+/// corners, diagonals) and is stroked as a path at draw time, matching the
+/// custom-drawn straight segments' stroke width.
+struct TerminalStrokeGlyph: Equatable {
+    var row: Int
+    var col: Int
+    var kind: TerminalBoxStrokeKind
+    var character: Character
+    var foreground: TerminalRGBA
 }
 
 /// The paint instructions for a single grid row, cached so unchanged rows are
 /// reused across frames.
-private struct RowRenderPlan: Equatable {
+struct TerminalRowRenderPlan: Equatable {
     var backgroundRuns: [TerminalBackgroundRun]
     var textSegments: [TerminalTextSegment]
+    var blockGlyphs: [TerminalBlockGlyph] = []
+    var strokeGlyphs: [TerminalStrokeGlyph] = []
+}
+
+/// The cached paint instructions for a whole frame. Production drawing reads
+/// row plans directly to avoid allocating a flattened copy after every update.
+struct TerminalRenderPlan: Equatable {
+    var rows: [TerminalRowRenderPlan]
+
+    var backgroundRuns: [TerminalBackgroundRun] {
+        rows.flatMap(\.backgroundRuns)
+    }
+
+    var textSegments: [TerminalTextSegment] {
+        rows.flatMap(\.textSegments)
+    }
+
+    var blockGlyphs: [TerminalBlockGlyph] {
+        rows.flatMap(\.blockGlyphs)
+    }
+
+    var strokeGlyphs: [TerminalStrokeGlyph] {
+        rows.flatMap(\.strokeGlyphs)
+    }
+
+    static let empty = TerminalRenderPlan(rows: [])
 }
 
 /// How the most recent `update` rebuilt the plan — surfaced to the debug overlay
@@ -63,7 +112,7 @@ final class TerminalRenderPlanCache {
     private(set) var plan = TerminalRenderPlan.empty
     private(set) var stats = TerminalRenderPlanStats.empty
 
-    private var rows: [RowRenderPlan] = []
+    private var rows: [TerminalRowRenderPlan] = []
     private var cachedConfig: TerminalRenderConfig?
     private var cachedCols = 0
     private var cachedRows = 0
@@ -80,6 +129,7 @@ final class TerminalRenderPlanCache {
             rows = (0..<frame.rows).map { row in
                 buildRow(row, frame: frame, renderConfig: renderConfig)
             }
+            plan = TerminalRenderPlan(rows: rows)
             stats = TerminalRenderPlanStats(
                 wasFullRebuild: true,
                 rebuiltRowCount: frame.rows,
@@ -87,9 +137,11 @@ final class TerminalRenderPlanCache {
             )
         } else {
             let dirtyRows = dirtyRows(for: damage, rowCount: frame.rows)
+            plan = .empty
             for row in dirtyRows {
                 rows[row] = buildRow(row, frame: frame, renderConfig: renderConfig)
             }
+            plan = TerminalRenderPlan(rows: rows)
             stats = TerminalRenderPlanStats(
                 wasFullRebuild: false,
                 rebuiltRowCount: dirtyRows.count,
@@ -100,7 +152,6 @@ final class TerminalRenderPlanCache {
         cachedConfig = renderConfig
         cachedCols = frame.cols
         cachedRows = frame.rows
-        flatten()
     }
 
     private func dirtyRows(for damage: TerminalDamage, rowCount: Int) -> [Int] {
@@ -117,29 +168,22 @@ final class TerminalRenderPlanCache {
         return ordered
     }
 
-    private func flatten() {
-        var backgroundRuns: [TerminalBackgroundRun] = []
-        var textSegments: [TerminalTextSegment] = []
-        for row in rows {
-            backgroundRuns.append(contentsOf: row.backgroundRuns)
-            textSegments.append(contentsOf: row.textSegments)
-        }
-        plan = TerminalRenderPlan(backgroundRuns: backgroundRuns, textSegments: textSegments)
-    }
-
     private func buildRow(
         _ row: Int,
         frame: TerminalFrame,
         renderConfig: TerminalRenderConfig
-    ) -> RowRenderPlan {
+    ) -> TerminalRowRenderPlan {
         var backgroundRuns: [TerminalBackgroundRun] = []
         var textSegments: [TerminalTextSegment] = []
+        var blockGlyphs: [TerminalBlockGlyph] = []
+        var strokeGlyphs: [TerminalStrokeGlyph] = []
 
         var activeBackgroundRun: TerminalBackgroundRun?
         var text = ""
         var textForeground: TerminalRGBA?
         var textBold = false
         var textStartCol = 0
+        var textCols = 0
 
         func flushBackgroundRun() {
             guard let run = activeBackgroundRun else {
@@ -156,11 +200,18 @@ final class TerminalRenderPlanCache {
             textSegments.append(TerminalTextSegment(
                 row: row,
                 startCol: textStartCol,
+                cols: textCols,
                 text: text,
                 foreground: foreground,
-                bold: textBold
+                bold: textBold,
+                lineCacheKey: TextLineCacheKey(
+                    bold: textBold,
+                    foregroundPackedValue: foreground.packedValue,
+                    text: text
+                )
             ))
             text = ""
+            textCols = 0
         }
 
         for cell in frame.cells(inRow: row) {
@@ -190,6 +241,45 @@ final class TerminalRenderPlanCache {
                 continue
             }
 
+            // Block elements and box-drawing connectors bypass the font: they
+            // are drawn as pixel-snapped rects so adjacent cells tile without
+            // seams (see TerminalBlockGlyphs / TerminalBoxDrawing).
+            if let rects = TerminalBlockGlyphs.geometry(for: cell.character)
+                ?? TerminalBoxDrawing.rectGeometry(
+                    for: cell.character,
+                    cellWidth: renderConfig.cellWidth,
+                    cellHeight: renderConfig.cellHeight,
+                    fontSize: renderConfig.fontSize
+                )
+            {
+                flushTextSegment()
+                textForeground = nil
+                textBold = false
+                blockGlyphs.append(TerminalBlockGlyph(
+                    row: row,
+                    col: cell.col,
+                    rects: rects,
+                    foreground: cell.foreground
+                ))
+                continue
+            }
+
+            // Rounded corners and diagonals are stroked as paths at draw time
+            // so their stroke width matches the rect-drawn straight segments.
+            if let kind = TerminalBoxDrawing.strokeKind(for: cell.character) {
+                flushTextSegment()
+                textForeground = nil
+                textBold = false
+                strokeGlyphs.append(TerminalStrokeGlyph(
+                    row: row,
+                    col: cell.col,
+                    kind: kind,
+                    character: cell.character,
+                    foreground: cell.foreground
+                ))
+                continue
+            }
+
             let foreground = cell.foreground
             let bold = cell.bold
             if textForeground != foreground || textBold != bold {
@@ -199,12 +289,18 @@ final class TerminalRenderPlanCache {
                 textStartCol = cell.col
             }
             text.append(cell.character)
+            textCols += 1
         }
 
         flushBackgroundRun()
         flushTextSegment()
 
-        return RowRenderPlan(backgroundRuns: backgroundRuns, textSegments: textSegments)
+        return TerminalRowRenderPlan(
+            backgroundRuns: backgroundRuns,
+            textSegments: textSegments,
+            blockGlyphs: blockGlyphs,
+            strokeGlyphs: strokeGlyphs
+        )
     }
 
     private func shouldPaintBackground(

@@ -194,8 +194,10 @@ pub(crate) struct TabStripState {
     pub(crate) hovered_tab_close: Option<usize>,
     hover_animation_tab: Option<usize>,
     hover_animation_started_at: Option<Instant>,
-    press_animation_tab: Option<usize>,
-    press_animation_started_at: Option<Instant>,
+    // Tab whose hover highlight is currently fading out after the pointer left
+    // it; mirrors the fade-in pair above so hover exits do not snap.
+    unhover_animation_tab: Option<usize>,
+    unhover_animation_started_at: Option<Instant>,
     pub(crate) interaction_animation_scheduled: bool,
     pub(crate) drag: Option<TabDragState>,
     pub(crate) drag_preview: TabDragPreviewState,
@@ -220,8 +222,8 @@ impl TabStripState {
             hovered_tab_close: None,
             hover_animation_tab: None,
             hover_animation_started_at: None,
-            press_animation_tab: None,
-            press_animation_started_at: None,
+            unhover_animation_tab: None,
+            unhover_animation_started_at: None,
             interaction_animation_scheduled: false,
             drag: None,
             drag_preview: TabDragPreviewState::default(),
@@ -240,6 +242,10 @@ impl TabStripState {
     }
 
     pub(crate) fn start_hover_animation(&mut self, tab_index: usize, now: Instant) -> bool {
+        if self.unhover_animation_tab == Some(tab_index) {
+            self.unhover_animation_tab = None;
+            self.unhover_animation_started_at = None;
+        }
         if self.hover_animation_tab == Some(tab_index)
             && self.hover_animation_started_at.is_some_and(|started| {
                 now.saturating_duration_since(started) < TAB_INTERACTION_ANIMATION_DURATION
@@ -252,10 +258,18 @@ impl TabStripState {
         true
     }
 
-    pub(crate) fn start_press_animation(&mut self, tab_index: usize, now: Instant) -> bool {
-        self.press_animation_tab = Some(tab_index);
-        self.press_animation_started_at = Some(now);
-        true
+    pub(crate) fn start_unhover_animation(&mut self, tab_index: usize, now: Instant) {
+        self.unhover_animation_tab = Some(tab_index);
+        self.unhover_animation_started_at = Some(now);
+        if self.hover_animation_tab == Some(tab_index) {
+            self.hover_animation_tab = None;
+            self.hover_animation_started_at = None;
+        }
+    }
+
+    pub(crate) fn clear_unhover_animation(&mut self) {
+        self.unhover_animation_tab = None;
+        self.unhover_animation_started_at = None;
     }
 
     fn progress_for(started_at: Option<Instant>, now: Instant) -> f32 {
@@ -272,32 +286,27 @@ impl TabStripState {
     }
 
     pub(crate) fn hover_progress(&self, tab_index: usize, now: Instant) -> f32 {
-        if self.hovered_tab != Some(tab_index) {
-            return 0.0;
+        if self.hovered_tab == Some(tab_index) {
+            return if self.hover_animation_tab == Some(tab_index) {
+                Self::progress_for(self.hover_animation_started_at, now)
+            } else {
+                1.0
+            };
         }
-        if self.hover_animation_tab == Some(tab_index) {
-            Self::progress_for(self.hover_animation_started_at, now)
-        } else {
-            1.0
+        if self.unhover_animation_tab == Some(tab_index) {
+            return 1.0 - Self::progress_for(self.unhover_animation_started_at, now);
         }
-    }
-
-    pub(crate) fn press_progress(&self, tab_index: usize, now: Instant) -> f32 {
-        if self.press_animation_tab != Some(tab_index) {
-            return 0.0;
-        }
-        let progress = Self::progress_for(self.press_animation_started_at, now);
-        1.0 - progress
+        0.0
     }
 
     pub(crate) fn interaction_animation_active(&self, now: Instant) -> bool {
-        let hover_active = self.hover_animation_started_at.is_some_and(|started| {
-            now.saturating_duration_since(started) < TAB_INTERACTION_ANIMATION_DURATION
-        });
-        let press_active = self.press_animation_started_at.is_some_and(|started| {
-            now.saturating_duration_since(started) < TAB_INTERACTION_ANIMATION_DURATION
-        });
-        hover_active || press_active
+        [
+            self.hover_animation_started_at,
+            self.unhover_animation_started_at,
+        ]
+        .into_iter()
+        .flatten()
+        .any(|started| now.saturating_duration_since(started) < TAB_INTERACTION_ANIMATION_DURATION)
     }
 }
 

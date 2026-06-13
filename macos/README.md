@@ -1,4 +1,4 @@
-# TermyAlpha
+# Termy
 
 Higly experimental not ready for daily use. 
 
@@ -7,10 +7,16 @@ Native macOS 14+ SwiftUI terminal host backed by the repo-local `libtermy`.
 ## Run
 
 ```sh
-./script/build_and_run.sh
+cargo macos run
 ```
 
-The script builds `crates/ffi` from the repository root first, then builds and launches the SwiftPM app as `macos/dist/TermyAlpha.app`.
+This builds `crates/ffi` from the repository root first, then builds and launches the SwiftPM app as `macos/dist/Termy.app`.
+
+The old script remains as a compatibility shim:
+
+```sh
+./script/build_and_run.sh
+```
 
 At startup the app reads Termy's local config, including `working_dir`, `window_width`, and `window_height`.
 
@@ -43,7 +49,7 @@ Keyboard input is encoded through repo-local `termy_core`, including Kitty keybo
 For a staged app bundle, run a local startup/RSS/CPU gate with:
 
 ```sh
-./scripts/check-launch-gate.sh --app .build/dmg-arm64/TermyAlpha.app
+./scripts/check-launch-gate.sh --app .build/dmg-arm64/Termy.app
 ```
 
 Native DMGs are built with `./scripts/build-dmg.sh`. Pass `--sign-identity` plus notary credentials to sign/notarize, or use `./scripts/build-dmg-signed.sh` when a missing signing identity should fail loudly.

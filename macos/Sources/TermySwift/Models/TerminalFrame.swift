@@ -1,33 +1,74 @@
 import CTermy
+import AppKit
 import SwiftUI
 
 struct TerminalRGBA: Equatable {
-    var red: Double
-    var green: Double
-    var blue: Double
-    var alpha: Double
+    private var packedRGBA: UInt32
 
     init(red: Double, green: Double, blue: Double, alpha: Double) {
-        self.red = red
-        self.green = green
-        self.blue = blue
-        self.alpha = alpha
+        self.init(
+            redByte: Self.byte(red),
+            greenByte: Self.byte(green),
+            blueByte: Self.byte(blue),
+            alphaByte: Self.byte(alpha)
+        )
+    }
+
+    init(redByte: UInt8, greenByte: UInt8, blueByte: UInt8, alphaByte: UInt8) {
+        packedRGBA = UInt32(redByte) << 24
+            | UInt32(greenByte) << 16
+            | UInt32(blueByte) << 8
+            | UInt32(alphaByte)
     }
 
     init(_ color: TermyFfiColor) {
-        red = Double(color.r) / 255.0
-        green = Double(color.g) / 255.0
-        blue = Double(color.b) / 255.0
-        alpha = Double(color.a) / 255.0
+        self.init(redByte: color.r, greenByte: color.g, blueByte: color.b, alphaByte: color.a)
+    }
+
+    /// The packed `0xRRGGBBAA` value. Stable and cheap, so it doubles as a
+    /// cache key for derived `NSColor`s and typeset lines in the renderer.
+    var packedValue: UInt32 {
+        packedRGBA
+    }
+
+    var red: Double {
+        Double((packedRGBA >> 24) & 0xff) / 255.0
+    }
+
+    var green: Double {
+        Double((packedRGBA >> 16) & 0xff) / 255.0
+    }
+
+    var blue: Double {
+        Double((packedRGBA >> 8) & 0xff) / 255.0
+    }
+
+    var alpha: Double {
+        Double(packedRGBA & 0xff) / 255.0
     }
 
     var swiftUIColor: Color {
         Color(red: red, green: green, blue: blue, opacity: alpha)
     }
 
-    static let termyForeground = TerminalRGBA(red: 0.91, green: 0.92, blue: 0.96, alpha: 1.0)
-    static let termyBackground = TerminalRGBA(red: 0.04, green: 0.06, blue: 0.13, alpha: 1.0)
-    static let termyCursor = TerminalRGBA(red: 0.65, green: 0.91, blue: 0.64, alpha: 1.0)
+    /// Terminal escape-sequence colors are sRGB by convention; the calibrated
+    /// generic color space renders them visibly duller.
+    var nsColor: NSColor {
+        NSColor(
+            srgbRed: red,
+            green: green,
+            blue: blue,
+            alpha: alpha
+        )
+    }
+
+    private static func byte(_ value: Double) -> UInt8 {
+        UInt8((min(1.0, max(0.0, value)) * 255.0).rounded())
+    }
+
+    static let termyForeground = TerminalRGBA(redByte: 232, greenByte: 235, blueByte: 245, alphaByte: 255)
+    static let termyBackground = TerminalRGBA(redByte: 10, greenByte: 15, blueByte: 33, alphaByte: 255)
+    static let termyCursor = TerminalRGBA(redByte: 166, greenByte: 232, blueByte: 163, alphaByte: 255)
 }
 
 struct TerminalRenderConfig: Equatable {
@@ -270,12 +311,65 @@ struct TerminalCell: Identifiable, Equatable {
 
     var col: Int
     var row: Int
-    var character: Character
+    var codepoint: UInt32
     var foreground: TerminalRGBA
     var background: TerminalRGBA
     var usesTerminalDefaultBackground: Bool
     var renderText: Bool
     var bold: Bool
+
+    init(
+        col: Int,
+        row: Int,
+        character: Character,
+        foreground: TerminalRGBA,
+        background: TerminalRGBA,
+        usesTerminalDefaultBackground: Bool,
+        renderText: Bool,
+        bold: Bool
+    ) {
+        self.col = col
+        self.row = row
+        codepoint = Self.codepoint(from: character)
+        self.foreground = foreground
+        self.background = background
+        self.usesTerminalDefaultBackground = usesTerminalDefaultBackground
+        self.renderText = renderText
+        self.bold = bold
+    }
+
+    init(
+        col: Int,
+        row: Int,
+        codepoint: UInt32,
+        foreground: TerminalRGBA,
+        background: TerminalRGBA,
+        usesTerminalDefaultBackground: Bool,
+        renderText: Bool,
+        bold: Bool
+    ) {
+        self.col = col
+        self.row = row
+        self.codepoint = UnicodeScalar(codepoint) == nil ? 32 : codepoint
+        self.foreground = foreground
+        self.background = background
+        self.usesTerminalDefaultBackground = usesTerminalDefaultBackground
+        self.renderText = renderText
+        self.bold = bold
+    }
+
+    var character: Character {
+        get {
+            UnicodeScalar(codepoint).map(Character.init) ?? " "
+        }
+        set {
+            codepoint = Self.codepoint(from: newValue)
+        }
+    }
+
+    private static func codepoint(from character: Character) -> UInt32 {
+        character.unicodeScalars.first.map { UInt32($0.value) } ?? 32
+    }
 }
 
 struct TerminalCursor: Equatable {
@@ -284,22 +378,101 @@ struct TerminalCursor: Equatable {
     var style: TerminalCursorStyle
 }
 
-struct TerminalFrame: Equatable {
+struct TerminalFrameMetadata: Equatable {
     var cols: Int
     var rows: Int
-    var cells: [TerminalCell]
     var cursor: TerminalCursor?
     var displayOffset: Int
     var historySize: Int
 
-    static let empty = TerminalFrame(
+    static let empty = TerminalFrameMetadata(
         cols: 0,
         rows: 0,
-        cells: [],
         cursor: nil,
         displayOffset: 0,
         historySize: 0
     )
+
+    init(
+        cols: Int,
+        rows: Int,
+        cursor: TerminalCursor?,
+        displayOffset: Int,
+        historySize: Int
+    ) {
+        self.cols = cols
+        self.rows = rows
+        self.cursor = cursor
+        self.displayOffset = displayOffset
+        self.historySize = historySize
+    }
+
+    init(frame: TerminalFrame) {
+        self.init(
+            cols: frame.cols,
+            rows: frame.rows,
+            cursor: frame.cursor,
+            displayOffset: frame.displayOffset,
+            historySize: frame.historySize
+        )
+    }
+}
+
+private final class TerminalCellStorage: Equatable {
+    var cells: [TerminalCell]
+
+    init(_ cells: [TerminalCell]) {
+        self.cells = cells
+    }
+
+    static func == (lhs: TerminalCellStorage, rhs: TerminalCellStorage) -> Bool {
+        lhs.cells == rhs.cells
+    }
+}
+
+struct TerminalFrame: Equatable {
+    var cols: Int
+    var rows: Int
+    private var cellStorage: TerminalCellStorage
+    var cursor: TerminalCursor?
+    var displayOffset: Int
+    var historySize: Int
+
+    init(
+        cols: Int,
+        rows: Int,
+        cells: [TerminalCell],
+        cursor: TerminalCursor?,
+        displayOffset: Int,
+        historySize: Int
+    ) {
+        self.cols = cols
+        self.rows = rows
+        cellStorage = TerminalCellStorage(cells)
+        self.cursor = cursor
+        self.displayOffset = displayOffset
+        self.historySize = historySize
+    }
+
+    var cells: [TerminalCell] {
+        get {
+            cellStorage.cells
+        }
+        set {
+            cellStorage = TerminalCellStorage(newValue)
+        }
+    }
+
+    static var empty: TerminalFrame {
+        TerminalFrame(
+            cols: 0,
+            rows: 0,
+            cells: [],
+            cursor: nil,
+            displayOffset: 0,
+            historySize: 0
+        )
+    }
 
     static func plainTextPreview(_ text: String, cols: Int = 96, rows: Int = 28) -> TerminalFrame {
         let cols = max(2, cols)
@@ -342,10 +515,10 @@ struct TerminalFrame: Equatable {
     func cells(inRow row: Int) -> ArraySlice<TerminalCell> {
         let start = row * cols
         let end = start + cols
-        guard row >= 0, cols > 0, start >= 0, end <= cells.count else {
+        guard row >= 0, cols > 0, start >= 0, end <= cellStorage.cells.count else {
             return []
         }
-        return cells[start..<end]
+        return cellStorage.cells[start..<end]
     }
 
     func cell(row: Int, col: Int) -> TerminalCell? {
@@ -353,10 +526,22 @@ struct TerminalFrame: Equatable {
             return nil
         }
         let index = (row * cols) + col
-        guard index >= 0, index < cells.count else {
+        guard index >= 0, index < cellStorage.cells.count else {
             return nil
         }
-        return cells[index]
+        return cellStorage.cells[index]
+    }
+
+    @discardableResult
+    mutating func setCell(_ cell: TerminalCell, at index: Int) -> Bool {
+        guard index >= 0, index < cellStorage.cells.count else {
+            return false
+        }
+        guard cellStorage.cells[index] != cell else {
+            return false
+        }
+        cellStorage.cells[index] = cell
+        return true
     }
 
     func selectedText(for selection: TerminalSelection?) -> String? {
@@ -377,6 +562,39 @@ struct TerminalFrame: Equatable {
             return nil
         }
         return lines.joined(separator: "\n")
+    }
+
+    /// Whether `selectedText(for:)` would return non-empty text, without
+    /// building the string (this runs per render pass). A multi-row selection
+    /// is always non-empty (the row join contributes a newline); a single-row
+    /// selection is non-empty exactly when some cell renders a non-space — the
+    /// trailing-space trim removes everything else.
+    func hasSelectedText(for selection: TerminalSelection?) -> Bool {
+        guard let selection else {
+            return false
+        }
+        let ranges = selection.rowRanges(cols: cols, rows: rows)
+        guard let range = ranges.first else {
+            return false
+        }
+        if ranges.count > 1 {
+            return true
+        }
+        guard range.startCol <= range.endCol else {
+            return false
+        }
+        return (range.startCol...range.endCol).contains { col in
+            guard let cell = cell(row: range.row, col: col), cell.renderText else {
+                return false
+            }
+            return cell.character != " "
+        }
+    }
+
+    var hasVisibleContent: Bool {
+        cells.contains { cell in
+            cell.renderText && cell.character != " "
+        }
     }
 
     func visibleTextSnapshot() -> String {

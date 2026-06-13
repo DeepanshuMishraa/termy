@@ -56,9 +56,12 @@ use termy_terminal_ui::{TerminalUiRenderMetricsSnapshot, terminal_ui_render_metr
 use termy_toast::ToastManager;
 
 mod benchmark;
+mod browser;
 mod command_palette;
 mod constants;
+mod git_panel;
 mod inline_input;
+mod inspector;
 mod interaction;
 #[cfg(target_os = "macos")]
 mod macos_file_drop;
@@ -72,6 +75,7 @@ pub(crate) mod tab_strip;
 mod tabs;
 mod titles;
 mod update_toasts;
+mod workspaces;
 
 use self::benchmark::{BENCHMARK_SAMPLE_INTERVAL, BenchmarkConfig, BenchmarkSession};
 use command_palette::{CommandPaletteMode, CommandPaletteState, TmuxSessionIntent};
@@ -317,6 +321,34 @@ struct HoveredPaneDivider {
     pane_id: String,
     axis: PaneResizeAxis,
     edge: PaneResizeEdge,
+}
+
+/// Where a dragged pane would land relative to the pane under the cursor:
+/// an edge half (insert as a split on that side) or the center (swap).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PaneDropRegion {
+    Left,
+    Right,
+    Top,
+    Bottom,
+    Center,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PaneDropTarget {
+    pane_id: String,
+    region: PaneDropRegion,
+}
+
+#[derive(Clone, Debug)]
+struct PaneMoveDragState {
+    pane_id: String,
+    start_x: f32,
+    start_y: f32,
+    /// Set once the pointer travels past the drag threshold; the placement
+    /// overlay only renders for active drags so a modifier-click stays inert.
+    active: bool,
+    drop_target: Option<PaneDropTarget>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -732,6 +764,9 @@ struct TerminalPane {
     pane_zoom_steps: i16,
     degraded: bool,
     terminal: Terminal,
+    // Progress reported by this pane's shell via OSC 9;4; the tab strip shows
+    // the per-tab aggregate (TerminalTab::aggregate_progress_state).
+    progress_state: ProgressState,
     render_cache: RefCell<TerminalPaneRenderCache>,
     /// Tracks the previous alternate-screen state so that transitions can be
     /// detected during `sync_terminal_size` and a SIGWINCH nudge sent.
@@ -748,6 +783,7 @@ struct PaneCachedElementIds {
     resize_handle_bottom: SharedString,
     focus_accent: SharedString,
     degraded_accent: SharedString,
+    drag_handle: SharedString,
 }
 
 impl PaneCachedElementIds {
@@ -758,6 +794,7 @@ impl PaneCachedElementIds {
             resize_handle_bottom: SharedString::from(format!("pane-resize-handle-bottom-{id}")),
             focus_accent: SharedString::from(format!("pane-focus-accent-{id}")),
             degraded_accent: SharedString::from(format!("pane-degraded-accent-{id}")),
+            drag_handle: SharedString::from(format!("pane-drag-handle-{id}")),
         }
     }
 }
@@ -820,6 +857,7 @@ impl TerminalPane {
             height,
             pane_zoom_steps: 0,
             degraded: false,
+            progress_state: ProgressState::default(),
             terminal,
             render_cache: RefCell::new(TerminalPaneRenderCache::default()),
             last_alternate_screen: Cell::new(false),
@@ -1102,10 +1140,19 @@ fn percentile_millis(samples_micros: &[u32], numerator: usize, denominator: usiz
     samples_micros[index] as f32 / 1000.0
 }
 
+/// What a tab hosts: terminal panes (the default) or an embedded browser.
+/// Browser tabs have an empty `panes` vec; the pane-oriented machinery
+/// treats them as pane-less and the render path swaps in the browser chrome.
+enum TabKind {
+    Terminal,
+    Browser(Box<browser::BrowserTabState>),
+}
+
 struct TerminalTab {
     id: TabId,
     window_id: String,
     window_index: i32,
+    kind: TabKind,
     panes: Vec<TerminalPane>,
     active_pane_id: String,
     pinned: bool,
@@ -1128,7 +1175,6 @@ struct TerminalTab {
     sticky_title_width: f32,
     display_width: f32,
     running_process: bool,
-    progress_state: ProgressState,
     command_lifecycle: CommandLifecycle,
 }
 
@@ -1140,6 +1186,38 @@ struct NativePaneZoomSnapshot {
     layout_tree: Option<NativePaneLayoutTree>,
 }
 impl TerminalTab {
+    /// Tab-level progress summary across panes, by severity: any error wins,
+    /// then warnings, then determinate progress (averaged across reporting
+    /// panes), then indeterminate.
+    fn aggregate_progress_state(&self) -> ProgressState {
+        let mut warning: Option<u8> = None;
+        let mut in_progress_sum = 0u32;
+        let mut in_progress_count = 0u32;
+        let mut has_indeterminate = false;
+        for pane in &self.panes {
+            match pane.progress_state {
+                ProgressState::Error(percent) => return ProgressState::Error(percent),
+                ProgressState::Warning(percent) => warning = warning.or(Some(percent)),
+                ProgressState::InProgress(percent) => {
+                    in_progress_sum += u32::from(percent);
+                    in_progress_count += 1;
+                }
+                ProgressState::Indeterminate => has_indeterminate = true,
+                ProgressState::Clear => {}
+            }
+        }
+        if let Some(percent) = warning {
+            return ProgressState::Warning(percent);
+        }
+        if let Some(average) = in_progress_sum.checked_div(in_progress_count) {
+            return ProgressState::InProgress(average as u8);
+        }
+        if has_indeterminate {
+            return ProgressState::Indeterminate;
+        }
+        ProgressState::Clear
+    }
+
     fn has_active_pane(&self) -> bool {
         self.panes.iter().any(|pane| pane.id == self.active_pane_id)
     }
@@ -1488,6 +1566,17 @@ pub(crate) enum TabBarVisibility {
 /// The main terminal view component
 pub struct TerminalView {
     tabs: Vec<TerminalTab>,
+    /// All workspaces in sidebar order. The entry at `active_workspace` always
+    /// has an empty `tabs` vec: the active workspace's tabs live in `tabs`
+    /// above so the existing tab machinery only ever sees the visible strip.
+    workspaces: Vec<workspaces::WorkspaceEntry>,
+    active_workspace: usize,
+    next_workspace_id: u64,
+    workspace_sidebar_enabled: bool,
+    browser_tabs_enabled: bool,
+    git_panel_enabled: bool,
+    git_panel_open: bool,
+    git_panel: git_panel::GitPanelState,
     native_pane_zoom_snapshots: HashMap<TabId, NativePaneZoomSnapshot>,
     native_pane_layout_trees: HashMap<TabId, NativePaneLayoutTree>,
     next_tab_id: TabId,
@@ -1536,6 +1625,9 @@ pub struct TerminalView {
     native_buffer_persistence: bool,
     current_named_layout: Option<String>,
     native_persist_revision: Arc<AtomicU64>,
+    /// Lazily opened SQLite-backed session store; `None` once opening failed
+    /// (logged), so persistence degrades to a no-op instead of retry spam.
+    workspace_store: std::cell::OnceCell<Option<Arc<crate::workspace_store::WorkspaceStore>>>,
     tmux_show_active_pane_border: bool,
     config_path: Option<PathBuf>,
     config_fingerprint: Option<u64>,
@@ -1580,6 +1672,9 @@ pub struct TerminalView {
     pending_cursor_move_preview: Option<PendingCursorMovePreview>,
     terminal_context_menu: Option<TerminalContextMenuState>,
     tab_context_menu: Option<TabContextMenuState>,
+    /// Window-space top-left of the "+" dropdown (terminal / browser tab
+    /// choice); `None` while closed. Only used when browser tabs are enabled.
+    new_tab_menu_anchor: Option<(f32, f32)>,
     hovered_link: Option<HoveredLink>,
     hovered_toast: Option<u64>,
     copied_toast_feedback: Option<(u64, Instant)>,
@@ -1597,6 +1692,7 @@ pub struct TerminalView {
     benchmark_session: Option<BenchmarkSession>,
     benchmark_exit_scheduled: bool,
     show_debug_overlay: bool,
+    inspector: inspector::InspectorState,
     debug_overlay_stats: DebugOverlayStats,
     install_cli_available: bool,
     tab_strip: TabStripState,
@@ -1615,6 +1711,7 @@ pub struct TerminalView {
     command_palette_scrollbar_drag: Option<TerminalScrollbarDragState>,
     command_palette_scrollbar_lane_bounds: Option<Bounds<Pixels>>,
     pane_resize_drag: Option<PaneResizeDragState>,
+    pane_move_drag: Option<PaneMoveDragState>,
     hovered_pane_divider: Option<HoveredPaneDivider>,
     pane_resize_blocked: bool,
     terminal_scrollbar_marker_cache: TerminalScrollbarMarkerCache,
@@ -2116,30 +2213,88 @@ impl TerminalView {
         axis: PaneResizeAxis,
         new_pane_id: &str,
     ) -> bool {
+        Self::native_replace_leaf_with_split_ordered(node, target_pane_id, axis, new_pane_id, false)
+    }
+
+    /// Replace the `target_pane_id` leaf with an even split between it and a
+    /// new leaf. `new_first` places the new leaf on the left/top side.
+    fn native_replace_leaf_with_split_ordered(
+        node: &mut NativePaneLayoutNode,
+        target_pane_id: &str,
+        axis: PaneResizeAxis,
+        new_pane_id: &str,
+        new_first: bool,
+    ) -> bool {
         match node {
             NativePaneLayoutNode::Leaf { pane_id } if pane_id == target_pane_id => {
-                let existing = pane_id.clone();
+                let existing = NativePaneLayoutNode::Leaf {
+                    pane_id: pane_id.clone(),
+                };
+                let added = NativePaneLayoutNode::Leaf {
+                    pane_id: new_pane_id.to_string(),
+                };
+                let (first, second) = if new_first {
+                    (added, existing)
+                } else {
+                    (existing, added)
+                };
                 *node = NativePaneLayoutNode::Split {
                     axis,
                     ratio: 0.5,
-                    first: Box::new(NativePaneLayoutNode::Leaf { pane_id: existing }),
-                    second: Box::new(NativePaneLayoutNode::Leaf {
-                        pane_id: new_pane_id.to_string(),
-                    }),
+                    first: Box::new(first),
+                    second: Box::new(second),
                 };
                 true
             }
             NativePaneLayoutNode::Leaf { .. } => false,
             NativePaneLayoutNode::Split { first, second, .. } => {
-                Self::native_replace_leaf_with_split(first, target_pane_id, axis, new_pane_id)
-                    || Self::native_replace_leaf_with_split(
-                        second,
-                        target_pane_id,
-                        axis,
-                        new_pane_id,
-                    )
+                Self::native_replace_leaf_with_split_ordered(
+                    first,
+                    target_pane_id,
+                    axis,
+                    new_pane_id,
+                    new_first,
+                ) || Self::native_replace_leaf_with_split_ordered(
+                    second,
+                    target_pane_id,
+                    axis,
+                    new_pane_id,
+                    new_first,
+                )
             }
         }
+    }
+
+    /// Swap two leaves in the layout tree by renaming their pane ids.
+    /// Returns `true` only when both leaves were found.
+    fn native_swap_leaves(
+        node: &mut NativePaneLayoutNode,
+        first_id: &str,
+        second_id: &str,
+    ) -> bool {
+        fn walk(node: &mut NativePaneLayoutNode, first_id: &str, second_id: &str) -> (bool, bool) {
+            match node {
+                NativePaneLayoutNode::Leaf { pane_id } => {
+                    if pane_id == first_id {
+                        *pane_id = second_id.to_string();
+                        (true, false)
+                    } else if pane_id == second_id {
+                        *pane_id = first_id.to_string();
+                        (false, true)
+                    } else {
+                        (false, false)
+                    }
+                }
+                NativePaneLayoutNode::Split { first, second, .. } => {
+                    let left = walk(first, first_id, second_id);
+                    let right = walk(second, first_id, second_id);
+                    (left.0 || right.0, left.1 || right.1)
+                }
+            }
+        }
+
+        let (found_first, found_second) = walk(node, first_id, second_id);
+        found_first && found_second
     }
 
     fn native_adjust_tree_split(
@@ -2682,6 +2837,7 @@ impl TerminalView {
             id: tab_id,
             window_id: format!("@native-{tab_id}"),
             window_index: 0,
+            kind: TabKind::Terminal,
             panes: vec![pane],
             active_pane_id: pane_id,
             pinned: false,
@@ -2698,7 +2854,6 @@ impl TerminalView {
             sticky_title_width,
             display_width,
             running_process: false,
-            progress_state: ProgressState::default(),
             command_lifecycle: CommandLifecycle::default(),
         }
     }
@@ -3019,7 +3174,7 @@ impl TerminalView {
     }
 
     fn record_debug_overlay_frame(&mut self) {
-        if !self.show_debug_overlay {
+        if !self.show_debug_overlay && !self.inspector_collects_render_stats() {
             return;
         }
         self.debug_overlay_stats.record_frame(Instant::now());
@@ -3185,13 +3340,19 @@ impl TerminalView {
         let viewport = window.viewport_size();
         let viewport_width: f32 = viewport.width.into();
         let viewport_height: f32 = viewport.height.into();
-        // The right-side sidebar (if any) shortens the terminal content width;
-        // its origin stays at x=0 because the sidebar sits to the right.
+        // Sidebars on either side shorten the terminal content width; the
+        // origin stays at (0, 0) because these bounds are local to the
+        // terminal surface, which flex layout already offsets past the
+        // left workspace sidebar.
         TerminalContentRect::new(
             0.0,
             0.0,
-            (viewport_width - self.effective_sidebar_width()).max(0.0),
-            viewport_height - self.terminal_content_top_inset(),
+            (viewport_width
+                - self.effective_sidebar_width()
+                - self.workspace_sidebar_width()
+                - self.git_panel_width_px())
+            .max(0.0),
+            viewport_height - self.terminal_content_top_inset() - self.inspector_bottom_inset(),
         )
     }
 
@@ -3768,21 +3929,29 @@ impl TerminalView {
         }
 
         // Toggle cursor visibility for blink in both terminal and inline inputs.
-        // Skip the redraw request when the blink has no visible effect (blink disabled
-        // or command palette is covering the terminal cursor).
+        // Skip the redraw request when the blink has no visible effect (blink disabled,
+        // command palette covering the terminal cursor, or the window inactive — an
+        // unfocused cursor is drawn solid, so blinking would only burn redraws).
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             loop {
                 smol::Timer::after(Duration::from_millis(CURSOR_BLINK_INTERVAL_MS)).await;
-                let result = cx.update(|cx| {
-                    this.update(cx, |view, cx| {
-                        if view.tick_cursor_blink()
-                            && !view.is_command_palette_open()
-                            && view.renaming_tab.is_none()
-                        {
-                            cx.notify();
-                        }
+                let result = cx
+                    .update_window(window_handle, |_, window, cx| {
+                        let window_active = window.is_window_active();
+                        this.update(cx, |view, cx| {
+                            if !window_active {
+                                view.cursor_blink_visible = true;
+                                return;
+                            }
+                            if view.tick_cursor_blink()
+                                && !view.is_command_palette_open()
+                                && view.renaming_tab.is_none()
+                            {
+                                cx.notify();
+                            }
+                        })
                     })
-                });
+                    .and_then(|inner| inner);
                 if result.is_err() {
                     break;
                 }
@@ -3853,6 +4022,14 @@ impl TerminalView {
 
         let mut view = Self {
             tabs: Vec::new(),
+            workspaces: vec![workspaces::WorkspaceEntry::new(1)],
+            active_workspace: 0,
+            next_workspace_id: 2,
+            workspace_sidebar_enabled: config.sidebar_enabled,
+            browser_tabs_enabled: config.browser_tabs_enabled,
+            git_panel_enabled: config.git_panel_enabled,
+            git_panel_open: false,
+            git_panel: git_panel::GitPanelState::new(),
             native_pane_zoom_snapshots: HashMap::new(),
             native_pane_layout_trees: HashMap::new(),
             next_tab_id: 1,
@@ -3901,6 +4078,7 @@ impl TerminalView {
             native_buffer_persistence: config.native_buffer_persistence,
             current_named_layout: None,
             native_persist_revision: Arc::new(AtomicU64::new(0)),
+            workspace_store: std::cell::OnceCell::new(),
             tmux_show_active_pane_border: config.tmux_show_active_pane_border,
             config_path,
             config_fingerprint,
@@ -3945,6 +4123,7 @@ impl TerminalView {
             pending_cursor_move_preview: None,
             terminal_context_menu: None,
             tab_context_menu: None,
+            new_tab_menu_anchor: None,
             hovered_link: None,
             hovered_toast: None,
             copied_toast_feedback: None,
@@ -3962,6 +4141,7 @@ impl TerminalView {
             benchmark_session: benchmark_config.map(BenchmarkSession::new),
             benchmark_exit_scheduled: false,
             show_debug_overlay: config.show_debug_overlay,
+            inspector: inspector::InspectorState::new(config.inspector_height),
             debug_overlay_stats: DebugOverlayStats::new(),
             install_cli_available: Self::install_cli_available_from_system(),
             tab_strip: TabStripState::new(config.tab_switch_modifier_hints),
@@ -3980,6 +4160,7 @@ impl TerminalView {
             command_palette_scrollbar_drag: None,
             command_palette_scrollbar_lane_bounds: None,
             pane_resize_drag: None,
+            pane_move_drag: None,
             hovered_pane_divider: None,
             pane_resize_blocked: false,
             terminal_scrollbar_marker_cache: TerminalScrollbarMarkerCache::default(),
@@ -4007,7 +4188,6 @@ impl TerminalView {
             // Surface explicit feedback when a synced/shared config requests tmux on Windows.
             termy_toast::warning(TMUX_UNSUPPORTED_WINDOWS_TOAST);
         }
-        command_palette::prewarm_user_path_resolution();
         let restored_native_workspace = if resolved_runtime_kind == RuntimeKind::Native {
             match view.restore_persisted_native_workspace(cx) {
                 Ok(restored) => restored,
@@ -4195,12 +4375,30 @@ impl TerminalView {
         let show_debug_overlay_changed = self.show_debug_overlay != config.show_debug_overlay;
         let simple_mode_changed = self.simple_mode != config.simple_mode;
         let auto_hide_tabbar_changed = self.auto_hide_tabbar != config.auto_hide_tabbar;
+        let workspace_sidebar_changed = self.workspace_sidebar_enabled != config.sidebar_enabled;
+        self.workspace_sidebar_enabled = config.sidebar_enabled;
+        self.browser_tabs_enabled = config.browser_tabs_enabled;
+        let git_panel_was_enabled = self.git_panel_enabled;
+        self.git_panel_enabled = config.git_panel_enabled;
+        if git_panel_was_enabled && !self.git_panel_enabled && self.git_panel_open {
+            self.git_panel_open = false;
+            self.git_panel.editing_commit = false;
+            self.mark_tab_strip_layout_dirty();
+            cx.notify();
+        }
+        if !self.workspace_sidebar_enabled {
+            // Stashed workspaces would be unreachable without the sidebar.
+            self.collapse_workspaces_into_active();
+        }
         self.tab_close_visibility = config.tab_close_visibility;
         self.tab_width_mode = config.tab_width_mode;
         self.tab_bar_position = config.tab_bar_position;
         self.auto_hide_tabbar = config.auto_hide_tabbar;
         self.show_termy_in_titlebar = config.show_termy_in_titlebar;
         self.show_debug_overlay = config.show_debug_overlay;
+        if self.sync_inspector_height_from_config(config.inspector_height) {
+            cx.notify();
+        }
         self.simple_mode = config.simple_mode;
         if self.simple_mode {
             if self.is_command_palette_open() {
@@ -4352,6 +4550,7 @@ impl TerminalView {
             || show_termy_in_titlebar_changed
             || simple_mode_changed
             || auto_hide_tabbar_changed
+            || workspace_sidebar_changed
         {
             self.mark_tab_strip_layout_dirty();
         }
@@ -4359,6 +4558,7 @@ impl TerminalView {
             || tab_bar_position_changed
             || auto_hide_tabbar_changed
             || simple_mode_changed
+            || workspace_sidebar_changed
         {
             cx.notify();
         }
@@ -4521,11 +4721,11 @@ impl TerminalView {
 
         let mut pending_tab_closures: HashSet<TabId> = HashSet::new();
         let mut pending_pane_closures: Vec<(TabId, String)> = Vec::new();
+        let mut pending_workspace_close = false;
         let mut simulated_tab_count = self.tabs.len();
-        let mut simulated_pane_counts = HashMap::new();
-        for tab in &self.tabs {
-            simulated_pane_counts.insert(tab.id, tab.panes.len());
-        }
+        // Built lazily on the first Exit event: this drain pass runs for every
+        // PTY wakeup burst, and allocating the map per pass is wasted work.
+        let mut simulated_pane_counts: Option<HashMap<TabId, usize>> = None;
 
         for tab_index in 0..self.tabs.len() {
             let tab_id = self.tabs[tab_index].id;
@@ -4552,16 +4752,30 @@ impl TerminalView {
                             }
                         }
                         TerminalEvent::Exit => {
+                            let simulated_pane_counts =
+                                simulated_pane_counts.get_or_insert_with(|| {
+                                    self.tabs
+                                        .iter()
+                                        .map(|tab| (tab.id, tab.panes.len()))
+                                        .collect()
+                                });
                             let exit_should_quit = Self::schedule_native_exit(
                                 tab_id,
                                 pane_id.as_str(),
                                 &mut simulated_tab_count,
-                                &mut simulated_pane_counts,
+                                simulated_pane_counts,
                                 &mut pending_tab_closures,
                                 &mut pending_pane_closures,
                             );
                             if exit_should_quit {
-                                should_quit = true;
+                                // Other workspaces still hold live tabs: the
+                                // exit of the visible strip's last pane closes
+                                // the workspace, not the app.
+                                if self.has_other_workspaces() {
+                                    pending_workspace_close = true;
+                                } else {
+                                    should_quit = true;
+                                }
                             }
                             if tab_index == active_tab {
                                 should_redraw = true;
@@ -4606,12 +4820,13 @@ impl TerminalView {
                                     .command_finished(code);
                             }
                         }
-                        // Progress indicator (OSC 9;4)
+                        // Progress indicator (OSC 9;4) — tracked per pane; the
+                        // tab strip shows the per-tab aggregate.
                         TerminalEvent::Progress(state) => {
                             if self.progress_indicator_enabled
-                                && self.tabs[tab_index].progress_state != state
+                                && self.tabs[tab_index].panes[pane_index].progress_state != state
                             {
-                                self.tabs[tab_index].progress_state = state;
+                                self.tabs[tab_index].panes[pane_index].progress_state = state;
                                 should_redraw = true;
                             }
                         }
@@ -4622,6 +4837,10 @@ impl TerminalView {
                     }
                 }
             }
+        }
+
+        if self.drain_stashed_workspace_terminal_events(&mut reply_host) {
+            terminal_events_remain = true;
         }
 
         for (tab_id, pane_id) in pending_pane_closures.drain(..) {
@@ -4636,6 +4855,10 @@ impl TerminalView {
                 self.close_tab(tab_index, cx);
                 should_redraw = true;
             }
+        }
+        if pending_workspace_close {
+            self.close_active_workspace(cx);
+            should_redraw = true;
         }
 
         if terminal_events_remain {

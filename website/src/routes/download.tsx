@@ -1,195 +1,138 @@
-import { createFileRoute } from '@tanstack/react-router';
+import { createFileRoute, Link } from '@tanstack/react-router';
 import { createServerFn } from '@tanstack/react-start';
 import { HomeLayout } from 'fumadocs-ui/layouts/home';
 import { baseOptions } from '@/lib/layout.shared';
 import {
+  assetArch,
   fetchLatestGitHubRelease,
+  formatBytes,
+  formatReleaseDate,
+  groupReleaseAssets,
   type GitHubRelease,
-  type GitHubReleaseAsset,
 } from '@/lib/github-release';
 
-const loadLatestRelease = createServerFn({ method: 'GET' }).handler(
-  async () => {
-    try {
-      return {
-        release: await fetchLatestGitHubRelease(),
-        error: null as string | null,
-      };
-    } catch (err) {
-      return {
-        release: null as GitHubRelease | null,
-        error:
-          err instanceof Error ? err.message : 'Failed to load latest release',
-      };
-    }
-  },
-);
+const loadLatestRelease = createServerFn({ method: 'GET' }).handler(async () => {
+  try {
+    return {
+      release: await fetchLatestGitHubRelease(),
+      error: null as string | null,
+    };
+  } catch (err) {
+    return {
+      release: null as GitHubRelease | null,
+      error:
+        err instanceof Error ? err.message : 'Failed to load latest release',
+    };
+  }
+});
 
 export const Route = createFileRoute('/download')({
   component: DownloadPage,
   loader: () => loadLatestRelease(),
 });
 
-type Platform = 'macos' | 'linux' | 'windows' | 'other';
-
-interface PlatformGroup {
-  id: Exclude<Platform, 'other'>;
-  title: string;
-  description: string;
-  assets: GitHubReleaseAsset[];
-}
-
-function assetPlatform(asset: GitHubReleaseAsset): Platform {
-  const name = asset.name.toLowerCase();
-
-  if (name.includes('mac') || name.includes('darwin') || name.endsWith('.dmg')) {
-    return 'macos';
-  }
-
-  if (
-    name.includes('linux') ||
-    name.includes('appimage') ||
-    name.endsWith('.deb') ||
-    name.endsWith('.rpm')
-  ) {
-    return 'linux';
-  }
-
-  if (
-    name.includes('windows') ||
-    name.includes('win') ||
-    name.endsWith('.msi') ||
-    name.endsWith('.exe')
-  ) {
-    return 'windows';
-  }
-
-  return 'other';
-}
-
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  const units = ['KB', 'MB', 'GB'];
-  let size = bytes / 1024;
-  let unit = units[0];
-
-  for (const nextUnit of units.slice(1)) {
-    if (size < 1024) break;
-    size /= 1024;
-    unit = nextUnit;
-  }
-
-  return `${size.toFixed(size >= 10 ? 0 : 1)} ${unit}`;
-}
-
-function platformGroups(assets: GitHubReleaseAsset[]): PlatformGroup[] {
-  const groups: PlatformGroup[] = [
-    {
-      id: 'macos',
-      title: 'macOS',
-      description: 'Disk images and macOS builds.',
-      assets: [],
-    },
-    {
-      id: 'linux',
-      title: 'Linux',
-      description: 'AppImage, tarball, and package builds.',
-      assets: [],
-    },
-    {
-      id: 'windows',
-      title: 'Windows',
-      description: 'Installer and Windows builds.',
-      assets: [],
-    },
-  ];
-
-  for (const asset of assets) {
-    const platform = assetPlatform(asset);
-    if (platform === 'other') continue;
-    groups.find((group) => group.id === platform)?.assets.push(asset);
-  }
-
-  return groups.filter((group) => group.assets.length > 0);
-}
+const linkClass =
+  'text-fd-foreground underline decoration-fd-border underline-offset-4 hover:decoration-fd-primary';
 
 function DownloadPage() {
   const { release, error } = Route.useLoaderData();
-  const groups = release ? platformGroups(release.assets) : [];
+  const groups = release ? groupReleaseAssets(release.assets) : [];
+  const githubUrl =
+    release?.htmlUrl ?? 'https://github.com/lassejlv/termy/releases';
 
   return (
     <HomeLayout {...baseOptions()}>
-      <main className="flex flex-1 flex-col">
-        <section className="mx-auto w-full max-w-5xl px-6 pt-24 pb-12 md:pt-32">
-          <div className="max-w-3xl">
-            <span className="inline-flex items-center rounded-full border border-fd-border bg-fd-card px-3 py-1 text-xs uppercase tracking-wider text-fd-muted-foreground">
-              Download
-            </span>
-            <h1 className="mt-6 text-balance font-medium text-5xl tracking-tight md:text-6xl">
-              Get the latest Termy release.
-            </h1>
-            <p className="mt-5 max-w-2xl text-balance text-fd-muted-foreground md:text-lg">
-              The latest release is fetched from GitHub and matched to the
-              available installers, packages, and archives.
-            </p>
-          </div>
-        </section>
+      <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col px-6 pb-24 pt-28 md:pt-36">
+        <h1 className="font-medium text-5xl tracking-tight md:text-6xl">
+          Download
+        </h1>
+        {release && (
+          <p className="mt-4 font-mono text-sm text-fd-muted-foreground">
+            <span className="text-fd-foreground">{release.tagName}</span>
+            {' · '}
+            {formatReleaseDate(release.publishedAt)}
+            {' · '}
+            <Link to="/releases" className={linkClass}>
+              release notes
+            </Link>
+          </p>
+        )}
 
-        <section className="mx-auto w-full max-w-5xl px-6 pb-20">
-          <div className="flex flex-col gap-4">
-            {error && (
-              <div className="rounded-lg border border-fd-border bg-fd-card p-5 text-sm text-fd-muted-foreground">
-                Unable to load the latest GitHub release right now. Use the
-                GitHub releases page below while the API is unavailable.
-              </div>
-            )}
-
-            {release && groups.length === 0 && (
-              <div className="rounded-lg border border-fd-border bg-fd-card p-5 text-sm text-fd-muted-foreground">
-                This release does not have downloadable assets attached yet.
-                Source archives are still available from GitHub.
-              </div>
-            )}
-
-            {groups.map((group) => (
-              <section
-                key={group.id}
-                className="rounded-lg border border-fd-border bg-fd-card p-5"
+        <div className="mt-12 divide-y divide-fd-border border-t border-fd-border">
+          {error && (
+            <p className="py-8 font-mono text-sm text-fd-muted-foreground">
+              <span className="text-fd-error">error:</span> could not reach
+              GitHub.{' '}
+              <a
+                href="https://github.com/lassejlv/termy/releases/latest"
+                target="_blank"
+                rel="noreferrer"
+                className={linkClass}
               >
-                <div>
-                  <h2 className="font-medium text-xl tracking-tight">
-                    {group.title}
-                  </h2>
-                  <p className="mt-1 text-sm text-fd-muted-foreground">
-                    {group.description}
-                  </p>
-                </div>
+                Download from GitHub →
+              </a>
+            </p>
+          )}
 
-                <div className="mt-5 divide-y divide-fd-border overflow-hidden rounded-md border border-fd-border bg-fd-background">
-                  {group.assets.map((asset) => (
-                    <a
-                      key={asset.id}
-                      href={asset.downloadUrl}
-                      className="flex flex-col gap-3 px-4 py-4 transition-colors hover:bg-fd-accent sm:flex-row sm:items-center sm:justify-between"
-                    >
-                      <span className="min-w-0">
-                        <span className="block break-all font-medium text-sm text-fd-foreground">
+          {release && groups.length === 0 && (
+            <p className="py-8 font-mono text-sm text-fd-muted-foreground">
+              No binaries for this release yet.{' '}
+              <a href={githubUrl} target="_blank" rel="noreferrer" className={linkClass}>
+                View on GitHub →
+              </a>
+            </p>
+          )}
+
+          {groups.map((group) => (
+            <section key={group.id} className="py-8">
+              <h2 className="font-medium text-fd-foreground">{group.title}</h2>
+              <ul className="mt-3 divide-y divide-fd-border">
+                {group.assets.map((asset) => {
+                  const arch = assetArch(asset.name);
+                  return (
+                    <li key={asset.id}>
+                      <a
+                        href={asset.downloadUrl}
+                        className="group -mx-2 flex items-center gap-3 rounded-md px-2 py-3 transition-colors hover:bg-fd-accent"
+                      >
+                        <span className="min-w-0 flex-1 break-all font-mono text-sm">
                           {asset.name}
                         </span>
-                        <span className="mt-1 block text-xs text-fd-muted-foreground">
-                          {formatSize(asset.size)}
+                        {arch && (
+                          <span className="hidden shrink-0 font-mono text-[10px] text-fd-muted-foreground sm:inline">
+                            {arch}
+                          </span>
+                        )}
+                        <span className="shrink-0 font-mono text-xs text-fd-muted-foreground tabular-nums">
+                          {formatBytes(asset.size)}
                         </span>
-                      </span>
-                      <span className="inline-flex shrink-0 items-center gap-1.5 text-sm font-medium text-fd-foreground">
-                        Download
-                      </span>
-                    </a>
-                  ))}
-                </div>
-              </section>
-            ))}
-          </div>
-        </section>
+                      </a>
+                    </li>
+                  );
+                })}
+              </ul>
+            </section>
+          ))}
+        </div>
+
+        <footer className="mt-4 flex flex-wrap gap-x-6 gap-y-2 border-t border-fd-border pt-8 font-mono text-xs text-fd-muted-foreground">
+          <Link to="/releases" className="hover:text-fd-foreground">
+            all releases →
+          </Link>
+          <a
+            href={githubUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="hover:text-fd-foreground"
+          >
+            GitHub ↗
+          </a>
+          {release && (
+            <a href={release.tarballUrl} className="hover:text-fd-foreground">
+              source tarball ↓
+            </a>
+          )}
+        </footer>
       </main>
     </HomeLayout>
   );

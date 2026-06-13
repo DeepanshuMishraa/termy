@@ -1,0 +1,319 @@
+use super::*;
+
+/// A workspace groups tabs under one sidebar entry. The active workspace's
+/// tabs live in `TerminalView::tabs`; only inactive workspaces keep their
+/// tabs stashed here. Switching workspaces swaps the whole tab vec so the
+/// index-based tab machinery (strip, drag, persistence) never has to filter.
+pub(crate) struct WorkspaceEntry {
+    pub(crate) id: u64,
+    pub(crate) name: String,
+    pub(crate) tabs: Vec<TerminalTab>,
+    pub(crate) active_tab: usize,
+}
+
+impl WorkspaceEntry {
+    pub(crate) fn new(id: u64) -> Self {
+        Self {
+            id,
+            name: format!("Workspace {id}"),
+            tabs: Vec::new(),
+            active_tab: 0,
+        }
+    }
+}
+
+impl TerminalView {
+    pub(crate) fn workspace_sidebar_visible(&self) -> bool {
+        self.workspace_sidebar_enabled
+            && !self.simple_mode
+            && self.effective_tab_bar_visibility() != TabBarVisibility::ForceHidden
+    }
+
+    /// Width reserved on the left for the workspace sidebar. Feeds the
+    /// terminal grid sizer and window-to-surface mouse coordinate mapping.
+    pub(crate) fn workspace_sidebar_width(&self) -> f32 {
+        if self.workspace_sidebar_visible() {
+            WORKSPACE_SIDEBAR_WIDTH
+        } else {
+            0.0
+        }
+    }
+
+    pub(crate) fn has_other_workspaces(&self) -> bool {
+        self.workspaces.len() > 1
+    }
+
+    fn stash_active_workspace_tabs(&mut self) {
+        let active_tab = self.active_tab;
+        if let Some(entry) = self.workspaces.get_mut(self.active_workspace) {
+            entry.tabs = std::mem::take(&mut self.tabs);
+            entry.active_tab = active_tab;
+            for tab in &mut entry.tabs {
+                if let Some(state) = tab.browser_state_mut() {
+                    state.editing_url = false;
+                }
+            }
+        }
+    }
+
+    fn restore_workspace_tabs(&mut self, index: usize) {
+        if let Some(entry) = self.workspaces.get_mut(index) {
+            self.tabs = std::mem::take(&mut entry.tabs);
+            self.active_tab = entry.active_tab.min(self.tabs.len().saturating_sub(1));
+        }
+        self.active_workspace = index;
+    }
+
+    fn set_tab_scrollback_options(&self, tab_index: usize, active: bool) {
+        let Some(inactive_scrollback) = self.inactive_tab_scrollback else {
+            return;
+        };
+        let active_options = self.terminal_runtime.term_options();
+        let options = if active {
+            active_options
+        } else {
+            active_options.with_scrollback_history(inactive_scrollback)
+        };
+        if let Some(tab) = self.tabs.get(tab_index) {
+            for pane in &tab.panes {
+                pane.terminal.set_term_options(options);
+            }
+        }
+    }
+
+    fn reset_view_state_after_workspace_change(&mut self, cx: &mut Context<Self>) {
+        self.reset_tab_rename_state();
+        self.reset_tab_drag_state();
+        self.clear_selection();
+        self.clear_hovered_link();
+        self.clear_terminal_scrollbar_marker_cache();
+        self.mark_tab_strip_layout_dirty();
+        self.sync_tab_strip_for_active_tab();
+        self.schedule_persist_native_workspace();
+        cx.notify();
+    }
+
+    pub(crate) fn switch_workspace(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index >= self.workspaces.len() || index == self.active_workspace {
+            return;
+        }
+
+        self.set_tab_scrollback_options(self.active_tab, false);
+        self.stash_active_workspace_tabs();
+        self.restore_workspace_tabs(index);
+        self.set_tab_scrollback_options(self.active_tab, true);
+        if self.tabs.is_empty() {
+            // Defensive: a workspace should never be empty, but if tab
+            // restoration ever leaves one bare, give it a fresh tab instead
+            // of rendering a dead surface.
+            self.add_tab(cx);
+        }
+        self.reset_view_state_after_workspace_change(cx);
+    }
+
+    pub(crate) fn add_workspace(&mut self, cx: &mut Context<Self>) {
+        if self.runtime_kind() != RuntimeKind::Native {
+            termy_toast::info("Workspaces are not available with the tmux runtime");
+            self.notify_overlay(cx);
+            return;
+        }
+
+        let previous_workspace = self.active_workspace;
+        let id = self.next_workspace_id;
+        self.stash_active_workspace_tabs();
+        self.workspaces.push(WorkspaceEntry::new(id));
+        self.active_workspace = self.workspaces.len() - 1;
+        self.active_tab = 0;
+        self.add_tab(cx);
+        if self.tabs.is_empty() {
+            // Tab creation failed; roll back so no empty workspace survives.
+            self.workspaces.pop();
+            self.restore_workspace_tabs(previous_workspace);
+            return;
+        }
+        self.next_workspace_id += 1;
+        self.reset_view_state_after_workspace_change(cx);
+    }
+
+    /// Close the active workspace (dropping its tabs) and activate a
+    /// neighbor. Used when the last tab of a workspace is closed or exits.
+    pub(crate) fn close_active_workspace(&mut self, cx: &mut Context<Self>) {
+        if !self.has_other_workspaces() {
+            return;
+        }
+
+        let removed_pane_ids = self
+            .tabs
+            .iter()
+            .flat_map(|tab| tab.panes.iter().map(|pane| pane.id.clone()))
+            .collect::<Vec<_>>();
+        let _ = self.release_forwarded_mouse_presses_for_panes(&removed_pane_ids);
+        let removed_tab_ids = self.tabs.iter().map(|tab| tab.id).collect::<Vec<_>>();
+        for tab_id in removed_tab_ids {
+            self.native_pane_zoom_snapshots.remove(&tab_id);
+            self.native_pane_layout_trees.remove(&tab_id);
+        }
+
+        let removed_index = self.active_workspace;
+        self.tabs.clear();
+        self.workspaces.remove(removed_index);
+        let target = removed_index.min(self.workspaces.len() - 1);
+        self.restore_workspace_tabs(target);
+        self.set_tab_scrollback_options(self.active_tab, true);
+        if self.tabs.is_empty() {
+            self.add_tab(cx);
+        }
+        self.reset_view_state_after_workspace_change(cx);
+    }
+
+    /// Merge every stashed workspace's tabs into the visible strip and keep a
+    /// single workspace. Runs when the sidebar setting is turned off so no
+    /// tab becomes unreachable.
+    pub(crate) fn collapse_workspaces_into_active(&mut self) {
+        if !self.has_other_workspaces() {
+            return;
+        }
+
+        let mut merged: Vec<TerminalTab> = Vec::new();
+        let mut active_tab = self.active_tab;
+        let mut kept_entry: Option<WorkspaceEntry> = None;
+        for (index, mut entry) in std::mem::take(&mut self.workspaces).into_iter().enumerate() {
+            if index == self.active_workspace {
+                active_tab = merged.len() + self.active_tab;
+                merged.append(&mut self.tabs);
+                kept_entry = Some(entry);
+            } else {
+                merged.append(&mut entry.tabs);
+            }
+        }
+
+        self.active_tab = active_tab.min(merged.len().saturating_sub(1));
+        self.tabs = merged;
+        let mut entry = kept_entry.unwrap_or_else(|| WorkspaceEntry::new(1));
+        entry.tabs = Vec::new();
+        self.workspaces = vec![entry];
+        self.active_workspace = 0;
+        self.mark_tab_strip_layout_dirty();
+        self.sync_tab_strip_for_active_tab();
+        self.schedule_persist_native_workspace();
+    }
+
+    /// Drain PTY events for tabs stashed in inactive workspaces so their
+    /// processes never stall behind a full event channel. Only a minimal
+    /// subset is applied (progress, cwd, exit); titles refresh on the next
+    /// prompt after the workspace is reactivated. Returns whether more
+    /// events remain queued.
+    pub(crate) fn drain_stashed_workspace_terminal_events(
+        &mut self,
+        reply_host: &mut impl TerminalReplyHost,
+    ) -> bool {
+        let mut events_remain = false;
+        let mut exited_panes: Vec<(u64, TabId, String)> = Vec::new();
+
+        for entry in &mut self.workspaces {
+            for tab in &mut entry.tabs {
+                for pane in &mut tab.panes {
+                    let (events, has_more) = pane.terminal.drain_events(reply_host);
+                    if has_more {
+                        events_remain = true;
+                    }
+                    for event in events {
+                        match event {
+                            TerminalEvent::Exit => {
+                                exited_panes.push((entry.id, tab.id, pane.id.clone()));
+                            }
+                            TerminalEvent::Progress(state) => {
+                                pane.progress_state = state;
+                            }
+                            TerminalEvent::WorkingDirectory(path) => {
+                                tab.last_prompt_cwd = Some(path);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+
+        for (workspace_id, tab_id, pane_id) in exited_panes {
+            self.remove_stashed_pane(workspace_id, tab_id, pane_id.as_str());
+        }
+
+        events_remain
+    }
+
+    fn remove_stashed_pane(&mut self, workspace_id: u64, tab_id: TabId, pane_id: &str) {
+        let Some(workspace_index) = self
+            .workspaces
+            .iter()
+            .position(|entry| entry.id == workspace_id)
+        else {
+            return;
+        };
+        if workspace_index == self.active_workspace {
+            return;
+        }
+
+        let entry = &mut self.workspaces[workspace_index];
+        let Some(tab_index) = entry.tabs.iter().position(|tab| tab.id == tab_id) else {
+            return;
+        };
+        let tab = &mut entry.tabs[tab_index];
+        let Some(pane_index) = tab.panes.iter().position(|pane| pane.id == pane_id) else {
+            return;
+        };
+
+        if tab.panes.len() > 1 {
+            let removed = tab.panes.remove(pane_index);
+            Self::native_close_expand_neighbors(&mut tab.panes, &removed);
+            if tab.active_pane_id == removed.id || !tab.has_active_pane() {
+                let next_index = pane_index.min(tab.panes.len().saturating_sub(1));
+                if let Some(next) = tab.panes.get(next_index) {
+                    tab.active_pane_id = next.id.clone();
+                }
+            }
+            // The stored layout tree still references the removed leaf; drop
+            // it so it is rebuilt from pane geometry on next use.
+            self.native_pane_layout_trees.remove(&tab_id);
+            self.native_pane_zoom_snapshots.remove(&tab_id);
+            return;
+        }
+
+        entry.tabs.remove(tab_index);
+        if entry.active_tab >= entry.tabs.len() {
+            entry.active_tab = entry.tabs.len().saturating_sub(1);
+        }
+        let entry_is_empty = entry.tabs.is_empty();
+        self.native_pane_layout_trees.remove(&tab_id);
+        self.native_pane_zoom_snapshots.remove(&tab_id);
+        if entry_is_empty {
+            self.workspaces.remove(workspace_index);
+            if workspace_index < self.active_workspace {
+                self.active_workspace -= 1;
+            }
+        }
+        self.schedule_persist_native_workspace();
+    }
+
+    /// All tabs held by inactive workspaces, in sidebar order.
+    pub(super) fn stashed_workspace_tabs(&self) -> impl Iterator<Item = &TerminalTab> {
+        self.workspaces.iter().flat_map(|entry| entry.tabs.iter())
+    }
+
+    /// Stashed tabs that are busy (running process or fullscreen app), for
+    /// quit warnings: the visible strip is checked separately.
+    pub(crate) fn stashed_busy_workspace_tab_titles(&self) -> Vec<String> {
+        let fallback_title = self.fallback_title();
+        self.stashed_workspace_tabs()
+            .filter(|tab| Self::tab_is_busy(tab))
+            .map(|tab| {
+                let title = tab.title.trim();
+                if title.is_empty() {
+                    fallback_title.to_string()
+                } else {
+                    title.to_string()
+                }
+            })
+            .collect()
+    }
+}

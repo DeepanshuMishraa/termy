@@ -2,20 +2,11 @@ use super::super::*;
 use super::hints::TabSwitchHintState;
 use super::render_palette::{TabStripPalette, resolve_branding_text_color};
 use super::render_shared::TabStripRenderState;
-use super::render_tab_item::{TabItemRenderInput, TabItemStrokeRects};
+use super::render_tab_item::TabItemRenderInput;
 use super::state::{TabStripOrientation, TabStripOverflowState};
 
-#[cfg(test)]
-use super::chrome;
-
 impl TerminalView {
-    fn render_inset_lane(
-        id: &'static str,
-        width: f32,
-        _tab_baseline_y: f32,
-        _tab_stroke_color: gpui::Rgba,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    fn render_inset_lane(id: &'static str, width: f32, cx: &mut Context<Self>) -> AnyElement {
         div()
             .id(id)
             .relative()
@@ -95,14 +86,14 @@ impl TerminalView {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_left_inset_lane(
         width: f32,
-        _tab_baseline_y: f32,
-        _tab_stroke_color: gpui::Rgba,
         font_family: &SharedString,
         termy_branding_slot_start_x: f32,
         termy_branding_slot_width: f32,
         termy_branding_text_color: gpui::Rgba,
+        workspace_actions: Option<AnyElement>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         div()
@@ -120,16 +111,11 @@ impl TerminalView {
                 termy_branding_slot_width,
                 termy_branding_text_color,
             ))
+            .children(workspace_actions)
             .into_any_element()
     }
 
-    fn render_gutter_lane(
-        gutter_width: f32,
-        _tab_baseline_y: f32,
-        tab_stroke_color: gpui::Rgba,
-        show_divider: bool,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    fn render_gutter_lane(gutter_width: f32, cx: &mut Context<Self>) -> AnyElement {
         div()
             .id("tabbar-action-gutter")
             .relative()
@@ -139,30 +125,11 @@ impl TerminalView {
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
                 this.on_action_rail_mouse_move(event, window, cx);
             }))
-            .children(show_divider.then(|| {
-                div()
-                    .absolute()
-                    .left(px(-TAB_STROKE_THICKNESS))
-                    .top(px(TAB_STROKE_THICKNESS))
-                    .bottom_0()
-                    .w(px(TAB_STROKE_THICKNESS))
-                    .bg(tab_stroke_color)
-            }))
             .into_any_element()
     }
 
-    fn should_render_gutter_divider(
-        _overflow: TabStripOverflowState,
-        _boundary_at_viewport_right: bool,
-    ) -> bool {
-        false
-    }
-
-    fn should_render_left_inset_divider(
-        overflow: TabStripOverflowState,
-        boundary_at_viewport_left: bool,
-    ) -> bool {
-        overflow.left && !boundary_at_viewport_left
+    fn should_render_left_inset_divider(overflow: TabStripOverflowState) -> bool {
+        overflow.left
     }
 
     fn horizontal_tab_render_width(display_width: f32, anim_progress: Option<f32>) -> f32 {
@@ -219,7 +186,7 @@ impl TerminalView {
                     tab.display_width,
                     tab.title.clone(),
                     tab.pinned,
-                    tab.progress_state,
+                    tab.aggregate_progress_state(),
                 )
             };
             let anim_progress = new_tab_anim
@@ -260,7 +227,7 @@ impl TerminalView {
             let icon_slot_width = if is_renaming {
                 0.0
             } else {
-                TAB_LEADING_ICON_SLOT_WIDTH
+                TAB_LEADING_SLOT_WIDTH
             };
             // Reserve the close-slot width in the TEXT area whenever the layout
             // already reserved it (Uniform/Stable modes / pinned), independent of
@@ -297,12 +264,6 @@ impl TerminalView {
                     index,
                     tab_primary_extent: tab_width,
                     tab_cross_extent: TAB_ITEM_HEIGHT,
-                    tab_strokes: TabItemStrokeRects {
-                        top: None,
-                        bottom: None,
-                        left: None,
-                        right: None,
-                    },
                     label,
                     switch_hint_label,
                     is_active,
@@ -313,11 +274,9 @@ impl TerminalView {
                     close_slot_width,
                     text_padding_x: TAB_TEXT_PADDING_X,
                     label_centered: false,
-                    trailing_divider_cover: None,
                     drop_marker_side: self.tab_drop_marker_side(index),
                     open_anim_progress: anim_progress,
                     hover_progress: self.tab_strip.hover_progress(index, now),
-                    press_progress: self.tab_strip.press_progress(index, now),
                     progress_state,
                 },
                 font_family,
@@ -345,6 +304,13 @@ impl TerminalView {
         let mut icon_color = palette.inactive_tab_text;
         icon_color.a = icon_color.a.max(0.70);
 
+        // Anchor for the new-tab kind dropdown: right-aligned under the "+"
+        // so it never overflows the window edge.
+        let menu_anchor = (
+            (state.geometry.button_end_x - NEW_TAB_MENU_WIDTH).max(4.0),
+            TABBAR_HEIGHT + 2.0,
+        );
+
         div()
             .id("tabbar-action-rail")
             .relative()
@@ -366,16 +332,16 @@ impl TerminalView {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded(px(0.0))
+                    .rounded(px(TAB_ITEM_RADIUS))
                     .bg(button_bg)
                     .text_color(icon_color)
                     .hover(move |style| style.bg(button_hover_bg))
                     .cursor_pointer()
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(|this, _event: &MouseDownEvent, window, cx| {
+                        cx.listener(move |this, _event: &MouseDownEvent, window, cx| {
                             window.prevent_default();
-                            this.add_tab(cx);
+                            this.handle_new_tab_button(menu_anchor, cx);
                             cx.stop_propagation();
                         }),
                     )
@@ -402,9 +368,16 @@ impl TerminalView {
             self.measure_tab_title_widths(window, font_family, font_family_key);
         self.sync_tab_title_text_widths(&measured_title_widths);
 
-        let base_left_inset_width = Self::titlebar_left_padding_for_platform();
-        let termy_branding_reserved_width =
-            self.termy_branding_reserved_width(window, font_family, font_family_key);
+        let base_left_inset_width = self.tab_strip_base_left_inset();
+        let workspace_sidebar_visible = self.workspace_sidebar_visible();
+        // With the workspace sidebar, the inset lane hosts its actions and
+        // the first tab stays flush with the sidebar edge, so the titlebar
+        // branding is suppressed.
+        let termy_branding_reserved_width = if workspace_sidebar_visible {
+            0.0
+        } else {
+            self.termy_branding_reserved_width(window, font_family, font_family_key)
+        };
         let termy_branding_tab_gap = if termy_branding_reserved_width > f32::EPSILON {
             TOP_STRIP_TERMY_BRANDING_TAB_GAP
         } else {
@@ -432,17 +405,9 @@ impl TerminalView {
             colors,
             cx,
         );
-        let scroll_offset_x: f32 = self.tab_strip.horizontal_scroll_handle.offset().x.into();
-        let divider_collisions = Self::edge_divider_collision_state(
-            &state.chrome_layout,
-            scroll_offset_x,
-            state.geometry.tabs_viewport_width,
-        );
-
-        let show_gutter_divider =
-            Self::should_render_gutter_divider(state.overflow_state, divider_collisions.right);
-        let show_left_inset_divider =
-            Self::should_render_left_inset_divider(state.overflow_state, divider_collisions.left);
+        let show_left_inset_divider = Self::should_render_left_inset_divider(state.overflow_state);
+        let workspace_actions = workspace_sidebar_visible
+            .then(|| self.render_workspace_sidebar_titlebar_actions(&palette, cx));
 
         div()
             .w_full()
@@ -453,12 +418,11 @@ impl TerminalView {
             .children((state.geometry.left_inset_width > 0.0).then(|| {
                 Self::render_left_inset_lane(
                     state.geometry.left_inset_width,
-                    state.chrome_layout.baseline_y,
-                    palette.tab_stroke_color,
                     font_family,
                     termy_branding_slot_start_x,
                     termy_branding_slot_width,
                     termy_branding_text_color,
+                    workspace_actions,
                     cx,
                 )
             }))
@@ -499,27 +463,16 @@ impl TerminalView {
                             .bg(palette.tab_stroke_color)
                     })),
             )
-            .children((state.geometry.gutter_width > 0.0).then(|| {
-                Self::render_gutter_lane(
-                    state.geometry.gutter_width,
-                    state.chrome_layout.baseline_y,
-                    palette.tab_stroke_color,
-                    show_gutter_divider,
-                    cx,
-                )
-            }))
+            .children(
+                (state.geometry.gutter_width > 0.0)
+                    .then(|| Self::render_gutter_lane(state.geometry.gutter_width, cx)),
+            )
             .children(
                 (state.geometry.action_rail_width > 0.0)
                     .then(|| self.render_action_rail(&state, &palette, cx)),
             )
             .children((state.geometry.right_inset_width > 0.0).then(|| {
-                Self::render_inset_lane(
-                    "tabbar-right-inset",
-                    state.geometry.right_inset_width,
-                    state.chrome_layout.baseline_y,
-                    palette.tab_stroke_color,
-                    cx,
-                )
+                Self::render_inset_lane("tabbar-right-inset", state.geometry.right_inset_width, cx)
             }))
             .into_any_element()
     }
@@ -530,56 +483,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn gutter_divider_never_shows() {
-        assert!(!TerminalView::should_render_gutter_divider(
-            TabStripOverflowState {
-                left: false,
-                right: false,
-            },
-            false,
-        ));
-        assert!(!TerminalView::should_render_gutter_divider(
-            TabStripOverflowState {
-                left: false,
-                right: true,
-            },
-            false,
-        ));
-        assert!(!TerminalView::should_render_gutter_divider(
-            TabStripOverflowState {
-                left: true,
-                right: true,
-            },
-            false,
-        ));
-    }
-
-    #[test]
-    fn gutter_divider_hides_at_true_max_right_scroll() {
-        assert!(!TerminalView::should_render_gutter_divider(
-            TabStripOverflowState {
-                left: true,
-                right: false,
-            },
-            false,
-        ));
-    }
-
-    #[test]
     fn left_inset_divider_hides_without_left_overflow() {
         assert!(!TerminalView::should_render_left_inset_divider(
             TabStripOverflowState {
                 left: false,
                 right: true,
             },
-            false,
         ));
         assert!(!TerminalView::should_render_left_inset_divider(
             TabStripOverflowState {
                 left: false,
                 right: false,
             },
-            false,
         ));
     }
 
@@ -590,36 +505,12 @@ mod tests {
                 left: true,
                 right: true,
             },
-            false,
         ));
         assert!(TerminalView::should_render_left_inset_divider(
             TabStripOverflowState {
                 left: true,
                 right: false,
             },
-            false,
-        ));
-    }
-
-    #[test]
-    fn gutter_divider_hides_when_tab_boundary_already_occupies_right_edge() {
-        assert!(!TerminalView::should_render_gutter_divider(
-            TabStripOverflowState {
-                left: false,
-                right: true,
-            },
-            true,
-        ));
-    }
-
-    #[test]
-    fn left_inset_divider_hides_when_tab_boundary_already_occupies_left_edge() {
-        assert!(!TerminalView::should_render_left_inset_divider(
-            TabStripOverflowState {
-                left: true,
-                right: true,
-            },
-            true,
         ));
     }
 
@@ -645,41 +536,5 @@ mod tests {
             TerminalView::horizontal_tab_render_width(TAB_MAX_WIDTH, None),
             TAB_MAX_WIDTH
         );
-    }
-
-    #[test]
-    fn edge_divider_collision_detects_fractional_overlap_on_both_edges() {
-        let layout = chrome::compute_tab_chrome_layout(
-            [100.0],
-            chrome::TabChromeInput {
-                active_index: Some(0),
-                tabbar_height: TABBAR_HEIGHT,
-                tab_item_height: TAB_ITEM_HEIGHT,
-                horizontal_padding: TAB_HORIZONTAL_PADDING,
-                tab_item_gap: TAB_ITEM_GAP,
-            },
-        );
-
-        let collisions = TerminalView::edge_divider_collision_state(&layout, -0.49, 100.0);
-        assert!(collisions.left);
-        assert!(collisions.right);
-    }
-
-    #[test]
-    fn edge_divider_collision_ignores_fractional_non_overlap_on_both_edges() {
-        let layout = chrome::compute_tab_chrome_layout(
-            [100.0],
-            chrome::TabChromeInput {
-                active_index: Some(0),
-                tabbar_height: TABBAR_HEIGHT,
-                tab_item_height: TAB_ITEM_HEIGHT,
-                horizontal_padding: TAB_HORIZONTAL_PADDING,
-                tab_item_gap: TAB_ITEM_GAP,
-            },
-        );
-
-        let collisions = TerminalView::edge_divider_collision_state(&layout, -1.01, 100.0);
-        assert!(!collisions.left);
-        assert!(!collisions.right);
     }
 }

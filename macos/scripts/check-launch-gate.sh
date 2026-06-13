@@ -5,8 +5,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MACOS_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 APP_PATH=""
 MAX_STARTUP_MS=5000
-MAX_RSS_MIB=512
-MAX_IDLE_CPU_PERCENT=75
+MAX_RSS_MIB=200
+MAX_IDLE_CPU_PERCENT=15
 
 usage() {
   cat <<EOF
@@ -15,10 +15,10 @@ Usage: $0 --app PATH [options]
 Launch a staged native Swift .app and gate basic startup, RSS, and idle CPU.
 
 Options:
-  --app PATH                 Staged TermyAlpha.app path
+  --app PATH                 Staged Termy.app path
   --max-startup-ms N         Maximum time until process appears (default: 5000)
-  --max-rss-mib N            Maximum resident memory after launch (default: 512)
-  --max-idle-cpu-percent N   Maximum sampled CPU after launch (default: 75)
+  --max-rss-mib N            Maximum resident memory after launch (default: 200)
+  --max-idle-cpu-percent N   Maximum sampled CPU after launch (default: 15)
   --help                     Show this help message
 EOF
 }
@@ -60,7 +60,7 @@ done
 [[ -n "$APP_PATH" ]] || { echo "Error: --app PATH is required" >&2; usage >&2; exit 2; }
 [[ -d "$APP_PATH" ]] || { echo "Error: app bundle not found: $APP_PATH" >&2; exit 1; }
 
-APP_BINARY="$APP_PATH/Contents/MacOS/TermyAlpha"
+APP_BINARY="$APP_PATH/Contents/MacOS/Termy"
 [[ -x "$APP_BINARY" ]] || { echo "Error: app binary not found: $APP_BINARY" >&2; exit 1; }
 
 now_ms() {
@@ -95,7 +95,8 @@ while :; do
   sleep 0.05
 done
 
-sleep 1
+# Let the native startup refresh window settle before sampling idle CPU.
+sleep 3
 RSS_KB="$(ps -o rss= -p "$PID" | awk '{ print $1 }')"
 CPU_PERCENT="$(ps -o %cpu= -p "$PID" | awk '{ print $1 }')"
 RSS_MIB="$(awk -v kb="$RSS_KB" 'BEGIN { printf "%.2f", kb / 1024 }')"

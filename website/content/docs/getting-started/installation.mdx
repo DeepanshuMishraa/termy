@@ -1,28 +1,38 @@
 ---
-title: Installation
-description: Install Termy on macOS, Linux, or Windows.
+title: Install
+description: Download Termy for macOS, Linux, or Windows.
 ---
 
-Termy ships pre-built binaries for macOS, Linux, and Windows. You can also build from source.
+Get binaries from [/download](/download) or [GitHub Releases](https://github.com/lassejlv/termy/releases).
 
 ## macOS
 
-Download the latest `.dmg` from [Releases](https://github.com/lassejlv/termy/releases) and drag Termy into `/Applications`.
+Open the `.dmg` and drag Termy to `/Applications`.
+
+If macOS blocks launch, see [Troubleshooting](/docs/getting-started/troubleshooting).
 
 ## Linux
 
-Download the AppImage or `.tar.gz` from [Releases](https://github.com/lassejlv/termy/releases).
+Use the AppImage or `.tar.gz` from Releases.
 
 ## Windows
 
-Download the `.msi` installer from [Releases](https://github.com/lassejlv/termy/releases).
+Run the `.msi` installer from Releases.
 
 ## From source
-
-Requires Rust stable.
 
 ```bash
 git clone https://github.com/lassejlv/termy
 cd termy
 cargo run --release -p termy
 ```
+
+## First launch
+
+| | |
+| --- | --- |
+| Theme | `termy` |
+| Shell | your login shell (`$SHELL`) |
+| Font | JetBrains Mono, 14px |
+| Settings | `Cmd ,` (macOS) · `Ctrl ,` (Linux / Windows) |
+| Command palette | `Cmd P` · `Ctrl P` |

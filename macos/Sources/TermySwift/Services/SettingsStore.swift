@@ -11,6 +11,7 @@ final class SettingsStore: ObservableObject {
     /// Color overrides keyed by color key. Empty string means "inherit theme".
     @Published private(set) var colors: [String: String] = [:]
     @Published var keybindsText: String = ""
+    @Published private(set) var installingThemeIDs: Set<String> = []
 
     func load() {
         do {
@@ -57,6 +58,52 @@ final class SettingsStore: ObservableObject {
                 try SettingsBridge.resetRoot(key: key)
             } else {
                 try SettingsBridge.setRoot(key: key, value: value)
+            }
+        }
+    }
+
+    func installThemeAndCommitRoot(choice: SettingEnumChoice, key: String) {
+        let slug = choice.value
+        guard choice.installed != true, !installingThemeIDs.contains(slug) else {
+            commitRoot(key: key, value: slug)
+            return
+        }
+
+        installingThemeIDs.insert(slug)
+        Task { @MainActor in
+            do {
+                try await Task.detached(priority: .userInitiated) {
+                    try SettingsBridge.installTheme(slug: slug)
+                }.value
+                installingThemeIDs.remove(slug)
+                load()
+                commitRoot(key: key, value: slug)
+            } catch {
+                installingThemeIDs.remove(slug)
+                report(error)
+            }
+        }
+    }
+
+    /// Installs a theme chosen from the remote store (by slug) and makes it the
+    /// active theme.
+    func installStoreTheme(slug: String) {
+        guard !installingThemeIDs.contains(slug) else {
+            return
+        }
+        installingThemeIDs.insert(slug)
+        Task { @MainActor in
+            do {
+                try await Task.detached(priority: .userInitiated) {
+                    try SettingsBridge.installTheme(slug: slug)
+                }.value
+                installingThemeIDs.remove(slug)
+                load()
+                commitRoot(key: "theme", value: slug)
+                TermyToastCenter.shared.show("Installed theme \(slug)", kind: .success)
+            } catch {
+                installingThemeIDs.remove(slug)
+                report(error)
             }
         }
     }

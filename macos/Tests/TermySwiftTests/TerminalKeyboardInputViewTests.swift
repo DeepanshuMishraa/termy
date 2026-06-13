@@ -1,0 +1,91 @@
+import AppKit
+import XCTest
+@testable import TermySwift
+
+@MainActor
+final class TerminalKeyboardInputViewTests: XCTestCase {
+    func testDragSelectionIgnoresSameCellJitter() {
+        let position = TerminalGridPosition(col: 12, row: 4)
+
+        XCTAssertNil(KeyboardCaptureView.dragSelection(anchor: position, active: position))
+    }
+
+    func testDragSelectionStartsAfterMovingToAnotherCell() {
+        let anchor = TerminalGridPosition(col: 12, row: 4)
+        let active = TerminalGridPosition(col: 13, row: 4)
+
+        XCTAssertEqual(
+            KeyboardCaptureView.dragSelection(anchor: anchor, active: active),
+            TerminalSelection(anchor: anchor, active: active)
+        )
+    }
+
+    func testEscapeDismissesVisibleSearchInsteadOfSendingTerminalKey() {
+        let view = KeyboardCaptureView()
+        var dismissedSearch = false
+        var sentKeys: [TerminalKeyInput] = []
+        view.isInputEnabled = true
+        view.isSearchVisible = true
+        view.onDismissSearch = {
+            dismissedSearch = true
+        }
+        view.onKeyInput = {
+            sentKeys.append($0)
+        }
+
+        view.keyDown(with: Self.escapeEvent())
+
+        XCTAssertTrue(dismissedSearch)
+        XCTAssertTrue(sentKeys.isEmpty)
+    }
+
+    func testEscapeStillSendsTerminalKeyWhenSearchIsHidden() {
+        let view = KeyboardCaptureView()
+        var dismissedSearch = false
+        var sentKeys: [TerminalKeyInput] = []
+        view.isInputEnabled = true
+        view.isSearchVisible = false
+        view.onDismissSearch = {
+            dismissedSearch = true
+        }
+        view.onKeyInput = {
+            sentKeys.append($0)
+        }
+
+        view.keyDown(with: Self.escapeEvent())
+
+        XCTAssertFalse(dismissedSearch)
+        XCTAssertEqual(sentKeys.map(\.key), ["escape"])
+    }
+
+    func testSearchVisibleInputDisabledStillReceivesHitForFocusRestore() {
+        let view = KeyboardCaptureView(frame: NSRect(x: 0, y: 0, width: 100, height: 100))
+        view.isInputEnabled = false
+        view.isSearchVisible = true
+
+        XCTAssertIdentical(view.hitTest(NSPoint(x: 50, y: 50)), view)
+    }
+
+    func testInputDisabledWithoutSearchIgnoresHit() {
+        let view = KeyboardCaptureView(frame: NSRect(x: 0, y: 0, width: 100, height: 100))
+        view.isInputEnabled = false
+        view.isSearchVisible = false
+
+        XCTAssertNil(view.hitTest(NSPoint(x: 50, y: 50)))
+    }
+
+    private static func escapeEvent() -> NSEvent {
+        NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: "\u{1b}",
+            charactersIgnoringModifiers: "\u{1b}",
+            isARepeat: false,
+            keyCode: 53
+        )!
+    }
+}

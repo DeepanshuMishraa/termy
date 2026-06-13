@@ -85,6 +85,13 @@ enum TerminalRuntimeEvent: Equatable {
     case shellCommandFinished(Int32?)
     case progress(TerminalProgress)
     case workingDirectory(String)
+
+    var isPlainWakeup: Bool {
+        if case .wakeup = self {
+            return true
+        }
+        return false
+    }
 }
 
 struct TerminalSearchMatch: Identifiable, Equatable {

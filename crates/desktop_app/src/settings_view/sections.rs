@@ -317,6 +317,21 @@ impl SettingsWindow {
             .child(self.render_terminal_scrolling_group(cx))
             .child(self.render_terminal_clipboard_group(cx))
             .child(self.render_terminal_ui_group(cx))
+            .child(self.render_terminal_git_group(cx))
+    }
+
+    pub(super) fn render_terminal_git_group(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let git_panel_enabled = self.config.git_panel_enabled;
+        let rows = vec![self.render_root_bool_setting_row(
+            "git_panel_enabled",
+            "git_panel_enabled-toggle",
+            RootSettingId::GitPanelEnabled,
+            git_panel_enabled,
+            "Saved",
+            cx,
+        )];
+
+        self.render_settings_group("GIT", rows)
     }
 
     pub(super) fn render_terminal_cursor_group(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -585,6 +600,8 @@ impl SettingsWindow {
             ))
             .child(self.render_tabs_title_group(cx))
             .child(self.render_tabs_strip_group(cx))
+            .child(self.render_tabs_sidebar_group(cx))
+            .child(self.render_tabs_browser_group(cx))
             .child(self.render_tabs_titlebar_group(cx))
     }
 
@@ -743,6 +760,34 @@ impl SettingsWindow {
         ));
 
         self.render_settings_group("TAB STRIP", rows)
+    }
+
+    pub(super) fn render_tabs_sidebar_group(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let sidebar_enabled = self.config.sidebar_enabled;
+        let rows = vec![self.render_root_bool_setting_row(
+            "sidebar_enabled",
+            "sidebar_enabled-toggle",
+            RootSettingId::SidebarEnabled,
+            sidebar_enabled,
+            "Saved",
+            cx,
+        )];
+
+        self.render_settings_group("SIDEBAR", rows)
+    }
+
+    pub(super) fn render_tabs_browser_group(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let browser_tabs_enabled = self.config.browser_tabs_enabled;
+        let rows = vec![self.render_root_bool_setting_row(
+            "browser_tabs_enabled",
+            "browser_tabs_enabled-toggle",
+            RootSettingId::BrowserTabsEnabled,
+            browser_tabs_enabled,
+            "Saved",
+            cx,
+        )];
+
+        self.render_settings_group("BROWSER", rows)
     }
 
     pub(super) fn render_tabs_titlebar_group(&mut self, cx: &mut Context<Self>) -> AnyElement {

@@ -15,9 +15,77 @@ enum LibTermyError: Error, CustomStringConvertible {
     }
 }
 
+private final class TerminalWakeupMonitor: @unchecked Sendable {
+    private let handle: OpaquePointer
+    private let onWakeup: @MainActor () -> Void
+    private let queue = DispatchQueue(label: "dev.termy.terminal-wakeup", qos: .userInteractive)
+    private let group = DispatchGroup()
+    private let lock = NSLock()
+    private var running = true
+
+    init(handle: OpaquePointer, onWakeup: @escaping @MainActor () -> Void) {
+        self.handle = handle
+        self.onWakeup = onWakeup
+        group.enter()
+        queue.async { [weak self] in
+            self?.run()
+        }
+    }
+
+    func stop() {
+        lock.lock()
+        let wasRunning = running
+        running = false
+        lock.unlock()
+
+        guard wasRunning else {
+            return
+        }
+
+        _ = termy_terminal_notify_wakeup(handle)
+        group.wait()
+    }
+
+    private func run() {
+        defer {
+            group.leave()
+        }
+
+        while isRunning {
+            var woke = false
+            // The timeout is a safety net only: PTY output and `stop()` (via
+            // `termy_terminal_notify_wakeup`) both wake the blocking wait
+            // immediately, so a long timeout keeps the monitor thread asleep
+            // instead of waking 4×/s per pane just to re-check `running`.
+            let status = termy_terminal_wait_for_wakeup(handle, 10_000, &woke)
+            guard status == TERMY_FFI_OK else {
+                return
+            }
+            guard woke, isRunning else {
+                continue
+            }
+            Task { @MainActor [weak self] in
+                guard let self, self.isRunning else {
+                    return
+                }
+                self.onWakeup()
+            }
+        }
+    }
+
+    private var isRunning: Bool {
+        lock.lock()
+        defer {
+            lock.unlock()
+        }
+        return running
+    }
+}
+
 final class LibTermyTerminal {
     private var handle: OpaquePointer?
     private var configHandle: OpaquePointer?
+    private var wakeupMonitor: TerminalWakeupMonitor?
 
     let renderConfig: TerminalRenderConfig
 
@@ -32,8 +100,19 @@ final class LibTermyTerminal {
         size.cols = cols
         size.rows = rows
         let config = try loadUserConfig ? Self.loadDefaultConfig() : nil
+        // `renderConfig` (a non-optional `let`) is the last property to gain a
+        // value, so until it's set the object is not fully initialized and
+        // `deinit` won't run. If `renderConfig(for:)` throws after we've stored
+        // `config`, the boxed config would leak — so free it explicitly here.
+        do {
+            renderConfig = try Self.renderConfig(for: config)
+        } catch {
+            if let config {
+                _ = termy_config_free(config)
+            }
+            throw error
+        }
         configHandle = config
-        renderConfig = try Self.renderConfig(for: config)
         let workingDirectory: String?
         if let override = Self.normalizedWorkingDirectory(workingDirectoryOverride) {
             workingDirectory = override
@@ -63,19 +142,73 @@ final class LibTermyTerminal {
         guard let terminal else {
             throw LibTermyError.missingTerminal
         }
-        // The Swift shell polls damage on its own cadence, so plain wakeup
-        // events only add queue churn. Metadata events still flow through.
-        _ = termy_terminal_set_wakeup_enabled(terminal, false)
+        // The Swift shell consumes the FFI wake channel, so plain wakeups are
+        // useful: they move idle terminals from timer cadence to immediate poll.
+        _ = termy_terminal_set_wakeup_enabled(terminal, true)
+        handle = terminal
+    }
+
+    /// Creates a display-only terminal (no shell/PTY) for rendering tmux
+    /// control-mode pane output. Drive it with `feedOutput`; `write` is a no-op.
+    init(displayCols cols: UInt16, rows: UInt16, loadUserConfig: Bool = true) throws {
+        var size = termy_size_default()
+        size.cols = cols
+        size.rows = rows
+        let config = try loadUserConfig ? Self.loadDefaultConfig() : nil
+        // See the main initializer: free `config` if `renderConfig(for:)` throws
+        // before the object is fully initialized, since `deinit` won't run yet.
+        do {
+            renderConfig = try Self.renderConfig(for: config)
+        } catch {
+            if let config {
+                _ = termy_config_free(config)
+            }
+            throw error
+        }
+        configHandle = config
+
+        var terminal: OpaquePointer?
+        try TermyFfiBridge.requireOK(
+            "termy_display_terminal_new",
+            termy_display_terminal_new(size, &terminal)
+        )
+        guard let terminal else {
+            throw LibTermyError.missingTerminal
+        }
         handle = terminal
     }
 
     deinit {
+        stopWakeupMonitor()
         if let handle {
             _ = termy_terminal_free(handle)
         }
         if let configHandle {
             _ = termy_config_free(configHandle)
         }
+    }
+
+    func startWakeupMonitor(onWakeup: @escaping @MainActor () -> Void) {
+        stopWakeupMonitor()
+        guard let handle else {
+            return
+        }
+        wakeupMonitor = TerminalWakeupMonitor(handle: handle, onWakeup: onWakeup)
+    }
+
+    func stopWakeupMonitor() {
+        wakeupMonitor?.stop()
+        wakeupMonitor = nil
+    }
+
+    /// Advance the grid with output bytes (e.g. tmux `%output`) on a display
+    /// terminal, without sending input to a PTY.
+    func feedOutput(_ bytes: [UInt8]) throws {
+        let handle = try terminalHandle()
+        let status = bytes.withUnsafeBufferPointer { buffer in
+            termy_terminal_feed_output(handle, buffer.baseAddress, buffer.count)
+        }
+        try TermyFfiBridge.requireOK("termy_terminal_feed_output", status)
     }
 
     func write(_ bytes: [UInt8]) throws {
@@ -201,6 +334,23 @@ final class LibTermyTerminal {
         }
     }
 
+    /// Whether the foreground program has enabled bracketed-paste mode. When
+    /// true, the host wraps pasted text in `ESC[200~`/`ESC[201~` so the program
+    /// can treat it as inert data rather than typed input.
+    func bracketedPasteMode() throws -> Bool {
+        try changedBy("termy_terminal_bracketed_paste_mode") { handle, enabled in
+            termy_terminal_bracketed_paste_mode(handle, enabled)
+        }
+    }
+
+    func setScrollbackHistory(_ scrollbackHistory: Int) throws {
+        let handle = try terminalHandle()
+        try TermyFfiBridge.requireOK(
+            "termy_terminal_set_scrollback_history",
+            termy_terminal_set_scrollback_history(handle, max(0, scrollbackHistory))
+        )
+    }
+
     func drainEvents() throws -> [TerminalRuntimeEvent] {
         let handle = try terminalHandle()
         var batch = TermyFfiEventBatch()
@@ -217,41 +367,6 @@ final class LibTermyTerminal {
         }
         return UnsafeBufferPointer(start: eventsPtr, count: Int(batch.events_len))
             .compactMap(Self.event(from:))
-    }
-
-    /// Polls the core for what changed since the last call. The FFI reports a
-    /// `kind` (0 = none, 1 = full, 2 = partial) plus a span list for partial
-    /// damage; we surface all of it so the render-plan cache can rebuild only the
-    /// rows that actually changed.
-    func takeDamage() throws -> TerminalDamage {
-        let handle = try terminalHandle()
-
-        var damage = TermyFfiDamage()
-        try TermyFfiBridge.requireOK(
-            "termy_terminal_take_damage",
-            termy_terminal_take_damage(handle, &damage)
-        )
-        defer { _ = termy_damage_free(&damage) }
-
-        switch damage.kind {
-        case 1:
-            return .full
-        case 2:
-            guard let spansPtr = damage.spans_ptr, damage.spans_len > 0 else {
-                return .none
-            }
-            let spans = UnsafeBufferPointer(start: spansPtr, count: damage.spans_len)
-                .map {
-                    TerminalDirtySpan(
-                        row: Int($0.row),
-                        leftCol: Int($0.left_col),
-                        rightCol: Int($0.right_col)
-                    )
-                }
-            return spans.isEmpty ? .none : .partial(spans)
-        default:
-            return .none
-        }
     }
 
     func snapshot() throws -> TerminalFrame {
@@ -532,7 +647,7 @@ final class LibTermyTerminal {
         TerminalCell(
             col: Int(ffiCell.col),
             row: Int(ffiCell.row),
-            character: character(from: ffiCell.codepoint),
+            codepoint: ffiCell.codepoint,
             foreground: TerminalRGBA(ffiCell.fg),
             background: TerminalRGBA(ffiCell.bg),
             usesTerminalDefaultBackground: ffiCell.uses_terminal_default_bg,
@@ -550,10 +665,6 @@ final class LibTermyTerminal {
             row: Int(ffiCursor.row),
             style: TerminalCursorStyle(ffiRawValue: ffiCursor.style)
         )
-    }
-
-    private static func character(from codepoint: UInt32) -> Character {
-        UnicodeScalar(codepoint).map(Character.init) ?? " "
     }
 
 }

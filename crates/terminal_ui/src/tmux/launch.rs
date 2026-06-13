@@ -15,7 +15,9 @@ use std::{
 
 #[cfg(unix)]
 use super::session::{append_socket_args, normalize_tmux_command_env};
-use super::types::{TmuxLaunchTarget, TmuxRuntimeConfig, TmuxShutdownMode, TmuxSocketTarget};
+use tmux_control_core::types::{
+    TmuxLaunchTarget, TmuxRuntimeConfig, TmuxShutdownMode, TmuxSocketTarget,
+};
 
 pub(crate) const PERSISTENT_SESSION_NAME: &str = "termy";
 

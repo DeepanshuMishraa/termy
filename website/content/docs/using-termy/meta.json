@@ -9,5 +9,5 @@
     "tmux-sessions",
     "tasks-layouts"
   ],
-  "defaultOpen": true
+  "defaultOpen": false
 }

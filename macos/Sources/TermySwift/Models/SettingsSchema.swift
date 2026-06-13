@@ -43,6 +43,8 @@ struct Setting: Decodable, Identifiable {
 struct SettingEnumChoice: Decodable, Identifiable, Hashable {
     var value: String
     var label: String
+    var installed: Bool?
+    var swatches: [String]?
 
     var id: String { value }
 }

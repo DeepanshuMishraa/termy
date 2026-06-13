@@ -82,6 +82,7 @@ final class NativeRenderMetricsGateTests: XCTestCase {
 
         let command = "printf 'native-metrics-1\\nnative-metrics-2\\nnative-metrics-3\\n'\n"
         try terminal.write(Array(command.utf8))
+        let seededPatchedCells = recorder.snapshot.patchedCells
 
         for _ in 0..<30 {
             try poll(
@@ -91,7 +92,8 @@ final class NativeRenderMetricsGateTests: XCTestCase {
                 recorder: recorder,
                 forceFull: false
             )
-            if recorder.snapshot.partialFrameUpdates > 0 {
+            if recorder.snapshot.partialRenderPlanRebuilds > 0,
+               recorder.snapshot.patchedCells > seededPatchedCells {
                 break
             }
             usleep(20_000)

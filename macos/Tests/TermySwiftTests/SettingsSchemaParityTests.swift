@@ -32,6 +32,9 @@ final class SettingsSchemaParityTests: XCTestCase {
             "shell_integration_enabled",
             "progress_indicator_enabled",
             "auto_hide_tabbar",
+            "sidebar_enabled",
+            "browser_tabs_enabled",
+            "git_panel_enabled",
             "show_termy_in_titlebar"
         ]
 
@@ -82,6 +85,17 @@ final class SettingsSchemaParityTests: XCTestCase {
             settingsByKey["app_icon"]?.choices?.map(\.value),
             ["default", "old"]
         )
+    }
+
+    func testSwiftSettingsSchemaDoesNotSynthesizeLegacyBuiltinThemeChoices() throws {
+        let schema = try SettingsBridge.loadSchema(contents: "")
+        let settingsByKey = schema.settingsByKey
+        let choices = try XCTUnwrap(settingsByKey["theme"]?.choices)
+
+        XCTAssertTrue(choices.contains { $0.value == "termy" })
+        XCTAssertTrue(choices.contains { $0.value == "shell-decide" })
+        XCTAssertFalse(choices.contains { $0.value == "tokyo-night" })
+        XCTAssertTrue(choices.first { $0.value == "termy" }?.swatches?.isEmpty ?? true)
     }
 }
 

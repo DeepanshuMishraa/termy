@@ -47,7 +47,14 @@ const SIDEBAR_WIDTH: f32 = 208.0;
 const SIDEBAR_ICON_SIZE: f32 = 18.0;
 const SIDEBAR_ITEM_HEIGHT: f32 = 32.0;
 const SIDEBAR_ITEM_RADIUS: f32 = 7.0;
-const SETTINGS_CONTROL_WIDTH: f32 = 360.0;
+// Accent bar marking the selected sidebar item; mirrors the active-tab and
+// command-palette selection indicators so the chrome speaks one language.
+const SIDEBAR_SELECTED_ACCENT_WIDTH: f32 = 2.0;
+const SIDEBAR_SELECTED_ACCENT_INSET_Y: f32 = 8.0;
+// Settings content is constrained and centered like native macOS System
+// Settings so rows do not stretch label-to-control across wide windows.
+const SETTINGS_CONTENT_MAX_WIDTH: f32 = 800.0;
+const SETTINGS_CONTROL_WIDTH: f32 = 300.0;
 const SETTINGS_CONTROL_HEIGHT: f32 = 30.0;
 const NUMERIC_STEP_BUTTON_SIZE: f32 = 22.0;
 const SETTINGS_INPUT_TEXT_SIZE: f32 = 13.0;
@@ -1279,7 +1286,14 @@ impl Render for SettingsWindow {
                             .overflow_x_hidden()
                             .px(px(CONTENT_GUTTER_X))
                             .py(px(CONTENT_GUTTER_Y))
-                            .child(self.render_content(cx)),
+                            .child(
+                                div().w_full().flex().justify_center().child(
+                                    div()
+                                        .w_full()
+                                        .max_w(px(SETTINGS_CONTENT_MAX_WIDTH))
+                                        .child(self.render_content(cx)),
+                                ),
+                            ),
                     )
                     .child(settings_scrollbar_lane),
             )

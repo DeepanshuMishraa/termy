@@ -1,5 +1,4 @@
 use super::super::*;
-use super::chrome;
 use super::layout::TabStripGeometry;
 use super::state::{TabStripOrientation, TabStripOverflowState};
 
@@ -7,13 +6,6 @@ pub(super) struct TabStripRenderState {
     pub(super) geometry: TabStripGeometry,
     pub(super) content_width: f32,
     pub(super) overflow_state: TabStripOverflowState,
-    pub(super) chrome_layout: chrome::TabChromeLayout,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) struct DividerCollisionState {
-    pub(super) left: bool,
-    pub(super) right: bool,
 }
 
 #[cfg(test)]
@@ -131,45 +123,6 @@ mod tests {
 }
 
 impl TerminalView {
-    pub(super) fn edge_divider_collision_state(
-        layout: &chrome::TabChromeLayout,
-        scroll_offset_x: f32,
-        tabs_viewport_width: f32,
-    ) -> DividerCollisionState {
-        let left_divider_start_col = 0_i32;
-        let left_divider_end_col = (TAB_STROKE_THICKNESS.ceil() as i32).max(1);
-        let right_divider_x = (tabs_viewport_width - TAB_STROKE_THICKNESS).max(0.0);
-        let right_divider_start_col = right_divider_x.floor() as i32;
-        let right_divider_end_col = ((right_divider_x + TAB_STROKE_THICKNESS).ceil() as i32)
-            .max(right_divider_start_col + 1);
-
-        let mut collisions = DividerCollisionState::default();
-
-        for stroke in &layout.boundary_strokes {
-            let boundary_left = stroke.x + scroll_offset_x;
-            let boundary_start_col = boundary_left.floor() as i32;
-            let boundary_end_col =
-                ((boundary_left + TAB_STROKE_THICKNESS).ceil() as i32).max(boundary_start_col + 1);
-
-            if boundary_start_col < left_divider_end_col
-                && boundary_end_col > left_divider_start_col
-            {
-                collisions.left = true;
-            }
-            if boundary_start_col < right_divider_end_col
-                && boundary_end_col > right_divider_start_col
-            {
-                collisions.right = true;
-            }
-
-            if collisions.left && collisions.right {
-                break;
-            }
-        }
-
-        collisions
-    }
-
     pub(crate) fn tab_strip_chrome_visible(
         auto_hide_tabbar: bool,
         tab_count: usize,
@@ -203,11 +156,14 @@ impl TerminalView {
     }
 
     pub(crate) fn should_render_tab_strip_chrome(&self) -> bool {
-        Self::tab_strip_chrome_visible(
-            self.auto_hide_tabbar,
-            self.tabs.len(),
-            self.effective_tab_bar_visibility(),
-        )
+        // The workspace sidebar needs the top chrome row for its actions and
+        // for the tab strip it aligns with, so it overrides auto-hide.
+        self.workspace_sidebar_visible()
+            || Self::tab_strip_chrome_visible(
+                self.auto_hide_tabbar,
+                self.tabs.len(),
+                self.effective_tab_bar_visibility(),
+            )
     }
 
     pub(super) fn build_tab_strip_render_state(
@@ -234,35 +190,11 @@ impl TerminalView {
         let geometry = layout.geometry;
         let content_width = fixed_content_width;
         let overflow_state = self.tab_strip_overflow_state();
-        let active_tab_index = (self.active_tab < self.tabs.len()).then_some(self.active_tab);
-        let chrome_layout = chrome::compute_tab_chrome_layout(
-            self.tabs.iter().map(|tab| tab.display_width),
-            chrome::TabChromeInput {
-                active_index: active_tab_index,
-                tabbar_height: TABBAR_HEIGHT,
-                tab_item_height: TAB_ITEM_HEIGHT,
-                horizontal_padding: TAB_HORIZONTAL_PADDING,
-                tab_item_gap: TAB_ITEM_GAP,
-            },
-        );
-        debug_assert!(chrome_layout.tab_strokes.len() == self.tabs.len());
 
         TabStripRenderState {
             geometry,
             content_width,
             overflow_state,
-            chrome_layout,
         }
-    }
-
-    pub(super) fn render_tab_stroke(stroke: chrome::StrokeRect, color: gpui::Rgba) -> AnyElement {
-        div()
-            .absolute()
-            .left(px(stroke.x))
-            .top(px(stroke.y))
-            .w(px(stroke.w))
-            .h(px(stroke.h))
-            .bg(color)
-            .into_any_element()
     }
 }

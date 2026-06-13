@@ -1,5 +1,5 @@
 {
   "title": "Start",
-  "pages": ["index", "installation", "first-run", "config-file", "quickstart-customize"],
+  "pages": ["index", "installation", "config-file", "troubleshooting"],
   "defaultOpen": true
 }

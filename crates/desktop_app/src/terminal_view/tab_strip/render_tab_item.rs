@@ -6,9 +6,10 @@ use termy_terminal_ui::ProgressState;
 pub(super) struct TabItemRenderInput {
     pub(super) orientation: TabStripOrientation,
     pub(super) index: usize,
+    // Extent along the strip's primary axis (width for the horizontal strip,
+    // row height for the vertical sidebar); cross extent is the other axis.
     pub(super) tab_primary_extent: f32,
     pub(super) tab_cross_extent: f32,
-    pub(super) tab_strokes: TabItemStrokeRects,
     pub(super) label: String,
     pub(super) switch_hint_label: Option<String>,
     pub(super) is_active: bool,
@@ -19,21 +20,10 @@ pub(super) struct TabItemRenderInput {
     pub(super) close_slot_width: f32,
     pub(super) text_padding_x: f32,
     pub(super) label_centered: bool,
-    pub(super) trailing_divider_cover: Option<gpui::Rgba>,
     pub(super) drop_marker_side: Option<TabDropMarkerSide>,
     pub(super) open_anim_progress: Option<f32>,
     pub(super) hover_progress: f32,
-    #[allow(dead_code)]
-    pub(super) press_progress: f32,
     pub(super) progress_state: ProgressState,
-}
-
-#[derive(Clone, Copy)]
-pub(super) struct TabItemStrokeRects {
-    pub(super) top: Option<super::chrome::StrokeRect>,
-    pub(super) bottom: Option<super::chrome::StrokeRect>,
-    pub(super) left: Option<super::chrome::StrokeRect>,
-    pub(super) right: Option<super::chrome::StrokeRect>,
 }
 
 #[cfg(test)]
@@ -116,7 +106,11 @@ impl TerminalView {
                                 cx.stop_propagation();
                             },
                         ))
-                        .hover(move |style| style.text_color(palette.close_button_hover_text))
+                        .hover(move |style| {
+                            style
+                                .bg(palette.close_button_hover_bg)
+                                .text_color(palette.close_button_hover_text)
+                        })
                         .cursor_pointer()
                         .child(
                             gpui::svg()
@@ -167,7 +161,11 @@ impl TerminalView {
                             cx.stop_propagation();
                         },
                     ))
-                    .hover(move |style| style.text_color(palette.close_button_hover_text))
+                    .hover(move |style| {
+                        style
+                            .bg(palette.close_button_hover_bg)
+                            .text_color(palette.close_button_hover_text)
+                    })
                     .cursor_pointer()
                     .child(
                         gpui::svg()
@@ -234,7 +232,6 @@ impl TerminalView {
         }
 
         let justify_label_center = input.label_centered;
-        let trailing_divider_cover = input.trailing_divider_cover;
         let title_font_size = if orientation == TabStripOrientation::Horizontal {
             TAB_HORIZONTAL_TITLE_FONT_SIZE
         } else {
@@ -254,6 +251,12 @@ impl TerminalView {
         } else {
             0.0
         };
+        // Primary extent runs along the strip axis: width for the horizontal
+        // strip, height for the vertical sidebar.
+        let (shell_width, shell_height) = match orientation {
+            TabStripOrientation::Horizontal => (input.tab_primary_extent, input.tab_cross_extent),
+            TabStripOrientation::Vertical => (input.tab_cross_extent, input.tab_primary_extent),
+        };
         let mut tab_shell = div()
             .flex_none()
             .relative()
@@ -261,8 +264,8 @@ impl TerminalView {
             .rounded(px(TAB_ITEM_RADIUS))
             .bg(tab_bg)
             .hover(move |style| style.bg(hover_tab_bg))
-            .w(px(input.tab_primary_extent))
-            .h(px(input.tab_cross_extent))
+            .w(px(shell_width))
+            .h(px(shell_height))
             .mt(px(visual_offset_y))
             .px(px(input.text_padding_x))
             .flex()
@@ -289,6 +292,14 @@ impl TerminalView {
                     cx.stop_propagation();
                 }),
             )
+            .on_mouse_down(
+                MouseButton::Middle,
+                cx.listener(move |this, _event: &MouseDownEvent, window, cx| {
+                    window.prevent_default();
+                    this.request_tab_close_by_index(close_tab_index, window, cx);
+                    cx.stop_propagation();
+                }),
+            )
             .on_mouse_move(
                 cx.listener(move |this, event: &MouseMoveEvent, window, cx| {
                     this.on_tab_mouse_move(orientation, hover_tab_index, event, window, cx);
@@ -300,16 +311,20 @@ impl TerminalView {
             tab_shell = tab_shell.shadow_md();
         }
 
-        for stroke in [
-            input.tab_strokes.top,
-            input.tab_strokes.bottom,
-            input.tab_strokes.left,
-            input.tab_strokes.right,
-        ]
-        .into_iter()
-        .flatten()
-        {
-            tab_shell = tab_shell.child(Self::render_tab_stroke(stroke, palette.tab_stroke_color));
+        if input.is_active {
+            let indicator_height = (shell_height - (TAB_ACTIVE_INDICATOR_INSET_Y * 2.0)).max(0.0);
+            let mut indicator_color = palette.active_tab_indicator;
+            indicator_color.a *= anim;
+            tab_shell = tab_shell.child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .top(px(TAB_ACTIVE_INDICATOR_INSET_Y))
+                    .w(px(TAB_ACTIVE_INDICATOR_WIDTH))
+                    .h(px(indicator_height))
+                    .rounded_full()
+                    .bg(indicator_color),
+            );
         }
 
         let drop_marker = input.drop_marker_side.map(|side| match orientation {
@@ -352,21 +367,20 @@ impl TerminalView {
             }
         });
 
-        let leading_icon = if !input.is_renaming {
+        let leading_slot = if !input.is_renaming {
             Some(
                 div()
                     .flex_none()
-                    .w(px(TAB_LEADING_ICON_SLOT_WIDTH))
+                    .w(px(TAB_LEADING_SLOT_WIDTH))
                     .h_full()
                     .flex()
                     .items_center()
                     .justify_start()
-                    .child(
-                        gpui::svg()
-                            .path(gpui::SharedString::from("icons/tab_strip/terminal.svg"))
-                            .size(px(TAB_LEADING_ICON_SIZE))
-                            .text_color(rename_text_color),
-                    )
+                    .children(Self::render_progress_dot(
+                        &input.progress_state,
+                        colors,
+                        anim,
+                    ))
                     .into_any_element(),
             )
         } else {
@@ -388,7 +402,7 @@ impl TerminalView {
 
         let tab_shell =
             tab_shell
-                .children(leading_icon)
+                .children(leading_slot)
                 .child(div().flex_1().min_w(px(0.0)).h_full().relative().child(
                     if input.is_renaming {
                         let rename_alignment = if justify_label_center {
@@ -426,17 +440,7 @@ impl TerminalView {
                     },
                 ))
                 .children(trailing_accessory)
-                .children(trailing_divider_cover.map(|cover_color| {
-                    div()
-                        .absolute()
-                        .right_0()
-                        .top_0()
-                        .bottom_0()
-                        .w(px(TAB_STROKE_THICKNESS))
-                        .bg(cover_color)
-                }))
-                .children(drop_marker)
-                .children(Self::render_progress_badge(&input.progress_state, anim));
+                .children(drop_marker);
 
         if orientation == TabStripOrientation::Horizontal {
             return div()
@@ -486,24 +490,25 @@ impl TerminalView {
         tab_shell.into_any_element()
     }
 
-    fn render_progress_badge(state: &ProgressState, anim: f32) -> Option<impl IntoElement> {
+    fn render_progress_dot(
+        state: &ProgressState,
+        colors: &TerminalColors,
+        anim: f32,
+    ) -> Option<impl IntoElement> {
         if !state.is_active() {
             return None;
         }
-        let color = match state {
-            ProgressState::InProgress(_) => gpui::rgb(0x22c55e), // green
-            ProgressState::Error(_) => gpui::rgb(0xef4444),      // red
-            ProgressState::Warning(_) => gpui::rgb(0xf59e0b),    // yellow
-            ProgressState::Indeterminate => gpui::rgb(0x3b82f6), // blue
+        let mut bg_color = match state {
+            ProgressState::InProgress(_) => colors.ansi[2], // green
+            ProgressState::Error(_) => colors.ansi[1],      // red
+            ProgressState::Warning(_) => colors.ansi[3],    // yellow
+            ProgressState::Indeterminate => colors.ansi[4], // blue
             ProgressState::Clear => return None,
         };
-        let mut bg_color: gpui::Rgba = color;
         bg_color.a *= anim;
         Some(
             div()
-                .absolute()
-                .top(px(TAB_PROGRESS_BADGE_MARGIN))
-                .left(px(TAB_PROGRESS_BADGE_MARGIN))
+                .flex_none()
                 .w(px(TAB_PROGRESS_BADGE_SIZE))
                 .h(px(TAB_PROGRESS_BADGE_SIZE))
                 .rounded_full()
@@ -522,12 +527,6 @@ mod tests {
             index: 0,
             tab_primary_extent: TAB_MIN_WIDTH,
             tab_cross_extent: TAB_ITEM_HEIGHT,
-            tab_strokes: TabItemStrokeRects {
-                top: None,
-                bottom: None,
-                left: None,
-                right: None,
-            },
             label: String::new(),
             switch_hint_label: None,
             is_active: true,
@@ -538,11 +537,9 @@ mod tests {
             close_slot_width,
             text_padding_x: TAB_TEXT_PADDING_X,
             label_centered: true,
-            trailing_divider_cover: None,
             drop_marker_side: None,
             open_anim_progress: None,
             hover_progress: 0.0,
-            press_progress: 0.0,
             progress_state: ProgressState::default(),
         }
     }

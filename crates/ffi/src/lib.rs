@@ -2,10 +2,16 @@
 
 use std::{
     collections::{BTreeSet, HashMap},
-    path::Path,
+    panic::{AssertUnwindSafe, catch_unwind},
+    path::{Path, PathBuf},
     ptr, slice, str,
+    time::Duration,
 };
 
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use flume::{Receiver, Sender, bounded};
 use termy_core::{
     ConfigDiagnostic, ConfigDiagnosticKind, LoadedTermyConfig, ProgressState, Terminal,
     TerminalClipboardTarget, TerminalDamageSnapshot, TerminalDirtySpan, TerminalEvent,
@@ -27,7 +33,11 @@ pub enum TermyFfiStatus {
     UnknownKey = 5,
     WriteFailed = 6,
     SerializeFailed = 7,
+    Panicked = 8,
 }
+
+#[cfg(test)]
+static PANIC_NEXT_FEED_OUTPUT: AtomicBool = AtomicBool::new(false);
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -255,6 +265,8 @@ pub struct TermyFfiNativeConfig {
 
 pub struct TermyFfiTerminal {
     terminal: Terminal,
+    wakeups_tx: Option<Sender<()>>,
+    wakeups_rx: Option<Receiver<()>>,
 }
 
 pub struct TermyFfiConfig {
@@ -516,6 +528,14 @@ fn leak_vec<T>(mut vec: Vec<T>) -> (*mut T, usize, usize) {
     (ptr, len, capacity)
 }
 
+fn ffi_guard<T>(default: T, f: impl FnOnce() -> T) -> T {
+    catch_unwind(AssertUnwindSafe(f)).unwrap_or(default)
+}
+
+fn ffi_status_guard(f: impl FnOnce() -> TermyFfiStatus) -> TermyFfiStatus {
+    ffi_guard(TermyFfiStatus::Panicked, f)
+}
+
 unsafe fn optional_utf8<'a>(ptr: *const u8, len: usize) -> Result<Option<&'a str>, TermyFfiStatus> {
     if ptr.is_null() || len == 0 {
         return Ok(None);
@@ -669,10 +689,11 @@ unsafe fn terminal_new_with_runtime_config(
         Err(status) => return status,
     };
 
+    let (wakeups_tx, wakeups_rx) = bounded(1);
     let Ok(terminal) = Terminal::new(
         size.into(),
         configured_working_dir,
-        None,
+        Some(wakeups_tx.clone()),
         tab_title_shell_integration,
         Some(runtime_config),
         startup_command,
@@ -681,7 +702,11 @@ unsafe fn terminal_new_with_runtime_config(
     };
 
     unsafe {
-        *out_terminal = Box::into_raw(Box::new(TermyFfiTerminal { terminal }));
+        *out_terminal = Box::into_raw(Box::new(TermyFfiTerminal {
+            terminal,
+            wakeups_tx: Some(wakeups_tx),
+            wakeups_rx: Some(wakeups_rx),
+        }));
     }
     TermyFfiStatus::Ok
 }
@@ -715,6 +740,28 @@ pub unsafe extern "C" fn termy_terminal_new(
             out_terminal,
         )
     }
+}
+
+/// Create a display-only terminal: a grid with no PTY/shell, fed via
+/// `termy_terminal_feed_output`. Used for tmux control-mode panes. All other
+/// terminal functions (render, resize, snapshot, free) work on the result.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_display_terminal_new(
+    size: TermyFfiSize,
+    out_terminal: *mut *mut TermyFfiTerminal,
+) -> TermyFfiStatus {
+    if out_terminal.is_null() {
+        return TermyFfiStatus::Null;
+    }
+    let terminal = Terminal::new_display(size.into(), None);
+    unsafe {
+        *out_terminal = Box::into_raw(Box::new(TermyFfiTerminal {
+            terminal,
+            wakeups_tx: None,
+            wakeups_rx: None,
+        }));
+    }
+    TermyFfiStatus::Ok
 }
 
 #[unsafe(no_mangle)]
@@ -865,6 +912,24 @@ pub unsafe extern "C" fn termy_config_runtime_scrollback_history(
     }
 
     unsafe { (*config).loaded.runtime_config.scrollback_history }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_config_runtime_inactive_tab_scrollback(
+    config: *const TermyFfiConfig,
+    out_enabled: *mut bool,
+    out_value: *mut usize,
+) -> TermyFfiStatus {
+    if config.is_null() || out_enabled.is_null() || out_value.is_null() {
+        return TermyFfiStatus::Null;
+    }
+
+    let inactive_tab_scrollback = unsafe { (*config).loaded.app_config.inactive_tab_scrollback };
+    unsafe {
+        *out_enabled = inactive_tab_scrollback.is_some();
+        *out_value = inactive_tab_scrollback.unwrap_or_default();
+    }
+    TermyFfiStatus::Ok
 }
 
 #[unsafe(no_mangle)]
@@ -1307,21 +1372,63 @@ fn settings_color_hex(app: &cfg::AppConfig, id: cfg::ColorSettingId) -> Option<S
     rgb.map(|c| format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b))
 }
 
-const SETTINGS_BUILTIN_THEME_IDS: &[&str] = &[
-    "termy",
-    "tokyo-night",
-    "catppuccin-mocha",
-    "dracula",
-    "gruvbox-dark",
-    "nord",
-    "solarized-dark",
-    "one-dark",
-    "monokai",
-    "material-dark",
-    "palenight",
-    "tomorrow-night",
-    "oceanic-next",
-];
+const SETTINGS_THEME_REGISTRY_URL: &str =
+    "https://raw.githubusercontent.com/termy-org/themes/main/index.json";
+const SETTINGS_THEME_REGISTRY_CACHE_VERSION: u32 = 1;
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct SettingsThemeStoreTheme {
+    name: String,
+    slug: String,
+    description: String,
+    latest_version: Option<String>,
+    file_url: Option<String>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SettingsThemeRegistryCache {
+    version: u32,
+    fetched_at: u64,
+    registry_url: String,
+    etag: Option<String>,
+    themes: Vec<SettingsThemeStoreTheme>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SettingsLegacyThemeStoreTheme {
+    name: String,
+    slug: String,
+    #[serde(default)]
+    description: String,
+    latest_version: Option<String>,
+    file_url: Option<String>,
+}
+
+impl SettingsLegacyThemeStoreTheme {
+    fn into_theme(self) -> Option<SettingsThemeStoreTheme> {
+        let name = self.name.trim().to_string();
+        let slug = settings_normalize_theme_id(&self.slug);
+        if name.is_empty() || slug.is_empty() {
+            return None;
+        }
+
+        Some(SettingsThemeStoreTheme {
+            name,
+            slug,
+            description: self.description,
+            latest_version: self.latest_version,
+            file_url: self.file_url,
+        })
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum SettingsThemeStorePayload {
+    Legacy(Vec<SettingsLegacyThemeStoreTheme>),
+    Registry(termy_themes::ThemeRegistryIndex),
+}
 
 fn settings_normalize_theme_id(theme_id: &str) -> String {
     let mut normalized = String::new();
@@ -1350,15 +1457,8 @@ fn settings_normalize_theme_id(theme_id: &str) -> String {
 }
 
 fn settings_installed_theme_ids(config_path: Option<&Path>) -> Vec<String> {
-    let owned_config_path;
-    let config_path = if let Some(path) = config_path {
-        path
-    } else {
-        owned_config_path = match cfg::config_path() {
-            Some(path) => path,
-            None => return Vec::new(),
-        };
-        owned_config_path.as_path()
+    let Some(config_path) = config_path else {
+        return Vec::new();
     };
     let Some(config_dir) = config_path.parent() else {
         return Vec::new();
@@ -1386,6 +1486,269 @@ fn settings_installed_theme_ids(config_path: Option<&Path>) -> Vec<String> {
         .collect()
 }
 
+fn settings_theme_registry_url() -> String {
+    std::env::var("TERMY_THEME_REGISTRY_URL")
+        .or_else(|_| std::env::var("THEME_STORE_REGISTRY_URL"))
+        .unwrap_or_else(|_| SETTINGS_THEME_REGISTRY_URL.to_string())
+}
+
+fn settings_theme_registry_cache_path(config_path: Option<&Path>) -> Option<PathBuf> {
+    let owned_config_path;
+    let config_path = if let Some(path) = config_path {
+        path
+    } else {
+        owned_config_path = cfg::config_path()?;
+        owned_config_path.as_path()
+    };
+    Some(config_path.parent()?.join("theme_registry.cache"))
+}
+
+fn settings_current_unix_timestamp() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs())
+}
+
+fn settings_theme_registry_fetch_url(registry_url: &str) -> String {
+    if !registry_url.contains("raw.githubusercontent.com") {
+        return registry_url.to_string();
+    }
+
+    let separator = if registry_url.contains('?') { '&' } else { '?' };
+    format!(
+        "{registry_url}{separator}termy_cache_bust={}",
+        settings_current_unix_timestamp()
+    )
+}
+
+fn settings_load_theme_registry_cache(
+    config_path: Option<&Path>,
+) -> Option<SettingsThemeRegistryCache> {
+    let path = settings_theme_registry_cache_path(config_path)?;
+    let bytes = std::fs::read(path).ok()?;
+    let cache: SettingsThemeRegistryCache = bincode::deserialize(&bytes).ok()?;
+    (cache.version == SETTINGS_THEME_REGISTRY_CACHE_VERSION).then_some(cache)
+}
+
+fn settings_save_theme_registry_cache(
+    config_path: Option<&Path>,
+    themes: &[SettingsThemeStoreTheme],
+    registry_url: &str,
+    etag: Option<String>,
+) {
+    let Some(path) = settings_theme_registry_cache_path(config_path) else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    let cache = SettingsThemeRegistryCache {
+        version: SETTINGS_THEME_REGISTRY_CACHE_VERSION,
+        fetched_at: settings_current_unix_timestamp(),
+        registry_url: registry_url.to_string(),
+        etag,
+        themes: themes.to_vec(),
+    };
+
+    if let Ok(bytes) = bincode::serialize(&cache) {
+        let _ = std::fs::write(path, bytes);
+    }
+}
+
+fn settings_parse_theme_store_payload(
+    raw_json: &str,
+    registry_url: &str,
+) -> Result<Vec<SettingsThemeStoreTheme>, String> {
+    let payload: SettingsThemeStorePayload = serde_json::from_str(raw_json)
+        .map_err(|error| format!("Invalid theme registry response: {error}"))?;
+
+    let mut parsed: Vec<SettingsThemeStoreTheme> = match payload {
+        SettingsThemeStorePayload::Legacy(themes) => themes
+            .into_iter()
+            .filter_map(SettingsLegacyThemeStoreTheme::into_theme)
+            .collect(),
+        SettingsThemeStorePayload::Registry(index) => index
+            .themes
+            .into_iter()
+            .filter_map(|theme| {
+                let slug = settings_normalize_theme_id(&theme.slug);
+                (!slug.is_empty() && !theme.name.trim().is_empty()).then(|| {
+                    SettingsThemeStoreTheme {
+                        name: theme.name.trim().to_string(),
+                        slug,
+                        description: theme.description,
+                        latest_version: Some(theme.latest_version),
+                        file_url: Some(termy_themes::registry_file_url(registry_url, &theme.file)),
+                    }
+                })
+            })
+            .collect(),
+    };
+
+    parsed.sort_unstable_by(|left, right| {
+        left.name
+            .to_ascii_lowercase()
+            .cmp(&right.name.to_ascii_lowercase())
+    });
+    Ok(parsed)
+}
+
+fn settings_fetch_theme_registry_themes(
+    config_path: Option<&Path>,
+) -> Result<Vec<SettingsThemeStoreTheme>, String> {
+    let registry_url = settings_theme_registry_url();
+    let cached = settings_load_theme_registry_cache(config_path);
+    let cached_etag = cached.as_ref().and_then(|cache| {
+        (cache.registry_url == registry_url)
+            .then(|| cache.etag.clone())
+            .flatten()
+    });
+
+    // Bound the request: ureq otherwise blocks indefinitely on connect/read,
+    // and this runs synchronously on the main thread when Settings opens, so a
+    // slow or hostile registry host (the URL is overridable via
+    // TERMY_THEME_REGISTRY_URL) could hang the app.
+    let mut request = ureq::get(&settings_theme_registry_fetch_url(&registry_url))
+        .timeout(std::time::Duration::from_secs(10))
+        .set("Accept", "application/json")
+        .set("Cache-Control", "no-cache")
+        .set("Pragma", "no-cache");
+
+    if let Some(ref etag) = cached_etag {
+        request = request.set("If-None-Match", etag);
+    }
+
+    match request.call() {
+        Ok(response) if response.status() == 304 => cached
+            .filter(|cache| cache.registry_url == registry_url)
+            .map(|cache| cache.themes)
+            .ok_or_else(|| {
+                "Server returned 304 Not Modified but no matching local cache exists".to_string()
+            }),
+        Ok(response) => {
+            let etag = response.header("etag").map(str::to_string);
+            let raw = response
+                .into_string()
+                .map_err(|error| format!("Invalid theme registry response: {error}"))?;
+            let themes = settings_parse_theme_store_payload(&raw, &registry_url)?;
+            settings_save_theme_registry_cache(config_path, &themes, &registry_url, etag);
+            Ok(themes)
+        }
+        Err(error) => cached
+            .filter(|cache| cache.registry_url == registry_url)
+            .map(|cache| cache.themes)
+            .ok_or_else(|| format!("Failed to fetch store themes: {error}")),
+    }
+}
+
+fn settings_theme_store_ids(config_path: Option<&Path>) -> Vec<String> {
+    if config_path.is_none() {
+        return Vec::new();
+    }
+
+    let registry_url = settings_theme_registry_url();
+    if let Some(cache) = settings_load_theme_registry_cache(config_path)
+        && cache.registry_url == registry_url
+        && !cache.themes.is_empty()
+    {
+        return cache.themes.into_iter().map(|theme| theme.slug).collect();
+    }
+
+    settings_fetch_theme_registry_themes(config_path)
+        .map(|themes| themes.into_iter().map(|theme| theme.slug).collect())
+        .unwrap_or_default()
+}
+
+fn settings_installed_theme_versions_path(config_path: &Path) -> Option<PathBuf> {
+    Some(config_path.parent()?.join("theme_store_installed.json"))
+}
+
+fn settings_installed_theme_file_path(config_path: &Path, slug: &str) -> Option<PathBuf> {
+    let normalized = settings_normalize_theme_id(slug);
+    if normalized.is_empty() {
+        return None;
+    }
+    Some(
+        config_path
+            .parent()?
+            .join("themes")
+            .join(format!("{normalized}.json")),
+    )
+}
+
+fn settings_load_installed_theme_versions(config_path: &Path) -> HashMap<String, String> {
+    let Some(path) = settings_installed_theme_versions_path(config_path) else {
+        return HashMap::new();
+    };
+    let Ok(contents) = std::fs::read_to_string(path) else {
+        return HashMap::new();
+    };
+    serde_json::from_str::<HashMap<String, String>>(&contents)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(slug, version)| {
+            (
+                settings_normalize_theme_id(&slug),
+                version.trim().to_string(),
+            )
+        })
+        .filter(|(slug, _)| !slug.is_empty())
+        .collect()
+}
+
+fn settings_persist_installed_theme_versions(
+    config_path: &Path,
+    versions: &HashMap<String, String>,
+) -> Result<(), TermyFfiStatus> {
+    let path =
+        settings_installed_theme_versions_path(config_path).ok_or(TermyFfiStatus::WriteFailed)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|_| TermyFfiStatus::WriteFailed)?;
+    }
+    let contents =
+        serde_json::to_string_pretty(versions).map_err(|_| TermyFfiStatus::SerializeFailed)?;
+    std::fs::write(path, contents).map_err(|_| TermyFfiStatus::WriteFailed)
+}
+
+fn settings_install_theme_from_registry(slug: &str) -> Result<(), TermyFfiStatus> {
+    let normalized = settings_normalize_theme_id(slug);
+    if normalized.is_empty() {
+        return Err(TermyFfiStatus::UnknownKey);
+    }
+
+    let config_path = cfg::config_path().ok_or(TermyFfiStatus::ConfigLoadFailed)?;
+    let themes = settings_fetch_theme_registry_themes(Some(config_path.as_path()))
+        .map_err(|_| TermyFfiStatus::ConfigLoadFailed)?;
+    let theme = themes
+        .into_iter()
+        .find(|theme| theme.slug.eq_ignore_ascii_case(&normalized))
+        .ok_or(TermyFfiStatus::UnknownKey)?;
+    let file_url = theme.file_url.ok_or(TermyFfiStatus::ConfigLoadFailed)?;
+
+    let response = ureq::get(&file_url)
+        .timeout(std::time::Duration::from_secs(10))
+        .set("Accept", "application/json")
+        .call()
+        .map_err(|_| TermyFfiStatus::ConfigLoadFailed)?;
+    let contents = response
+        .into_string()
+        .map_err(|_| TermyFfiStatus::ConfigLoadFailed)?;
+    termy_themes::parse_theme_colors_json(&contents)
+        .map_err(|_| TermyFfiStatus::SerializeFailed)?;
+
+    let path = settings_installed_theme_file_path(&config_path, &normalized)
+        .ok_or(TermyFfiStatus::WriteFailed)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|_| TermyFfiStatus::WriteFailed)?;
+    }
+    std::fs::write(path, contents).map_err(|_| TermyFfiStatus::WriteFailed)?;
+
+    let mut versions = settings_load_installed_theme_versions(&config_path);
+    versions.insert(normalized, theme.latest_version.unwrap_or_default());
+    settings_persist_installed_theme_versions(&config_path, &versions)
+}
+
 fn settings_theme_label(theme_id: &str) -> String {
     if theme_id == cfg::SHELL_DECIDE_THEME_ID {
         return "Shell Decide".to_string();
@@ -1405,6 +1768,42 @@ fn settings_theme_label(theme_id: &str) -> String {
         .join(" ")
 }
 
+fn settings_installed_theme_colors(
+    theme_id: &str,
+    config_path: Option<&Path>,
+) -> Option<termy_themes::ThemeColors> {
+    let normalized = settings_normalize_theme_id(theme_id);
+    if normalized.is_empty() || normalized == cfg::SHELL_DECIDE_THEME_ID {
+        return None;
+    }
+
+    let config_dir = config_path.and_then(Path::parent)?;
+    let path = config_dir.join("themes").join(format!("{normalized}.json"));
+    if let Ok(contents) = std::fs::read_to_string(path)
+        && let Ok(colors) = termy_themes::parse_theme_colors_json(&contents)
+    {
+        return Some(colors);
+    }
+    None
+}
+
+fn settings_theme_swatches(theme_id: &str, config_path: Option<&Path>) -> Vec<String> {
+    let Some(colors) = settings_installed_theme_colors(theme_id, config_path) else {
+        return Vec::new();
+    };
+    [
+        colors.background,
+        colors.foreground,
+        colors.ansi[1],
+        colors.ansi[2],
+        colors.ansi[4],
+        colors.ansi[5],
+    ]
+    .into_iter()
+    .map(|color| format!("#{:02x}{:02x}{:02x}", color.r, color.g, color.b))
+    .collect()
+}
+
 fn settings_theme_choices(
     loaded: &LoadedTermyConfig,
     current_value: Option<&str>,
@@ -1413,12 +1812,11 @@ fn settings_theme_choices(
 
     let mut ids = BTreeSet::new();
     ids.insert(cfg::SHELL_DECIDE_THEME_ID.to_string());
-    ids.extend(
-        SETTINGS_BUILTIN_THEME_IDS
-            .iter()
-            .map(|theme_id| (*theme_id).to_string()),
-    );
-    ids.extend(settings_installed_theme_ids(loaded.path.as_deref()));
+    let installed_ids: BTreeSet<String> = settings_installed_theme_ids(loaded.path.as_deref())
+        .into_iter()
+        .collect();
+    ids.extend(settings_theme_store_ids(loaded.path.as_deref()));
+    ids.extend(installed_ids.iter().cloned());
     if let Some(current_value) = current_value
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -1431,6 +1829,8 @@ fn settings_theme_choices(
             json!({
                 "value": theme_id,
                 "label": settings_theme_label(&theme_id),
+                "installed": theme_id == cfg::SHELL_DECIDE_THEME_ID || installed_ids.contains(&theme_id),
+                "swatches": settings_theme_swatches(&theme_id, loaded.path.as_deref()),
             })
         })
         .collect()
@@ -1689,6 +2089,236 @@ pub unsafe extern "C" fn termy_settings_set_keybinds(
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_settings_install_theme(
+    slug_ptr: *const u8,
+    slug_len: usize,
+) -> TermyFfiStatus {
+    let slug = match unsafe { required_utf8(slug_ptr, slug_len) } {
+        Ok(slug) => slug,
+        Err(status) => return status,
+    };
+    match settings_install_theme_from_registry(slug) {
+        Ok(()) => TermyFfiStatus::Ok,
+        Err(status) => status,
+    }
+}
+
+/// Installs the bundled `termy-cli` shim (symlink into a PATH dir + shell PATH
+/// setup), reusing `termy_cli_install_core`. `shell` may be null to use $SHELL.
+/// A human-readable summary (or error) is written to `out_message`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_cli_install(
+    shell_ptr: *const u8,
+    shell_len: usize,
+    out_message: *mut TermyFfiBytes,
+) -> TermyFfiStatus {
+    let shell = if shell_ptr.is_null() || shell_len == 0 {
+        None
+    } else {
+        match unsafe { required_utf8(shell_ptr, shell_len) } {
+            Ok(value) => Some(value),
+            Err(status) => return status,
+        }
+    };
+    match termy_cli_install_core::install_cli(shell) {
+        Ok(result) => {
+            if !out_message.is_null() {
+                let message = format!("Installed CLI to {}", result.install_path.display());
+                unsafe { *out_message = ffi_bytes_from_string(message) };
+            }
+            TermyFfiStatus::Ok
+        }
+        Err(error) => {
+            if !out_message.is_null() {
+                unsafe { *out_message = ffi_bytes_from_string(error) };
+            }
+            TermyFfiStatus::WriteFailed
+        }
+    }
+}
+
+// MARK: - tmux control mode (unix only)
+
+#[cfg(unix)]
+#[repr(C)]
+pub struct TermyFfiTmuxNotification {
+    /// 0 = output, 1 = needs-refresh, 2 = warning, 3 = exit.
+    pub kind: u32,
+    pub pane_id: TermyFfiBytes,
+    pub data: TermyFfiBytes,
+}
+
+#[cfg(unix)]
+#[repr(C)]
+pub struct TermyFfiTmuxNotificationBatch {
+    pub notifications_ptr: *mut TermyFfiTmuxNotification,
+    pub notifications_len: usize,
+    pub notifications_capacity: usize,
+}
+
+#[cfg(unix)]
+fn ffi_tmux_notification(
+    notification: tmux_control_core::types::TmuxNotification,
+) -> TermyFfiTmuxNotification {
+    use tmux_control_core::types::TmuxNotification;
+    match notification {
+        TmuxNotification::Output { pane_id, bytes } => TermyFfiTmuxNotification {
+            kind: 0,
+            pane_id: ffi_bytes_from_string(pane_id),
+            data: ffi_bytes_from_vec(bytes),
+        },
+        TmuxNotification::NeedsRefresh => TermyFfiTmuxNotification {
+            kind: 1,
+            pane_id: ffi_bytes_from_vec(Vec::new()),
+            data: ffi_bytes_from_vec(Vec::new()),
+        },
+        TmuxNotification::Warning(message) => TermyFfiTmuxNotification {
+            kind: 2,
+            pane_id: ffi_bytes_from_vec(Vec::new()),
+            data: ffi_bytes_from_string(message),
+        },
+        TmuxNotification::Exit(reason) => TermyFfiTmuxNotification {
+            kind: 3,
+            pane_id: ffi_bytes_from_vec(Vec::new()),
+            data: ffi_bytes_from_string(reason.unwrap_or_default()),
+        },
+    }
+}
+
+/// Opens a `tmux -CC` control session. On success writes a session handle to
+/// `out_session`; free it with `termy_tmux_control_close`.
+#[cfg(unix)]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_tmux_control_open(
+    binary_ptr: *const u8,
+    binary_len: usize,
+    socket_ptr: *const u8,
+    socket_len: usize,
+    session_ptr: *const u8,
+    session_len: usize,
+    out_session: *mut *mut tmux_control_core::session::ControlSession,
+) -> TermyFfiStatus {
+    if out_session.is_null() {
+        return TermyFfiStatus::Null;
+    }
+    let binary = match unsafe { required_utf8(binary_ptr, binary_len) } {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    let socket = match unsafe { required_utf8(socket_ptr, socket_len) } {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    let session_name = match unsafe { required_utf8(session_ptr, session_len) } {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    match tmux_control_core::session::ControlSession::launch(binary, socket, session_name) {
+        Ok(session) => {
+            unsafe { *out_session = Box::into_raw(Box::new(session)) };
+            TermyFfiStatus::Ok
+        }
+        Err(_) => TermyFfiStatus::SpawnFailed,
+    }
+}
+
+/// Drains pending control notifications into `out_batch`; free with
+/// `termy_tmux_control_notifications_free`.
+#[cfg(unix)]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_tmux_control_poll(
+    session: *mut tmux_control_core::session::ControlSession,
+    out_batch: *mut TermyFfiTmuxNotificationBatch,
+) -> TermyFfiStatus {
+    if session.is_null() || out_batch.is_null() {
+        return TermyFfiStatus::Null;
+    }
+    let session = unsafe { &*session };
+    let notifications: Vec<TermyFfiTmuxNotification> = session
+        .poll()
+        .into_iter()
+        .map(ffi_tmux_notification)
+        .collect();
+    let (ptr, len, capacity) = leak_vec(notifications);
+    unsafe {
+        *out_batch = TermyFfiTmuxNotificationBatch {
+            notifications_ptr: ptr,
+            notifications_len: len,
+            notifications_capacity: capacity,
+        };
+    }
+    TermyFfiStatus::Ok
+}
+
+#[cfg(unix)]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_tmux_control_notifications_free(
+    batch: *mut TermyFfiTmuxNotificationBatch,
+) -> TermyFfiStatus {
+    if batch.is_null() {
+        return TermyFfiStatus::Null;
+    }
+    let batch = unsafe { &mut *batch };
+    if !batch.notifications_ptr.is_null() {
+        let notifications = unsafe {
+            Vec::from_raw_parts(
+                batch.notifications_ptr,
+                batch.notifications_len,
+                batch.notifications_capacity,
+            )
+        };
+        for notification in notifications {
+            free_bytes(notification.pane_id);
+            free_bytes(notification.data);
+        }
+        batch.notifications_ptr = std::ptr::null_mut();
+        batch.notifications_len = 0;
+        batch.notifications_capacity = 0;
+    }
+    TermyFfiStatus::Ok
+}
+
+/// Runs a tmux command over the control channel; writes its output to
+/// `out_output` (free with `termy_buffer_free`).
+#[cfg(unix)]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_tmux_control_send(
+    session: *mut tmux_control_core::session::ControlSession,
+    command_ptr: *const u8,
+    command_len: usize,
+    out_output: *mut TermyFfiBytes,
+) -> TermyFfiStatus {
+    if session.is_null() {
+        return TermyFfiStatus::Null;
+    }
+    let command = match unsafe { required_utf8(command_ptr, command_len) } {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    let session = unsafe { &*session };
+    match session.send_command(command) {
+        Ok(output) => {
+            if !out_output.is_null() {
+                unsafe { *out_output = ffi_bytes_from_string(output) };
+            }
+            TermyFfiStatus::Ok
+        }
+        Err(_) => TermyFfiStatus::WriteFailed,
+    }
+}
+
+/// Closes and frees a control session handle from `termy_tmux_control_open`.
+#[cfg(unix)]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_tmux_control_close(
+    session: *mut tmux_control_core::session::ControlSession,
+) {
+    if !session.is_null() {
+        drop(unsafe { Box::from_raw(session) });
+    }
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn termy_settings_prettify_config() -> TermyFfiStatus {
     let contents = settings_read_contents();
     let prettified = cfg::prettify_config_contents(&contents);
@@ -1740,15 +2370,58 @@ pub unsafe extern "C" fn termy_terminal_write(
     bytes_ptr: *const u8,
     bytes_len: usize,
 ) -> TermyFfiStatus {
-    if terminal.is_null() || bytes_ptr.is_null() {
-        return TermyFfiStatus::Null;
-    }
+    ffi_status_guard(|| {
+        if terminal.is_null() {
+            return TermyFfiStatus::Null;
+        }
+        // An empty payload is a no-op, not an error. A zero-length Swift array
+        // yields a null `baseAddress`, so treat (null, 0) as empty rather than
+        // rejecting it (matches the other byte-buffer entry points).
+        if bytes_len == 0 {
+            return TermyFfiStatus::Ok;
+        }
+        if bytes_ptr.is_null() {
+            return TermyFfiStatus::Null;
+        }
 
-    let bytes = unsafe { slice::from_raw_parts(bytes_ptr, bytes_len) };
-    unsafe {
-        (*terminal).terminal.write(bytes);
-    }
-    TermyFfiStatus::Ok
+        let bytes = unsafe { slice::from_raw_parts(bytes_ptr, bytes_len) };
+        unsafe {
+            (*terminal).terminal.write(bytes);
+        }
+        TermyFfiStatus::Ok
+    })
+}
+
+/// Advance a display-only terminal's grid with output bytes (e.g. tmux
+/// `%output`), without sending input to a PTY.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_terminal_feed_output(
+    terminal: *mut TermyFfiTerminal,
+    bytes_ptr: *const u8,
+    bytes_len: usize,
+) -> TermyFfiStatus {
+    ffi_status_guard(|| {
+        if terminal.is_null() {
+            return TermyFfiStatus::Null;
+        }
+        // Empty `%output` payloads are valid no-ops; don't fail on (null, 0).
+        if bytes_len == 0 {
+            return TermyFfiStatus::Ok;
+        }
+        if bytes_ptr.is_null() {
+            return TermyFfiStatus::Null;
+        }
+
+        let bytes = unsafe { slice::from_raw_parts(bytes_ptr, bytes_len) };
+        #[cfg(test)]
+        if PANIC_NEXT_FEED_OUTPUT.swap(false, Ordering::SeqCst) {
+            panic!("test-only feed_output panic");
+        }
+        unsafe {
+            (*terminal).terminal.feed_output(bytes);
+        }
+        TermyFfiStatus::Ok
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -1757,48 +2430,51 @@ pub unsafe extern "C" fn termy_terminal_encode_key(
     keystroke: *const TermyFfiKeystroke,
     out_bytes: *mut TermyFfiBytes,
 ) -> TermyFfiStatus {
-    if terminal.is_null() || keystroke.is_null() || out_bytes.is_null() {
-        return TermyFfiStatus::Null;
-    }
+    ffi_status_guard(|| {
+        if terminal.is_null() || keystroke.is_null() || out_bytes.is_null() {
+            return TermyFfiStatus::Null;
+        }
 
-    let keystroke = unsafe { *keystroke };
-    let key = match unsafe { required_utf8(keystroke.key_ptr, keystroke.key_len) } {
-        Ok(key) => key.to_owned(),
-        Err(status) => return status,
-    };
-    let key_char = match unsafe { optional_utf8(keystroke.key_char_ptr, keystroke.key_char_len) } {
-        Ok(key_char) => key_char.map(ToOwned::to_owned),
-        Err(status) => return status,
-    };
-    let event_kind = match keystroke.event_kind {
-        2 => TerminalKeyEventKind::Repeat,
-        3 => TerminalKeyEventKind::Release,
-        _ => TerminalKeyEventKind::Press,
-    };
-    let input = unsafe {
-        let terminal = &(*terminal).terminal;
-        keystroke_to_input(
-            &TermyKeystroke {
-                modifiers: TermyModifiers {
-                    control: keystroke.control,
-                    alt: keystroke.alt,
-                    shift: keystroke.shift,
-                    platform: keystroke.platform,
-                    function: keystroke.function,
+        let keystroke = unsafe { *keystroke };
+        let key = match unsafe { required_utf8(keystroke.key_ptr, keystroke.key_len) } {
+            Ok(key) => key.to_owned(),
+            Err(status) => return status,
+        };
+        let key_char =
+            match unsafe { optional_utf8(keystroke.key_char_ptr, keystroke.key_char_len) } {
+                Ok(key_char) => key_char.map(ToOwned::to_owned),
+                Err(status) => return status,
+            };
+        let event_kind = match keystroke.event_kind {
+            2 => TerminalKeyEventKind::Repeat,
+            3 => TerminalKeyEventKind::Release,
+            _ => TerminalKeyEventKind::Press,
+        };
+        let input = unsafe {
+            let terminal = &(*terminal).terminal;
+            keystroke_to_input(
+                &TermyKeystroke {
+                    modifiers: TermyModifiers {
+                        control: keystroke.control,
+                        alt: keystroke.alt,
+                        shift: keystroke.shift,
+                        platform: keystroke.platform,
+                        function: keystroke.function,
+                    },
+                    key,
+                    key_char,
                 },
-                key,
-                key_char,
-            },
-            event_kind,
-            terminal.keyboard_mode(),
-            true,
-        )
-    };
+                event_kind,
+                terminal.keyboard_mode(),
+                true,
+            )
+        };
 
-    unsafe {
-        *out_bytes = input.map_or_else(|| termy_null_buffer(), ffi_bytes_from_vec);
-    }
-    TermyFfiStatus::Ok
+        unsafe {
+            *out_bytes = input.map_or_else(|| termy_null_buffer(), ffi_bytes_from_vec);
+        }
+        TermyFfiStatus::Ok
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -1807,36 +2483,38 @@ pub unsafe extern "C" fn termy_terminal_encode_mouse(
     input: *const TermyFfiMouseInput,
     out_bytes: *mut TermyFfiBytes,
 ) -> TermyFfiStatus {
-    if terminal.is_null() || input.is_null() || out_bytes.is_null() {
-        return TermyFfiStatus::Null;
-    }
+    ffi_status_guard(|| {
+        if terminal.is_null() || input.is_null() || out_bytes.is_null() {
+            return TermyFfiStatus::Null;
+        }
 
-    let input = unsafe { *input };
-    let Some(event) = mouse_event(input) else {
-        return TermyFfiStatus::UnknownKey;
-    };
+        let input = unsafe { *input };
+        let Some(event) = mouse_event(input) else {
+            return TermyFfiStatus::UnknownKey;
+        };
 
-    let encoded = unsafe {
-        let terminal = &(*terminal).terminal;
-        encode_mouse_report(
-            terminal.mouse_mode(),
-            event,
-            TerminalMousePosition {
-                col: input.col,
-                row: input.row,
-            },
-            TerminalMouseModifiers {
-                shift: input.shift,
-                alt: input.alt,
-                control: input.control,
-            },
-        )
-    };
+        let encoded = unsafe {
+            let terminal = &(*terminal).terminal;
+            encode_mouse_report(
+                terminal.mouse_mode(),
+                event,
+                TerminalMousePosition {
+                    col: input.col,
+                    row: input.row,
+                },
+                TerminalMouseModifiers {
+                    shift: input.shift,
+                    alt: input.alt,
+                    control: input.control,
+                },
+            )
+        };
 
-    unsafe {
-        *out_bytes = encoded.map_or_else(|| termy_null_buffer(), ffi_bytes_from_vec);
-    }
-    TermyFfiStatus::Ok
+        unsafe {
+            *out_bytes = encoded.map_or_else(|| termy_null_buffer(), ffi_bytes_from_vec);
+        }
+        TermyFfiStatus::Ok
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -1865,6 +2543,56 @@ pub unsafe extern "C" fn termy_terminal_set_wakeup_enabled(
 
     unsafe {
         (*terminal).terminal.set_wakeup_enabled(enabled);
+    }
+    TermyFfiStatus::Ok
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_terminal_wait_for_wakeup(
+    terminal: *mut TermyFfiTerminal,
+    timeout_ms: u64,
+    out_woke: *mut bool,
+) -> TermyFfiStatus {
+    if terminal.is_null() || out_woke.is_null() {
+        return TermyFfiStatus::Null;
+    }
+
+    let receiver = unsafe { (*terminal).wakeups_rx.as_ref() };
+    let woke = match receiver {
+        Some(receiver) => {
+            let received = if timeout_ms == 0 {
+                receiver.try_recv().is_ok()
+            } else {
+                receiver
+                    .recv_timeout(Duration::from_millis(timeout_ms))
+                    .is_ok()
+            };
+            if received {
+                while receiver.try_recv().is_ok() {}
+                true
+            } else {
+                false
+            }
+        }
+        None => false,
+    };
+
+    unsafe {
+        *out_woke = woke;
+    }
+    TermyFfiStatus::Ok
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_terminal_notify_wakeup(
+    terminal: *mut TermyFfiTerminal,
+) -> TermyFfiStatus {
+    if terminal.is_null() {
+        return TermyFfiStatus::Null;
+    }
+
+    if let Some(sender) = unsafe { (*terminal).wakeups_tx.as_ref() } {
+        let _ = sender.try_send(());
     }
     TermyFfiStatus::Ok
 }
@@ -1916,36 +2644,74 @@ pub unsafe extern "C" fn termy_terminal_clear_scrollback(
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_terminal_set_scrollback_history(
+    terminal: *mut TermyFfiTerminal,
+    scrollback_history: usize,
+) -> TermyFfiStatus {
+    if terminal.is_null() {
+        return TermyFfiStatus::Null;
+    }
+
+    unsafe {
+        (*terminal)
+            .terminal
+            .set_scrollback_history(scrollback_history);
+    }
+    TermyFfiStatus::Ok
+}
+
+/// Writes whether the terminal currently has bracketed-paste mode enabled into
+/// `out_enabled`. Hosts use this to wrap pasted text in the bracketed-paste
+/// markers (and to strip an embedded terminator) so a multi-line paste cannot
+/// be executed line-by-line by the foreground program.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_terminal_bracketed_paste_mode(
+    terminal: *mut TermyFfiTerminal,
+    out_enabled: *mut bool,
+) -> TermyFfiStatus {
+    if terminal.is_null() || out_enabled.is_null() {
+        return TermyFfiStatus::Null;
+    }
+
+    unsafe {
+        *out_enabled = (*terminal).terminal.bracketed_paste_mode();
+    }
+    TermyFfiStatus::Ok
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn termy_terminal_snapshot(
     terminal: *mut TermyFfiTerminal,
     out_frame: *mut TermyFfiFrame,
 ) -> TermyFfiStatus {
-    if terminal.is_null() || out_frame.is_null() {
-        return TermyFfiStatus::Null;
-    }
+    ffi_status_guard(|| {
+        if terminal.is_null() || out_frame.is_null() {
+            return TermyFfiStatus::Null;
+        }
 
-    let frame = unsafe { (*terminal).terminal.snapshot() };
-    let cells = frame
-        .cells
-        .into_iter()
-        .map(TermyFfiCell::from)
-        .collect::<Vec<_>>();
-    let (cells_ptr, cells_len, cells_capacity) = leak_vec(cells);
-    let cursor = ffi_cursor_from_cursor(frame.cursor);
+        let frame = unsafe { (*terminal).terminal.snapshot() };
+        let cells = frame
+            .cells
+            .into_iter()
+            .map(TermyFfiCell::from)
+            .collect::<Vec<_>>();
+        let (cells_ptr, cells_len, cells_capacity) = leak_vec(cells);
+        let cursor = ffi_cursor_from_cursor(frame.cursor);
 
-    unsafe {
-        *out_frame = TermyFfiFrame {
-            cols: frame.cols,
-            rows: frame.rows,
-            cells_ptr,
-            cells_len,
-            cells_capacity,
-            cursor,
-            display_offset: frame.display_offset,
-            history_size: frame.history_size,
-        };
-    }
-    TermyFfiStatus::Ok
+        unsafe {
+            *out_frame = TermyFfiFrame {
+                cols: frame.cols,
+                rows: frame.rows,
+                cells_ptr,
+                cells_len,
+                cells_capacity,
+                cursor,
+                display_offset: frame.display_offset,
+                history_size: frame.history_size,
+            };
+        }
+        TermyFfiStatus::Ok
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -1974,15 +2740,17 @@ pub unsafe extern "C" fn termy_terminal_take_frame_update(
     force_full: bool,
     out_update: *mut TermyFfiFrameUpdate,
 ) -> TermyFfiStatus {
-    if terminal.is_null() || out_update.is_null() {
-        return TermyFfiStatus::Null;
-    }
+    ffi_status_guard(|| {
+        if terminal.is_null() || out_update.is_null() {
+            return TermyFfiStatus::Null;
+        }
 
-    let update = unsafe { (*terminal).terminal.frame_update(force_full) };
-    unsafe {
-        *out_update = ffi_frame_update_from_update(update);
-    }
-    TermyFfiStatus::Ok
+        let update = unsafe { (*terminal).terminal.frame_update(force_full) };
+        unsafe {
+            *out_update = ffi_frame_update_from_update(update);
+        }
+        TermyFfiStatus::Ok
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -2027,25 +2795,27 @@ pub unsafe extern "C" fn termy_terminal_hyperlink_at(
     out_found: *mut bool,
     out_link: *mut TermyFfiHyperlink,
 ) -> TermyFfiStatus {
-    if terminal.is_null() || out_found.is_null() || out_link.is_null() {
-        return TermyFfiStatus::Null;
-    }
-
-    let link = unsafe { (*terminal).terminal.hyperlink_at(row, col) };
-    unsafe {
-        if let Some(link) = link {
-            *out_found = true;
-            *out_link = TermyFfiHyperlink {
-                start_col: link.start_col,
-                end_col: link.end_col,
-                uri: ffi_bytes_from_string(link.target),
-            };
-        } else {
-            *out_found = false;
-            *out_link = TermyFfiHyperlink::default();
+    ffi_status_guard(|| {
+        if terminal.is_null() || out_found.is_null() || out_link.is_null() {
+            return TermyFfiStatus::Null;
         }
-    }
-    TermyFfiStatus::Ok
+
+        let link = unsafe { (*terminal).terminal.hyperlink_at(row, col) };
+        unsafe {
+            if let Some(link) = link {
+                *out_found = true;
+                *out_link = TermyFfiHyperlink {
+                    start_col: link.start_col,
+                    end_col: link.end_col,
+                    uri: ffi_bytes_from_string(link.target),
+                };
+            } else {
+                *out_found = false;
+                *out_link = TermyFfiHyperlink::default();
+            }
+        }
+        TermyFfiStatus::Ok
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -2067,46 +2837,48 @@ pub unsafe extern "C" fn termy_terminal_take_damage(
     terminal: *mut TermyFfiTerminal,
     out_damage: *mut TermyFfiDamage,
 ) -> TermyFfiStatus {
-    if terminal.is_null() || out_damage.is_null() {
-        return TermyFfiStatus::Null;
-    }
-
-    let damage = unsafe { (*terminal).terminal.take_damage_snapshot() };
-    let result = match damage {
-        TerminalDamageSnapshot::Full => TermyFfiDamage {
-            kind: 1,
-            ..TermyFfiDamage::default()
-        },
-        TerminalDamageSnapshot::Partial(spans) if spans.is_empty() => TermyFfiDamage::default(),
-        TerminalDamageSnapshot::Partial(spans) => {
-            let spans = spans
-                .into_iter()
-                .map(
-                    |TerminalDirtySpan {
-                         row,
-                         left_col,
-                         right_col,
-                     }| TermyFfiDirtySpan {
-                        row,
-                        left_col,
-                        right_col,
-                    },
-                )
-                .collect::<Vec<_>>();
-            let (spans_ptr, spans_len, spans_capacity) = leak_vec(spans);
-            TermyFfiDamage {
-                kind: 2,
-                spans_ptr,
-                spans_len,
-                spans_capacity,
-            }
+    ffi_status_guard(|| {
+        if terminal.is_null() || out_damage.is_null() {
+            return TermyFfiStatus::Null;
         }
-    };
 
-    unsafe {
-        *out_damage = result;
-    }
-    TermyFfiStatus::Ok
+        let damage = unsafe { (*terminal).terminal.take_damage_snapshot() };
+        let result = match damage {
+            TerminalDamageSnapshot::Full => TermyFfiDamage {
+                kind: 1,
+                ..TermyFfiDamage::default()
+            },
+            TerminalDamageSnapshot::Partial(spans) if spans.is_empty() => TermyFfiDamage::default(),
+            TerminalDamageSnapshot::Partial(spans) => {
+                let spans = spans
+                    .into_iter()
+                    .map(
+                        |TerminalDirtySpan {
+                             row,
+                             left_col,
+                             right_col,
+                         }| TermyFfiDirtySpan {
+                            row,
+                            left_col,
+                            right_col,
+                        },
+                    )
+                    .collect::<Vec<_>>();
+                let (spans_ptr, spans_len, spans_capacity) = leak_vec(spans);
+                TermyFfiDamage {
+                    kind: 2,
+                    spans_ptr,
+                    spans_len,
+                    spans_capacity,
+                }
+            }
+        };
+
+        unsafe {
+            *out_damage = result;
+        }
+        TermyFfiStatus::Ok
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -2134,26 +2906,28 @@ pub unsafe extern "C" fn termy_terminal_drain_events(
     terminal: *mut TermyFfiTerminal,
     out_batch: *mut TermyFfiEventBatch,
 ) -> TermyFfiStatus {
-    if terminal.is_null() || out_batch.is_null() {
-        return TermyFfiStatus::Null;
-    }
+    ffi_status_guard(|| {
+        if terminal.is_null() || out_batch.is_null() {
+            return TermyFfiStatus::Null;
+        }
 
-    let (events, has_more) = unsafe { (*terminal).terminal.drain_events(&mut EmptyReplyHost) };
-    let events = events
-        .into_iter()
-        .map(ffi_event_from_event)
-        .collect::<Vec<_>>();
-    let (events_ptr, events_len, events_capacity) = leak_vec(events);
+        let (events, has_more) = unsafe { (*terminal).terminal.drain_events(&mut EmptyReplyHost) };
+        let events = events
+            .into_iter()
+            .map(ffi_event_from_event)
+            .collect::<Vec<_>>();
+        let (events_ptr, events_len, events_capacity) = leak_vec(events);
 
-    unsafe {
-        *out_batch = TermyFfiEventBatch {
-            events_ptr,
-            events_len,
-            events_capacity,
-            has_more,
-        };
-    }
-    TermyFfiStatus::Ok
+        unsafe {
+            *out_batch = TermyFfiEventBatch {
+                events_ptr,
+                events_len,
+                events_capacity,
+                has_more,
+            };
+        }
+        TermyFfiStatus::Ok
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -2182,7 +2956,7 @@ pub unsafe extern "C" fn termy_terminal_search(
     query_len: usize,
     out_batch: *mut TermyFfiSearchBatch,
 ) -> TermyFfiStatus {
-    unsafe {
+    ffi_status_guard(|| unsafe {
         termy_terminal_search_with_options(
             terminal,
             query_ptr,
@@ -2190,7 +2964,7 @@ pub unsafe extern "C" fn termy_terminal_search(
             TermyFfiSearchOptions::default(),
             out_batch,
         )
-    }
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -2201,37 +2975,39 @@ pub unsafe extern "C" fn termy_terminal_search_with_options(
     options: TermyFfiSearchOptions,
     out_batch: *mut TermyFfiSearchBatch,
 ) -> TermyFfiStatus {
-    if terminal.is_null() || out_batch.is_null() {
-        return TermyFfiStatus::Null;
-    }
+    ffi_status_guard(|| {
+        if terminal.is_null() || out_batch.is_null() {
+            return TermyFfiStatus::Null;
+        }
 
-    let query = match unsafe { contents_utf8(query_ptr, query_len) } {
-        Ok(query) => query,
-        Err(status) => return status,
-    };
-
-    let matches = unsafe {
-        (*terminal).terminal.search_with_options(
-            query,
-            TermySearchOptions {
-                case_sensitive: options.case_sensitive,
-                regex: options.regex,
-            },
-        )
-    }
-    .into_iter()
-    .map(ffi_search_match_from_match)
-    .collect::<Vec<_>>();
-    let (matches_ptr, matches_len, matches_capacity) = leak_vec(matches);
-
-    unsafe {
-        *out_batch = TermyFfiSearchBatch {
-            matches_ptr,
-            matches_len,
-            matches_capacity,
+        let query = match unsafe { contents_utf8(query_ptr, query_len) } {
+            Ok(query) => query,
+            Err(status) => return status,
         };
-    }
-    TermyFfiStatus::Ok
+
+        let matches = unsafe {
+            (*terminal).terminal.search_with_options(
+                query,
+                TermySearchOptions {
+                    case_sensitive: options.case_sensitive,
+                    regex: options.regex,
+                },
+            )
+        }
+        .into_iter()
+        .map(ffi_search_match_from_match)
+        .collect::<Vec<_>>();
+        let (matches_ptr, matches_len, matches_capacity) = leak_vec(matches);
+
+        unsafe {
+            *out_batch = TermyFfiSearchBatch {
+                matches_ptr,
+                matches_len,
+                matches_capacity,
+            };
+        }
+        TermyFfiStatus::Ok
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -2391,7 +3167,13 @@ mod tests {
         assert!(
             theme_choices
                 .iter()
-                .any(|choice| choice["value"] == "tokyo-night")
+                .any(|choice| choice["value"] == "termy")
+        );
+        assert!(
+            !theme_choices
+                .iter()
+                .any(|choice| choice["value"] == "tokyo-night"),
+            "schema loaded from in-memory contents must not synthesize legacy built-in themes"
         );
         assert!(
             sections
@@ -2658,6 +3440,54 @@ mod tests {
     }
 
     #[test]
+    fn config_from_contents_exposes_inactive_tab_scrollback() {
+        let contents = b"inactive_tab_scrollback = 123\n";
+        let mut config = ptr::null_mut();
+
+        let status =
+            unsafe { termy_config_from_contents(contents.as_ptr(), contents.len(), &mut config) };
+        assert_eq!(status, TermyFfiStatus::Ok);
+        assert!(!config.is_null());
+
+        let mut enabled = false;
+        let mut value = 0;
+        assert_eq!(
+            unsafe {
+                termy_config_runtime_inactive_tab_scrollback(config, &mut enabled, &mut value)
+            },
+            TermyFfiStatus::Ok
+        );
+        assert!(enabled);
+        assert_eq!(value, 123);
+
+        assert_eq!(unsafe { termy_config_free(config) }, TermyFfiStatus::Ok);
+    }
+
+    #[test]
+    fn config_from_contents_exposes_disabled_inactive_tab_scrollback() {
+        let contents = b"inactive_tab_scrollback = none\n";
+        let mut config = ptr::null_mut();
+
+        let status =
+            unsafe { termy_config_from_contents(contents.as_ptr(), contents.len(), &mut config) };
+        assert_eq!(status, TermyFfiStatus::Ok);
+        assert!(!config.is_null());
+
+        let mut enabled = true;
+        let mut value = 999;
+        assert_eq!(
+            unsafe {
+                termy_config_runtime_inactive_tab_scrollback(config, &mut enabled, &mut value)
+            },
+            TermyFfiStatus::Ok
+        );
+        assert!(!enabled);
+        assert_eq!(value, 0);
+
+        assert_eq!(unsafe { termy_config_free(config) }, TermyFfiStatus::Ok);
+    }
+
+    #[test]
     fn config_from_contents_exposes_render_config() {
         let contents = b"theme = nord\nfont_family = Example Mono\nfont_size = 18\nline_height = 1.25\npadding_x = 3\npadding_y = 5\nbackground_opacity = 0.5\nbackground_opacity_cells = true\nbackground_blur = true\nmouse_scroll_multiplier = 4.5\nscrollbar_visibility = always\nscrollbar_style = theme\ncopy_on_select = true\ncopy_on_select_toast = false\npane_focus_effect = cinematic\npane_focus_strength = 1.25\nchrome_contrast = true\ncursor_blink = false\ncursor_style = line\n[colors]\nbackground = #010203\ncursor = #040506\n";
         let mut config = ptr::null_mut();
@@ -2823,6 +3653,82 @@ mod tests {
             unsafe { termy_search_batch_free(&mut batch) },
             TermyFfiStatus::Ok
         );
+        assert_eq!(unsafe { termy_terminal_free(terminal) }, TermyFfiStatus::Ok);
+    }
+
+    #[test]
+    fn terminal_wakeup_wait_is_coalesced_and_notifiable() {
+        let size = TermyFfiSize {
+            cols: 16,
+            rows: 4,
+            cell_width: 9.0,
+            cell_height: 18.0,
+        };
+        #[cfg(target_os = "windows")]
+        let command: &[u8] = b"";
+        #[cfg(not(target_os = "windows"))]
+        let command: &[u8] = b"sleep 1";
+        let mut terminal = ptr::null_mut();
+
+        assert_eq!(
+            unsafe { termy_terminal_new(size, command.as_ptr(), command.len(), &mut terminal) },
+            TermyFfiStatus::Ok
+        );
+
+        let mut woke = false;
+        loop {
+            assert_eq!(
+                unsafe { termy_terminal_wait_for_wakeup(terminal, 0, &mut woke) },
+                TermyFfiStatus::Ok
+            );
+            if !woke {
+                break;
+            }
+        }
+
+        assert_eq!(
+            unsafe { termy_terminal_notify_wakeup(terminal) },
+            TermyFfiStatus::Ok
+        );
+        assert_eq!(
+            unsafe { termy_terminal_notify_wakeup(terminal) },
+            TermyFfiStatus::Ok
+        );
+        assert_eq!(
+            unsafe { termy_terminal_wait_for_wakeup(terminal, 50, &mut woke) },
+            TermyFfiStatus::Ok
+        );
+        assert!(woke);
+        assert_eq!(
+            unsafe { termy_terminal_wait_for_wakeup(terminal, 0, &mut woke) },
+            TermyFfiStatus::Ok
+        );
+        assert!(!woke);
+
+        assert_eq!(unsafe { termy_terminal_free(terminal) }, TermyFfiStatus::Ok);
+    }
+
+    #[test]
+    fn terminal_feed_output_panic_returns_status() {
+        let size = TermyFfiSize {
+            cols: 8,
+            rows: 2,
+            cell_width: 9.0,
+            cell_height: 18.0,
+        };
+        let mut terminal = ptr::null_mut();
+        assert_eq!(
+            unsafe { termy_display_terminal_new(size, &mut terminal) },
+            TermyFfiStatus::Ok
+        );
+
+        PANIC_NEXT_FEED_OUTPUT.store(true, Ordering::SeqCst);
+        let bytes = b"x";
+        assert_eq!(
+            unsafe { termy_terminal_feed_output(terminal, bytes.as_ptr(), bytes.len()) },
+            TermyFfiStatus::Panicked
+        );
+        assert!(!terminal.is_null());
         assert_eq!(unsafe { termy_terminal_free(terminal) }, TermyFfiStatus::Ok);
     }
 

@@ -1,7 +1,7 @@
 import AppKit
 
 enum TerminalSurfaceContextMenu {
-    static func make(canCopy: Bool, canPaste: Bool, target: AnyObject) -> NSMenu {
+    static func make(canCopy: Bool, canPaste: Bool, target: KeyboardCaptureView) -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
 
@@ -18,6 +18,25 @@ enum TerminalSurfaceContextMenu {
             keyEquivalent: "v",
             target: target,
             isEnabled: canPaste
+        ))
+        menu.addItem(item(
+            title: "Select All",
+            action: #selector(KeyboardCaptureView.selectAllFromTerminalContextMenu(_:)),
+            keyEquivalent: "a",
+            target: target
+        ))
+        menu.addItem(.separator())
+        menu.addItem(item(
+            title: "Split Right",
+            action: #selector(KeyboardCaptureView.splitRightFromTerminalContextMenu(_:)),
+            keyEquivalent: "d",
+            target: target
+        ))
+        menu.addItem(item(
+            title: "Split Down",
+            action: #selector(KeyboardCaptureView.splitDownFromTerminalContextMenu(_:)),
+            keyEquivalent: "D",
+            target: target
         ))
         menu.addItem(.separator())
         menu.addItem(item(
@@ -40,7 +59,7 @@ enum TerminalSurfaceContextMenu {
         title: String,
         action: Selector,
         keyEquivalent: String,
-        target: AnyObject,
+        target: KeyboardCaptureView,
         isEnabled: Bool = true
     ) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: keyEquivalent)

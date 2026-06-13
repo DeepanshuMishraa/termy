@@ -67,9 +67,13 @@ final class TerminalWorkspaceStore: ObservableObject {
     @Published private(set) var root: TerminalPaneNode
     @Published var focusedPaneID: UUID
     @Published var isSearchVisible = false
+    @Published private(set) var isSearchInputFocused = false
+    @Published private(set) var searchFocusRequest = 0
     @Published var searchOptions = TerminalSearchOptions()
     @Published private(set) var zoomedPaneID: UUID?
     @Published var isCommandPaletteVisible = false
+    @Published private(set) var tabPinned = false
+    @Published private(set) var tabManualTitle: String?
 
     init(initialTask: TermyTaskConfiguration? = nil) {
         let firstPane = TerminalPane(
@@ -96,7 +100,9 @@ final class TerminalWorkspaceStore: ObservableObject {
             },
             layoutTree: layoutSnapshot(from: root, paneIndices: paneIndices),
             activePane: activePane,
-            isSearchVisible: isSearchVisible
+            isSearchVisible: isSearchVisible,
+            pinned: tabPinned,
+            manualTitle: tabManualTitle
         )
 
         return TerminalWorkspaceSnapshot(tabs: [tab])
@@ -127,6 +133,8 @@ final class TerminalWorkspaceStore: ObservableObject {
         let activePane = max(0, min(tab.activePane, restoredPanes.count - 1))
         focusedPaneID = restoredPanes[activePane].id
         isSearchVisible = tab.isSearchVisible
+        tabPinned = tab.pinned
+        tabManualTitle = Self.normalizedManualTitle(tab.manualTitle)
         zoomedPaneID = nil
         objectWillChange.send()
         return true
@@ -148,16 +156,13 @@ final class TerminalWorkspaceStore: ObservableObject {
         leaves().contains { !$0.terminal.isExited }
     }
 
-    var panesInStableOrder: [TerminalPane] {
-        leaves()
-    }
+    var tabDisplayTitle: String {
+        if let tabManualTitle {
+            return tabManualTitle
+        }
 
-    var paneIDsInStableOrder: [UUID] {
-        leaves().map(\.id)
-    }
-
-    var isZoomed: Bool {
-        zoomedPaneID != nil
+        let title = (focusedTerminal?.title ?? "Shell").trimmingCharacters(in: .whitespacesAndNewlines)
+        return title.isEmpty ? "Shell" : title
     }
 
     var zoomedPane: TerminalPane? {
@@ -169,6 +174,23 @@ final class TerminalWorkspaceStore: ObservableObject {
 
     func focus(_ pane: TerminalPane) {
         focusedPaneID = pane.id
+    }
+
+    func setTabPinned(_ pinned: Bool) {
+        guard tabPinned != pinned else {
+            return
+        }
+        tabPinned = pinned
+        NotificationCenter.default.post(name: .termyNativeTabsChanged, object: nil)
+    }
+
+    func renameTab(_ title: String) {
+        let normalizedTitle = Self.normalizedManualTitle(title)
+        guard tabManualTitle != normalizedTitle else {
+            return
+        }
+        tabManualTitle = normalizedTitle
+        NotificationCenter.default.post(name: .termyNativeTabsChanged, object: nil)
     }
 
     func splitFocused(_ axis: TerminalSplitAxis) {
@@ -280,21 +302,23 @@ final class TerminalWorkspaceStore: ObservableObject {
         zoomedPaneID = zoomedPaneID == focusedPaneID ? nil : focusedPaneID
     }
 
-    func clearPaneZoom() {
-        zoomedPaneID = nil
-    }
-
-    func isPaneZoomed(_ pane: TerminalPane) -> Bool {
-        zoomedPaneID == pane.id
-    }
-
     func showSearch() {
         isSearchVisible = true
+        isSearchInputFocused = true
+        searchFocusRequest &+= 1
     }
 
     func hideSearch() {
         isSearchVisible = false
+        isSearchInputFocused = false
         focusedTerminal?.updateSearch("", options: searchOptions)
+    }
+
+    func setSearchInputFocused(_ isFocused: Bool) {
+        guard isSearchInputFocused != isFocused else {
+            return
+        }
+        isSearchInputFocused = isFocused
     }
 
     func toggleSearchCaseSensitive() {
@@ -334,6 +358,11 @@ final class TerminalWorkspaceStore: ObservableObject {
 
     private func pane(with id: UUID) -> TerminalPane? {
         leaves().first { $0.id == id }
+    }
+
+    private static func normalizedManualTitle(_ title: String?) -> String? {
+        let normalized = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return normalized.isEmpty ? nil : normalized
     }
 
     private func leaves() -> [TerminalPane] {

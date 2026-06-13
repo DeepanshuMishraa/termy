@@ -1,15 +1,11 @@
 mod client;
-mod command;
-mod control;
 mod launch;
-mod payload;
 mod session;
 mod shutdown;
 mod snapshot;
-mod types;
 
 pub use client::TmuxClient;
-pub use types::{
+pub use tmux_control_core::types::{
     TmuxLaunchTarget, TmuxNotification, TmuxPaneState, TmuxRuntimeConfig, TmuxSessionSummary,
     TmuxShutdownMode, TmuxSnapshot, TmuxSocketTarget, TmuxWindowState,
 };

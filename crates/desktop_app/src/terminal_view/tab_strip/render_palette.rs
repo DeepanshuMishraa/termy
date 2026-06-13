@@ -1,5 +1,4 @@
 use super::super::*;
-use super::chrome;
 
 #[derive(Clone, Copy)]
 pub(super) struct TabStripPalette {
@@ -9,7 +8,9 @@ pub(super) struct TabStripPalette {
     pub(super) hovered_tab_bg: gpui::Rgba,
     pub(super) active_tab_text: gpui::Rgba,
     pub(super) inactive_tab_text: gpui::Rgba,
+    pub(super) active_tab_indicator: gpui::Rgba,
     pub(super) close_button_bg: gpui::Rgba,
+    pub(super) close_button_hover_bg: gpui::Rgba,
     pub(super) close_button_hover_text: gpui::Rgba,
     pub(super) switch_hint_bg: gpui::Rgba,
     pub(super) switch_hint_border: gpui::Rgba,
@@ -29,7 +30,7 @@ impl TerminalView {
         colors: &TerminalColors,
         tabbar_bg: gpui::Rgba,
     ) -> TabStripPalette {
-        let tab_stroke_color = chrome::resolve_tab_stroke_color(
+        let tab_stroke_color = resolve_chrome_stroke_color(
             tabbar_bg,
             colors.foreground,
             self.chrome_contrast_profile().stroke_mix,
@@ -37,15 +38,19 @@ impl TerminalView {
         let mut inactive_tab_bg = colors.foreground;
         inactive_tab_bg.a = 0.0;
         let mut active_tab_bg = colors.foreground;
-        active_tab_bg.a = self.scaled_chrome_surface_alpha(0.07);
+        active_tab_bg.a = self.scaled_chrome_surface_alpha(0.11);
         let mut hovered_tab_bg = colors.foreground;
-        hovered_tab_bg.a = self.scaled_chrome_surface_alpha(0.045);
+        hovered_tab_bg.a = self.scaled_chrome_surface_alpha(0.05);
         let mut active_tab_text = colors.foreground;
         active_tab_text.a = 0.95;
         let mut inactive_tab_text = colors.foreground;
         inactive_tab_text.a = 0.62;
+        let mut active_tab_indicator = colors.cursor;
+        active_tab_indicator.a = self.scaled_chrome_accent_alpha(0.90);
         let mut close_button_bg = colors.foreground;
         close_button_bg.a = 0.0;
+        let mut close_button_hover_bg = colors.foreground;
+        close_button_hover_bg.a = self.scaled_chrome_surface_alpha(0.10);
         let mut close_button_hover_text = colors.foreground;
         close_button_hover_text.a = 1.0;
         let now = Instant::now();
@@ -65,7 +70,9 @@ impl TerminalView {
             hovered_tab_bg,
             active_tab_text,
             inactive_tab_text,
+            active_tab_indicator,
             close_button_bg,
+            close_button_hover_bg,
             close_button_hover_text,
             switch_hint_bg,
             switch_hint_border,

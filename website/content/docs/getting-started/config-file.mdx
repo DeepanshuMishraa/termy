@@ -1,54 +1,46 @@
 ---
-title: Config File
-description: Where Termy reads configuration from and how it is structured.
+title: Config file
+description: Where settings live and how to edit them.
 ---
-
-Termy reads configuration from a single plain-text file.
-
-## Location
 
 | Platform | Path |
 | -------- | ---- |
-| macOS    | `~/.config/termy/config.txt` |
-| Linux    | `~/.config/termy/config.txt` |
-| Windows  | `%APPDATA%\termy\config.txt` |
+| macOS / Linux | `~/.config/termy/config.txt` |
+| Windows | `%APPDATA%\termy\config.txt` |
 
-## Syntax
-
-Each setting is a single line in the form `key = value`. Comments start with `#`.
+Open **Settings** (`Cmd ,` / `Ctrl ,`) or edit the file directly. Each line is `key = value`. Comments start with `#`.
 
 ```txt
-# appearance
 theme = termy
 font_family = JetBrains Mono
 font_size = 14
-
-# terminal
 shell = /opt/homebrew/bin/fish
-cursor_style = block
-
-# keybinds (repeatable)
 keybind = cmd-p=toggle_command_palette
 ```
 
-## Sections
+## Colors
 
-The `[colors]` block is the only section header; everything else lives at the top level.
+Only `[colors]` uses a section header:
 
 ```txt
 [colors]
 foreground = #e7ebf5
 background = #0b1020
-cursor     = #a7e9a3
 ```
 
 ## Tasks
-
-Tasks use a dotted key pattern.
 
 ```txt
 task.build.command     = cargo build
 task.build.working_dir = crates/cli
 ```
 
-See [Customize](/docs/customize) for guided settings and [Configuration Reference](/docs/reference/configuration-reference) for the generated reference.
+## Common tweaks
+
+| Goal | Setting |
+| ---- | ------- |
+| Transparent window | `background_opacity = 0.88` |
+| Blur | `background_blur = true` |
+| Always show tab bar | `auto_hide_tabbar = false` |
+
+Full key list: [Configuration reference](/docs/reference/configuration-reference). Keybind syntax: [Keybindings](/docs/customize/keybindings).

@@ -1,5 +1,5 @@
-import neonDarkLogo from '../../../assets/legends/neon-logo-dark-color.svg?url';
-import neonLightLogo from '../../../assets/legends/neon-logo-light-color.svg?url';
+const neonDarkLogo = '/sponsors/neon-logo-dark-color.svg';
+const neonLightLogo = '/sponsors/neon-logo-light-color.svg';
 
 export interface Sponsor {
   name: string;
