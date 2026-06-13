@@ -8,6 +8,7 @@ mod cli_delegate;
 mod colors;
 mod commands;
 mod config;
+mod crash_log;
 mod deeplink;
 mod keybindings;
 #[cfg(target_os = "macos")]
@@ -450,6 +451,7 @@ fn main() {
     }
 
     env_logger::init();
+    crash_log::install_panic_hook();
 
     let startup_arguments = parse_startup_arguments(cli_args);
     let (deeplink_tx, deeplink_rx) = flume::unbounded::<Vec<String>>();
