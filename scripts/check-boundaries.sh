@@ -63,6 +63,18 @@ require_issue_url_for_pattern() {
   fi
 }
 
+require_ignored_test_budget() {
+  local max_ignored_tests=10
+  local ignored_count
+
+  ignored_count="$(rg -n '#\[ignore' crates | wc -l | tr -d ' ')"
+  if (( ignored_count > max_ignored_tests )); then
+    echo "Boundary check failed: ignored test count is ${ignored_count}, max is ${max_ignored_tests}" >&2
+    rg -n '#\[ignore' crates >&2
+    exit 1
+  fi
+}
+
 require_crate_readme_metadata() {
   local crate_dir="$1"
   local readme="$crate_dir/README.md"
@@ -120,6 +132,7 @@ require_issue_url_for_pattern \
   'clippy::cognitive_complexity' \
   "crates" \
   "clippy::cognitive_complexity allows must link a tracking issue on the same line"
+require_ignored_test_budget
 
 cargo run -p xtask -- generate-keybindings-doc --check
 cargo run -p xtask -- generate-config-doc --check

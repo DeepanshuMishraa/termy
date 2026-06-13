@@ -72,7 +72,7 @@
 | E2.2 | Test pyramid doc | `docs/engineering/testing.md`: unit → integration → manual | Linked from CONTRIBUTING | — | Done |
 | E2.3 | FFI contract tests | Minimal C API round-trips in `crates/ffi` tests | Run on Linux + macOS in CI | — | Partial |
 | E2.4 | Swift config parity | Extend `test-macos-config` in PR checklist when touching config | Required path in `macos-native.yml` | G8 | Planned |
-| E2.5 | Ignore audit | Every `#[ignore]` has issue URL; quarterly cleanup | ≤10 ignored tests repo-wide | — | Planned |
+| E2.5 | Ignore audit | Every `#[ignore]` has issue URL; quarterly cleanup | ≤10 ignored tests repo-wide | — | Partial |
 | E2.6 | Stress harness | Scripted tab storm + scrollback (product Phase 4) | Documented scenario; optional CI nightly | — | Planned |
 
 **Aligns with product roadmap Phase 4** (stress tests, scrollback validation).
