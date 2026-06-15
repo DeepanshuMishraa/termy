@@ -2488,16 +2488,35 @@ impl TerminalView {
         }
     }
 
+    fn resize_throttle_duration() -> Duration {
+        Duration::from_millis(RESIZE_THROTTLE_MS)
+    }
+
+    fn can_apply_resize_at(now: Instant, last_applied_at: Option<Instant>) -> bool {
+        last_applied_at
+            .is_none_or(|last| now.duration_since(last) >= Self::resize_throttle_duration())
+    }
+
+    fn resize_throttle_follow_up_delay(now: Instant, last_applied_at: Option<Instant>) -> Duration {
+        let throttle = Self::resize_throttle_duration();
+        let Some(last) = last_applied_at else {
+            return Duration::from_millis(1);
+        };
+        throttle
+            .saturating_sub(now.saturating_duration_since(last))
+            .saturating_add(Duration::from_millis(1))
+    }
+
     /// Schedules a follow-up task to apply pending resize after the throttle window.
     /// This ensures the final resize is applied even if no new frames are rendered.
-    fn schedule_resize_throttle_follow_up(&mut self, cx: &mut Context<Self>) {
+    fn schedule_resize_throttle_follow_up(&mut self, delay: Duration, cx: &mut Context<Self>) {
         // Only schedule if not already scheduled
         if self.resize_throttle_task.is_some() {
             return;
         }
 
         self.resize_throttle_task = Some(cx.spawn(async move |this, cx| {
-            smol::Timer::after(Duration::from_millis(RESIZE_THROTTLE_MS + 1)).await;
+            smol::Timer::after(delay).await;
             let _ = cx.update(|cx| {
                 this.update(cx, |view, cx| {
                     view.resize_throttle_task = None;
@@ -4515,6 +4534,133 @@ mod tests {
                 width: 30,
                 height: 40,
             }
+        );
+    }
+
+    #[test]
+    fn native_adjust_tree_split_applies_batched_delta() {
+        let mut root = native_test_split(
+            PaneResizeAxis::Horizontal,
+            0.5,
+            native_test_leaf("a"),
+            native_test_leaf("b"),
+        );
+
+        let result = TerminalView::native_adjust_tree_split(
+            &mut root,
+            "a",
+            PaneResizeAxis::Horizontal,
+            PaneResizeEdge::Right,
+            12,
+            NativePaneRect {
+                left: 0,
+                top: 0,
+                width: 100,
+                height: 20,
+            },
+            24,
+        );
+
+        assert_eq!(result, PaneResizeResult::Applied);
+        let rects = native_test_rects(&root, 100, 20);
+        assert_eq!(
+            rects["a"],
+            NativePaneRect {
+                left: 0,
+                top: 0,
+                width: 62,
+                height: 20,
+            }
+        );
+        assert_eq!(
+            rects["b"],
+            NativePaneRect {
+                left: 62,
+                top: 0,
+                width: 38,
+                height: 20,
+            }
+        );
+    }
+
+    #[test]
+    fn native_adjust_tree_split_blocks_oversized_batch_without_mutating() {
+        let mut root = native_test_split(
+            PaneResizeAxis::Horizontal,
+            0.5,
+            native_test_leaf("a"),
+            native_test_leaf("b"),
+        );
+
+        let result = TerminalView::native_adjust_tree_split(
+            &mut root,
+            "a",
+            PaneResizeAxis::Horizontal,
+            PaneResizeEdge::Right,
+            40,
+            NativePaneRect {
+                left: 0,
+                top: 0,
+                width: 100,
+                height: 20,
+            },
+            24,
+        );
+
+        assert_eq!(result, PaneResizeResult::BlockedByMinimum);
+        let rects = native_test_rects(&root, 100, 20);
+        assert_eq!(
+            rects["a"],
+            NativePaneRect {
+                left: 0,
+                top: 0,
+                width: 50,
+                height: 20,
+            }
+        );
+        assert_eq!(
+            rects["b"],
+            NativePaneRect {
+                left: 50,
+                top: 0,
+                width: 50,
+                height: 20,
+            }
+        );
+    }
+
+    #[test]
+    fn resize_throttle_allows_next_frame_after_interval() {
+        let last = Instant::now();
+        let throttle = TerminalView::resize_throttle_duration();
+
+        assert!(!TerminalView::can_apply_resize_at(
+            last + throttle.saturating_sub(Duration::from_millis(1)),
+            Some(last),
+        ));
+        assert!(TerminalView::can_apply_resize_at(
+            last + throttle,
+            Some(last),
+        ));
+    }
+
+    #[test]
+    fn resize_throttle_follow_up_waits_only_for_remaining_interval() {
+        let last = Instant::now();
+        let throttle = TerminalView::resize_throttle_duration();
+        let now = last + throttle.saturating_sub(Duration::from_millis(1));
+
+        assert_eq!(
+            TerminalView::resize_throttle_follow_up_delay(now, Some(last)),
+            Duration::from_millis(2)
+        );
+        assert_eq!(
+            TerminalView::resize_throttle_follow_up_delay(last + throttle, Some(last)),
+            Duration::from_millis(1)
+        );
+        assert_eq!(
+            TerminalView::resize_throttle_follow_up_delay(now, None),
+            Duration::from_millis(1)
         );
     }
 

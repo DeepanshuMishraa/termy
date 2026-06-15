@@ -60,7 +60,7 @@ pub(super) const TMUX_UNSUPPORTED_WINDOWS_TOAST: &str =
 pub(super) const INPUT_SCROLL_SUPPRESS_MS: u64 = 160;
 pub(super) const TOAST_COPY_FEEDBACK_MS: u64 = 1200;
 pub(super) const WINDOW_RESIZE_INDICATOR_MS: u64 = 850;
-pub(super) const RESIZE_THROTTLE_MS: u64 = 32;
+pub(super) const RESIZE_THROTTLE_MS: u64 = 16;
 pub(super) const CHILD_WORKING_DIR_CACHE_TTL: Duration =
     Duration::from_millis(CHILD_WORKING_DIR_CACHE_TTL_MS);
 pub(super) const BENCHMARK_EXIT_GRACE_DURATION: Duration = Duration::from_millis(250);

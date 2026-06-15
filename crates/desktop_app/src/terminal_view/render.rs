@@ -2319,12 +2319,15 @@ impl TerminalView {
             })
             .detach();
         }
-        if self.resize_indicator_visible_until.is_some()
+        if let Some(until) = self.resize_indicator_visible_until
             && !self.resize_indicator_animation_scheduled
         {
+            let delay = until
+                .saturating_duration_since(now)
+                .max(Duration::from_millis(1));
             self.resize_indicator_animation_scheduled = true;
             cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-                smol::Timer::after(Duration::from_millis(16)).await;
+                smol::Timer::after(delay).await;
                 let _ = cx.update(|cx| {
                     this.update(cx, |view, cx| {
                         view.resize_indicator_animation_scheduled = false;

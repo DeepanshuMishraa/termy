@@ -101,18 +101,23 @@ impl TerminalView {
         }
     }
 
-    pub(in crate::terminal_view) fn tmux_resize_pane_step(
+    pub(in crate::terminal_view) fn tmux_resize_pane_by(
         &mut self,
         pane_id: &str,
         axis: PaneResizeAxis,
         positive_direction: bool,
+        cells: u16,
     ) -> bool {
+        if cells == 0 {
+            return false;
+        }
+
         let resized = self.run_tmux_action("Failed to resize pane", |tmux_client| {
             match (axis, positive_direction) {
-                (PaneResizeAxis::Horizontal, true) => tmux_client.resize_pane_right(pane_id, 1),
-                (PaneResizeAxis::Horizontal, false) => tmux_client.resize_pane_left(pane_id, 1),
-                (PaneResizeAxis::Vertical, true) => tmux_client.resize_pane_down(pane_id, 1),
-                (PaneResizeAxis::Vertical, false) => tmux_client.resize_pane_up(pane_id, 1),
+                (PaneResizeAxis::Horizontal, true) => tmux_client.resize_pane_right(pane_id, cells),
+                (PaneResizeAxis::Horizontal, false) => tmux_client.resize_pane_left(pane_id, cells),
+                (PaneResizeAxis::Vertical, true) => tmux_client.resize_pane_down(pane_id, cells),
+                (PaneResizeAxis::Vertical, false) => tmux_client.resize_pane_up(pane_id, cells),
             }
         });
         if resized {

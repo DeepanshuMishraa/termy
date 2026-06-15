@@ -348,10 +348,10 @@ impl TerminalView {
             }
         }
 
-        // Throttle resize to avoid SIGWINCH flood during window drag
-        let can_resize = self.last_resize_applied_at.is_none_or(|last| {
-            now.duration_since(last) >= Duration::from_millis(RESIZE_THROTTLE_MS)
-        });
+        // Throttle resize to avoid SIGWINCH flood during window drag.
+        let can_resize = Self::can_apply_resize_at(now, self.last_resize_applied_at);
+        let throttle_follow_up_delay =
+            Self::resize_throttle_follow_up_delay(now, self.last_resize_applied_at);
         let mut needs_throttle_follow_up = false;
 
         for tab_index in 0..self.tabs.len() {
@@ -424,7 +424,7 @@ impl TerminalView {
         }
 
         if needs_throttle_follow_up {
-            self.schedule_resize_throttle_follow_up(cx);
+            self.schedule_resize_throttle_follow_up(throttle_follow_up_delay, cx);
         }
     }
 }

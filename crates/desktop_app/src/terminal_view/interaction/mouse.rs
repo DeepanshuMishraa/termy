@@ -592,46 +592,53 @@ impl TerminalView {
         if step_delta == 0 {
             return false;
         }
-        let mut completed_steps = 0i32;
-        let mut was_blocked = false;
-        for _ in 0..step_delta.unsigned_abs() {
-            let result = match self.runtime_kind() {
-                RuntimeKind::Tmux => {
-                    // Left/top drags invert the tmux resize direction relative to cursor delta,
-                    // because dragging toward the pane interior shrinks that edge.
-                    let positive_direction = match edge {
-                        PaneResizeEdge::Left | PaneResizeEdge::Top => step_delta.is_negative(),
-                        PaneResizeEdge::Right | PaneResizeEdge::Bottom => step_delta.is_positive(),
-                    };
-                    if self.tmux_resize_pane_step(pane_id.as_str(), axis, positive_direction) {
-                        PaneResizeResult::Applied
-                    } else {
-                        PaneResizeResult::NoChange
-                    }
+        let (completed_steps, was_blocked) = match self.runtime_kind() {
+            RuntimeKind::Tmux => {
+                // Left/top drags invert the tmux resize direction relative to cursor delta,
+                // because dragging toward the pane interior shrinks that edge.
+                let positive_direction = match edge {
+                    PaneResizeEdge::Left | PaneResizeEdge::Top => step_delta.is_negative(),
+                    PaneResizeEdge::Right | PaneResizeEdge::Bottom => step_delta.is_positive(),
+                };
+                let cells = step_delta.unsigned_abs().min(u32::from(u16::MAX)) as u16;
+                if self.tmux_resize_pane_by(pane_id.as_str(), axis, positive_direction, cells) {
+                    (i32::from(cells), false)
+                } else {
+                    (0, false)
                 }
-                RuntimeKind::Native => self.native_resize_pane_step(
+            }
+            RuntimeKind::Native => {
+                let batched_delta = step_delta.clamp(i32::from(i16::MIN), i32::from(i16::MAX));
+                match self.native_resize_pane_step(
                     pane_id.as_str(),
                     axis,
                     edge,
-                    if step_delta.is_positive() { 1 } else { -1 },
-                ),
-            };
-            match result {
-                PaneResizeResult::Applied => {
-                    completed_steps += 1;
-                    self.pane_resize_blocked = false;
+                    batched_delta as i16,
+                ) {
+                    PaneResizeResult::Applied => (batched_delta.unsigned_abs() as i32, false),
+                    PaneResizeResult::NoChange => (0, false),
+                    PaneResizeResult::BlockedByMinimum => {
+                        let mut completed_steps = 0i32;
+                        for _ in 0..batched_delta.unsigned_abs() {
+                            match self.native_resize_pane_step(
+                                pane_id.as_str(),
+                                axis,
+                                edge,
+                                if batched_delta.is_positive() { 1 } else { -1 },
+                            ) {
+                                PaneResizeResult::Applied => completed_steps += 1,
+                                PaneResizeResult::BlockedByMinimum | PaneResizeResult::NoChange => {
+                                    break;
+                                }
+                            }
+                        }
+                        (completed_steps, true)
+                    }
                 }
-                PaneResizeResult::BlockedByMinimum => {
-                    was_blocked = true;
-                    break;
-                }
-                PaneResizeResult::NoChange => break,
             }
-        }
+        };
 
-        if was_blocked {
-            self.pane_resize_blocked = true;
-        }
+        self.pane_resize_blocked = was_blocked;
 
         if completed_steps == 0 {
             return false;
