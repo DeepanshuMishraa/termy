@@ -111,6 +111,43 @@ pub fn is_refresh_notification(line: &[u8]) -> bool {
     .any(|prefix| line.starts_with(prefix))
 }
 
+/// Parse a `%subscription-changed` line into its fields.
+///
+/// tmux 3.4 emits: `%subscription-changed <name> $<session> @<window>
+/// <window-index> <pane|-> : <value>`. The five metadata fields are
+/// whitespace-separated and never contain spaces; the value follows a
+/// ` : ` separator and may itself contain spaces and colons. The pane id is
+/// `-` for window- or session-scoped subscriptions. The window-index field is
+/// redundant with the window id and is discarded.
+pub(crate) fn parse_subscription_changed(
+    line: &[u8],
+) -> Option<(String, String, String, String, String)> {
+    let rest = line.strip_prefix(b"%subscription-changed ")?;
+    let text = std::str::from_utf8(rest).ok()?;
+    let mut fields = text.split(' ');
+    let name = fields.next()?;
+    let session = fields.next()?;
+    let window = fields.next()?;
+    let _window_index = fields.next()?;
+    let pane = fields.next()?;
+    // Scan forward to the standalone `:` separator instead of assuming it is the
+    // sixth field. tmux may insert further metadata fields before `:` in newer
+    // releases; skipping to the separator keeps those out of the value. The
+    // value itself follows `:` and is preserved verbatim (it may contain spaces
+    // and colons).
+    if !fields.by_ref().any(|field| field == ":") {
+        return None;
+    }
+    let value = fields.collect::<Vec<_>>().join(" ");
+    Some((
+        name.to_string(),
+        session.to_string(),
+        window.to_string(),
+        pane.to_string(),
+        value,
+    ))
+}
+
 pub fn unescape_tmux_payload(payload: &[u8]) -> Vec<u8> {
     let mut output = Vec::with_capacity(payload.len());
     let mut index = 0;
@@ -190,8 +227,78 @@ pub fn strip_legacy_title_sequences(input: Vec<u8>) -> Vec<u8> {
 mod tests {
     use super::{
         capture_full_pane_args, capture_pane_range_args, parse_output_notification,
-        strip_legacy_title_sequences, unescape_tmux_payload,
+        parse_subscription_changed, strip_legacy_title_sequences, unescape_tmux_payload,
     };
+
+    #[test]
+    fn parse_subscription_changed_extracts_pane_scoped_fields() {
+        let parsed = parse_subscription_changed(b"%subscription-changed p_all $0 @0 0 %0 : /tmp")
+            .expect("pane-scoped subscription");
+        assert_eq!(
+            parsed,
+            (
+                "p_all".to_string(),
+                "$0".to_string(),
+                "@0".to_string(),
+                "%0".to_string(),
+                "/tmp".to_string(),
+            )
+        );
+    }
+
+    #[test]
+    fn parse_subscription_changed_handles_window_scoped_dash_pane() {
+        let parsed = parse_subscription_changed(b"%subscription-changed win $0 @0 0 - : mywin")
+            .expect("window-scoped subscription");
+        assert_eq!(parsed.3, "-");
+        assert_eq!(parsed.4, "mywin");
+    }
+
+    #[test]
+    fn parse_subscription_changed_preserves_spaces_and_colons_in_value() {
+        let parsed = parse_subscription_changed(b"%subscription-changed cmd $0 @0 0 %0 : a: b : c")
+            .expect("value with separators");
+        assert_eq!(parsed.4, "a: b : c");
+    }
+
+    #[test]
+    fn parse_subscription_changed_allows_empty_value() {
+        let parsed = parse_subscription_changed(b"%subscription-changed p $0 @0 0 %0 : ")
+            .expect("empty value");
+        assert_eq!(parsed.4, "");
+    }
+
+    #[test]
+    fn parse_subscription_changed_allows_empty_value_without_trailing_space() {
+        // Defensive fallback branch: a `:` separator with no trailing space
+        // still yields an empty value rather than a stray colon.
+        let parsed = parse_subscription_changed(b"%subscription-changed p $0 @0 0 %0 :")
+            .expect("empty value");
+        assert_eq!(parsed.4, "");
+    }
+
+    #[test]
+    fn parse_subscription_changed_rejects_other_lines() {
+        assert!(parse_subscription_changed(b"%output %0 hi").is_none());
+        assert!(parse_subscription_changed(b"%subscription-changed").is_none());
+        assert!(parse_subscription_changed(b"%subscription-changed only three fields").is_none());
+    }
+
+    #[test]
+    fn parse_subscription_changed_ignores_unknown_fields_before_separator() {
+        let parsed =
+            parse_subscription_changed(b"%subscription-changed p $0 @0 0 %0 future-field : /tmp")
+                .expect("value after unknown field");
+        assert_eq!(parsed.3, "%0");
+        assert_eq!(parsed.4, "/tmp");
+    }
+
+    #[test]
+    fn parse_subscription_changed_rejects_missing_separator() {
+        assert!(
+            parse_subscription_changed(b"%subscription-changed p $0 @0 0 %0 novalue").is_none()
+        );
+    }
 
     fn bytes_contains(haystack: &[u8], needle: &[u8]) -> bool {
         haystack

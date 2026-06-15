@@ -2,7 +2,7 @@
 
 use super::super::payload::{
     is_refresh_notification, parse_exit_reason, parse_output_notification,
-    strip_control_line_wrappers,
+    parse_subscription_changed, strip_control_line_wrappers,
 };
 use super::super::types::{TmuxControlError, TmuxNotification};
 
@@ -77,6 +77,17 @@ impl ControlStateMachine {
                 pane_id,
                 bytes,
             }));
+        }
+        if let Some((name, session, window, pane, value)) = parse_subscription_changed(line) {
+            return Ok(ControlStateEvent::Notification(
+                TmuxNotification::SubscriptionChanged {
+                    name,
+                    session,
+                    window,
+                    pane,
+                    value,
+                },
+            ));
         }
         if is_refresh_notification(line) {
             return Ok(ControlStateEvent::Notification(
@@ -431,6 +442,34 @@ mod tests {
         );
 
         let (is_error, output) = expect_command_complete(sm.on_line(b"%end 72 1 0").expect("end"));
+        assert!(!is_error);
+        assert_eq!(output, "captured");
+    }
+
+    #[test]
+    fn control_state_machine_routes_subscription_changed_notifications_inside_command_block() {
+        let mut sm = ControlStateMachine::default();
+        assert_eq!(
+            sm.on_line(b"%begin 81 1 0").expect("begin"),
+            ControlStateEvent::CommandBegin
+        );
+        assert_eq!(
+            sm.on_line(b"%subscription-changed p_all $0 @0 0 %0 : /tmp")
+                .expect("subscription"),
+            ControlStateEvent::Notification(TmuxNotification::SubscriptionChanged {
+                name: "p_all".to_string(),
+                session: "$0".to_string(),
+                window: "@0".to_string(),
+                pane: "%0".to_string(),
+                value: "/tmp".to_string(),
+            })
+        );
+        assert_eq!(
+            sm.on_line(b"captured").expect("output line"),
+            ControlStateEvent::None
+        );
+
+        let (is_error, output) = expect_command_complete(sm.on_line(b"%end 81 1 0").expect("end"));
         assert!(!is_error);
         assert_eq!(output, "captured");
     }

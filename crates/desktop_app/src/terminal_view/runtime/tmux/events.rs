@@ -177,6 +177,12 @@ impl TerminalView {
                     termy_toast::warning(message);
                     should_redraw = true;
                 }
+                TmuxNotification::SubscriptionChanged { .. } => {
+                    // The desktop app reconciles pane/window metadata from
+                    // snapshots on NeedsRefresh and does not consume format
+                    // subscriptions yet. The plumbing exists for control-mode
+                    // embedders that opt in via TmuxClient::subscribe.
+                }
                 TmuxNotification::Exit(reason) => {
                     let reason =
                         Some(reason.unwrap_or_else(|| "tmux control mode exited".to_string()));

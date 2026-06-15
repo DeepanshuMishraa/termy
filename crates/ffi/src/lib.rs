@@ -2238,9 +2238,9 @@ pub struct TermyFfiTmuxNotificationBatch {
 #[cfg(unix)]
 fn ffi_tmux_notification(
     notification: tmux_control_core::types::TmuxNotification,
-) -> TermyFfiTmuxNotification {
+) -> Option<TermyFfiTmuxNotification> {
     use tmux_control_core::types::TmuxNotification;
-    match notification {
+    Some(match notification {
         TmuxNotification::Output { pane_id, bytes } => TermyFfiTmuxNotification {
             kind: 0,
             pane_id: ffi_bytes_from_string(pane_id),
@@ -2261,7 +2261,13 @@ fn ffi_tmux_notification(
             pane_id: ffi_bytes_from_vec(Vec::new()),
             data: ffi_bytes_from_string(reason.unwrap_or_default()),
         },
-    }
+        TmuxNotification::SubscriptionChanged { .. } => {
+            // The Swift/FFI client does not consume format subscriptions yet.
+            // Keep this surface unchanged until it grows fields for the full
+            // subscription payload.
+            return None;
+        }
+    })
 }
 
 /// Opens a `tmux -CC` control session. On success writes a session handle to
@@ -2319,7 +2325,7 @@ pub unsafe extern "C" fn termy_tmux_control_poll(
         let notifications: Vec<TermyFfiTmuxNotification> = session
             .poll()
             .into_iter()
-            .map(ffi_tmux_notification)
+            .filter_map(ffi_tmux_notification)
             .collect();
         let (ptr, len, capacity) = leak_vec(notifications);
         unsafe {
