@@ -19,6 +19,7 @@ mod menus;
 mod settings_view;
 mod startup;
 mod terminal_view;
+mod text_editing;
 mod text_input;
 mod theme_store;
 mod ui;

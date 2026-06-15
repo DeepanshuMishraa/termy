@@ -1473,7 +1473,7 @@ struct SettingsLegacyThemeStoreTheme {
 impl SettingsLegacyThemeStoreTheme {
     fn into_theme(self) -> Option<SettingsThemeStoreTheme> {
         let name = self.name.trim().to_string();
-        let slug = settings_normalize_theme_id(&self.slug);
+        let slug = termy_themes::normalize_theme_id(&self.slug);
         if name.is_empty() || slug.is_empty() {
             return None;
         }
@@ -1493,32 +1493,6 @@ impl SettingsLegacyThemeStoreTheme {
 enum SettingsThemeStorePayload {
     Legacy(Vec<SettingsLegacyThemeStoreTheme>),
     Registry(termy_themes::ThemeRegistryIndex),
-}
-
-fn settings_normalize_theme_id(theme_id: &str) -> String {
-    let mut normalized = String::new();
-    let mut last_dash = false;
-
-    for character in theme_id.trim().chars() {
-        let character = character.to_ascii_lowercase();
-        match character {
-            'a'..='z' | '0'..='9' => {
-                normalized.push(character);
-                last_dash = false;
-            }
-            '-' | '_' | ' ' if !normalized.is_empty() && !last_dash => {
-                normalized.push('-');
-                last_dash = true;
-            }
-            _ => {}
-        }
-    }
-
-    while normalized.ends_with('-') {
-        normalized.pop();
-    }
-
-    normalized
 }
 
 fn settings_installed_theme_ids(config_path: Option<&Path>) -> Vec<String> {
@@ -1545,7 +1519,7 @@ fn settings_installed_theme_ids(config_path: Option<&Path>) -> Vec<String> {
             }
 
             let stem = path.file_stem()?.to_str()?;
-            let normalized = settings_normalize_theme_id(stem);
+            let normalized = termy_themes::normalize_theme_id(stem);
             (!normalized.is_empty()).then_some(normalized)
         })
         .collect()
@@ -1637,7 +1611,7 @@ fn settings_parse_theme_store_payload(
             .themes
             .into_iter()
             .filter_map(|theme| {
-                let slug = settings_normalize_theme_id(&theme.slug);
+                let slug = termy_themes::normalize_theme_id(&theme.slug);
                 (!slug.is_empty() && !theme.name.trim().is_empty()).then(|| {
                     SettingsThemeStoreTheme {
                         name: theme.name.trim().to_string(),
@@ -1730,7 +1704,7 @@ fn settings_installed_theme_versions_path(config_path: &Path) -> Option<PathBuf>
 }
 
 fn settings_installed_theme_file_path(config_path: &Path, slug: &str) -> Option<PathBuf> {
-    let normalized = settings_normalize_theme_id(slug);
+    let normalized = termy_themes::normalize_theme_id(slug);
     if normalized.is_empty() {
         return None;
     }
@@ -1754,7 +1728,7 @@ fn settings_load_installed_theme_versions(config_path: &Path) -> HashMap<String,
         .into_iter()
         .map(|(slug, version)| {
             (
-                settings_normalize_theme_id(&slug),
+                termy_themes::normalize_theme_id(&slug),
                 version.trim().to_string(),
             )
         })
@@ -1777,7 +1751,7 @@ fn settings_persist_installed_theme_versions(
 }
 
 fn settings_install_theme_from_registry(slug: &str) -> Result<(), TermyFfiStatus> {
-    let normalized = settings_normalize_theme_id(slug);
+    let normalized = termy_themes::normalize_theme_id(slug);
     if normalized.is_empty() {
         return Err(TermyFfiStatus::UnknownKey);
     }
@@ -1837,7 +1811,7 @@ fn settings_installed_theme_colors(
     theme_id: &str,
     config_path: Option<&Path>,
 ) -> Option<termy_themes::ThemeColors> {
-    let normalized = settings_normalize_theme_id(theme_id);
+    let normalized = termy_themes::normalize_theme_id(theme_id);
     if normalized.is_empty() || normalized == cfg::SHELL_DECIDE_THEME_ID {
         return None;
     }

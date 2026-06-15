@@ -3,7 +3,7 @@ import XCTest
 
 final class TermyBenchmarkRunnerTests: XCTestCase {
     func testBenchmarkWorkloadProducesMetrics() throws {
-        let result = TermyBenchmarkRunner.run(cols: 40, rows: 10, frames: 40)
+        let result = try TermyBenchmarkRunner.run(cols: 40, rows: 10, frames: 40)
 
         XCTAssertGreaterThanOrEqual(result.metrics.frameUpdates, 1)
         XCTAssertGreaterThanOrEqual(result.metrics.fullFrameUpdates, 1, "the forced full update seeds the workload")

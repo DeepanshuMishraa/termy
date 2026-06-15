@@ -461,7 +461,6 @@ fn quote_windows_arg(arg: &str) -> String {
 pub fn do_install(tarball_path: &PathBuf) -> Result<InstallOutcome> {
     use std::process::Command;
 
-    // Determine install directory: prefer ~/.local/bin, fall back to ~/bin
     let home = std::env::var("HOME").context("HOME environment variable not set")?;
     let home_path = PathBuf::from(&home);
 
@@ -473,7 +472,6 @@ pub fn do_install(tarball_path: &PathBuf) -> Result<InstallOutcome> {
         local_bin
     };
 
-    // Extract tarball to temp directory
     let temp_dir = std::env::temp_dir().join("termy-update-extract");
     let _ = std::fs::remove_dir_all(&temp_dir);
     std::fs::create_dir_all(&temp_dir).context("Failed to create temp extraction directory")?;
@@ -520,12 +518,10 @@ pub fn do_install(tarball_path: &PathBuf) -> Result<InstallOutcome> {
         found.context("Could not find termy binary in extracted tarball")?
     };
 
-    // Copy binary to install directory
     let target_binary = install_dir.join("termy");
     std::fs::copy(&source_binary, &target_binary)
         .context("Failed to copy binary to install directory")?;
 
-    // Make it executable
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

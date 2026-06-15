@@ -1,4 +1,5 @@
 use super::*;
+use crate::text_editing;
 use gpui::{
     Bounds, ContentMask, ElementInputHandler, Entity, EntityInputHandler, Font, Hsla, IntoElement,
     PaintQuad, Pixels, ShapedLine, TextAlign, TextRun, UTF16Selection, UnderlineStyle, Window,
@@ -37,13 +38,6 @@ fn ime_candidate_bounds(
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum InlineInputCharClass {
-    Word,
-    Whitespace,
-    Other,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum InlineInputTarget {
     CommandPalette,
     RenameTab,
@@ -72,17 +66,6 @@ pub(super) struct InlineInputState {
 }
 
 impl InlineInputState {
-    #[inline]
-    fn char_class(ch: char) -> InlineInputCharClass {
-        if ch.is_alphanumeric() || ch == '_' {
-            InlineInputCharClass::Word
-        } else if ch.is_whitespace() {
-            InlineInputCharClass::Whitespace
-        } else {
-            InlineInputCharClass::Other
-        }
-    }
-
     pub(super) fn new(text: String) -> Self {
         let mut state = Self {
             text,
@@ -142,14 +125,14 @@ impl InlineInputState {
     }
 
     fn set_cursor_utf8(&mut self, offset: usize) {
-        let offset = Self::clamp_utf8_index(&self.text, offset);
+        let offset = text_editing::clamp_utf8_index(&self.text, offset);
         self.selected_range = offset..offset;
         self.selection_reversed = false;
         self.marked_range = None;
     }
 
     fn select_to_utf8(&mut self, offset: usize) {
-        let offset = Self::clamp_utf8_index(&self.text, offset);
+        let offset = text_editing::clamp_utf8_index(&self.text, offset);
         if self.selection_reversed {
             self.selected_range.start = offset;
         } else {
@@ -163,143 +146,43 @@ impl InlineInputState {
     }
 
     fn set_cursor_utf16(&mut self, offset: usize) {
-        let utf8_offset = Self::utf16_to_utf8_in_text(&self.text, offset);
+        let utf8_offset = text_editing::utf16_to_utf8(&self.text, offset);
         self.set_cursor_utf8(utf8_offset);
     }
 
     fn select_to_utf16(&mut self, offset: usize) {
-        let utf8_offset = Self::utf16_to_utf8_in_text(&self.text, offset);
+        let utf8_offset = text_editing::utf16_to_utf8(&self.text, offset);
         self.select_to_utf8(utf8_offset);
     }
 
     fn previous_char_boundary(&self, offset: usize) -> usize {
-        if offset == 0 {
-            return 0;
-        }
-
-        let mut index = offset.min(self.text.len());
-        while index > 0 {
-            index -= 1;
-            if self.text.is_char_boundary(index) {
-                return index;
-            }
-        }
-        0
+        text_editing::previous_char_boundary(&self.text, offset)
     }
 
     fn next_char_boundary(&self, offset: usize) -> usize {
-        if offset >= self.text.len() {
-            return self.text.len();
-        }
-
-        let mut index = offset + 1;
-        while index < self.text.len() {
-            if self.text.is_char_boundary(index) {
-                return index;
-            }
-            index += 1;
-        }
-        self.text.len()
+        text_editing::next_char_boundary(&self.text, offset)
     }
 
     fn previous_word_boundary(&self, offset: usize) -> usize {
-        if offset == 0 {
-            return 0;
-        }
-
-        let mut boundary = 0;
-        let mut seen_word = false;
-        for (idx, ch) in self.text[..offset].char_indices().rev() {
-            if Self::char_class(ch) == InlineInputCharClass::Word {
-                seen_word = true;
-                boundary = idx;
-                continue;
-            }
-            if seen_word {
-                boundary = idx + ch.len_utf8();
-                break;
-            }
-            boundary = idx;
-        }
-        boundary
+        text_editing::previous_word_boundary(&self.text, offset)
     }
 
     fn next_word_boundary(&self, offset: usize) -> usize {
-        if offset >= self.text.len() {
-            return self.text.len();
-        }
-
-        let mut seen_word = false;
-        for (rel_idx, ch) in self.text[offset..].char_indices() {
-            let is_word = Self::char_class(ch) == InlineInputCharClass::Word;
-            if is_word {
-                seen_word = true;
-            } else if seen_word {
-                return offset + rel_idx;
-            }
-        }
-        self.text.len()
+        text_editing::next_word_boundary(&self.text, offset)
     }
 
     fn select_range_utf8(&mut self, range: Range<usize>) {
-        let start = Self::clamp_utf8_index(&self.text, range.start.min(self.text.len()));
-        let end = Self::clamp_utf8_index(&self.text, range.end.min(self.text.len()));
-        if end < start {
-            self.selected_range = end..start;
-        } else {
-            self.selected_range = start..end;
-        }
+        self.selected_range = text_editing::clamped_utf8_range(&self.text, range);
         self.selection_reversed = false;
         self.marked_range = None;
     }
 
     fn token_range_at_utf8(&self, offset: usize) -> Range<usize> {
-        if self.text.is_empty() {
-            return 0..0;
-        }
-
-        let mut anchor = Self::clamp_utf8_index(&self.text, offset.min(self.text.len()));
-        if anchor == self.text.len() && anchor > 0 {
-            anchor = self.previous_char_boundary(anchor);
-        }
-        if anchor >= self.text.len() {
-            return self.text.len()..self.text.len();
-        }
-
-        let Some(anchor_char) = self.text[anchor..].chars().next() else {
-            return self.text.len()..self.text.len();
-        };
-        let class = Self::char_class(anchor_char);
-
-        let mut start = anchor;
-        while start > 0 {
-            let prev = self.previous_char_boundary(start);
-            let Some(prev_char) = self.text[prev..start].chars().next() else {
-                break;
-            };
-            if Self::char_class(prev_char) != class {
-                break;
-            }
-            start = prev;
-        }
-
-        let mut end = self.next_char_boundary(anchor);
-        while end < self.text.len() {
-            let next_end = self.next_char_boundary(end);
-            let Some(next_char) = self.text[end..next_end].chars().next() else {
-                break;
-            };
-            if Self::char_class(next_char) != class {
-                break;
-            }
-            end = next_end;
-        }
-
-        start..end
+        text_editing::token_range_at_utf8(&self.text, offset)
     }
 
     fn select_token_at_utf16(&mut self, offset_utf16: usize) {
-        let utf8_offset = Self::utf16_to_utf8_in_text(&self.text, offset_utf16);
+        let utf8_offset = text_editing::utf16_to_utf8(&self.text, offset_utf16);
         let range = self.token_range_at_utf8(utf8_offset);
         self.select_range_utf8(range);
     }
@@ -409,67 +292,16 @@ impl InlineInputState {
         self.last_line_layouts = line_layouts;
     }
 
-    fn clamp_utf8_index(text: &str, index: usize) -> usize {
-        let mut index = index.min(text.len());
-        while index > 0 && !text.is_char_boundary(index) {
-            index -= 1;
-        }
-        index
-    }
-
-    fn utf16_to_utf8_in_text(text: &str, utf16_offset: usize) -> usize {
-        let mut utf8_offset = 0;
-        let mut utf16_count = 0;
-
-        for ch in text.chars() {
-            if utf16_count >= utf16_offset {
-                break;
-            }
-            utf16_count += ch.len_utf16();
-            utf8_offset += ch.len_utf8();
-        }
-
-        Self::clamp_utf8_index(text, utf8_offset)
-    }
-
-    fn utf8_to_utf16_in_text(text: &str, utf8_offset: usize) -> usize {
-        let mut utf16_offset = 0;
-        let mut utf8_count = 0;
-        let clamped_utf8 = Self::clamp_utf8_index(text, utf8_offset);
-
-        for ch in text.chars() {
-            if utf8_count >= clamped_utf8 {
-                break;
-            }
-            utf8_count += ch.len_utf8();
-            utf16_offset += ch.len_utf16();
-        }
-
-        utf16_offset
-    }
-
-    fn range_from_utf16_for_text(text: &str, range_utf16: &Range<usize>) -> Range<usize> {
-        let start = Self::utf16_to_utf8_in_text(text, range_utf16.start);
-        let end = Self::utf16_to_utf8_in_text(text, range_utf16.end);
-        if end < start { end..start } else { start..end }
-    }
-
-    fn range_to_utf16_for_text(text: &str, range_utf8: &Range<usize>) -> Range<usize> {
-        let start = Self::utf8_to_utf16_in_text(text, range_utf8.start);
-        let end = Self::utf8_to_utf16_in_text(text, range_utf8.end);
-        if end < start { end..start } else { start..end }
-    }
-
     fn range_from_utf16(&self, range_utf16: &Range<usize>) -> Range<usize> {
-        Self::range_from_utf16_for_text(&self.text, range_utf16)
+        text_editing::range_from_utf16(&self.text, range_utf16)
     }
 
     fn range_to_utf16(&self, range_utf8: &Range<usize>) -> Range<usize> {
-        Self::range_to_utf16_for_text(&self.text, range_utf8)
+        text_editing::range_to_utf16(&self.text, range_utf8)
     }
 
     fn utf8_to_utf16(&self, utf8_offset: usize) -> usize {
-        Self::utf8_to_utf16_in_text(&self.text, utf8_offset)
+        text_editing::utf8_to_utf16(&self.text, utf8_offset)
     }
 
     fn replacement_range(&self, range_utf16: Option<Range<usize>>) -> Range<usize> {
@@ -632,7 +464,7 @@ impl InlineInputState {
 
         self.selection_reversed = false;
         if let Some(local_selected_utf16) = new_selected_range_utf16 {
-            let local_selected = Self::range_from_utf16_for_text(new_text, &local_selected_utf16);
+            let local_selected = text_editing::range_from_utf16(new_text, &local_selected_utf16);
             let selected_start = range.start + local_selected.start;
             let selected_end = range.start + local_selected.end;
             self.selected_range = selected_start..selected_end;

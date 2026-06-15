@@ -1,6 +1,6 @@
 //! SQLite-backed store for workspace / tab / pane session state and named
-//! layouts. Replaces the legacy `native-tabs.json` file; the terminal view
-//! imports that file once into a fresh database and reads it no further.
+//! layouts. A fresh database imports legacy `native-tabs.json` once and reads
+//! it no further.
 //!
 //! sqlx is async-first while the app runs on gpui/smol, so the store owns a
 //! small single-threaded tokio runtime and exposes blocking methods. Callers

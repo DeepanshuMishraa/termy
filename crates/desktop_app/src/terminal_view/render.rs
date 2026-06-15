@@ -429,8 +429,7 @@ fn cursor_state_with_preview(
     }
 }
 
-type PaneRenderRow = Arc<Vec<CellRenderInfo>>;
-type PaneRenderCells = Arc<Vec<PaneRenderRow>>;
+type PaneRenderCells = TerminalGridRows;
 
 fn pane_render_cells_match_dimensions(cells: &PaneRenderCells, cols: usize, rows: usize) -> bool {
     cells.len() == rows && cells.iter().all(|row_cells| row_cells.len() == cols)
@@ -1549,7 +1548,6 @@ impl TerminalView {
                                     .text_color(accent)
                                     .child(icon),
                             )
-                            // Message - max width accounts for icon (24px) + copy btn (68px) + gaps (20px) + padding (28px)
                             .child(
                                 div()
                                     .max_w(px(340.0))
@@ -1565,7 +1563,6 @@ impl TerminalView {
                                     .flex()
                                     .items_center()
                                     .justify_end()
-                                    // "Fix" button — always visible for actionable toasts
                                     .children(toast_action_label.as_ref().map(|label| {
                                         let label = label.clone();
                                         let mut action_bg = accent;
@@ -1595,7 +1592,6 @@ impl TerminalView {
                                             )
                                             .child(label)
                                     }))
-                                    // "Copied" feedback
                                     .children((toast_action_label.is_none() && is_copied).then(|| {
                                         let mut copied_bg = accent;
                                         copied_bg.a = 0.22;
@@ -1608,7 +1604,6 @@ impl TerminalView {
                                             .bg(copied_bg)
                                             .child("Copied")
                                     }))
-                                    // "Copy" button — shown on hover when no action button
                                     .children((toast_action_label.is_none() && !is_copied && is_hovered).then(|| {
                                         let toast_message_for_copy = toast_message.clone();
                                         div()
@@ -2800,10 +2795,7 @@ impl Render for TerminalView {
                 }
 
                 if multi_pane && self.runtime_kind() == RuntimeKind::Native {
-                    // Grab handle at the pane's top center: drag it to move
-                    // the pane (modifier-free entry into the pane-move drag).
-                    // Chromeless — just three grip dots that fade in when the
-                    // pointer is over the handle area (or during a drag).
+                    // Pane-move handle at the top center, shown only on hover or drag.
                     let is_drag_source = self
                         .pane_move_drag
                         .as_ref()

@@ -1,5 +1,4 @@
-// PTY reply handling lives here so future upstream Alacritty query events can be
-// added in one place without growing runtime.rs into another protocol dump.
+// Centralize PTY reply handling so protocol-specific branches stay out of runtime.rs.
 mod query_colors;
 mod replies;
 

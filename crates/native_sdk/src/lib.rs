@@ -32,6 +32,16 @@ fn wide_string(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
+#[cfg(target_os = "windows")]
+struct MenuGuard(windows::Win32::UI::WindowsAndMessaging::HMENU);
+
+#[cfg(target_os = "windows")]
+impl Drop for MenuGuard {
+    fn drop(&mut self) {
+        let _ = unsafe { DestroyMenu(self.0) };
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ContextMenuAction {
     Copy,
@@ -415,12 +425,6 @@ pub fn show_copy_paste_context_menu(
     {
         let _ = anchor;
         let menu = unsafe { CreatePopupMenu().ok()? };
-        struct MenuGuard(windows::Win32::UI::WindowsAndMessaging::HMENU);
-        impl Drop for MenuGuard {
-            fn drop(&mut self) {
-                let _ = unsafe { DestroyMenu(self.0) };
-            }
-        }
         let _menu_guard = MenuGuard(menu);
 
         let has_buffer_position = buffer_position_label.is_some();
@@ -596,12 +600,6 @@ pub fn show_tab_context_menu(
     {
         let _ = anchor;
         let menu = unsafe { CreatePopupMenu().ok()? };
-        struct MenuGuard(windows::Win32::UI::WindowsAndMessaging::HMENU);
-        impl Drop for MenuGuard {
-            fn drop(&mut self) {
-                let _ = unsafe { DestroyMenu(self.0) };
-            }
-        }
         let _menu_guard = MenuGuard(menu);
 
         // Rename Tab

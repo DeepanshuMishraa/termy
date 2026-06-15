@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     fs,
     io::Read,
     path::{Path, PathBuf},
@@ -10,6 +10,7 @@ use std::{
 use std::cell::RefCell;
 
 use fs4::fs_std::FileExt;
+use serde::{Deserialize, de::IgnoredAny};
 use termy_config_core::{
     ColorSettingId, ColorSettingUpdate, Rgb8, RootSettingId, TaskConfig, apply_color_updates,
     color_setting_from_key, color_setting_spec, parse_theme_id, prettify_config_contents,
@@ -23,6 +24,13 @@ use super::DEFAULT_CONFIG;
 use super::io::{ensure_config_file, notify_config_changed, write_atomic};
 
 static CONFIG_UPDATE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ImportedThemeJsonValue {
+    String(String),
+    Ignored(IgnoredAny),
+}
 
 #[cfg(test)]
 thread_local! {
@@ -55,10 +63,9 @@ fn config_file_for_update() -> Result<PathBuf, ConfigIoError> {
 fn update_config_contents<R>(
     updater: impl FnOnce(&str) -> Result<(String, R), String>,
 ) -> Result<R, String> {
-    let _process_guard = CONFIG_UPDATE_LOCK.lock().unwrap_or_else(|poison| {
-        log::warn!("Config update lock was poisoned; recovering lock state");
-        poison.into_inner()
-    });
+    let _process_guard = CONFIG_UPDATE_LOCK
+        .lock()
+        .map_err(|_| "Config update lock was poisoned by a previous failed update".to_string())?;
     let config_path = config_file_for_update().map_err(|error| error.to_string())?;
     let lock_path = config_path.with_extension("lock");
     let lock_path_display = lock_path.display().to_string();
@@ -183,12 +190,8 @@ pub fn import_colors_from_json(json_path: &Path) -> Result<String, String> {
     let contents =
         fs::read_to_string(json_path).map_err(|e| format!("Failed to read file: {e}"))?;
 
-    let json: serde_json::Value =
+    let colors: BTreeMap<String, ImportedThemeJsonValue> =
         serde_json::from_str(&contents).map_err(|e| format!("Invalid JSON: {e}"))?;
-
-    let colors = json
-        .as_object()
-        .ok_or_else(|| "JSON must be an object".to_string())?;
 
     let mut updates_by_id: HashMap<ColorSettingId, String> = HashMap::new();
     for (key, value) in colors {
@@ -196,24 +199,24 @@ pub fn import_colors_from_json(json_path: &Path) -> Result<String, String> {
             continue;
         }
 
-        let Some(id) = color_setting_from_key(key) else {
+        let Some(id) = color_setting_from_key(&key) else {
             continue;
         };
 
-        let hex = value
-            .as_str()
-            .ok_or_else(|| format!("Color '{key}' must be a hex string"))?;
+        let ImportedThemeJsonValue::String(hex) = value else {
+            return Err(format!("Color '{key}' must be a hex string"));
+        };
 
-        if Rgb8::from_hex(hex).is_none() {
+        if Rgb8::from_hex(&hex).is_none() {
             return Err(format!("Invalid hex color for '{key}': {hex}"));
         }
 
         let is_canonical_key = key.eq_ignore_ascii_case(color_setting_spec(id).key);
         match updates_by_id.get_mut(&id) {
-            Some(existing_hex) if is_canonical_key => *existing_hex = hex.to_string(),
+            Some(existing_hex) if is_canonical_key => *existing_hex = hex,
             Some(_) => {}
             None => {
-                updates_by_id.insert(id, hex.to_string());
+                updates_by_id.insert(id, hex);
             }
         }
     }
@@ -377,6 +380,32 @@ mod tests {
 
             let result = import_colors_from_json(&json_path).expect("import colors");
             assert!(result.contains("Imported"));
+        });
+    }
+
+    #[test]
+    fn import_colors_json_ignores_unknown_metadata_values() {
+        with_temp_config_file(|temp_dir, _| {
+            let json_path = temp_dir.join("colors.json");
+            std::fs::write(
+                &json_path,
+                "{\n  \"$schema\": \"./theme.schema.json\",\n  \"metadata\": {\"name\": \"ignored\"},\n  \"foreground\": \"#112233\"\n}\n",
+            )
+            .expect("write json");
+
+            let result = import_colors_from_json(&json_path).expect("import colors");
+            assert!(result.contains("Imported 1 colors"));
+        });
+    }
+
+    #[test]
+    fn import_colors_json_rejects_known_non_string_values() {
+        with_temp_config_file(|temp_dir, _| {
+            let json_path = temp_dir.join("colors.json");
+            std::fs::write(&json_path, "{\n  \"foreground\": 42\n}\n").expect("write json");
+
+            let error = import_colors_from_json(&json_path).expect_err("reject color");
+            assert_eq!(error, "Color 'foreground' must be a hex string");
         });
     }
 

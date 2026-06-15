@@ -13,10 +13,8 @@ struct BenchmarkBuildTimes: Codable, Equatable {
     var encodedJSON: String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        guard let data = try? encoder.encode(self), let json = String(data: data, encoding: .utf8) else {
-            return "{}"
-        }
-        return json
+        let data = try! encoder.encode(self)
+        return String(decoding: data, as: UTF8.self)
     }
 }
 
@@ -36,35 +34,38 @@ enum TermyBenchmarkRunner {
         guard CommandLine.arguments.contains(argument) else {
             return
         }
-        let result = run()
-        print("native-render-metrics \(result.metrics.encodedJSON)")
-        print("native-build-times \(result.buildTimes.encodedJSON)")
-        exit(0)
+        do {
+            let result = try run()
+            print("native-render-metrics \(result.metrics.encodedJSON)")
+            print("native-build-times \(result.buildTimes.encodedJSON)")
+            exit(0)
+        } catch {
+            FileHandle.standardError.write(Data("termy benchmark failed: \(error)\n".utf8))
+            exit(1)
+        }
     }
 
     /// Drives bulk scrolling output (a `cat` of a large file) through the real
     /// terminal → frame-store → render-plan pipeline and returns metrics plus
     /// per-present render-plan build times.
-    static func run(cols: Int = 80, rows: Int = 24, frames: Int = 120) -> BenchmarkResult {
+    static func run(cols: Int = 80, rows: Int = 24, frames: Int = 120) throws -> BenchmarkResult {
         let recorder = NativeRenderMetricsRecorder()
-        guard let terminal = try? LibTermyTerminal(
+        let terminal = try LibTermyTerminal(
             cols: UInt16(cols),
             rows: UInt16(rows),
             loadUserConfig: false
-        ) else {
-            return BenchmarkResult(metrics: recorder.snapshot, buildTimes: BenchmarkBuildTimes())
-        }
+        )
         let store = TerminalFrameStore()
         let planCache = TerminalRenderPlanCache()
         var buildMicros: [Double] = []
 
-        _ = try? poll(terminal, store, planCache, recorder, forceFull: true)
+        _ = try poll(terminal, store, planCache, recorder, forceFull: true)
 
         let bulk = String(repeating: "native benchmark scrolling line of terminal text\n", count: 400)
-        try? terminal.write(Array(bulk.utf8))
+        try terminal.write(Array(bulk.utf8))
 
         for _ in 0..<frames {
-            if let micros = try? poll(terminal, store, planCache, recorder, forceFull: false) {
+            if let micros = try poll(terminal, store, planCache, recorder, forceFull: false) {
                 buildMicros.append(micros)
             }
             usleep(2_000)

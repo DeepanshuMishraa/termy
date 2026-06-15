@@ -230,22 +230,11 @@ pub fn parse_theme_colors_json(contents: &str) -> Result<ThemeColors, String> {
     json.into_colors()
 }
 
-pub fn parse_theme_colors_value(json: &serde_json::Value) -> Result<ThemeColors, String> {
-    let json: ThemeColorsJson = serde_json::from_value(json.clone())
-        .map_err(|error| format!("Invalid theme colors: {error}"))?;
-    json.into_colors()
-}
-
-pub fn theme_colors_json_value(colors: &ThemeColors, schema: Option<&str>) -> serde_json::Value {
-    serde_json::to_value(ThemeColorsJson::from((colors, schema)))
-        .expect("theme colors serialize to JSON")
-}
-
 pub fn theme_colors_json_pretty(
     colors: &ThemeColors,
     schema: Option<&str>,
 ) -> Result<String, String> {
-    serde_json::to_string_pretty(&theme_colors_json_value(colors, schema))
+    serde_json::to_string_pretty(&ThemeColorsJson::from((colors, schema)))
         .map_err(|error| format!("Failed to serialize theme colors: {error}"))
 }
 

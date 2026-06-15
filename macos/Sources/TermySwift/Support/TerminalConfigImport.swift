@@ -42,6 +42,81 @@ struct ImportableTerminal: Identifiable {
     }
 }
 
+private struct ITerm2Preferences: Decodable {
+    var defaultBookmarkGuid: String?
+    var newBookmarks: [ITerm2Profile]
+
+    enum CodingKeys: String, CodingKey {
+        case defaultBookmarkGuid = "Default Bookmark Guid"
+        case newBookmarks = "New Bookmarks"
+    }
+}
+
+private struct ITerm2Profile: Decodable {
+    var guid: String?
+    var foreground: ITerm2Color?
+    var background: ITerm2Color?
+    var cursor: ITerm2Color?
+    var ansi0: ITerm2Color?
+    var ansi1: ITerm2Color?
+    var ansi2: ITerm2Color?
+    var ansi3: ITerm2Color?
+    var ansi4: ITerm2Color?
+    var ansi5: ITerm2Color?
+    var ansi6: ITerm2Color?
+    var ansi7: ITerm2Color?
+    var ansi8: ITerm2Color?
+    var ansi9: ITerm2Color?
+    var ansi10: ITerm2Color?
+    var ansi11: ITerm2Color?
+    var ansi12: ITerm2Color?
+    var ansi13: ITerm2Color?
+    var ansi14: ITerm2Color?
+    var ansi15: ITerm2Color?
+
+    var ansiColors: [ITerm2Color?] {
+        [
+            ansi0, ansi1, ansi2, ansi3, ansi4, ansi5, ansi6, ansi7,
+            ansi8, ansi9, ansi10, ansi11, ansi12, ansi13, ansi14, ansi15,
+        ]
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case guid = "Guid"
+        case foreground = "Foreground Color"
+        case background = "Background Color"
+        case cursor = "Cursor Color"
+        case ansi0 = "Ansi 0 Color"
+        case ansi1 = "Ansi 1 Color"
+        case ansi2 = "Ansi 2 Color"
+        case ansi3 = "Ansi 3 Color"
+        case ansi4 = "Ansi 4 Color"
+        case ansi5 = "Ansi 5 Color"
+        case ansi6 = "Ansi 6 Color"
+        case ansi7 = "Ansi 7 Color"
+        case ansi8 = "Ansi 8 Color"
+        case ansi9 = "Ansi 9 Color"
+        case ansi10 = "Ansi 10 Color"
+        case ansi11 = "Ansi 11 Color"
+        case ansi12 = "Ansi 12 Color"
+        case ansi13 = "Ansi 13 Color"
+        case ansi14 = "Ansi 14 Color"
+        case ansi15 = "Ansi 15 Color"
+    }
+}
+
+private struct ITerm2Color: Decodable {
+    var red: Double
+    var green: Double
+    var blue: Double
+
+    enum CodingKeys: String, CodingKey {
+        case red = "Red Component"
+        case green = "Green Component"
+        case blue = "Blue Component"
+    }
+}
+
 /// Detects and imports settings from other terminal emulators' config files.
 enum TerminalConfigImport {
     /// ANSI color names in palette order (index 0–15), used to map `color0`/
@@ -111,55 +186,60 @@ enum TerminalConfigImport {
     }
 
     private static func readITerm2(at url: URL) -> ImportedSettings {
-        guard let data = try? Data(contentsOf: url),
-              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil),
-              let root = plist as? [String: Any]
-        else {
+        guard let data = try? Data(contentsOf: url) else {
             return ImportedSettings()
         }
-        return parseITerm2(root)
+        return parseITerm2Data(data)
+    }
+
+    static func parseITerm2Data(_ data: Data) -> ImportedSettings {
+        guard let preferences = try? PropertyListDecoder().decode(ITerm2Preferences.self, from: data) else {
+            return ImportedSettings()
+        }
+        return parseITerm2(preferences)
     }
 
     /// iTerm2 stores colors per profile under `New Bookmarks`; pick the default
     /// profile (by `Default Bookmark Guid`) and convert its color components.
-    static func parseITerm2(_ plist: [String: Any]) -> ImportedSettings {
+    private static func parseITerm2(_ plist: ITerm2Preferences) -> ImportedSettings {
         var result = ImportedSettings()
-        guard let bookmarks = plist["New Bookmarks"] as? [[String: Any]], !bookmarks.isEmpty else {
+        let bookmarks = plist.newBookmarks
+        guard !bookmarks.isEmpty else {
             return result
         }
-        let defaultGuid = plist["Default Bookmark Guid"] as? String
-        let profile = bookmarks.first { ($0["Guid"] as? String) == defaultGuid } ?? bookmarks[0]
+        let profile = plist.defaultBookmarkGuid
+            .flatMap { defaultGuid in bookmarks.first { $0.guid == defaultGuid } }
+            ?? bookmarks[0]
         result.colors = iTerm2Colors(from: profile)
         return result
     }
 
-    private static func iTerm2Colors(from profile: [String: Any]) -> [String: String] {
+    private static func iTerm2Colors(from profile: ITerm2Profile) -> [String: String] {
         var colors: [String: String] = [:]
-        func add(_ itermKey: String, _ termyKey: String) {
-            if let dict = profile[itermKey] as? [String: Any], let hex = iTerm2Hex(dict) {
+        func add(_ color: ITerm2Color?, _ termyKey: String) {
+            if let color, let hex = iTerm2Hex(color) {
                 colors[termyKey] = hex
             }
         }
-        add("Foreground Color", "foreground")
-        add("Background Color", "background")
-        add("Cursor Color", "cursor")
-        for index in ansiColorNames.indices {
-            add("Ansi \(index) Color", ansiColorNames[index])
+        add(profile.foreground, "foreground")
+        add(profile.background, "background")
+        add(profile.cursor, "cursor")
+        for (termyKey, color) in zip(ansiColorNames, profile.ansiColors) {
+            add(color, termyKey)
         }
         return colors
     }
 
-    private static func iTerm2Hex(_ dict: [String: Any]) -> String? {
-        guard let red = dict["Red Component"] as? Double,
-              let green = dict["Green Component"] as? Double,
-              let blue = dict["Blue Component"] as? Double
-        else {
-            return nil
-        }
+    private static func iTerm2Hex(_ color: ITerm2Color) -> String? {
         func channel(_ value: Double) -> Int {
             max(0, min(255, Int((value * 255).rounded())))
         }
-        return String(format: "#%02x%02x%02x", channel(red), channel(green), channel(blue))
+        return String(
+            format: "#%02x%02x%02x",
+            channel(color.red),
+            channel(color.green),
+            channel(color.blue)
+        )
     }
 
     /// Apply imported settings to the Termy config, returning the keys written.

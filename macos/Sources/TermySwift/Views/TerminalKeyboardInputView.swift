@@ -838,8 +838,8 @@ extension KeyboardCaptureView: @MainActor NSTextInputClient {
     }
 
     func firstRect(forCharacterRange range: NSRange, actualRange: NSRangePointer?) -> NSRect {
-        // Anchors the candidate window to the view; exact cursor placement is a
-        // later refinement once the cursor cell is plumbed through.
+        // Anchor IME candidate windows to the input view; cursor-cell
+        // coordinates are not exposed through this NSView bridge.
         guard let window else {
             return .zero
         }

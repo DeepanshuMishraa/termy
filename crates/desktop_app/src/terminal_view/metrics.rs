@@ -214,11 +214,6 @@ impl DebugOverlayStats {
         self.terminal_redraws = self.terminal_redraws.saturating_add(1);
     }
 
-    #[allow(dead_code)]
-    pub(super) fn record_alt_screen_fallback_redraw(&mut self) {
-        self.alt_screen_fallback_redraws = self.alt_screen_fallback_redraws.saturating_add(1);
-    }
-
     fn refresh_process_metrics(&mut self) {
         let Some(pid) = self.pid else {
             self.cpu_percent = 0.0;

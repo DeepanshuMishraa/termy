@@ -14,12 +14,8 @@ struct NativeRenderMetricsSnapshot: Codable, Equatable {
     var encodedJSON: String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        guard let data = try? encoder.encode(self),
-              let json = String(data: data, encoding: .utf8)
-        else {
-            return "{}"
-        }
-        return json
+        let data = try! encoder.encode(self)
+        return String(decoding: data, as: UTF8.self)
     }
 }
 

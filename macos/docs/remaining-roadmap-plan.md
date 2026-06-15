@@ -4,10 +4,6 @@ After this session the roadmap is complete except for **one multi-week feature**
 (tmux control mode) and **one infra-gated step** (P6's GPU frame-time comparison).
 Both are scoped below. Verified against the source on 2026-06-08.
 
-> Items previously listed here that are now **done**: line-mark scrollbar markers
-> (cap-aware command marks, `CommandMarkTests`) and the native P6 benchmark with
-> render-plan build-time percentiles (`TermyBenchmarkRunner`).
-
 ---
 
 ## 1. tmux control mode (M3) — multi-week, architecturally gated

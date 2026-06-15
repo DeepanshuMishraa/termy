@@ -37,14 +37,6 @@ struct NativeCloseCandidate {
     required_coverage: u16,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct NativePaneRect {
-    left: u16,
-    top: u16,
-    width: u16,
-    height: u16,
-}
-
 impl TerminalView {
     pub(in super::super) fn execute_tab_command_action(
         &mut self,
@@ -1142,7 +1134,7 @@ impl TerminalView {
             active_pane.top = current_size.1;
             active_pane.width = current_size.2;
             active_pane.height = current_size.3;
-            // Resize terminal immediately to avoid visual "crump" on first render
+            // Resize terminal before the first render so pane geometry and grid size match.
             active_pane.terminal.resize(TerminalSize {
                 cols: current_size.2,
                 rows: current_size.3,

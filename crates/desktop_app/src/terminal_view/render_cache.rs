@@ -1,4 +1,5 @@
-use super::*;
+use super::SelectionPos;
+use termy_terminal_ui::{TerminalGridPaintCacheHandle, TerminalGridRows};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::terminal_view) struct TerminalPaneCellColorTransformKey {

@@ -172,29 +172,21 @@ impl TerminalView {
         let size = terminal.size();
         let rows = size.rows as i32;
 
-        // Calculate required scroll to make match visible
         let (display_offset, history_size) = terminal.scroll_state();
 
-        // Convert match line to viewport-relative position
-        // match.line is in Alacritty coordinates (negative = history)
+        // `current.line` uses Alacritty coordinates: negative values are scrollback.
         let viewport_row = current.line + display_offset as i32;
 
-        // Check if match is in the current viewport
         if viewport_row >= 0 && viewport_row < rows {
-            // Match is already visible
             return;
         }
 
-        // Scroll to make the match visible (centered if possible)
         let target_offset = if current.line < 0 {
-            // Match is in scrollback history
             (-current.line) as usize
         } else {
-            // Match is below viewport - scroll down
             0
         };
 
-        // Clamp to valid range
         let target_offset = target_offset.min(history_size);
         let delta = target_offset as i32 - display_offset as i32;
 
@@ -600,7 +592,6 @@ fn collect_search_line_texts(
     line_texts
 }
 
-/// Extract text from a terminal grid line
 fn extract_line_text(
     grid: &alacritty_terminal::grid::Grid<alacritty_terminal::term::cell::Cell>,
     line_idx: i32,
@@ -610,7 +601,6 @@ fn extract_line_text(
     let line = Line(line_idx);
     let cols = grid.columns();
 
-    // Check if line is within grid bounds
     let total_lines = grid.total_lines();
     if line_idx < -(total_lines as i32 - grid.screen_lines() as i32)
         || line_idx >= grid.screen_lines() as i32

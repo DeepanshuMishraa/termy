@@ -1312,7 +1312,7 @@ pub struct Terminal {
 }
 
 impl Terminal {
-    /// Create a new terminal with the given size
+    /// Create a new terminal with the given size.
     pub fn new(
         size: TerminalSize,
         configured_working_dir: Option<&str>,
@@ -1321,18 +1321,15 @@ impl Terminal {
         runtime_config: Option<&TerminalRuntimeConfig>,
         startup_command: Option<&str>,
     ) -> anyhow::Result<Self> {
-        // Create event channels
         let (events_tx, events_rx) = unbounded();
         let runtime_config = runtime_config.cloned().unwrap_or_default();
         let shell = startup_shell(&runtime_config, startup_command);
 
-        // Get working directory
         let working_directory = resolve_launch_working_directory(
             configured_working_dir,
             runtime_config.working_dir_fallback,
         );
 
-        // Configure PTY
         let pty_options = PtyOptions {
             shell: Some(shell),
             working_directory,
@@ -1342,15 +1339,12 @@ impl Terminal {
             escape_args: true,
         };
 
-        // Create terminal config with configurable scrollback history
         let term_config = runtime_config.term_options().term_config();
 
-        // Create the terminal emulator
         let listener = JsonEventListener::new(events_tx, event_wakeup_tx);
         let term = Term::new(term_config, &size, listener.clone());
         let term = Arc::new(FairMutex::new(term));
 
-        // Create PTY
         let window_id = 0;
         let pty = tty::new(&pty_options, size.into(), window_id)?;
         #[cfg(unix)]
@@ -1358,7 +1352,6 @@ impl Terminal {
         #[cfg(not(unix))]
         let child_pid = pty_child_pid(&pty);
 
-        // Create and spawn the event loop
         let event_loop = NativeEventLoop::new(
             term.clone(),
             listener.clone(),

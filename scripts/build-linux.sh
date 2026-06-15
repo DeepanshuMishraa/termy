@@ -161,13 +161,12 @@ case "$FORMAT" in
     cp "$BINARY_PATH" "$STAGING_DIR/$APP_NAME_LOWER/"
     cp "$CLI_BINARY_PATH" "$STAGING_DIR/$APP_NAME_LOWER/"
 
-    # Copy assets if they exist
     if [[ -d "$REPO_ROOT/assets" ]]; then
       mkdir -p "$STAGING_DIR/$APP_NAME_LOWER/assets"
       cp -r "$REPO_ROOT/assets/"* "$STAGING_DIR/$APP_NAME_LOWER/assets/" 2>/dev/null || true
     fi
 
-    # Create a simple install script
+    # Embed a tarball-local installer.
     cat > "$STAGING_DIR/$APP_NAME_LOWER/install.sh" <<'INSTALL_SCRIPT'
 #!/usr/bin/env bash
 set -euo pipefail

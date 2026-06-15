@@ -92,24 +92,41 @@ final class TerminalConfigImportTests: XCTestCase {
     }
 
     func testITerm2ParsesDefaultProfileColors() {
-        func color(_ r: Double, _ g: Double, _ b: Double) -> [String: Any] {
-            ["Red Component": r, "Green Component": g, "Blue Component": b]
+        func color(_ r: Double, _ g: Double, _ b: Double) -> String {
+            """
+            <dict>
+                <key>Red Component</key><real>\(r)</real>
+                <key>Green Component</key><real>\(g)</real>
+                <key>Blue Component</key><real>\(b)</real>
+            </dict>
+            """
         }
-        let plist: [String: Any] = [
-            "Default Bookmark Guid": "B",
-            "New Bookmarks": [
-                ["Guid": "A", "Background Color": color(1, 1, 1)],
-                [
-                    "Guid": "B",
-                    "Foreground Color": color(0.921568, 0.858823, 0.698039),
-                    "Background Color": color(0.113725, 0.125490, 0.129411),
-                    "Cursor Color": color(0.980392, 0.741176, 0.184313),
-                    "Ansi 0 Color": color(0.156862, 0.156862, 0.156862),
-                    "Ansi 15 Color": color(0.984313, 0.945098, 0.780392),
-                ],
-            ],
-        ]
-        let result = TerminalConfigImport.parseITerm2(plist)
+        let plist = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" \
+        "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+            <key>Default Bookmark Guid</key><string>B</string>
+            <key>New Bookmarks</key>
+            <array>
+                <dict>
+                    <key>Guid</key><string>A</string>
+                    <key>Background Color</key>\(color(1, 1, 1))
+                </dict>
+                <dict>
+                    <key>Guid</key><string>B</string>
+                    <key>Foreground Color</key>\(color(0.921568, 0.858823, 0.698039))
+                    <key>Background Color</key>\(color(0.113725, 0.125490, 0.129411))
+                    <key>Cursor Color</key>\(color(0.980392, 0.741176, 0.184313))
+                    <key>Ansi 0 Color</key>\(color(0.156862, 0.156862, 0.156862))
+                    <key>Ansi 15 Color</key>\(color(0.984313, 0.945098, 0.780392))
+                </dict>
+            </array>
+        </dict>
+        </plist>
+        """
+        let result = TerminalConfigImport.parseITerm2Data(Data(plist.utf8))
         // Default profile is "B", not the first bookmark "A".
         XCTAssertEqual(result.colors["background"], "#1d2021")
         XCTAssertEqual(result.colors["foreground"], "#ebdbb2")
@@ -119,7 +136,18 @@ final class TerminalConfigImportTests: XCTestCase {
     }
 
     func testITerm2WithoutBookmarksIsEmpty() {
-        XCTAssertTrue(TerminalConfigImport.parseITerm2([:]).isEmpty)
+        let plist = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" \
+        "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+            <key>New Bookmarks</key>
+            <array/>
+        </dict>
+        </plist>
+        """
+        XCTAssertTrue(TerminalConfigImport.parseITerm2Data(Data(plist.utf8)).isEmpty)
     }
 
     func testNormalizeTriggerConvertsModifiers() {

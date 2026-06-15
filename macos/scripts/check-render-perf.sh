@@ -22,7 +22,11 @@ swift build --package-path "$MACOS_DIR" >/dev/null
 BINARY="$MACOS_DIR/.build/debug/TermySwift"
 [[ -x "$BINARY" ]] || { echo "render-perf: built binary not found at $BINARY" >&2; exit 1; }
 
-OUTPUT="$("$BINARY" --benchmark 2>/dev/null)"
+if ! OUTPUT="$("$BINARY" --benchmark 2>&1)"; then
+    echo "render-perf: benchmark command failed" >&2
+    printf '%s\n' "$OUTPUT" >&2
+    exit 1
+fi
 METRICS_LINE="$(printf '%s\n' "$OUTPUT" | grep '^native-render-metrics ' | sed 's/^native-render-metrics //')"
 TIMES_LINE="$(printf '%s\n' "$OUTPUT" | grep '^native-build-times ' | sed 's/^native-build-times //')"
 

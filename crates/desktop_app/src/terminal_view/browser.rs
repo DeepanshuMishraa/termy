@@ -1,5 +1,5 @@
 //! Embedded browser tabs. A browser tab hosts a native webview (wry /
-//! WKWebView, macOS only for now) layered as a child view over the gpui
+//! WKWebView on macOS) layered as a child view over the gpui
 //! window. gpui renders the chrome (URL bar, buttons); every frame the
 //! webview's bounds and visibility are synced to the tab content area, and
 //! hidden whenever its tab is not the visible one (or an overlay like the
