@@ -5,6 +5,11 @@ import tailwindcss from "@tailwindcss/vite";
 import mdx from "fumadocs-mdx/vite";
 import { nitro } from "nitro/vite";
 
+// Default to the `bun` preset for local dev and the Docker image. Deployment
+// targets (e.g. Vercel) override this via the NITRO_PRESET env var at build
+// time — see vercel.json.
+const preset = process.env.NITRO_PRESET ?? "bun";
+
 export default defineConfig({
   server: {
     port: 3000,
@@ -19,7 +24,7 @@ export default defineConfig({
     }),
     react(),
     nitro({
-      preset: "bun",
+      preset,
       traceDeps: ["tslib*"],
     }),
   ],
