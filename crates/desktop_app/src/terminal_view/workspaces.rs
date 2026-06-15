@@ -11,6 +11,12 @@ pub(crate) struct WorkspaceEntry {
     pub(crate) active_tab: usize,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct WorkspaceSidebarResizeDragState {
+    start_window_x: f32,
+    start_width: f32,
+}
+
 impl WorkspaceEntry {
     pub(crate) fn new(id: u64) -> Self {
         Self {
@@ -23,6 +29,17 @@ impl WorkspaceEntry {
 }
 
 impl TerminalView {
+    pub(crate) fn clamp_workspace_sidebar_width(width: f32) -> f32 {
+        if width.is_finite() {
+            width.clamp(
+                termy_config_core::MIN_SIDEBAR_WIDTH,
+                termy_config_core::MAX_SIDEBAR_WIDTH,
+            )
+        } else {
+            termy_config_core::DEFAULT_SIDEBAR_WIDTH
+        }
+    }
+
     pub(crate) fn workspace_sidebar_visible(&self) -> bool {
         self.workspace_sidebar_enabled
             && !self.simple_mode
@@ -33,10 +50,67 @@ impl TerminalView {
     /// terminal grid sizer and window-to-surface mouse coordinate mapping.
     pub(crate) fn workspace_sidebar_width(&self) -> f32 {
         if self.workspace_sidebar_visible() {
-            WORKSPACE_SIDEBAR_WIDTH
+            self.workspace_sidebar_width
         } else {
             0.0
         }
+    }
+
+    pub(crate) fn begin_workspace_sidebar_resize_drag(&mut self, window_x: f32) {
+        self.workspace_sidebar_resize_drag = Some(WorkspaceSidebarResizeDragState {
+            start_window_x: window_x,
+            start_width: self.workspace_sidebar_width,
+        });
+    }
+
+    pub(crate) fn workspace_sidebar_resize_drag_active(&self) -> bool {
+        self.workspace_sidebar_resize_drag.is_some()
+    }
+
+    pub(crate) fn update_workspace_sidebar_resize_drag(&mut self, window_x: f32) -> bool {
+        let Some(drag) = self.workspace_sidebar_resize_drag else {
+            return false;
+        };
+        let next_width = Self::clamp_workspace_sidebar_width(
+            drag.start_width + (window_x - drag.start_window_x),
+        );
+        if (next_width - self.workspace_sidebar_width).abs() < f32::EPSILON {
+            return false;
+        }
+        self.workspace_sidebar_width = next_width;
+        self.mark_tab_strip_layout_dirty();
+        true
+    }
+
+    pub(crate) fn finish_workspace_sidebar_resize_drag(&mut self) -> bool {
+        let Some(drag) = self.workspace_sidebar_resize_drag.take() else {
+            return false;
+        };
+        if (self.workspace_sidebar_width - drag.start_width).abs() >= 1.0
+            && let Err(error) = crate::config::set_root_setting(
+                termy_config_core::RootSettingId::SidebarWidth,
+                &format!("{:.0}", self.workspace_sidebar_width),
+            )
+        {
+            log::error!("Failed to persist workspace sidebar width: {error}");
+        }
+        self.mark_tab_strip_layout_dirty();
+        true
+    }
+
+    pub(crate) fn sync_workspace_sidebar_width_from_config(
+        &mut self,
+        configured_width: f32,
+    ) -> bool {
+        if self.workspace_sidebar_resize_drag.is_some() {
+            return false;
+        }
+        let next_width = Self::clamp_workspace_sidebar_width(configured_width);
+        if (next_width - self.workspace_sidebar_width).abs() < f32::EPSILON {
+            return false;
+        }
+        self.workspace_sidebar_width = next_width;
+        true
     }
 
     pub(crate) fn has_other_workspaces(&self) -> bool {
@@ -315,5 +389,27 @@ impl TerminalView {
                 }
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn workspace_sidebar_width_clamps_to_configured_bounds() {
+        assert_eq!(
+            TerminalView::clamp_workspace_sidebar_width(1.0),
+            termy_config_core::MIN_SIDEBAR_WIDTH
+        );
+        assert_eq!(TerminalView::clamp_workspace_sidebar_width(240.0), 240.0);
+        assert_eq!(
+            TerminalView::clamp_workspace_sidebar_width(10_000.0),
+            termy_config_core::MAX_SIDEBAR_WIDTH
+        );
+        assert_eq!(
+            TerminalView::clamp_workspace_sidebar_width(f32::NAN),
+            termy_config_core::DEFAULT_SIDEBAR_WIDTH
+        );
     }
 }

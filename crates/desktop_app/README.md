@@ -2,6 +2,8 @@
 
 Main desktop application.
 
+## Owner
+
 This crate owns the GPUI app shell, windows, titlebar/chrome, menus, settings, onboarding, command execution, and user-visible desktop workflows.
 
 Important internal areas:
@@ -13,9 +15,15 @@ Important internal areas:
 
 Push reusable headless behavior into `termy_core` or a pure domain crate. Push GPUI-adjacent terminal adapter behavior into `termy_terminal_ui` only when it is reusable outside the desktop app shell.
 
-Validation:
+## Validation
 
 ```sh
 cargo test -p termy
 cargo check -p termy
 ```
+
+## Forbidden Dependencies
+
+- `termy_ffi`
+- native host app packages
+- website packages

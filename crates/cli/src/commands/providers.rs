@@ -12,12 +12,22 @@ pub fn config_file_path() -> Result<PathBuf, String> {
 }
 
 pub fn list_action_lines() -> Vec<String> {
-    action_lines_for_tmux_enabled(load_config_for_providers().tmux_enabled)
+    let config = load_config_for_providers();
+    action_lines_for_capabilities(
+        config.tmux_enabled,
+        detect_install_cli_available(),
+        config.browser_tabs_enabled,
+    )
 }
 
 pub fn list_keybind_lines() -> Vec<String> {
     let config = load_config_for_providers();
-    keybind_lines_for_tmux_enabled(&config.keybind_lines, config.tmux_enabled)
+    keybind_lines_for_capabilities(
+        &config.keybind_lines,
+        config.tmux_enabled,
+        detect_install_cli_available(),
+        config.browser_tabs_enabled,
+    )
 }
 
 pub fn list_theme_lines() -> Vec<String> {
@@ -114,12 +124,22 @@ pub fn load_config_for_providers() -> AppConfig {
     AppConfig::default()
 }
 
+#[cfg(test)]
 fn action_lines_for_tmux_enabled(tmux_enabled: bool) -> Vec<String> {
-    action_lines_for_capabilities(tmux_enabled, detect_install_cli_available())
+    action_lines_for_capabilities(
+        tmux_enabled,
+        detect_install_cli_available(),
+        AppConfig::default().browser_tabs_enabled,
+    )
 }
 
-fn action_lines_for_capabilities(tmux_enabled: bool, install_cli_available: bool) -> Vec<String> {
-    let capabilities = command_capabilities(tmux_enabled, install_cli_available);
+fn action_lines_for_capabilities(
+    tmux_enabled: bool,
+    install_cli_available: bool,
+    browser_tabs_enabled: bool,
+) -> Vec<String> {
+    let capabilities =
+        command_capabilities(tmux_enabled, install_cli_available, browser_tabs_enabled);
 
     CommandId::all()
         .map(|id| {
@@ -200,19 +220,27 @@ fn convert_config_color(color: termy_config_core::Rgb8) -> termy_theme_core::Rgb
     termy_theme_core::Rgb8::new(color.r, color.g, color.b)
 }
 
+#[cfg(test)]
 fn keybind_lines_for_tmux_enabled(
     lines: &[termy_config_core::KeybindConfigLine],
     tmux_enabled: bool,
 ) -> Vec<String> {
-    keybind_lines_for_capabilities(lines, tmux_enabled, detect_install_cli_available())
+    keybind_lines_for_capabilities(
+        lines,
+        tmux_enabled,
+        detect_install_cli_available(),
+        AppConfig::default().browser_tabs_enabled,
+    )
 }
 
 fn keybind_lines_for_capabilities(
     lines: &[termy_config_core::KeybindConfigLine],
     tmux_enabled: bool,
     install_cli_available: bool,
+    browser_tabs_enabled: bool,
 ) -> Vec<String> {
-    let capabilities = command_capabilities(tmux_enabled, install_cli_available);
+    let capabilities =
+        command_capabilities(tmux_enabled, install_cli_available, browser_tabs_enabled);
 
     resolve_keybinds_for_lines(lines)
         .into_iter()
@@ -246,10 +274,15 @@ fn detect_install_cli_available() -> bool {
     !termy_cli_install_core::is_cli_installed()
 }
 
-fn command_capabilities(tmux_enabled: bool, install_cli_available: bool) -> CommandCapabilities {
+fn command_capabilities(
+    tmux_enabled: bool,
+    install_cli_available: bool,
+    browser_tabs_enabled: bool,
+) -> CommandCapabilities {
     CommandCapabilities {
         tmux_runtime_active: tmux_enabled,
         install_cli_available,
+        browser_tabs_enabled,
     }
 }
 
@@ -392,7 +425,7 @@ mod tests {
 
     #[test]
     fn list_actions_reports_install_cli_unavailable_when_probe_is_false() {
-        let actions = action_lines_for_capabilities(true, false);
+        let actions = action_lines_for_capabilities(true, false, false);
         let install_cli_line = actions
             .iter()
             .find(|line| line.starts_with(CommandId::InstallCli.config_name()))
@@ -403,8 +436,32 @@ mod tests {
     }
 
     #[test]
+    fn list_actions_reports_browser_tabs_unavailable_when_setting_is_false() {
+        let actions = action_lines_for_capabilities(true, true, false);
+        let browser_tab_line = actions
+            .iter()
+            .find(|line| line.starts_with(CommandId::NewBrowserTab.config_name()))
+            .expect("missing new_browser_tab action metadata");
+        assert!(browser_tab_line.contains("available=false"));
+        assert!(browser_tab_line.contains("tmux_required=false"));
+        assert!(browser_tab_line.contains("restart_required=false"));
+    }
+
+    #[test]
+    fn list_actions_reports_browser_tabs_available_when_setting_is_true() {
+        let actions = action_lines_for_capabilities(true, true, true);
+        let browser_tab_line = actions
+            .iter()
+            .find(|line| line.starts_with(CommandId::NewBrowserTab.config_name()))
+            .expect("missing new_browser_tab action metadata");
+        assert!(browser_tab_line.contains("available=true"));
+        assert!(browser_tab_line.contains("tmux_required=false"));
+        assert!(browser_tab_line.contains("restart_required=false"));
+    }
+
+    #[test]
     fn list_actions_reports_restart_not_required_when_tmux_runtime_is_active() {
-        let actions = action_lines_for_capabilities(true, true);
+        let actions = action_lines_for_capabilities(true, true, false);
         let resize_pane_line = actions
             .iter()
             .find(|line| line.starts_with(CommandId::ResizePaneLeft.config_name()))
@@ -462,6 +519,7 @@ mod tests {
             }],
             true,
             false,
+            false,
         );
         let install_cli_line = keybind_lines
             .iter()
@@ -481,6 +539,7 @@ mod tests {
             }],
             true,
             true,
+            false,
         );
         let resize_pane_line = keybind_lines
             .iter()

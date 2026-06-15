@@ -6853,6 +6853,7 @@ dependencies = [
  "flume",
  "serde",
  "serde_json",
+ "tempfile",
  "termy_cli_install_core",
  "termy_command_core",
  "termy_config_core",

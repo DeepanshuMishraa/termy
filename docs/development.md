@@ -1,5 +1,19 @@
 # Development
 
+## Crash Logs
+
+Termy appends panic reports to a crash log before Rust's normal panic output
+runs. The default location is:
+
+- Linux: `${XDG_DATA_HOME:-~/.local/share}/termy/crash.log`
+- Windows: `%LOCALAPPDATA%\termy\crash.log`
+- macOS: `~/Library/Application Support/termy/crash.log`
+- Fallback when no platform data directory is available: `./termy-crash.log`
+
+Set `TERMY_CRASH_LOG_PATH=/path/to/crash.log` to override the location when
+debugging or collecting a support artifact. Crash reports include the Termy
+version, panic location, panic message, thread name, and a captured backtrace.
+
 ## Render metrics (debug-only)
 
 Enable render churn metrics in debug builds:

@@ -18,7 +18,6 @@ pub(crate) fn app_menus(
         // Menus are not rebuilt on config reload, so feature-gated entries
         // stay visible; execution gates on the live settings with a toast.
         browser_tabs_enabled: true,
-        git_panel_enabled: true,
     };
 
     CommandAction::menu_roots()
@@ -93,10 +92,7 @@ fn menu_item_title(
         Some(CommandUnavailableReason::InstallCliAlreadyInstalled) => {
             Some(INSTALL_CLI_INSTALLED_TITLE)
         }
-        Some(
-            CommandUnavailableReason::BrowserTabsDisabled
-            | CommandUnavailableReason::GitPanelDisabled,
-        ) => None,
+        Some(CommandUnavailableReason::BrowserTabsDisabled) => None,
         None => unreachable!("disabled command must include an unavailable reason"),
     }
 }
@@ -227,7 +223,6 @@ mod tests {
             tmux_runtime_active: true,
             install_cli_available: false,
             browser_tabs_enabled: true,
-            git_panel_enabled: true,
         });
         assert_eq!(
             availability.reason,
@@ -267,7 +262,6 @@ mod tests {
             tmux_runtime_active: false,
             install_cli_available: true,
             browser_tabs_enabled: true,
-            git_panel_enabled: true,
         };
         for action in [
             CommandAction::SplitPaneVertical,

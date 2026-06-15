@@ -4,6 +4,23 @@ use termy_terminal_ui::{
     encode_mouse_report,
 };
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(in crate::terminal_view) struct MouseReportTargetCell {
+    pub(in crate::terminal_view) pane_id: String,
+    pub(in crate::terminal_view) col: usize,
+    pub(in crate::terminal_view) row: usize,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(in crate::terminal_view) struct MouseReportingState {
+    pub(in crate::terminal_view) left_button: Option<MouseReportTargetCell>,
+    pub(in crate::terminal_view) middle_button: Option<MouseReportTargetCell>,
+    pub(in crate::terminal_view) right_button: Option<MouseReportTargetCell>,
+    pub(in crate::terminal_view) hover_target: Option<MouseReportTargetCell>,
+    pub(in crate::terminal_view) scroll_accumulator_x: f32,
+    pub(in crate::terminal_view) scroll_accumulator_y: f32,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MouseTrackedButton {
     Left,

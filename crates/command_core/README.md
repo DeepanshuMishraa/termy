@@ -2,13 +2,22 @@
 
 Shared command catalog.
 
+## Owner
+
 This crate owns Termy's public command identifiers, command metadata, and command/keybinding-facing definitions. It should stay pure and must not depend on GPUI or config parsing.
 
 Use this crate when adding, renaming, documenting, or grouping user-facing commands. Wire execution in `crates/desktop_app/`.
 
-Validation:
+## Validation
 
 ```sh
 cargo test -p termy_command_core
 just check-keybindings-doc
 ```
+
+## Forbidden Dependencies
+
+- `gpui`
+- `termy_config_core`
+- `termy_terminal_ui`
+- `termy` / `crates/desktop_app`

@@ -9,6 +9,8 @@ use gpui::{ElementInputHandler, canvas};
 use std::sync::Arc;
 use std::time::Instant;
 use termy_terminal_ui::add_span_damage_compute_us;
+#[cfg(debug_assertions)]
+use termy_terminal_ui::terminal_ui_render_metrics_snapshot;
 
 fn blend_rgb_only(base: gpui::Rgba, target: gpui::Rgba, factor: f32) -> gpui::Rgba {
     let factor = factor.clamp(0.0, 1.0);
@@ -2102,18 +2104,6 @@ impl TerminalView {
                                 cx,
                                 |view, cx| view.add_browser_tab(cx),
                             ))
-                        })
-                        .when(self.git_panel_enabled, |panel| {
-                            panel.child(menu_row(
-                                "new-tab-menu-git-panel",
-                                if self.git_panel_open {
-                                    "Hide Git Panel"
-                                } else {
-                                    "Show Git Panel"
-                                },
-                                cx,
-                                |view, cx| view.toggle_git_panel(cx),
-                            ))
                         }),
                 )
                 .into_any_element(),
@@ -3069,11 +3059,6 @@ impl Render for TerminalView {
             .then(|| self.render_workspace_sidebar(&colors, &ui_font_family, tabbar_bg, cx));
         self.sync_browser_tab_titles();
         self.sync_browser_webviews(window);
-        self.apply_git_panel_updates();
-        self.schedule_git_panel_poll(cx);
-        let git_panel = self
-            .git_panel_visible()
-            .then(|| self.render_git_panel(&colors, &ui_font_family, cx));
         let browser_chrome = self
             .active_tab_is_browser()
             .then(|| self.render_browser_chrome(&colors, &ui_font_family, cx));
@@ -3233,10 +3218,16 @@ impl Render for TerminalView {
             .on_mouse_up_out(
                 MouseButton::Left,
                 cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
+                    if this.finish_workspace_sidebar_resize_drag() {
+                        cx.notify();
+                    }
                     this.disarm_titlebar_window_move();
                     this.commit_tab_drag(cx);
                 }),
             )
+            .when(self.workspace_sidebar_resize_drag_active(), |s| {
+                s.cursor_col_resize()
+            })
             .children(titlebar_element)
             .child(
                 div()
@@ -3402,8 +3393,7 @@ impl Render for TerminalView {
                                     )
                                     .children(inspector_panel),
                             )
-                            .children(tab_sidebar)
-                            .children(git_panel),
+                            .children(tab_sidebar),
                     ),
             )
             .child(overlay_view);

@@ -49,7 +49,6 @@ enum InlineInputTarget {
     RenameTab,
     Search,
     BrowserUrl,
-    GitCommit,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1154,8 +1153,7 @@ impl TerminalView {
             InlineInputTarget::CommandPalette => InlineInputNotifyTarget::Overlay,
             InlineInputTarget::RenameTab
             | InlineInputTarget::Search
-            | InlineInputTarget::BrowserUrl
-            | InlineInputTarget::GitCommit => InlineInputNotifyTarget::Parent,
+            | InlineInputTarget::BrowserUrl => InlineInputNotifyTarget::Parent,
         }
     }
 
@@ -1183,8 +1181,6 @@ impl TerminalView {
             Some(InlineInputTarget::RenameTab)
         } else if self.browser_url_editing() {
             Some(InlineInputTarget::BrowserUrl)
-        } else if self.git_commit_editing() {
-            Some(InlineInputTarget::GitCommit)
         } else {
             None
         }
@@ -1243,7 +1239,6 @@ impl TerminalView {
             InlineInputTarget::BrowserUrl => {
                 self.active_browser_state().map(|state| &state.url_input)
             }
-            InlineInputTarget::GitCommit => Some(&self.git_panel.commit_input),
         }
     }
 
@@ -1257,7 +1252,6 @@ impl TerminalView {
                 .get_mut(self.active_tab)
                 .and_then(TerminalTab::browser_state_mut)
                 .map(|state| &mut state.url_input),
-            InlineInputTarget::GitCommit => Some(&mut self.git_panel.commit_input),
         }
     }
 
@@ -1311,10 +1305,6 @@ impl TerminalView {
                     mutate(&mut state.url_input);
                 }
                 self.notify_for_inline_input_target(InlineInputTarget::BrowserUrl, cx);
-            }
-            Some(InlineInputTarget::GitCommit) => {
-                mutate(&mut self.git_panel.commit_input);
-                self.notify_for_inline_input_target(InlineInputTarget::GitCommit, cx);
             }
             None => {}
         }

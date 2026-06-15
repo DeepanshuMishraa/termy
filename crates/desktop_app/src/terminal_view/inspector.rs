@@ -4,6 +4,7 @@
 
 use super::*;
 use std::collections::VecDeque;
+use termy_terminal_ui::terminal_ui_render_metrics_snapshot;
 
 const INSPECTOR_DEFAULT_HEIGHT: f32 = 280.0;
 const INSPECTOR_MIN_HEIGHT: f32 = 140.0;
@@ -1046,7 +1047,7 @@ impl TerminalView {
     ) -> AnyElement {
         let stats = &self.debug_overlay_stats;
         let terminal_ui = terminal_ui_render_metrics_snapshot();
-        let mut rows: Vec<(&'static str, String)> = vec![
+        let base_rows: Vec<(&'static str, String)> = vec![
             ("FPS", format!("{:.1}", stats.fps)),
             (
                 "Frame p50 / p95 / p99",
@@ -1103,47 +1104,56 @@ impl TerminalView {
             ),
         ];
 
-        #[cfg(debug_assertions)]
-        {
-            let counters = self.render_metrics.counters;
-            let delta = counters.saturating_sub(self.render_metrics.last_emit_counters);
-            rows.extend([
-                (
-                    "Render Metrics Enabled",
-                    bool_label(self.render_metrics.enabled).to_string(),
-                ),
-                (
-                    "Cache Full / Partial / Reuse",
-                    format!(
-                        "{} / {} / {}",
-                        counters.cache_full_count,
-                        counters.cache_partial_count,
-                        counters.cache_reuse_count
+        let rows = {
+            #[cfg(debug_assertions)]
+            let rows = {
+                let mut rows = base_rows;
+                let counters = self.render_metrics.counters;
+                let delta = counters.saturating_sub(self.render_metrics.last_emit_counters);
+                rows.extend([
+                    (
+                        "Render Metrics Enabled",
+                        bool_label(self.render_metrics.enabled).to_string(),
                     ),
-                ),
-                (
-                    "Dirty Spans / Patched Cells",
-                    format!(
-                        "{} / {}",
-                        counters.dirty_span_count, counters.patched_cell_count
+                    (
+                        "Cache Full / Partial / Reuse",
+                        format!(
+                            "{} / {} / {}",
+                            counters.cache_full_count,
+                            counters.cache_partial_count,
+                            counters.cache_reuse_count
+                        ),
                     ),
-                ),
-                (
-                    "Since Last Log: Render / Full / Partial / Reuse",
-                    format!(
-                        "{} / {} / {} / {}",
-                        delta.render_count,
-                        delta.cache_full_count,
-                        delta.cache_partial_count,
-                        delta.cache_reuse_count
+                    (
+                        "Dirty Spans / Patched Cells",
+                        format!(
+                            "{} / {}",
+                            counters.dirty_span_count, counters.patched_cell_count
+                        ),
                     ),
-                ),
-                (
-                    "Since Last Log: Dirty / Patched",
-                    format!("{} / {}", delta.dirty_span_count, delta.patched_cell_count),
-                ),
-            ]);
-        }
+                    (
+                        "Since Last Log: Render / Full / Partial / Reuse",
+                        format!(
+                            "{} / {} / {} / {}",
+                            delta.render_count,
+                            delta.cache_full_count,
+                            delta.cache_partial_count,
+                            delta.cache_reuse_count
+                        ),
+                    ),
+                    (
+                        "Since Last Log: Dirty / Patched",
+                        format!("{} / {}", delta.dirty_span_count, delta.patched_cell_count),
+                    ),
+                ]);
+                rows
+            };
+
+            #[cfg(not(debug_assertions))]
+            let rows = base_rows;
+
+            rows
+        };
 
         let mut content = div().flex().flex_col();
         for (label, value) in rows {

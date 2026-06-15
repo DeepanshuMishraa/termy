@@ -10,6 +10,45 @@ pub(super) struct TerminalScrollbarLayout {
     pub(super) viewport_rows: usize,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(super) struct TerminalScrollbarDragState {
+    pub(super) thumb_grab_offset: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct TerminalScrollbarTrackHoldState {
+    pub(super) local_y: f32,
+    pub(super) track_height: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct TerminalScrollbarHit {
+    pub(super) local_y: f32,
+    pub(super) thumb_hit: bool,
+    pub(super) thumb_top: f32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct TerminalScrollbarMarkerCacheKey {
+    pub(super) results_revision: u64,
+    pub(super) history_size: usize,
+    pub(super) viewport_rows: usize,
+    pub(super) marker_top_limit_bucket: i32,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(super) struct TerminalScrollbarMarkerCache {
+    pub(super) key: Option<TerminalScrollbarMarkerCacheKey>,
+    pub(super) marker_tops: Vec<f32>,
+}
+
+impl TerminalScrollbarMarkerCache {
+    pub(super) fn clear(&mut self) {
+        self.key = None;
+        self.marker_tops.clear();
+    }
+}
+
 pub(super) fn compute_layout(
     display_offset: usize,
     history_size: usize,

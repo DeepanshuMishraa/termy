@@ -19,6 +19,7 @@ Where tests live and which command to run for a given change.
 - CI: macOS `architecture-checks` job (when tmux available).
 
 Every `#[ignore]` must reference a tracking issue in a comment.
+`just check-boundaries` enforces that the repo stays at or below 10 ignored tests.
 
 ## Before opening a PR
 

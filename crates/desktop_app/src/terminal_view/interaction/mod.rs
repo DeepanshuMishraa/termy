@@ -14,3 +14,10 @@ mod quit;
 mod scroll;
 mod selection;
 mod terminal;
+
+pub(super) use context_menu::{TabContextMenuState, TerminalContextMenuState};
+pub(super) use input::PendingKeyRelease;
+pub(super) use mouse::{PendingCursorMoveClick, PendingCursorMovePreview};
+pub(super) use mouse_reporting::{MouseReportTargetCell, MouseReportingState};
+pub(super) use pane_move::{PaneDropRegion, PaneMoveDragState};
+pub(super) use selection::HoveredLink;

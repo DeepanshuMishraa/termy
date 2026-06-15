@@ -38,7 +38,6 @@ impl TerminalView {
             tmux_runtime_active: self.runtime_uses_tmux(),
             install_cli_available: self.install_cli_available(),
             browser_tabs_enabled: self.browser_tabs_enabled,
-            git_panel_enabled: self.git_panel_enabled,
         }
     }
 
@@ -91,11 +90,6 @@ impl TerminalView {
                 }
                 Some(CommandUnavailableReason::BrowserTabsDisabled) => {
                     termy_toast::info("Enable Browser Tabs in Settings to use this command");
-                    self.notify_overlay(cx);
-                    return;
-                }
-                Some(CommandUnavailableReason::GitPanelDisabled) => {
-                    termy_toast::info("Enable Git Panel in Settings to use this command");
                     self.notify_overlay(cx);
                     return;
                 }
@@ -157,9 +151,6 @@ impl TerminalView {
                 if self.set_tab_bar_visibility(next_visibility) {
                     cx.notify();
                 }
-            }
-            CommandAction::ToggleGitPanel => {
-                self.toggle_git_panel(cx);
             }
             CommandAction::ToggleInspector => {
                 self.toggle_inspector(cx);

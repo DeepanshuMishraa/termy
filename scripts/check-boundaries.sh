@@ -43,6 +43,57 @@ require_pattern() {
   fi
 }
 
+require_issue_url_for_pattern() {
+  local pattern="$1"
+  local path="$2"
+  local message="$3"
+  local matches
+  local violations
+
+  matches="$(rg -n "$pattern" "$path" || true)"
+  if [[ -z "$matches" ]]; then
+    return
+  fi
+
+  violations="$(printf '%s\n' "$matches" | rg -v 'https://github\.com/.*/issues/[0-9]+' || true)"
+  if [[ -n "$violations" ]]; then
+    echo "Boundary check failed: $message" >&2
+    printf '%s\n' "$violations" >&2
+    exit 1
+  fi
+}
+
+require_ignored_test_budget() {
+  local max_ignored_tests=10
+  local ignored_count
+
+  ignored_count="$(rg -n '#\[ignore' crates | wc -l | tr -d ' ')"
+  if (( ignored_count > max_ignored_tests )); then
+    echo "Boundary check failed: ignored test count is ${ignored_count}, max is ${max_ignored_tests}" >&2
+    rg -n '#\[ignore' crates >&2
+    exit 1
+  fi
+}
+
+require_crate_readme_metadata() {
+  local crate_dir="$1"
+  local readme="$crate_dir/README.md"
+
+  require_path "$readme"
+  require_pattern '^## Owner$' \
+    "$readme" \
+    "$readme must document the crate owner boundary"
+  require_pattern '^## Validation$' \
+    "$readme" \
+    "$readme must document validation commands"
+  require_pattern '^cargo test -p ' \
+    "$readme" \
+    "$readme must document a cargo test command"
+  require_pattern '^## Forbidden Dependencies$' \
+    "$readme" \
+    "$readme must document forbidden dependencies"
+}
+
 require_path "crates/desktop_app/Cargo.toml"
 require_path "scripts/build-dmg.sh"
 require_path "scripts/build-setup.ps1"
@@ -54,7 +105,7 @@ require_path "docs/architecture/release-packaging.md"
 
 while IFS= read -r manifest; do
   crate_dir="$(dirname "$manifest")"
-  require_path "$crate_dir/README.md"
+  require_crate_readme_metadata "$crate_dir"
 done < <(find crates -mindepth 2 -maxdepth 2 -name Cargo.toml | sort)
 
 forbid_pattern 'macos/scripts|macos/dist' \
@@ -77,8 +128,15 @@ check_forbidden_dep "termy_core" "gpui"
 check_forbidden_dep "termy_ffi" "gpui"
 check_forbidden_dep "termy_ffi" "termy_terminal_ui"
 
+require_issue_url_for_pattern \
+  'clippy::cognitive_complexity' \
+  "crates" \
+  "clippy::cognitive_complexity allows must link a tracking issue on the same line"
+require_ignored_test_budget
+
 cargo run -p xtask -- generate-keybindings-doc --check
 cargo run -p xtask -- generate-config-doc --check
+cargo run -p xtask -- check-dependency-policy
 
 "$(dirname "${BASH_SOURCE[0]}")/check-file-sizes.sh"
 

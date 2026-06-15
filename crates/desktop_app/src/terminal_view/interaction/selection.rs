@@ -1,6 +1,14 @@
 use super::*;
 use alacritty_terminal::grid::Dimensions;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(in crate::terminal_view) struct HoveredLink {
+    pub(in crate::terminal_view) row: usize,
+    pub(in crate::terminal_view) start_col: usize,
+    pub(in crate::terminal_view) end_col: usize,
+    pub(in crate::terminal_view) target: String,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TerminalSelectionCharClass {
     Whitespace,

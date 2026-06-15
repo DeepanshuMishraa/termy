@@ -25,7 +25,6 @@ use std::process::Stdio;
 use std::{
     cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
-    env,
     ops::Range,
     path::{Path, PathBuf},
     process::Command,
@@ -35,12 +34,9 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use sysinfo::{ProcessesToUpdate, System, get_current_pid};
 use termy_auto_update::{AutoUpdater, UpdateState};
 use termy_config_core::{MAX_LINE_HEIGHT, MIN_LINE_HEIGHT};
 use termy_search::SearchState;
-#[cfg(debug_assertions)]
-use termy_terminal_ui::terminal_ui_render_metrics_reset;
 use termy_terminal_ui::{
     CellRenderInfo, CommandLifecycle, PaneTerminal, ProgressState, TabTitleShellIntegration,
     Terminal as NativeTerminal, TerminalClipboardTarget, TerminalCursorState, TerminalCursorStyle,
@@ -52,22 +48,23 @@ use termy_terminal_ui::{
     find_link_in_line, hyperlink_at_viewport_cell, keystroke_to_input,
     normalize_working_directory_candidate, resolve_launch_working_directory,
 };
-use termy_terminal_ui::{TerminalUiRenderMetricsSnapshot, terminal_ui_render_metrics_snapshot};
 use termy_toast::ToastManager;
 
+mod appearance;
 mod benchmark;
 mod browser;
 mod command_palette;
 mod constants;
-mod git_panel;
 mod inline_input;
 mod inspector;
 mod interaction;
 #[cfg(target_os = "macos")]
 mod macos_file_drop;
+mod metrics;
 mod overlay_view;
 mod persistence;
 mod render;
+mod render_cache;
 mod runtime;
 mod scrollbar;
 mod search;
@@ -78,12 +75,34 @@ mod update_toasts;
 mod workspaces;
 
 use self::benchmark::{BENCHMARK_SAMPLE_INTERVAL, BenchmarkConfig, BenchmarkSession};
+use self::scrollbar::{
+    TerminalScrollbarDragState, TerminalScrollbarHit, TerminalScrollbarMarkerCache,
+    TerminalScrollbarMarkerCacheKey, TerminalScrollbarTrackHoldState,
+};
+pub(crate) use appearance::initial_window_background_appearance;
+use appearance::{
+    BackgroundSupportContext, BlurFallbackReason, OverlayStyleBuilder, PaneFocusPreset,
+    background_opacity_factor, blend_rgba, pane_divider_color, pane_focus_preset,
+    pane_focus_strength_factor, resolve_background_appearance, resolve_chrome_stroke_color,
+    scaled_background_alpha_for_opacity, scaled_chrome_alpha_for_opacity,
+};
 use command_palette::{CommandPaletteMode, CommandPaletteState, TmuxSessionIntent};
 use constants::*;
 use inline_input::{InlineInputAlignment, InlineInputState};
+use interaction::{
+    HoveredLink, MouseReportTargetCell, MouseReportingState, PaneDropRegion, PaneMoveDragState,
+    PendingCursorMoveClick, PendingCursorMovePreview, PendingKeyRelease, TabContextMenuState,
+    TerminalContextMenuState,
+};
 #[cfg(target_os = "macos")]
 pub(crate) use macos_file_drop::{NativeDropResult, install_native_file_drop};
+use metrics::DebugOverlayStats;
+#[cfg(debug_assertions)]
+use metrics::{TerminalRenderMetricsCounters, TerminalRenderMetricsState};
 use overlay_view::TerminalOverlayView;
+use render_cache::{
+    TerminalPaneCellColorTransformKey, TerminalPaneRenderCache, TerminalPaneRenderCacheKey,
+};
 use runtime::{RuntimeKind, RuntimeState, TmuxRuntime};
 pub(crate) use tab_strip::constants::*;
 use tab_strip::state::TabStripState;
@@ -281,17 +300,6 @@ fn cell_ranges_overlap(start_a: u32, end_a: u32, start_b: u32, end_b: u32) -> bo
     start_a < end_b && start_b < end_a
 }
 
-#[derive(Clone, Copy, Debug)]
-struct TerminalScrollbarDragState {
-    thumb_grab_offset: f32,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct TerminalScrollbarTrackHoldState {
-    local_y: f32,
-    track_height: f32,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PaneResizeAxis {
     Horizontal,
@@ -323,128 +331,11 @@ struct HoveredPaneDivider {
     edge: PaneResizeEdge,
 }
 
-/// Where a dragged pane would land relative to the pane under the cursor:
-/// an edge half (insert as a split on that side) or the center (swap).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PaneDropRegion {
-    Left,
-    Right,
-    Top,
-    Bottom,
-    Center,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct PaneDropTarget {
-    pane_id: String,
-    region: PaneDropRegion,
-}
-
-#[derive(Clone, Debug)]
-struct PaneMoveDragState {
-    pane_id: String,
-    start_x: f32,
-    start_y: f32,
-    /// Set once the pointer travels past the drag threshold; the placement
-    /// overlay only renders for active drags so a modifier-click stays inert.
-    active: bool,
-    drop_target: Option<PaneDropTarget>,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PaneResizeResult {
     Applied,
     BlockedByMinimum,
     NoChange,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct PendingCursorMoveClick {
-    pane_id: String,
-    selection_start: SelectionPos,
-    start_cell: CellPos,
-    target: CellPos,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct PendingCursorMovePreview {
-    pane_id: String,
-    target: CellPos,
-    style: TerminalCursorStyle,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct TerminalScrollbarHit {
-    local_y: f32,
-    thumb_hit: bool,
-    thumb_top: f32,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-struct TerminalContextMenuState {
-    anchor_position: gpui::Point<Pixels>,
-    buffer_position: Option<SelectionPos>,
-    can_copy: bool,
-    can_paste: bool,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-struct TabContextMenuState {
-    anchor_position: gpui::Point<Pixels>,
-    tab_id: TabId,
-    pinned: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct TerminalScrollbarMarkerCacheKey {
-    results_revision: u64,
-    history_size: usize,
-    viewport_rows: usize,
-    marker_top_limit_bucket: i32,
-}
-
-#[derive(Clone, Debug, Default)]
-struct TerminalScrollbarMarkerCache {
-    key: Option<TerminalScrollbarMarkerCacheKey>,
-    marker_tops: Vec<f32>,
-}
-
-impl TerminalScrollbarMarkerCache {
-    fn clear(&mut self) {
-        self.key = None;
-        self.marker_tops.clear();
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct MouseReportTargetCell {
-    pane_id: String,
-    col: usize,
-    row: usize,
-}
-
-#[derive(Clone, Debug, Default)]
-struct MouseReportingState {
-    left_button: Option<MouseReportTargetCell>,
-    middle_button: Option<MouseReportTargetCell>,
-    right_button: Option<MouseReportTargetCell>,
-    hover_target: Option<MouseReportTargetCell>,
-    scroll_accumulator_x: f32,
-    scroll_accumulator_y: f32,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum PendingKeyRelease {
-    Consumed,
-    Terminal { pane_id: String },
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct PaneFocusPreset {
-    inactive_fg_blend: f32,
-    inactive_bg_blend: f32,
-    inactive_desaturate: f32,
-    active_border_alpha: f32,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -799,46 +690,6 @@ impl PaneCachedElementIds {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct TerminalPaneCellColorTransformKey {
-    fg_blend_bits: u32,
-    bg_blend_bits: u32,
-    desaturate_bits: u32,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct TerminalPaneRenderCacheKey {
-    is_active_pane: bool,
-    alternate_screen_mode: bool,
-    selection_range: Option<(SelectionPos, SelectionPos)>,
-    search_results_revision: Option<u64>,
-    search_position: Option<(usize, usize)>,
-    effective_background_opacity_bits: u32,
-    background_opacity_cells: bool,
-    color_transform: TerminalPaneCellColorTransformKey,
-}
-
-#[derive(Clone, Default)]
-struct TerminalPaneRenderCache {
-    cells: TerminalGridRows,
-    cols: usize,
-    rows: usize,
-    display_offset: usize,
-    key: Option<TerminalPaneRenderCacheKey>,
-    paint_cache: TerminalGridPaintCacheHandle,
-}
-
-impl TerminalPaneRenderCache {
-    fn clear(&mut self) {
-        self.cells = std::sync::Arc::new(Vec::new());
-        self.cols = 0;
-        self.rows = 0;
-        self.display_offset = 0;
-        self.key = None;
-        self.paint_cache.clear();
-    }
-}
-
 impl TerminalPane {
     fn new_native(
         id: String,
@@ -864,280 +715,6 @@ impl TerminalPane {
             cached_element_ids,
         }
     }
-}
-
-#[cfg(debug_assertions)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct TerminalRenderMetricsCounters {
-    render_count: u64,
-    cache_full_count: u64,
-    cache_partial_count: u64,
-    cache_reuse_count: u64,
-    dirty_span_count: u64,
-    patched_cell_count: u64,
-}
-
-#[cfg(debug_assertions)]
-impl TerminalRenderMetricsCounters {
-    fn saturating_sub(self, previous: Self) -> Self {
-        Self {
-            render_count: self.render_count.saturating_sub(previous.render_count),
-            cache_full_count: self
-                .cache_full_count
-                .saturating_sub(previous.cache_full_count),
-            cache_partial_count: self
-                .cache_partial_count
-                .saturating_sub(previous.cache_partial_count),
-            cache_reuse_count: self
-                .cache_reuse_count
-                .saturating_sub(previous.cache_reuse_count),
-            dirty_span_count: self
-                .dirty_span_count
-                .saturating_sub(previous.dirty_span_count),
-            patched_cell_count: self
-                .patched_cell_count
-                .saturating_sub(previous.patched_cell_count),
-        }
-    }
-}
-
-#[cfg(debug_assertions)]
-#[derive(Clone, Debug)]
-struct TerminalRenderMetricsState {
-    enabled: bool,
-    counters: TerminalRenderMetricsCounters,
-    last_emit_counters: TerminalRenderMetricsCounters,
-    last_emit_terminal_ui: TerminalUiRenderMetricsSnapshot,
-    last_emit_at: Option<Instant>,
-    log_interval: Duration,
-}
-
-#[cfg(debug_assertions)]
-impl TerminalRenderMetricsState {
-    fn parse_env_flag(value: &str) -> bool {
-        matches!(value.trim(), "1")
-            || value.eq_ignore_ascii_case("true")
-            || value.eq_ignore_ascii_case("yes")
-            || value.eq_ignore_ascii_case("on")
-    }
-
-    fn enabled_from_env() -> bool {
-        env::var("TERMY_RENDER_METRICS")
-            .ok()
-            .is_some_and(|value| Self::parse_env_flag(value.as_str()))
-    }
-
-    fn from_env() -> Self {
-        let enabled = Self::enabled_from_env();
-        if enabled {
-            terminal_ui_render_metrics_reset();
-        }
-        Self {
-            enabled,
-            counters: TerminalRenderMetricsCounters::default(),
-            last_emit_counters: TerminalRenderMetricsCounters::default(),
-            last_emit_terminal_ui: terminal_ui_render_metrics_snapshot(),
-            last_emit_at: None,
-            log_interval: RENDER_METRICS_LOG_INTERVAL,
-        }
-    }
-}
-
-#[derive(Debug)]
-struct DebugOverlayStats {
-    system: System,
-    pid: Option<sysinfo::Pid>,
-    sample_started_at: Instant,
-    last_frame_at: Option<Instant>,
-    frames_in_sample: u32,
-    frame_interval_samples_micros: Vec<u32>,
-    fps: f32,
-    frame_p50_ms: f32,
-    frame_p95_ms: f32,
-    frame_p99_ms: f32,
-    cpu_percent: f32,
-    memory_bytes: u64,
-    view_wake_signals: u64,
-    terminal_event_drain_passes: u64,
-    terminal_redraws: u64,
-    alt_screen_fallback_redraws: u64,
-    span_damage_ms: f32,
-    span_rebuild_ms: f32,
-    span_shaping_ms: f32,
-    span_paint_ms: f32,
-    span_snapshot_base: TerminalUiRenderMetricsSnapshot,
-    #[cfg(debug_assertions)]
-    runtime_wakeup_base: u64,
-    #[cfg(debug_assertions)]
-    runtime_wakeups: u64,
-}
-
-impl DebugOverlayStats {
-    fn new() -> Self {
-        #[cfg(debug_assertions)]
-        let runtime_wakeup_base = terminal_ui_render_metrics_snapshot().runtime_wakeup_count;
-        let mut stats = Self {
-            system: System::new(),
-            pid: get_current_pid().ok(),
-            sample_started_at: Instant::now(),
-            last_frame_at: None,
-            frames_in_sample: 0,
-            frame_interval_samples_micros: Vec::with_capacity(128),
-            fps: 0.0,
-            frame_p50_ms: 0.0,
-            frame_p95_ms: 0.0,
-            frame_p99_ms: 0.0,
-            cpu_percent: 0.0,
-            memory_bytes: 0,
-            view_wake_signals: 0,
-            terminal_event_drain_passes: 0,
-            terminal_redraws: 0,
-            alt_screen_fallback_redraws: 0,
-            span_damage_ms: 0.0,
-            span_rebuild_ms: 0.0,
-            span_shaping_ms: 0.0,
-            span_paint_ms: 0.0,
-            span_snapshot_base: terminal_ui_render_metrics_snapshot(),
-            #[cfg(debug_assertions)]
-            runtime_wakeup_base,
-            #[cfg(debug_assertions)]
-            runtime_wakeups: 0,
-        };
-        stats.refresh_process_metrics();
-        stats.refresh_runtime_wakeups();
-        stats
-    }
-
-    fn reset(&mut self) {
-        self.sample_started_at = Instant::now();
-        self.last_frame_at = None;
-        self.frames_in_sample = 0;
-        self.frame_interval_samples_micros.clear();
-        self.fps = 0.0;
-        self.frame_p50_ms = 0.0;
-        self.frame_p95_ms = 0.0;
-        self.frame_p99_ms = 0.0;
-        self.view_wake_signals = 0;
-        self.terminal_event_drain_passes = 0;
-        self.terminal_redraws = 0;
-        self.alt_screen_fallback_redraws = 0;
-        self.span_damage_ms = 0.0;
-        self.span_rebuild_ms = 0.0;
-        self.span_shaping_ms = 0.0;
-        self.span_paint_ms = 0.0;
-        self.span_snapshot_base = terminal_ui_render_metrics_snapshot();
-        #[cfg(debug_assertions)]
-        {
-            self.runtime_wakeup_base = terminal_ui_render_metrics_snapshot().runtime_wakeup_count;
-            self.runtime_wakeups = 0;
-        }
-        self.refresh_process_metrics();
-    }
-
-    fn record_frame(&mut self, now: Instant) {
-        if let Some(previous_frame_at) = self.last_frame_at.replace(now) {
-            let frame_interval = now.saturating_duration_since(previous_frame_at);
-            let micros = frame_interval.as_micros().min(u128::from(u32::MAX)) as u32;
-            self.frame_interval_samples_micros.push(micros);
-        }
-        self.frames_in_sample = self.frames_in_sample.saturating_add(1);
-        let elapsed = now.saturating_duration_since(self.sample_started_at);
-        if elapsed < DEBUG_OVERLAY_SAMPLE_INTERVAL {
-            return;
-        }
-
-        let elapsed_secs = elapsed.as_secs_f32();
-        if elapsed_secs > f32::EPSILON {
-            self.fps = self.frames_in_sample as f32 / elapsed_secs;
-        }
-        self.refresh_frame_percentiles();
-        self.refresh_span_timings();
-        self.refresh_runtime_wakeups();
-        self.sample_started_at = now;
-        self.frames_in_sample = 0;
-        self.frame_interval_samples_micros.clear();
-        self.refresh_process_metrics();
-    }
-
-    fn record_view_wake_signal(&mut self) {
-        self.view_wake_signals = self.view_wake_signals.saturating_add(1);
-    }
-
-    fn record_terminal_event_drain_pass(&mut self) {
-        self.terminal_event_drain_passes = self.terminal_event_drain_passes.saturating_add(1);
-    }
-
-    fn record_terminal_redraw(&mut self) {
-        self.terminal_redraws = self.terminal_redraws.saturating_add(1);
-    }
-
-    #[allow(dead_code)]
-    fn record_alt_screen_fallback_redraw(&mut self) {
-        self.alt_screen_fallback_redraws = self.alt_screen_fallback_redraws.saturating_add(1);
-    }
-
-    fn refresh_process_metrics(&mut self) {
-        let Some(pid) = self.pid else {
-            self.cpu_percent = 0.0;
-            self.memory_bytes = 0;
-            return;
-        };
-
-        let _ = self
-            .system
-            .refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
-        if let Some(process) = self.system.process(pid) {
-            self.cpu_percent = process.cpu_usage();
-            self.memory_bytes = process.memory();
-        }
-    }
-
-    fn refresh_frame_percentiles(&mut self) {
-        if self.frame_interval_samples_micros.is_empty() {
-            self.frame_p50_ms = 0.0;
-            self.frame_p95_ms = 0.0;
-            self.frame_p99_ms = 0.0;
-            return;
-        }
-
-        let mut sorted_samples = self.frame_interval_samples_micros.clone();
-        sorted_samples.sort_unstable();
-        self.frame_p50_ms = percentile_millis(&sorted_samples, 50, 100);
-        self.frame_p95_ms = percentile_millis(&sorted_samples, 95, 100);
-        self.frame_p99_ms = percentile_millis(&sorted_samples, 99, 100);
-    }
-
-    fn refresh_span_timings(&mut self) {
-        let current = terminal_ui_render_metrics_snapshot();
-        let delta = current.saturating_sub(self.span_snapshot_base);
-        self.span_snapshot_base = current;
-        let frames = self.frames_in_sample.max(1) as f32;
-        self.span_damage_ms = delta.span_damage_compute_us as f32 / 1000.0 / frames;
-        self.span_rebuild_ms = delta.span_row_ops_rebuild_us as f32 / 1000.0 / frames;
-        self.span_shaping_ms = delta.span_text_shaping_us as f32 / 1000.0 / frames;
-        self.span_paint_ms = delta.span_grid_paint_us as f32 / 1000.0 / frames;
-    }
-
-    #[cfg(debug_assertions)]
-    fn refresh_runtime_wakeups(&mut self) {
-        let snapshot = terminal_ui_render_metrics_snapshot();
-        self.runtime_wakeups = snapshot
-            .runtime_wakeup_count
-            .saturating_sub(self.runtime_wakeup_base);
-    }
-
-    #[cfg(not(debug_assertions))]
-    fn refresh_runtime_wakeups(&mut self) {}
-}
-
-fn percentile_millis(samples_micros: &[u32], numerator: usize, denominator: usize) -> f32 {
-    let Some(last_index) = samples_micros.len().checked_sub(1) else {
-        return 0.0;
-    };
-    let rank = (samples_micros.len().saturating_mul(numerator) + denominator.saturating_sub(1))
-        / denominator;
-    let index = rank.saturating_sub(1).min(last_index);
-    samples_micros[index] as f32 / 1000.0
 }
 
 /// What a tab hosts: terminal panes (the default) or an embedded browser.
@@ -1263,298 +840,6 @@ struct ChildWorkingDirCacheEntry {
     resolved_at: Instant,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct HoveredLink {
-    row: usize,
-    start_col: usize,
-    end_col: usize,
-    target: String,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)]
-enum BackgroundPlatform {
-    MacOs,
-    Windows,
-    Linux,
-    Other,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct BackgroundSupportContext {
-    platform: BackgroundPlatform,
-    linux_wayland_session: bool,
-}
-
-impl BackgroundSupportContext {
-    fn current() -> Self {
-        #[cfg(target_os = "macos")]
-        let platform = BackgroundPlatform::MacOs;
-        #[cfg(target_os = "windows")]
-        let platform = BackgroundPlatform::Windows;
-        #[cfg(target_os = "linux")]
-        let platform = BackgroundPlatform::Linux;
-        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-        let platform = BackgroundPlatform::Other;
-
-        #[cfg(target_os = "linux")]
-        let linux_wayland_session = std::env::var("XDG_SESSION_TYPE")
-            .ok()
-            .is_some_and(|session_type| session_type.eq_ignore_ascii_case("wayland"))
-            || std::env::var_os("WAYLAND_DISPLAY").is_some();
-        #[cfg(not(target_os = "linux"))]
-        let linux_wayland_session = false;
-
-        Self {
-            platform,
-            linux_wayland_session,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum BlurFallbackReason {
-    None,
-    KnownUnsupported,
-    UnknownSupport,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct ResolvedBackgroundAppearance {
-    appearance: WindowBackgroundAppearance,
-    blur_fallback: BlurFallbackReason,
-}
-
-fn resolve_background_appearance(
-    background_opacity: f32,
-    background_blur: bool,
-    context: BackgroundSupportContext,
-) -> ResolvedBackgroundAppearance {
-    let opacity = background_opacity.clamp(0.0, 1.0);
-    if opacity >= 1.0 {
-        return ResolvedBackgroundAppearance {
-            appearance: WindowBackgroundAppearance::Opaque,
-            blur_fallback: BlurFallbackReason::None,
-        };
-    }
-
-    if !background_blur {
-        return ResolvedBackgroundAppearance {
-            appearance: WindowBackgroundAppearance::Transparent,
-            blur_fallback: BlurFallbackReason::None,
-        };
-    }
-
-    match context.platform {
-        BackgroundPlatform::MacOs | BackgroundPlatform::Windows => ResolvedBackgroundAppearance {
-            appearance: WindowBackgroundAppearance::Blurred,
-            blur_fallback: BlurFallbackReason::None,
-        },
-        BackgroundPlatform::Linux => {
-            if context.linux_wayland_session {
-                ResolvedBackgroundAppearance {
-                    appearance: WindowBackgroundAppearance::Blurred,
-                    blur_fallback: BlurFallbackReason::UnknownSupport,
-                }
-            } else {
-                ResolvedBackgroundAppearance {
-                    appearance: WindowBackgroundAppearance::Transparent,
-                    blur_fallback: BlurFallbackReason::KnownUnsupported,
-                }
-            }
-        }
-        BackgroundPlatform::Other => ResolvedBackgroundAppearance {
-            appearance: WindowBackgroundAppearance::Blurred,
-            blur_fallback: BlurFallbackReason::UnknownSupport,
-        },
-    }
-}
-
-fn background_opacity_factor(background_opacity: f32) -> f32 {
-    background_opacity.clamp(0.0, 1.0)
-}
-
-fn scaled_background_alpha_for_opacity(base_alpha: f32, background_opacity: f32) -> f32 {
-    (base_alpha * background_opacity_factor(background_opacity)).clamp(0.0, 1.0)
-}
-
-fn scaled_chrome_alpha_for_opacity(base_alpha: f32, background_opacity: f32) -> f32 {
-    scaled_background_alpha_for_opacity(base_alpha, background_opacity)
-}
-
-fn adaptive_overlay_panel_alpha_for_opacity(base_alpha: f32, background_opacity: f32) -> f32 {
-    let floor = base_alpha * OVERLAY_PANEL_ALPHA_FLOOR_RATIO;
-    scaled_background_alpha_for_opacity(base_alpha, background_opacity)
-        .max(floor)
-        .clamp(0.0, 1.0)
-}
-
-fn adaptive_overlay_panel_alpha_with_floor_for_opacity(
-    base_alpha: f32,
-    background_opacity: f32,
-    translucent_floor_alpha: f32,
-) -> f32 {
-    let alpha = adaptive_overlay_panel_alpha_for_opacity(base_alpha, background_opacity);
-    if background_opacity_factor(background_opacity) < 1.0 {
-        alpha.max(translucent_floor_alpha).clamp(0.0, 1.0)
-    } else {
-        alpha
-    }
-}
-
-fn blend_rgba(base: gpui::Rgba, tint: gpui::Rgba, tint_factor: f32) -> gpui::Rgba {
-    let tint_factor = tint_factor.clamp(0.0, 1.0);
-    let base_factor = 1.0 - tint_factor;
-    gpui::Rgba {
-        r: (base.r * base_factor) + (tint.r * tint_factor),
-        g: (base.g * base_factor) + (tint.g * tint_factor),
-        b: (base.b * base_factor) + (tint.b * tint_factor),
-        a: (base.a * base_factor) + (tint.a * tint_factor),
-    }
-}
-
-fn resolve_chrome_stroke_color(
-    chrome_background: gpui::Rgba,
-    foreground: gpui::Rgba,
-    foreground_mix: f32,
-) -> gpui::Rgba {
-    let mix = foreground_mix.clamp(0.0, 1.0);
-    let inv_mix = 1.0 - mix;
-
-    gpui::Rgba {
-        r: (chrome_background.r * inv_mix) + (foreground.r * mix),
-        g: (chrome_background.g * inv_mix) + (foreground.g * mix),
-        b: (chrome_background.b * inv_mix) + (foreground.b * mix),
-        a: 1.0,
-    }
-}
-
-fn pane_divider_color(chrome_background: gpui::Rgba, foreground: gpui::Rgba) -> gpui::Rgba {
-    resolve_chrome_stroke_color(chrome_background, foreground, TAB_STROKE_FOREGROUND_MIX)
-}
-
-fn pane_focus_strength_factor(pane_focus_strength: f32) -> f32 {
-    pane_focus_strength.clamp(0.0, MAX_PANE_FOCUS_STRENGTH)
-}
-
-fn pane_focus_preset(effect: PaneFocusEffect) -> Option<PaneFocusPreset> {
-    match effect {
-        PaneFocusEffect::Off => None,
-        PaneFocusEffect::SoftSpotlight => Some(PaneFocusPreset {
-            inactive_fg_blend: 0.36,
-            inactive_bg_blend: 0.12,
-            inactive_desaturate: 0.0,
-            active_border_alpha: 0.38,
-        }),
-        PaneFocusEffect::Cinematic => Some(PaneFocusPreset {
-            inactive_fg_blend: 0.52,
-            inactive_bg_blend: 0.18,
-            inactive_desaturate: 0.34,
-            active_border_alpha: 0.46,
-        }),
-        PaneFocusEffect::Minimal => Some(PaneFocusPreset {
-            inactive_fg_blend: 0.22,
-            inactive_bg_blend: 0.08,
-            inactive_desaturate: 0.0,
-            active_border_alpha: 0.28,
-        }),
-    }
-}
-
-#[derive(Clone, Copy)]
-struct OverlayStyleBuilder<'a> {
-    colors: &'a TerminalColors,
-    background_opacity: f32,
-    contrast_profile: ChromeContrastProfile,
-}
-
-impl<'a> OverlayStyleBuilder<'a> {
-    fn new(
-        colors: &'a TerminalColors,
-        background_opacity: f32,
-        contrast_profile: ChromeContrastProfile,
-    ) -> Self {
-        Self {
-            colors,
-            background_opacity,
-            contrast_profile,
-        }
-    }
-
-    fn panel_background(self, base_alpha: f32) -> gpui::Rgba {
-        let alpha = adaptive_overlay_panel_alpha_for_opacity(base_alpha, self.background_opacity);
-        self.with_alpha(self.colors.background, alpha)
-    }
-
-    fn panel_cursor(self, base_alpha: f32) -> gpui::Rgba {
-        let alpha = adaptive_overlay_panel_alpha_for_opacity(base_alpha, self.background_opacity);
-        self.with_alpha(self.colors.cursor, alpha)
-    }
-
-    fn panel_foreground(self, base_alpha: f32) -> gpui::Rgba {
-        let alpha = adaptive_overlay_panel_alpha_for_opacity(base_alpha, self.background_opacity);
-        self.with_alpha(self.colors.foreground, alpha)
-    }
-
-    fn chrome_panel_background(self, base_alpha: f32) -> gpui::Rgba {
-        let alpha = adaptive_overlay_panel_alpha_for_opacity(
-            self.contrast_profile.panel_surface_alpha(base_alpha),
-            self.background_opacity,
-        );
-        self.with_alpha(self.colors.background, alpha)
-    }
-
-    fn chrome_panel_background_with_floor(
-        self,
-        base_alpha: f32,
-        translucent_floor_alpha: f32,
-    ) -> gpui::Rgba {
-        let alpha = adaptive_overlay_panel_alpha_with_floor_for_opacity(
-            self.contrast_profile.panel_surface_alpha(base_alpha),
-            self.background_opacity,
-            self.contrast_profile
-                .panel_surface_alpha(translucent_floor_alpha),
-        );
-        self.with_alpha(self.colors.background, alpha)
-    }
-
-    fn chrome_panel_cursor(self, base_alpha: f32) -> gpui::Rgba {
-        let alpha = adaptive_overlay_panel_alpha_for_opacity(
-            self.contrast_profile.panel_accent_alpha(base_alpha),
-            self.background_opacity,
-        );
-        self.with_alpha(self.colors.cursor, alpha)
-    }
-
-    fn chrome_panel_neutral(self, base_alpha: f32) -> gpui::Rgba {
-        let alpha = adaptive_overlay_panel_alpha_for_opacity(
-            self.contrast_profile.panel_neutral_alpha(base_alpha),
-            self.background_opacity,
-        );
-        self.with_alpha(self.colors.foreground, alpha)
-    }
-
-    fn transparent_background(self) -> gpui::Rgba {
-        self.with_alpha(self.colors.background, 0.0)
-    }
-
-    fn with_alpha(self, mut color: gpui::Rgba, alpha: f32) -> gpui::Rgba {
-        color.a = alpha.clamp(0.0, 1.0);
-        color
-    }
-}
-
-pub(crate) fn initial_window_background_appearance(
-    config: &AppConfig,
-) -> WindowBackgroundAppearance {
-    resolve_background_appearance(
-        config.background_opacity,
-        config.background_blur,
-        BackgroundSupportContext::current(),
-    )
-    .appearance
-}
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum TabBarVisibility {
     #[default]
@@ -1573,10 +858,9 @@ pub struct TerminalView {
     active_workspace: usize,
     next_workspace_id: u64,
     workspace_sidebar_enabled: bool,
+    workspace_sidebar_width: f32,
+    workspace_sidebar_resize_drag: Option<workspaces::WorkspaceSidebarResizeDragState>,
     browser_tabs_enabled: bool,
-    git_panel_enabled: bool,
-    git_panel_open: bool,
-    git_panel: git_panel::GitPanelState,
     native_pane_zoom_snapshots: HashMap<TabId, NativePaneZoomSnapshot>,
     native_pane_layout_trees: HashMap<TabId, NativePaneLayoutTree>,
     next_tab_id: TabId,
@@ -3347,11 +2631,8 @@ impl TerminalView {
         TerminalContentRect::new(
             0.0,
             0.0,
-            (viewport_width
-                - self.effective_sidebar_width()
-                - self.workspace_sidebar_width()
-                - self.git_panel_width_px())
-            .max(0.0),
+            (viewport_width - self.effective_sidebar_width() - self.workspace_sidebar_width())
+                .max(0.0),
             viewport_height - self.terminal_content_top_inset() - self.inspector_bottom_inset(),
         )
     }
@@ -4026,10 +3307,9 @@ impl TerminalView {
             active_workspace: 0,
             next_workspace_id: 2,
             workspace_sidebar_enabled: config.sidebar_enabled,
+            workspace_sidebar_width: Self::clamp_workspace_sidebar_width(config.sidebar_width),
+            workspace_sidebar_resize_drag: None,
             browser_tabs_enabled: config.browser_tabs_enabled,
-            git_panel_enabled: config.git_panel_enabled,
-            git_panel_open: false,
-            git_panel: git_panel::GitPanelState::new(),
             native_pane_zoom_snapshots: HashMap::new(),
             native_pane_layout_trees: HashMap::new(),
             next_tab_id: 1,
@@ -4375,17 +3655,14 @@ impl TerminalView {
         let show_debug_overlay_changed = self.show_debug_overlay != config.show_debug_overlay;
         let simple_mode_changed = self.simple_mode != config.simple_mode;
         let auto_hide_tabbar_changed = self.auto_hide_tabbar != config.auto_hide_tabbar;
-        let workspace_sidebar_changed = self.workspace_sidebar_enabled != config.sidebar_enabled;
+        let workspace_sidebar_enabled_changed =
+            self.workspace_sidebar_enabled != config.sidebar_enabled;
+        let workspace_sidebar_width_changed =
+            self.sync_workspace_sidebar_width_from_config(config.sidebar_width);
+        let workspace_sidebar_changed =
+            workspace_sidebar_enabled_changed || workspace_sidebar_width_changed;
         self.workspace_sidebar_enabled = config.sidebar_enabled;
         self.browser_tabs_enabled = config.browser_tabs_enabled;
-        let git_panel_was_enabled = self.git_panel_enabled;
-        self.git_panel_enabled = config.git_panel_enabled;
-        if git_panel_was_enabled && !self.git_panel_enabled && self.git_panel_open {
-            self.git_panel_open = false;
-            self.git_panel.editing_commit = false;
-            self.mark_tab_strip_layout_dirty();
-            cx.notify();
-        }
         if !self.workspace_sidebar_enabled {
             // Stashed workspaces would be unreachable without the sidebar.
             self.collapse_workspaces_into_active();
@@ -4965,16 +4242,6 @@ mod tests {
         assert_eq!(TOAST_GEOMETRY.control_radius, 6.0);
     }
 
-    #[cfg(debug_assertions)]
-    #[test]
-    fn render_metrics_env_parser_accepts_truthy_values() {
-        assert!(TerminalRenderMetricsState::parse_env_flag("1"));
-        assert!(TerminalRenderMetricsState::parse_env_flag("true"));
-        assert!(TerminalRenderMetricsState::parse_env_flag("TRUE"));
-        assert!(TerminalRenderMetricsState::parse_env_flag("yes"));
-        assert!(TerminalRenderMetricsState::parse_env_flag("on"));
-    }
-
     #[test]
     fn native_exit_quits_only_for_single_tab_single_pane() {
         assert!(TerminalView::native_exit_should_quit_app(1, 1));
@@ -5385,150 +4652,6 @@ mod tests {
     }
 
     #[test]
-    fn percentile_millis_uses_full_length_rank() {
-        let samples: Vec<u32> = (1..=100).collect();
-
-        assert_eq!(percentile_millis(&samples, 50, 100), 0.050);
-        assert_eq!(percentile_millis(&samples, 95, 100), 0.095);
-        assert_eq!(percentile_millis(&samples, 99, 100), 0.099);
-    }
-
-    #[cfg(debug_assertions)]
-    #[test]
-    fn render_metrics_env_parser_rejects_empty_and_zero_values() {
-        assert!(!TerminalRenderMetricsState::parse_env_flag(""));
-        assert!(!TerminalRenderMetricsState::parse_env_flag("0"));
-        assert!(!TerminalRenderMetricsState::parse_env_flag("false"));
-    }
-
-    #[cfg(debug_assertions)]
-    #[test]
-    fn terminal_pane_render_cache_clear_resets_paint_cache_state() {
-        let mut cache = TerminalPaneRenderCache {
-            cells: std::sync::Arc::new(vec![std::sync::Arc::new(vec![])]),
-            cols: 120,
-            rows: 40,
-            display_offset: 4,
-            key: Some(TerminalPaneRenderCacheKey {
-                is_active_pane: true,
-                alternate_screen_mode: false,
-                selection_range: Some((
-                    SelectionPos { line: 1, col: 1 },
-                    SelectionPos { line: 1, col: 2 },
-                )),
-                search_results_revision: Some(7),
-                search_position: Some((1, 1)),
-                effective_background_opacity_bits: 0.92f32.to_bits(),
-                background_opacity_cells: false,
-                color_transform: TerminalPaneCellColorTransformKey {
-                    fg_blend_bits: 0.1f32.to_bits(),
-                    bg_blend_bits: 0.2f32.to_bits(),
-                    desaturate_bits: 0.3f32.to_bits(),
-                },
-            }),
-            paint_cache: TerminalGridPaintCacheHandle::default(),
-        };
-        cache.paint_cache.debug_seed_rows_for_tests(3);
-        assert_eq!(cache.paint_cache.debug_row_cache_len_for_tests(), 3);
-
-        cache.clear();
-
-        assert!(cache.cells.is_empty());
-        assert_eq!(cache.cols, 0);
-        assert_eq!(cache.rows, 0);
-        assert_eq!(cache.display_offset, 0);
-        assert!(cache.key.is_none());
-        assert_eq!(cache.paint_cache.debug_row_cache_len_for_tests(), 0);
-    }
-
-    #[test]
-    fn resolve_background_appearance_is_opaque_when_opacity_is_full() {
-        let resolved = resolve_background_appearance(
-            1.0,
-            true,
-            BackgroundSupportContext {
-                platform: BackgroundPlatform::MacOs,
-                linux_wayland_session: false,
-            },
-        );
-        assert_eq!(resolved.appearance, WindowBackgroundAppearance::Opaque);
-        assert_eq!(resolved.blur_fallback, BlurFallbackReason::None);
-    }
-
-    #[test]
-    fn resolve_background_appearance_is_transparent_without_blur() {
-        let resolved = resolve_background_appearance(
-            0.85,
-            false,
-            BackgroundSupportContext {
-                platform: BackgroundPlatform::Windows,
-                linux_wayland_session: false,
-            },
-        );
-        assert_eq!(resolved.appearance, WindowBackgroundAppearance::Transparent);
-        assert_eq!(resolved.blur_fallback, BlurFallbackReason::None);
-    }
-
-    #[test]
-    fn resolve_background_appearance_blur_is_known_unsupported_on_linux_non_wayland() {
-        let resolved = resolve_background_appearance(
-            0.9,
-            true,
-            BackgroundSupportContext {
-                platform: BackgroundPlatform::Linux,
-                linux_wayland_session: false,
-            },
-        );
-        assert_eq!(resolved.appearance, WindowBackgroundAppearance::Transparent);
-        assert_eq!(resolved.blur_fallback, BlurFallbackReason::KnownUnsupported);
-    }
-
-    #[test]
-    fn resolve_background_appearance_blur_is_unknown_on_linux_wayland() {
-        let resolved = resolve_background_appearance(
-            0.9,
-            true,
-            BackgroundSupportContext {
-                platform: BackgroundPlatform::Linux,
-                linux_wayland_session: true,
-            },
-        );
-        assert_eq!(resolved.appearance, WindowBackgroundAppearance::Blurred);
-        assert_eq!(resolved.blur_fallback, BlurFallbackReason::UnknownSupport);
-    }
-
-    #[test]
-    fn resolve_background_appearance_blur_is_enabled_on_macos() {
-        let resolved = resolve_background_appearance(
-            0.9,
-            true,
-            BackgroundSupportContext {
-                platform: BackgroundPlatform::MacOs,
-                linux_wayland_session: false,
-            },
-        );
-        assert_eq!(resolved.appearance, WindowBackgroundAppearance::Blurred);
-        assert_eq!(resolved.blur_fallback, BlurFallbackReason::None);
-    }
-
-    #[test]
-    fn chrome_alpha_scales_without_floor() {
-        let base = 0.92;
-        let alpha = scaled_chrome_alpha_for_opacity(base, 0.1);
-        assert_eq!(alpha, base * 0.1);
-    }
-
-    #[test]
-    fn overlay_panel_floor_applies_only_when_background_is_translucent() {
-        let base = 0.64;
-        let floor = 0.76;
-        let translucent = adaptive_overlay_panel_alpha_with_floor_for_opacity(base, 0.2, floor);
-        let opaque = adaptive_overlay_panel_alpha_with_floor_for_opacity(base, 1.0, floor);
-        assert!(translucent >= floor);
-        assert!(opaque < floor);
-    }
-
-    #[test]
     fn overlay_banner_visibility_tracks_updater_state_policy() {
         assert!(!TerminalView::overlay_banner_visible_for_state(None));
         assert!(!TerminalView::overlay_banner_visible_for_state(Some(
@@ -5581,56 +4704,6 @@ mod tests {
         assert!(TerminalView::overlay_banner_visible_for_state(Some(
             &UpdateState::Error("boom".to_string())
         )));
-    }
-
-    #[test]
-    fn pane_divider_color_matches_shared_chrome_stroke_resolution() {
-        let chrome_surface_bg = gpui::Rgba {
-            r: 0.04,
-            g: 0.08,
-            b: 0.13,
-            a: 0.94,
-        };
-        let foreground = gpui::Rgba {
-            r: 0.82,
-            g: 0.88,
-            b: 0.93,
-            a: 1.0,
-        };
-
-        assert_eq!(
-            pane_divider_color(chrome_surface_bg, foreground),
-            resolve_chrome_stroke_color(chrome_surface_bg, foreground, TAB_STROKE_FOREGROUND_MIX)
-        );
-    }
-
-    #[test]
-    fn pane_focus_preset_is_disabled_for_off() {
-        assert!(pane_focus_preset(PaneFocusEffect::Off).is_none());
-    }
-
-    #[test]
-    fn pane_focus_preset_strength_scales_monotonically() {
-        let preset = pane_focus_preset(PaneFocusEffect::SoftSpotlight)
-            .expect("soft spotlight preset should exist");
-        let low_strength = pane_focus_strength_factor(0.2);
-        let high_strength = pane_focus_strength_factor(0.8);
-
-        assert!(
-            (preset.inactive_fg_blend * high_strength) > (preset.inactive_fg_blend * low_strength)
-        );
-        assert!(
-            (preset.inactive_bg_blend * high_strength) > (preset.inactive_bg_blend * low_strength)
-        );
-        assert!(
-            (preset.active_border_alpha * high_strength)
-                > (preset.active_border_alpha * low_strength)
-        );
-    }
-
-    #[test]
-    fn pane_focus_strength_factor_clamps_to_extended_upper_bound() {
-        assert_eq!(pane_focus_strength_factor(2.5), MAX_PANE_FOCUS_STRENGTH);
     }
 
     #[test]
@@ -5748,27 +4821,6 @@ mod tests {
                 opacity: 0.5,
             })
         );
-    }
-
-    #[test]
-    fn resolve_background_appearance_uses_preview_opacity_during_drag() {
-        let effective_opacity = config::effective_background_opacity(
-            1.0,
-            Some(config::BackgroundOpacityPreview {
-                owner_id: 1,
-                opacity: 0.4,
-            }),
-        );
-        let resolved = resolve_background_appearance(
-            effective_opacity,
-            false,
-            BackgroundSupportContext {
-                platform: BackgroundPlatform::MacOs,
-                linux_wayland_session: false,
-            },
-        );
-
-        assert_eq!(resolved.appearance, WindowBackgroundAppearance::Transparent);
     }
 
     #[test]

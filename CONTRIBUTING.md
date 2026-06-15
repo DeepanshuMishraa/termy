@@ -151,6 +151,7 @@ Good PRs usually include:
 - Prefer small, explicit code paths over clever abstractions.
 - Preserve existing project structure and naming where possible.
 - Keep docs and behavior aligned.
+- Do not add `#[allow(clippy::cognitive_complexity)]` unless the same line links the tracking issue.
 - Avoid unrelated drive-by changes in the same PR.
 
 ## Questions
