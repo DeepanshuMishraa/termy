@@ -771,12 +771,9 @@ fn is_safe_deeplink_terminal_input(value: &str) -> bool {
 }
 
 fn deeplink_command_terminal_input(value: &str) -> Option<String> {
-    let mut input = value.trim().to_string();
+    let input = value.trim().to_string();
     if !is_safe_deeplink_terminal_input(&input) {
         return None;
-    }
-    if !input.ends_with('\n') {
-        input.push('\n');
     }
     Some(input)
 }
@@ -845,10 +842,10 @@ mod tests {
     }
 
     #[test]
-    fn deeplink_command_input_appends_newline() {
+    fn deeplink_command_input_preserves_command_without_submitting() {
         assert_eq!(
             deeplink_command_terminal_input("git status").as_deref(),
-            Some("git status\n")
+            Some("git status")
         );
     }
 
