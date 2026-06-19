@@ -395,9 +395,11 @@ final class TerminalViewModel: ObservableObject {
             return
         }
 
-        // Strip any embedded paste terminator so the payload can't close the
-        // bracket early. `\u{1b}[201~` is the only sequence that ends a paste.
-        let sanitized = text.replacingOccurrences(of: "\u{1b}[201~", with: "")
+        // Strip embedded bracketed-paste markers so the payload can't close
+        // the bracket early or smuggle a nested framed paste sequence.
+        let sanitized = text
+            .replacingOccurrences(of: "\u{1b}[200~", with: "")
+            .replacingOccurrences(of: "\u{1b}[201~", with: "")
         var bytes = Array("\u{1b}[200~".utf8)
         bytes.append(contentsOf: sanitized.utf8)
         bytes.append(contentsOf: Array("\u{1b}[201~".utf8))
