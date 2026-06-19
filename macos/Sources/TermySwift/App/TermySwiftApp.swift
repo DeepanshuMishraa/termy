@@ -635,7 +635,7 @@ private final class ConfiguredKeybindRouter {
             guard let text = NSPasteboard.general.string(forType: .string) else {
                 return false
             }
-            TerminalCommandRouter.shared.focusedStore(for: event)?.focusedTerminal?.send(bytes: Array(text.utf8))
+            TerminalCommandRouter.shared.focusedStore(for: event)?.focusedTerminal?.paste(text)
             return true
         case .openSearch:
             return withFocusedStore(event) { $0.showSearch() }

@@ -187,7 +187,7 @@ struct TerminalWorkspaceView: View {
                 guard let text = NSPasteboard.general.string(forType: .string) else {
                     return
                 }
-                store.focusedTerminal?.send(bytes: Array(text.utf8))
+                store.focusedTerminal?.paste(text)
             },
             clearScrollback: {
                 store.focusedTerminal?.clearScrollback()
