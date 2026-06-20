@@ -58,6 +58,20 @@ final class TerminalKeyboardInputViewTests: XCTestCase {
         XCTAssertEqual(sentKeys.map(\.key), ["escape"])
     }
 
+    func testArrowKeysSendTerminalInput() {
+        let view = KeyboardCaptureView()
+        var sentKeys: [TerminalKeyInput] = []
+        view.isInputEnabled = true
+        view.onKeyInput = {
+            sentKeys.append($0)
+        }
+
+        view.keyDown(with: Self.keyEvent(keyCode: 125, characters: "\u{F701}"))
+        view.keyDown(with: Self.keyEvent(keyCode: 126, characters: "\u{F700}"))
+
+        XCTAssertEqual(sentKeys.map(\.key), ["down", "up"])
+    }
+
     func testSearchVisibleInputDisabledStillReceivesHitForFocusRestore() {
         let view = KeyboardCaptureView(frame: NSRect(x: 0, y: 0, width: 100, height: 100))
         view.isInputEnabled = false
@@ -82,6 +96,10 @@ final class TerminalKeyboardInputViewTests: XCTestCase {
     }
 
     private static func escapeEvent() -> NSEvent {
+        keyEvent(keyCode: 53, characters: "\u{1b}")
+    }
+
+    private static func keyEvent(keyCode: UInt16, characters: String) -> NSEvent {
         NSEvent.keyEvent(
             with: .keyDown,
             location: .zero,
@@ -89,10 +107,10 @@ final class TerminalKeyboardInputViewTests: XCTestCase {
             timestamp: 0,
             windowNumber: 0,
             context: nil,
-            characters: "\u{1b}",
-            charactersIgnoringModifiers: "\u{1b}",
+            characters: characters,
+            charactersIgnoringModifiers: characters,
             isARepeat: false,
-            keyCode: 53
+            keyCode: keyCode
         )!
     }
 }

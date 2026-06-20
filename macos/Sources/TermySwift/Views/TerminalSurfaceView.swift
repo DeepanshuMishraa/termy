@@ -408,11 +408,18 @@ struct TerminalWindowChromeState: Equatable {
     }
 
     var requiresTransparentWindow: Bool {
-        backgroundBlur || effectiveBackgroundAlpha < 1.0
+        backgroundBlur
     }
 
     var chromeBackgroundColor: NSColor {
-        background.nsColor.withAlphaComponent(effectiveBackgroundAlpha)
+        // Without blur, AppKit composites the transparent titlebar directly over
+        // whatever app is behind the window, while the terminal body is painted
+        // over Termy's own backing. Use an opaque titlebar backing so a hidden
+        // tab bar still matches the terminal surface instead of the desktop.
+        if !backgroundBlur {
+            return background.nsColor.withAlphaComponent(CGFloat(background.alpha))
+        }
+        return background.nsColor.withAlphaComponent(effectiveBackgroundAlpha)
     }
 }
 
@@ -440,20 +447,42 @@ enum TerminalWindowChromeApplier {
 
     @discardableResult
     static func applyFocusedChrome(_ state: TerminalWindowChromeState, to window: NSWindow) -> Bool {
+        applyFocusedChrome(state, to: window, updatesTitle: true)
+    }
+
+    @discardableResult
+    static func applyFocusedChrome(
+        _ state: TerminalWindowChromeState,
+        to window: NSWindow,
+        updatesTitle: Bool
+    ) -> Bool {
         var titleChanged = false
-        if window.title != state.title {
+        if updatesTitle, window.title != state.title {
             window.title = state.title
             titleChanged = true
         }
         window.titlebarAppearsTransparent = true
         window.backgroundColor = state.chromeBackgroundColor
-        window.isOpaque = !state.requiresTransparentWindow
+        let isOpaque = !state.requiresTransparentWindow
+        if window.isOpaque != isOpaque {
+            window.isOpaque = isOpaque
+            // Toggling opacity changes the window's compositing and shadow;
+            // refresh it so a stale outline doesn't linger when blur flips.
+            window.invalidateShadow()
+        }
         return titleChanged
     }
 
-    private static func windowNeedsChrome(_ state: TerminalWindowChromeState, window: NSWindow) -> Bool {
-        if window.title != state.title
-            || !window.titlebarAppearsTransparent
+    static func windowNeedsChrome(
+        _ state: TerminalWindowChromeState,
+        window: NSWindow,
+        checksTitle: Bool = true
+    ) -> Bool {
+        if checksTitle && window.title != state.title {
+            return true
+        }
+
+        if !window.titlebarAppearsTransparent
             || window.isOpaque == state.requiresTransparentWindow
         {
             return true
@@ -487,6 +516,10 @@ private final class TerminalWindowChromeSyncNSView: NSView {
 
     private func applyPendingChromeIfPossible() {
         guard let state = pendingState, state.isFocused, let window else {
+            return
+        }
+        if NativeTabWindowManager.shared.applyTerminalChrome(state, for: window, requireVisible: true) {
+            appliedState = state
             return
         }
         TerminalWindowChromeApplier.apply(state, to: window, appliedState: &appliedState)

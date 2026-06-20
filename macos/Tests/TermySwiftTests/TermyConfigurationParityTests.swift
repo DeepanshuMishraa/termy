@@ -71,6 +71,7 @@ final class TermyConfigurationParityTests: XCTestCase {
         XCTAssertEqual(native.autoHideTabbar, false)
         XCTAssertEqual(native.showTermyInTitlebar, false)
         XCTAssertEqual(configuration.uiFontFamily, "Avenir Next")
+        XCTAssertTrue(configuration.isUIFontExplicitlySet)
         XCTAssertEqual(configuration.scrollbackHistory, 777)
         XCTAssertEqual(configuration.inactiveTabScrollback, 123)
 
@@ -155,5 +156,21 @@ final class TermyConfigurationParityTests: XCTestCase {
     func testEmptyUIFontFallsBackToDefault() throws {
         let configuration = try TermyAppConfiguration.load(contents: "ui_font_family =     \n")
         XCTAssertEqual(configuration.uiFontFamily, "JetBrains Mono")
+        XCTAssertFalse(configuration.isUIFontExplicitlySet)
+    }
+
+    func testUnsetUIFontIsNotExplicitlySet() throws {
+        let configuration = try TermyAppConfiguration.load(contents: "")
+        XCTAssertEqual(configuration.uiFontFamily, "JetBrains Mono")
+        XCTAssertFalse(configuration.isUIFontExplicitlySet)
+    }
+
+    /// Documents the accepted edge case: an explicit `ui_font_family = JetBrains
+    /// Mono` is indistinguishable from unset (no per-key presence signal in the
+    /// FFI), so the Settings UI uses the native system font — the desired default.
+    func testExplicitDefaultUIFontIsNotExplicitlySet() throws {
+        let configuration = try TermyAppConfiguration.load(contents: "ui_font_family = JetBrains Mono\n")
+        XCTAssertEqual(configuration.uiFontFamily, "JetBrains Mono")
+        XCTAssertFalse(configuration.isUIFontExplicitlySet)
     }
 }

@@ -12,6 +12,31 @@ enum TerminalPaneDirection: Equatable {
     case down
 }
 
+enum TerminalPaneDropPlacement: String, CaseIterable, Equatable {
+    case left
+    case right
+    case top
+    case bottom
+
+    var splitAxis: TerminalSplitAxis {
+        switch self {
+        case .left, .right:
+            return .horizontal
+        case .top, .bottom:
+            return .vertical
+        }
+    }
+
+    var insertsBeforeTarget: Bool {
+        switch self {
+        case .left, .top:
+            return true
+        case .right, .bottom:
+            return false
+        }
+    }
+}
+
 @MainActor
 final class TerminalPane: ObservableObject, Identifiable {
     let id: UUID
@@ -74,6 +99,7 @@ final class TerminalWorkspaceStore: ObservableObject {
     @Published var isCommandPaletteVisible = false
     @Published private(set) var tabPinned = false
     @Published private(set) var tabManualTitle: String?
+    @Published private(set) var draggingPaneID: UUID?
 
     init(initialTask: TermyTaskConfiguration? = nil) {
         let firstPane = TerminalPane(
@@ -210,6 +236,52 @@ final class TerminalWorkspaceStore: ObservableObject {
             zoomedPaneID = nil
             objectWillChange.send()
         }
+    }
+
+    func beginDraggingPane(_ paneID: UUID) {
+        guard pane(with: paneID) != nil else {
+            draggingPaneID = nil
+            return
+        }
+        draggingPaneID = paneID
+    }
+
+    func endDraggingPane() {
+        draggingPaneID = nil
+    }
+
+    @discardableResult
+    func movePane(
+        _ sourcePaneID: UUID,
+        to targetPaneID: UUID,
+        placement: TerminalPaneDropPlacement
+    ) -> Bool {
+        guard sourcePaneID != targetPaneID, paneCount > 1 else {
+            return false
+        }
+        guard containsPane(sourcePaneID, in: root),
+              containsPane(targetPaneID, in: root)
+        else {
+            return false
+        }
+
+        let originalRoot = root
+        let previousFocus = focusedPaneID
+        let detached = detachingLeaf(paneID: sourcePaneID, from: root)
+        guard let movedPane = detached.pane, let nextRoot = detached.node else {
+            return false
+        }
+
+        root = nextRoot
+        guard insertPane(movedPane, relativeTo: targetPaneID, placement: placement, in: root) else {
+            root = originalRoot
+            return false
+        }
+
+        focusedPaneID = pane(with: previousFocus) == nil ? sourcePaneID : previousFocus
+        zoomedPaneID = nil
+        objectWillChange.send()
+        return true
     }
 
     func closeFocusedPane() {
@@ -432,6 +504,79 @@ final class TerminalWorkspaceStore: ObservableObject {
             case (nil, nil):
                 return nil
             }
+        }
+    }
+
+    private func detachingLeaf(
+        paneID: UUID,
+        from node: TerminalPaneNode
+    ) -> (node: TerminalPaneNode?, pane: TerminalPane?) {
+        switch node.kind {
+        case .leaf(let pane):
+            if pane.id == paneID {
+                return (nil, pane)
+            }
+            return (node, nil)
+        case .split(_, let first, let second):
+            let firstResult = detachingLeaf(paneID: paneID, from: first)
+            if let pane = firstResult.pane {
+                if let firstNode = firstResult.node {
+                    return (
+                        TerminalPaneNode(
+                            kind: nodeSplit(axisOf: node, first: firstNode, second: second),
+                            splitRatio: node.splitRatio
+                        ),
+                        pane
+                    )
+                }
+                return (second, pane)
+            }
+
+            let secondResult = detachingLeaf(paneID: paneID, from: second)
+            if let pane = secondResult.pane {
+                if let secondNode = secondResult.node {
+                    return (
+                        TerminalPaneNode(
+                            kind: nodeSplit(axisOf: node, first: first, second: secondNode),
+                            splitRatio: node.splitRatio
+                        ),
+                        pane
+                    )
+                }
+                return (first, pane)
+            }
+
+            return (node, nil)
+        }
+    }
+
+    private func insertPane(
+        _ pane: TerminalPane,
+        relativeTo targetPaneID: UUID,
+        placement: TerminalPaneDropPlacement,
+        in node: TerminalPaneNode
+    ) -> Bool {
+        switch node.kind {
+        case .leaf(let targetPane) where targetPane.id == targetPaneID:
+            let movingNode = TerminalPaneNode.leaf(pane)
+            let targetNode = TerminalPaneNode.leaf(targetPane)
+            let first = placement.insertsBeforeTarget ? movingNode : targetNode
+            let second = placement.insertsBeforeTarget ? targetNode : movingNode
+            node.kind = .split(axis: placement.splitAxis, first: first, second: second)
+            node.setSplitRatio(0.5)
+            return true
+        case .leaf:
+            return false
+        case .split(let axis, let first, let second):
+            if insertPane(pane, relativeTo: targetPaneID, placement: placement, in: first) {
+                node.kind = .split(axis: axis, first: first, second: second)
+                return true
+            }
+            if insertPane(pane, relativeTo: targetPaneID, placement: placement, in: second) {
+                node.kind = .split(axis: axis, first: first, second: second)
+                return true
+            }
+            return false
         }
     }
 

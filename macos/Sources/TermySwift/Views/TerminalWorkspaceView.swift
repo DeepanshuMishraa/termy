@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct TerminalWorkspaceView: View {
     @StateObject private var store: TerminalWorkspaceStore
@@ -8,6 +9,7 @@ struct TerminalWorkspaceView: View {
     @State private var workspacePersistenceError: String?
     @State private var didRestoreWorkspace = false
     @State private var persistenceSaveTask: Task<Void, Never>?
+    @State private var currentWindow: NSWindow?
     private let workspacePersistence = TerminalWorkspacePersistence()
     private let shouldRestorePersistedWorkspace: Bool
 
@@ -17,10 +19,12 @@ struct TerminalWorkspaceView: View {
     }
 
     var body: some View {
-        workspaceContent
+        workspaceWithChrome
             .background(TerminalWorkspaceRoutingView(
                 store: store,
-                onWindowChanged: { _ in }
+                onWindowChanged: { window in
+                    currentWindow = window
+                }
             ))
             .focusedValue(\.terminalCommands, commandSet)
             .onAppear {
@@ -39,6 +43,29 @@ struct TerminalWorkspaceView: View {
             .onReceive(configurationStore.$loadErrorMessage) { message in
                 appConfigurationError = message
             }
+    }
+
+    private var workspaceWithChrome: some View {
+        let chrome = NativeTabChromeView(
+            window: currentWindow,
+            configuration: configurationStore.configuration,
+            renderConfig: focusedRenderConfig
+        )
+
+        return Group {
+            switch configurationStore.configuration.native.tabBarPosition {
+            case .top:
+                VStack(spacing: 0) {
+                    chrome
+                    workspaceContent
+                }
+            case .right:
+                HStack(spacing: 0) {
+                    workspaceContent
+                    chrome
+                }
+            }
+        }
     }
 
     private var workspaceContent: some View {
@@ -92,6 +119,10 @@ struct TerminalWorkspaceView: View {
             TermyToastOverlay()
                 .zIndex(20)
         }
+    }
+
+    private var focusedRenderConfig: TerminalRenderConfig {
+        store.focusedTerminal?.renderConfig ?? TerminalRenderConfig.default
     }
 
     /// A top-leading error banner with a dismiss button, overlaid on the workspace.
@@ -881,52 +912,295 @@ private struct TerminalPaneLeafView: View {
     @ObservedObject var store: TerminalWorkspaceStore
     @ObservedObject private var configurationStore = TermyConfigurationStore.shared
 
-    var body: some View {
-        ZStack(alignment: .topTrailing) {
-            TerminalSurfaceView(
-                terminal: pane.terminal,
-                isFocused: store.focusedPaneID == pane.id,
-                showsFocusBorder: store.paneCount > 1,
-                // While an overlay owns the keyboard, the terminal must not
-                // re-steal first responder (updateNSView refocuses on every
-                // frame tick, which makes overlay text fields untypable).
-                isInputEnabled: !store.isSearchInputFocused && !store.isCommandPaletteVisible,
-                isSearchVisible: store.isSearchVisible,
-                windowTitle: store.tabDisplayTitle,
-                onFocus: {
-                    store.focus(pane)
-                },
-                onSplitRight: {
-                    store.focus(pane)
-                    store.splitFocused(.horizontal)
-                },
-                onSplitDown: {
-                    store.focus(pane)
-                    store.splitFocused(.vertical)
-                },
-                onClosePane: {
-                    store.focus(pane)
-                    store.closeFocusedPane()
-                },
-                onClosePaneIfSplit: {
-                    store.focus(pane)
-                    return store.closeFocusedPaneIfSplit()
-                },
-                onFocusNextPane: store.focusNextPane,
-                onShowSearch: store.showSearch,
-                onDismissSearch: {
-                    store.setSearchInputFocused(false)
-                }
-            )
+    @State private var isDropTargeted = false
+    @State private var activeDropPlacement: TerminalPaneDropPlacement?
 
-            if configurationStore.configuration.native.showDebugOverlay {
-                TerminalDebugOverlay(metrics: pane.terminal.debugMetrics)
-                    .padding(8)
-                    .allowsHitTesting(false)
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .top) {
+                TerminalSurfaceView(
+                    terminal: pane.terminal,
+                    isFocused: store.focusedPaneID == pane.id,
+                    showsFocusBorder: store.paneCount > 1,
+                    // While an overlay owns the keyboard, the terminal must not
+                    // re-steal first responder (updateNSView refocuses on every
+                    // frame tick, which makes overlay text fields untypable).
+                    isInputEnabled: !store.isSearchInputFocused && !store.isCommandPaletteVisible,
+                    isSearchVisible: store.isSearchVisible,
+                    windowTitle: store.tabDisplayTitle,
+                    onFocus: {
+                        store.focus(pane)
+                    },
+                    onSplitRight: {
+                        store.focus(pane)
+                        store.splitFocused(.horizontal)
+                    },
+                    onSplitDown: {
+                        store.focus(pane)
+                        store.splitFocused(.vertical)
+                    },
+                    onClosePane: {
+                        store.focus(pane)
+                        store.closeFocusedPane()
+                    },
+                    onClosePaneIfSplit: {
+                        store.focus(pane)
+                        return store.closeFocusedPaneIfSplit()
+                    },
+                    onFocusNextPane: store.focusNextPane,
+                    onShowSearch: store.showSearch,
+                    onDismissSearch: {
+                        store.setSearchInputFocused(false)
+                    }
+                )
+
+                if isDropTargeted, activeDropPlacement != nil {
+                    TerminalPaneDropPlacementOverlay(activePlacement: activeDropPlacement)
+                        .transition(.opacity)
+                        .allowsHitTesting(false)
+                }
+
+                if dragEnabled {
+                    TerminalPaneDragHandle(isSuppressed: isDropTargeted) {
+                        store.focus(pane)
+                        store.beginDraggingPane(pane.id)
+                        return TerminalPaneDragPayload.itemProvider(for: pane.id)
+                    }
+                    .padding(.top, 5)
+                }
+
+                if configurationStore.configuration.native.showDebugOverlay {
+                    TerminalDebugOverlay(metrics: pane.terminal.debugMetrics)
+                        .padding(8)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                        .allowsHitTesting(false)
+                }
             }
+            .onDrop(
+                of: [UTType.termyPaneDrag],
+                delegate: TerminalPaneDropDelegate(
+                    targetPaneID: pane.id,
+                    store: store,
+                    paneSize: proxy.size,
+                    isDropTargeted: $isDropTargeted,
+                    activePlacement: $activeDropPlacement
+                )
+            )
         }
         .id(pane.id)
         .frame(minWidth: 240, minHeight: 120)
+    }
+
+    private var dragEnabled: Bool {
+        store.paneCount > 1 && store.zoomedPane == nil
+    }
+}
+
+private extension UTType {
+    static let termyPaneDrag = UTType(exportedAs: "com.lassevestergaard.termy.pane-drag")
+}
+
+private enum TerminalPaneDragPayload {
+    static func itemProvider(for paneID: UUID) -> NSItemProvider {
+        let provider = NSItemProvider()
+        provider.registerDataRepresentation(
+            forTypeIdentifier: UTType.termyPaneDrag.identifier,
+            visibility: .ownProcess
+        ) { completion in
+            completion(Data(paneID.uuidString.utf8), nil)
+            return nil
+        }
+        return provider
+    }
+}
+
+private struct TerminalPaneDropDelegate: DropDelegate {
+    let targetPaneID: UUID
+    let store: TerminalWorkspaceStore
+    let paneSize: CGSize
+    @Binding var isDropTargeted: Bool
+    @Binding var activePlacement: TerminalPaneDropPlacement?
+
+    func validateDrop(info: DropInfo) -> Bool {
+        store.draggingPaneID != nil
+            && store.draggingPaneID != targetPaneID
+            && !info.itemProviders(for: [UTType.termyPaneDrag]).isEmpty
+    }
+
+    func dropEntered(info: DropInfo) {
+        updatePlacement(for: info)
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        updatePlacement(for: info)
+        return DropProposal(operation: validateDrop(info: info) ? .move : .forbidden)
+    }
+
+    func dropExited(info: DropInfo) {
+        clearPlacement()
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        defer {
+            clearPlacement()
+            store.endDraggingPane()
+        }
+
+        guard validateDrop(info: info),
+              let sourcePaneID = store.draggingPaneID,
+              let placement = activePlacement ?? Self.placement(at: info.location, in: paneSize)
+        else {
+            return false
+        }
+
+        return store.movePane(sourcePaneID, to: targetPaneID, placement: placement)
+    }
+
+    private func updatePlacement(for info: DropInfo) {
+        guard validateDrop(info: info) else {
+            clearPlacement()
+            return
+        }
+        isDropTargeted = true
+        activePlacement = Self.placement(at: info.location, in: paneSize)
+    }
+
+    private func clearPlacement() {
+        isDropTargeted = false
+        activePlacement = nil
+    }
+
+    private static func placement(
+        at location: CGPoint,
+        in size: CGSize
+    ) -> TerminalPaneDropPlacement? {
+        guard size.width > 0, size.height > 0 else {
+            return nil
+        }
+
+        let x = min(max(location.x, 0), size.width) / size.width
+        let y = min(max(location.y, 0), size.height) / size.height
+        let candidates: [(TerminalPaneDropPlacement, CGFloat)] = [
+            (.left, x),
+            (.right, 1 - x),
+            (.top, y),
+            (.bottom, 1 - y)
+        ]
+        return candidates.min { lhs, rhs in lhs.1 < rhs.1 }?.0
+    }
+}
+
+private struct TerminalPaneDragHandle: View {
+    let isSuppressed: Bool
+    let itemProvider: () -> NSItemProvider
+
+    @State private var isHovered = false
+
+    var body: some View {
+        dots(opacity: 0.86)
+        .frame(width: 34, height: 18)
+        .contentShape(Rectangle())
+        .opacity(isVisible ? 1 : 0)
+        .scaleEffect(isVisible ? 1 : 0.94)
+        .animation(.easeOut(duration: 0.1), value: isVisible)
+        .allowsHitTesting(!isSuppressed)
+        .onHover { hovering in
+            isHovered = hovering
+            if hovering {
+                NSCursor.pointingHand.set()
+            } else {
+                NSCursor.arrow.set()
+            }
+        }
+        .onDrag {
+            itemProvider()
+        } preview: {
+            dots(opacity: 1)
+                .frame(width: 26, height: 12)
+        }
+        .accessibilityLabel("Move pane")
+        .help("Move Pane")
+    }
+
+    private var isVisible: Bool {
+        isHovered && !isSuppressed
+    }
+
+    private func dots(opacity: Double) -> some View {
+        HStack(spacing: 3) {
+            ForEach(0..<3, id: \.self) { _ in
+                Circle()
+                    .fill(Color.secondary.opacity(opacity))
+                    .frame(width: 3, height: 3)
+            }
+        }
+    }
+}
+
+private struct TerminalPaneDropPlacementOverlay: View {
+    let activePlacement: TerminalPaneDropPlacement?
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack {
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(Color.accentColor.opacity(0.58), lineWidth: 1)
+                    .padding(6)
+
+                ForEach(TerminalPaneDropPlacement.allCases, id: \.self) { placement in
+                    placementBand(placement, in: proxy.size)
+                }
+            }
+            .background(Color.accentColor.opacity(0.035))
+        }
+    }
+
+    private func placementBand(_ placement: TerminalPaneDropPlacement, in size: CGSize) -> some View {
+        RoundedRectangle(cornerRadius: 7)
+            .fill(Color.accentColor.opacity(placement == activePlacement ? 0.34 : 0.13))
+            .overlay {
+                RoundedRectangle(cornerRadius: 7)
+                    .stroke(Color.accentColor.opacity(placement == activePlacement ? 0.82 : 0.28), lineWidth: 1)
+            }
+            .frame(
+                width: placementBandWidth(placement, in: size),
+                height: placementBandHeight(placement, in: size)
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: placement.overlayAlignment)
+            .padding(12)
+    }
+
+    private func placementBandWidth(_ placement: TerminalPaneDropPlacement, in size: CGSize) -> CGFloat? {
+        switch placement {
+        case .left, .right:
+            return max(32, min(84, size.width * 0.24))
+        case .top, .bottom:
+            return nil
+        }
+    }
+
+    private func placementBandHeight(_ placement: TerminalPaneDropPlacement, in size: CGSize) -> CGFloat? {
+        switch placement {
+        case .left, .right:
+            return nil
+        case .top, .bottom:
+            return max(28, min(72, size.height * 0.22))
+        }
+    }
+}
+
+private extension TerminalPaneDropPlacement {
+    var overlayAlignment: Alignment {
+        switch self {
+        case .left:
+            return .leading
+        case .right:
+            return .trailing
+        case .top:
+            return .top
+        case .bottom:
+            return .bottom
+        }
     }
 }
 

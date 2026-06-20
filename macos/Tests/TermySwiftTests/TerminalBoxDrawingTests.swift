@@ -1,3 +1,4 @@
+import CoreGraphics
 import XCTest
 @testable import TermySwift
 
@@ -96,6 +97,45 @@ final class TerminalBoxDrawingTests: XCTestCase {
         XCTAssertEqual(TerminalBoxDrawing.strokeKind(for: "\u{2573}"), .diagonal) // ╳
         XCTAssertNil(TerminalBoxDrawing.strokeKind(for: "\u{2500}"))
         XCTAssertNil(TerminalBoxDrawing.strokeKind(for: "a"))
+    }
+
+    func testRoundedTopLeftCornerUsesSmoothCubicPath() {
+        let spec = TerminalBoxDrawing.roundedCornerPathSpec(
+            for: "\u{256D}",
+            in: CGRect(x: 0, y: 0, width: 10, height: 20),
+            strokeWidth: 1
+        )!
+
+        XCTAssertEqual(spec.start.x, 5.5)
+        XCTAssertEqual(spec.start.y, 20)
+        XCTAssertEqual(spec.curveStart.x, 5.5)
+        XCTAssertEqual(spec.curveStart.y, 15)
+        XCTAssertEqual(spec.controlA.x, spec.curveStart.x)
+        XCTAssertEqual(spec.controlA.y, 12.51471862576143, accuracy: 1e-9)
+        XCTAssertEqual(spec.controlB.x, 7.51471862576143, accuracy: 1e-9)
+        XCTAssertEqual(spec.controlB.y, spec.curveEnd.y)
+        XCTAssertEqual(spec.curveEnd.x, 10)
+        XCTAssertEqual(spec.curveEnd.y, 10.5)
+        XCTAssertEqual(spec.end.x, 10)
+        XCTAssertEqual(spec.end.y, 10.5)
+    }
+
+    func testRoundedCornerPathEndpointsMeetAdjacentBoxLines() {
+        let cell = CGRect(x: 0, y: 0, width: 10, height: 20)
+        let topLeft = TerminalBoxDrawing.roundedCornerPathSpec(for: "\u{256D}", in: cell, strokeWidth: 1)!
+        let topRight = TerminalBoxDrawing.roundedCornerPathSpec(for: "\u{256E}", in: cell, strokeWidth: 1)!
+        let bottomRight = TerminalBoxDrawing.roundedCornerPathSpec(for: "\u{256F}", in: cell, strokeWidth: 1)!
+        let bottomLeft = TerminalBoxDrawing.roundedCornerPathSpec(for: "\u{2570}", in: cell, strokeWidth: 1)!
+
+        XCTAssertEqual(topLeft.end, CGPoint(x: 10, y: 10.5))
+        XCTAssertEqual(topRight.end, CGPoint(x: 0, y: 10.5))
+        XCTAssertEqual(bottomRight.end, CGPoint(x: 0, y: 10.5))
+        XCTAssertEqual(bottomLeft.end, CGPoint(x: 10, y: 10.5))
+
+        XCTAssertEqual(topLeft.start, CGPoint(x: 5.5, y: 20))
+        XCTAssertEqual(topRight.start, CGPoint(x: 5.5, y: 20))
+        XCTAssertEqual(bottomRight.start, CGPoint(x: 5.5, y: 0))
+        XCTAssertEqual(bottomLeft.start, CGPoint(x: 5.5, y: 0))
     }
 
     // Geometry shape checks. With light=1, cell 8x20: hLightTop=9.5,

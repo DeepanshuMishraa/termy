@@ -38,6 +38,27 @@ final class TerminalViewModel: ObservableObject {
         markedText = text
     }
 
+    @discardableResult
+    func applyTerminalTitle(_ rawTitle: String) -> Bool {
+        let nextTitle = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !nextTitle.isEmpty, title != nextTitle else {
+            return false
+        }
+        title = nextTitle
+        NotificationCenter.default.post(name: .termyNativeTabsChanged, object: nil)
+        return true
+    }
+
+    @discardableResult
+    func resetTerminalTitle() -> Bool {
+        guard title != "Shell" else {
+            return false
+        }
+        title = "Shell"
+        NotificationCenter.default.post(name: .termyNativeTabsChanged, object: nil)
+        return true
+    }
+
     /// Host-driven cursor blink visibility; the grid view skips the cursor
     /// while this is `false`. Ticked from the refresh driver in
     /// `pollAndPresent()` so blinking follows the active/idle cadence and
@@ -1052,11 +1073,9 @@ final class TerminalViewModel: ObservableObject {
         for event in events {
             switch event {
             case .title(let title):
-                if !title.isEmpty {
-                    self.title = title
-                }
+                applyTerminalTitle(title)
             case .resetTitle:
-                title = "Shell"
+                resetTerminalTitle()
             case .exit:
                 isExited = true
                 progress = .clear

@@ -87,8 +87,8 @@ final class TerminalSurfaceViewTests: XCTestCase {
         XCTAssertTrue(TerminalWindowChromeApplier.apply(state, to: window, appliedState: &appliedState))
         XCTAssertEqual(window.title, "Focused Shell")
         XCTAssertTrue(window.titlebarAppearsTransparent)
-        XCTAssertFalse(window.isOpaque)
-        assertColor(window.backgroundColor, matches: background, alpha: 0.75)
+        XCTAssertTrue(window.isOpaque)
+        assertColor(window.backgroundColor, matches: background, alpha: 1.0)
         XCTAssertEqual(appliedState, state)
     }
 
@@ -141,8 +141,8 @@ final class TerminalSurfaceViewTests: XCTestCase {
 
         XCTAssertTrue(TerminalWindowChromeApplier.apply(state, to: window, appliedState: &appliedState))
         XCTAssertTrue(window.titlebarAppearsTransparent)
-        XCTAssertFalse(window.isOpaque)
-        assertColor(window.backgroundColor, matches: background, alpha: 0.85)
+        XCTAssertTrue(window.isOpaque)
+        assertColor(window.backgroundColor, matches: background, alpha: 1.0)
     }
 
     private func makeWindow() -> NSWindow {

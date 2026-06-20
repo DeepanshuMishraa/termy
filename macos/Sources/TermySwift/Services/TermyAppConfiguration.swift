@@ -38,6 +38,13 @@ struct TermyAppConfiguration {
     var tmux: TermyTmuxConfiguration
     var native: TermyNativeConfiguration
     var uiFontFamily: String
+    /// True when the user explicitly set `ui_font_family` in their config (i.e.
+    /// the resolved value differs from the shipped default). Used to keep the
+    /// Settings UI on the native system font unless a UI font was chosen.
+    /// Detected by default-value comparison because the FFI exposes no per-key
+    /// presence signal — an explicit `ui_font_family = JetBrains Mono` reads as
+    /// not-set, which is acceptable (system font is the desired default there).
+    var isUIFontExplicitlySet: Bool = false
     var configPath: String?
     var tasks: [TermyTaskConfiguration]
     var keybinds: [TermyKeybindConfiguration]
@@ -169,6 +176,9 @@ struct TermyAppConfiguration {
         let uiFontFamily = try readBytes("termy_config_ui_font_family") {
             termy_config_ui_font_family(config, &$0)
         }
+        let trimmedUIFont = (uiFontFamily ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let isUIFontExplicitlySet = !trimmedUIFont.isEmpty
+            && trimmedUIFont != defaultConfiguration.uiFontFamily
         let configPath = try readBytes("termy_config_path") {
             termy_config_path(config, &$0)
         }
@@ -196,6 +206,7 @@ struct TermyAppConfiguration {
             tmux: TermyTmuxConfiguration(native, binary: tmuxBinary ?? "tmux"),
             native: TermyNativeConfiguration(native),
             uiFontFamily: Self.normalizedUIFontFamily(uiFontFamily ?? defaultConfiguration.uiFontFamily),
+            isUIFontExplicitlySet: isUIFontExplicitlySet,
             configPath: configPath,
             tasks: tasks,
             keybinds: keybinds,

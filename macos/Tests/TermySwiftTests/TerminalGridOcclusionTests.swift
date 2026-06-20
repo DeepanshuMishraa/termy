@@ -25,4 +25,16 @@ final class TerminalGridOcclusionTests: XCTestCase {
         view.applyWindowOcclusion(visible: true)
         XCTAssertTrue(view.needsDisplay, "returning to visibility must schedule a repaint")
     }
+
+    func testResizeDropsStaleLayerBackingStoreAndRepaints() {
+        let view = TerminalGridNSView(frame: NSRect(x: 0, y: 0, width: 200, height: 100))
+        XCTAssertNotNil(view.layer)
+        view.layer?.contents = NSImage(size: NSSize(width: 1, height: 1))
+        view.needsDisplay = false
+
+        view.setFrameSize(NSSize(width: 240, height: 120))
+
+        XCTAssertNil(view.layer?.contents, "resize must drop stale layer contents instead of stretching terminal art")
+        XCTAssertTrue(view.layer?.needsDisplay() ?? false, "resize must schedule a layer repaint")
+    }
 }

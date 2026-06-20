@@ -31,6 +31,15 @@ enum TerminalBoxStrokeKind: Equatable {
     case diagonal
 }
 
+struct TerminalRoundedCornerPathSpec: Equatable {
+    var start: CGPoint
+    var curveStart: CGPoint
+    var controlA: CGPoint
+    var controlB: CGPoint
+    var curveEnd: CGPoint
+    var end: CGPoint
+}
+
 /// Cell-filling geometry for Unicode box-drawing characters (U+2500–U+257F),
 /// mirroring `crates/terminal_ui/src/grid.rs::box_draw_segments` and
 /// `box_draw_geometry` (which in turn follow Ghostty's `linesChar` edge
@@ -73,6 +82,74 @@ enum TerminalBoxDrawing {
         max(1, (fontSize * 0.0675).rounded(.up))
     }
 
+    static func roundedCornerPathSpec(
+        for glyph: Character,
+        in cell: CGRect,
+        strokeWidth: CGFloat
+    ) -> TerminalRoundedCornerPathSpec? {
+        guard cell.width > 0, cell.height > 0 else {
+            return nil
+        }
+
+        let radius = max(min(cell.width, cell.height) - strokeWidth, 0) / 2
+        let controlDistance = radius * 0.5522847498307936
+        let centerX = snappedStrokeCenter(origin: cell.minX, size: cell.width, strokeWidth: strokeWidth)
+        let centerY = snappedStrokeCenter(origin: cell.minY, size: cell.height, strokeWidth: strokeWidth)
+        let leftCenter = CGPoint(x: cell.minX, y: centerY)
+        let rightCenter = CGPoint(x: cell.maxX, y: centerY)
+        let topCenter = CGPoint(x: centerX, y: cell.minY)
+        let bottomCenter = CGPoint(x: centerX, y: cell.maxY)
+
+        switch glyph {
+        case "\u{256D}": // ╭
+            let curveStart = CGPoint(x: centerX, y: centerY + radius)
+            let curveEnd = CGPoint(x: centerX + radius, y: centerY)
+            return TerminalRoundedCornerPathSpec(
+                start: bottomCenter,
+                curveStart: curveStart,
+                controlA: CGPoint(x: curveStart.x, y: curveStart.y - controlDistance),
+                controlB: CGPoint(x: curveEnd.x - controlDistance, y: curveEnd.y),
+                curveEnd: curveEnd,
+                end: rightCenter
+            )
+        case "\u{256E}": // ╮
+            let curveStart = CGPoint(x: centerX, y: centerY + radius)
+            let curveEnd = CGPoint(x: centerX - radius, y: centerY)
+            return TerminalRoundedCornerPathSpec(
+                start: bottomCenter,
+                curveStart: curveStart,
+                controlA: CGPoint(x: curveStart.x, y: curveStart.y - controlDistance),
+                controlB: CGPoint(x: curveEnd.x + controlDistance, y: curveEnd.y),
+                curveEnd: curveEnd,
+                end: leftCenter
+            )
+        case "\u{256F}": // ╯
+            let curveStart = CGPoint(x: centerX, y: centerY - radius)
+            let curveEnd = CGPoint(x: centerX - radius, y: centerY)
+            return TerminalRoundedCornerPathSpec(
+                start: topCenter,
+                curveStart: curveStart,
+                controlA: CGPoint(x: curveStart.x, y: curveStart.y + controlDistance),
+                controlB: CGPoint(x: curveEnd.x + controlDistance, y: curveEnd.y),
+                curveEnd: curveEnd,
+                end: leftCenter
+            )
+        case "\u{2570}": // ╰
+            let curveStart = CGPoint(x: centerX, y: centerY - radius)
+            let curveEnd = CGPoint(x: centerX + radius, y: centerY)
+            return TerminalRoundedCornerPathSpec(
+                start: topCenter,
+                curveStart: curveStart,
+                controlA: CGPoint(x: curveStart.x, y: curveStart.y + controlDistance),
+                controlB: CGPoint(x: curveEnd.x - controlDistance, y: curveEnd.y),
+                curveEnd: curveEnd,
+                end: rightCenter
+            )
+        default:
+            return nil
+        }
+    }
+
     private static func singleScalar(of character: Character) -> UInt32? {
         guard let scalar = character.unicodeScalars.first,
               character.unicodeScalars.count == 1
@@ -80,6 +157,15 @@ enum TerminalBoxDrawing {
             return nil
         }
         return scalar.value
+    }
+
+    /// Midpoint of a stroke pixel-snapped to integer boundaries: rounds both
+    /// stroke edges independently, then averages.
+    private static func snappedStrokeCenter(origin: CGFloat, size: CGFloat, strokeWidth: CGFloat) -> CGFloat {
+        let center = origin + size / 2
+        let minEdge = (center - strokeWidth / 2).rounded()
+        let maxEdge = (center + strokeWidth / 2).rounded()
+        return (minEdge + maxEdge) / 2
     }
 
     // MARK: - Segment table (parity with grid.rs::box_draw_segments)

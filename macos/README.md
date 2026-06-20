@@ -1,6 +1,6 @@
 # Termy
 
-Higly experimental not ready for daily use. 
+Highly experimental not ready for daily use.
 
 Native macOS 14+ SwiftUI terminal host backed by the repo-local `libtermy`.
 

@@ -1,18 +1,17 @@
 # Remaining roadmap — execution-ready plans
 
-After this session the roadmap is complete except for **one multi-week feature**
-(tmux control mode) and **one infra-gated step** (P6's GPU frame-time comparison).
-Both are scoped below. Verified against the source on 2026-06-08.
+The native roadmap is complete except for **one GUI-gated tmux step** and **one
+infra-gated step** (P6's GPU frame-time comparison). Both are scoped below.
 
 ---
 
-## 1. tmux control mode (M3) — multi-week, architecturally gated
+## 1. tmux control mode (M3) — GUI wiring remaining
 
-**Why it isn't done:** a control parser exists (`crates/terminal_ui/src/tmux/control/parser.rs`),
-but it lives in `terminal_ui`, which the FFI crate is **boundary-forbidden** to
-depend on (`scripts/check-boundaries.sh`: `check_forbidden_dep "termy_ffi" "termy_terminal_ui"`).
-So the native host can't reuse it, and full control mode is essentially a tmux
-client (window/pane model, layout sync, transitions) — weeks of work.
+**Why it isn't done:** the tmux protocol, FFI surface, Swift wrapper, layout
+parser, display-terminal mode, and `TmuxControlSession` orchestration are done
+and verified. The remaining work is presentation: render the reconciled tmux
+layout in SwiftUI, route focused-pane input through `sendInput(toPane:)`, and
+ship it behind a config flag while the per-pane shell fallback remains available.
 
 **Plan:**
 1. ✅ **Done.** Extracted the tmux control protocol (parser/state-machine,

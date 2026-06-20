@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 struct NativeTabChromeView: View {
     weak var window: NSWindow?
     let configuration: TermyAppConfiguration
+    let renderConfig: TerminalRenderConfig
 
     @State private var hoveredTabID: ObjectIdentifier?
     @State private var modifierFlags: NSEvent.ModifierFlags = []
@@ -12,6 +13,8 @@ struct NativeTabChromeView: View {
     @State private var refreshToken = 0
     @State private var renameRequest: NativeTabRenameRequest?
     @State private var renameText = ""
+    @State private var renderedStructure: [TabStructureSignature] = []
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var tabs: [NativeTabDescriptor] {
         _ = refreshToken
@@ -21,6 +24,28 @@ struct NativeTabChromeView: View {
     /// Shared spring for tab entrances, removals, and width changes —
     /// approximates the system tab bar's feel.
     static let chromeAnimation: Animation = .spring(response: 0.3, dampingFraction: 0.85)
+
+    /// The chrome spring, or `nil` when the system requests reduced motion.
+    private var motion: Animation? {
+        reduceMotion ? nil : Self.chromeAnimation
+    }
+
+    /// Quick hover crossfade, suppressed under reduced motion.
+    private var hoverMotion: Animation? {
+        reduceMotion ? nil : .easeInOut(duration: 0.12)
+    }
+
+    private var selectedTabID: NativeTabDescriptor.ID? {
+        tabs.first(where: { $0.isSelected })?.id
+    }
+
+    /// Geometry-affecting snapshot of the tab list, used to decide whether a
+    /// refresh should animate.
+    private var currentTabStructure: [TabStructureSignature] {
+        tabs.map {
+            TabStructureSignature(id: $0.id, isSelected: $0.isSelected, isPinned: $0.isPinned)
+        }
+    }
 
     var body: some View {
         if shouldRender {
@@ -60,20 +85,29 @@ struct NativeTabChromeView: View {
                     .padding(.leading, 10)
             }
 
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 4) {
-                    ForEach(tabs) { tab in
-                        NativeTabEntrance(
-                            animatesEntrance: NativeTabWindowManager.shared.shouldAnimateTabEntrance(for: tab.id),
-                            collapses: .horizontal,
-                            alignment: .leading
-                        ) {
-                            tabButton(tab, axis: .horizontal)
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 4) {
+                        ForEach(tabs) { tab in
+                            NativeTabEntrance(
+                                animatesEntrance: NativeTabWindowManager.shared.shouldAnimateTabEntrance(for: tab.id),
+                                collapses: .horizontal,
+                                alignment: .leading
+                            ) {
+                                tabButton(tab, axis: .horizontal)
+                            }
+                            .transition(tabRemovalTransition(collapses: .horizontal))
                         }
-                        .transition(tabRemovalTransition(collapses: .horizontal))
                     }
+                    .padding(.horizontal, 6)
                 }
-                .padding(.horizontal, 6)
+                .onChange(of: selectedTabID) { _, _ in
+                    scrollSelectionIntoView(proxy, animated: true)
+                }
+                .onAppear {
+                    renderedStructure = currentTabStructure
+                    scrollSelectionIntoView(proxy, animated: false)
+                }
             }
 
             Button {
@@ -87,15 +121,14 @@ struct NativeTabChromeView: View {
             .padding(.trailing, 8)
         }
         .frame(height: 34)
-        .background(.bar)
+        .background(chromeBackground)
         .overlay(alignment: .bottom) {
             Divider()
+                .overlay(chromeDivider)
         }
         .modifierFlagsTracking($modifierFlags, monitor: $modifierMonitor)
         .onReceive(NotificationCenter.default.publisher(for: .termyNativeTabsChanged)) { _ in
-            withAnimation(Self.chromeAnimation) {
-                refreshToken &+= 1
-            }
+            handleTabsChanged()
         }
         .sheet(item: $renameRequest) { request in
             RenameNativeTabSheet(
@@ -130,32 +163,40 @@ struct NativeTabChromeView: View {
             .buttonStyle(.plain)
             .help("New Tab")
 
-            ScrollView(.vertical, showsIndicators: false) {
-                LazyVStack(spacing: 5) {
-                    ForEach(tabs) { tab in
-                        NativeTabEntrance(
-                            animatesEntrance: NativeTabWindowManager.shared.shouldAnimateTabEntrance(for: tab.id),
-                            collapses: .vertical,
-                            alignment: .top
-                        ) {
-                            tabButton(tab, axis: .vertical)
+            ScrollViewReader { proxy in
+                ScrollView(.vertical, showsIndicators: false) {
+                    LazyVStack(spacing: 5) {
+                        ForEach(tabs) { tab in
+                            NativeTabEntrance(
+                                animatesEntrance: NativeTabWindowManager.shared.shouldAnimateTabEntrance(for: tab.id),
+                                collapses: .vertical,
+                                alignment: .top
+                            ) {
+                                tabButton(tab, axis: .vertical)
+                            }
+                            .transition(tabRemovalTransition(collapses: .vertical))
                         }
-                        .transition(tabRemovalTransition(collapses: .vertical))
                     }
+                    .padding(6)
                 }
-                .padding(6)
+                .onChange(of: selectedTabID) { _, _ in
+                    scrollSelectionIntoView(proxy, animated: true)
+                }
+                .onAppear {
+                    renderedStructure = currentTabStructure
+                    scrollSelectionIntoView(proxy, animated: false)
+                }
             }
         }
         .frame(width: 164)
-        .background(.bar)
+        .background(chromeBackground)
         .overlay(alignment: .leading) {
             Divider()
+                .overlay(chromeDivider)
         }
         .modifierFlagsTracking($modifierFlags, monitor: $modifierMonitor)
         .onReceive(NotificationCenter.default.publisher(for: .termyNativeTabsChanged)) { _ in
-            withAnimation(Self.chromeAnimation) {
-                refreshToken &+= 1
-            }
+            handleTabsChanged()
         }
         .sheet(item: $renameRequest) { request in
             RenameNativeTabSheet(
@@ -208,10 +249,12 @@ struct NativeTabChromeView: View {
         }
         .padding(.horizontal, 8)
         .frame(width: tabWidth(for: tab, axis: axis), height: 24)
-        .background(tab.isSelected ? Color.accentColor.opacity(0.16) : Color.clear, in: RoundedRectangle(cornerRadius: 6))
+        .background(tabBackground(for: tab), in: RoundedRectangle(cornerRadius: 6))
         .contentShape(Rectangle())
         .onHover { hovering in
-            hoveredTabID = hovering ? tab.id : nil
+            withAnimation(hoverMotion) {
+                hoveredTabID = hovering ? tab.id : nil
+            }
         }
         .onTapGesture {
             NativeTabWindowManager.shared.selectNativeTab(tab)
@@ -283,6 +326,30 @@ struct NativeTabChromeView: View {
         .custom(configuration.uiFontFamily, size: size).weight(weight)
     }
 
+    private var chromeBackground: Color {
+        Color(nsColor: TerminalWindowChromeState(
+            title: "",
+            isFocused: true,
+            background: renderConfig.background,
+            backgroundOpacity: renderConfig.backgroundOpacity,
+            backgroundBlur: renderConfig.backgroundBlur
+        ).chromeBackgroundColor)
+    }
+
+    private var chromeDivider: Color {
+        renderConfig.foreground.swiftUIColor.opacity(0.12)
+    }
+
+    private func tabBackground(for tab: NativeTabDescriptor) -> Color {
+        if tab.isSelected {
+            return renderConfig.foreground.swiftUIColor.opacity(0.12)
+        }
+        if hoveredTabID == tab.id {
+            return renderConfig.foreground.swiftUIColor.opacity(0.07)
+        }
+        return Color.clear
+    }
+
     private func beginRename(_ tab: NativeTabDescriptor) {
         renameText = tab.title
         renameRequest = NativeTabRenameRequest(descriptor: tab)
@@ -307,6 +374,34 @@ struct NativeTabChromeView: View {
             }
         }
         return true
+    }
+
+    /// Refreshes the tab list, animating only when the structure (count, order,
+    /// selection, pin state) changed. Programs can rewrite their title many
+    /// times a second; routing those through the spring would churn the bar, so
+    /// title-only updates refresh without animation.
+    private func handleTabsChanged() {
+        let structure = currentTabStructure
+        let isStructural = structure != renderedStructure
+        renderedStructure = structure
+        withAnimation(isStructural ? motion : nil) {
+            refreshToken &+= 1
+        }
+    }
+
+    /// Scrolls the selected tab into view — e.g. after `cmd-9` selects a tab
+    /// currently clipped by the overflow scroll view.
+    private func scrollSelectionIntoView(_ proxy: ScrollViewProxy, animated: Bool) {
+        guard let selectedTabID else {
+            return
+        }
+        if animated {
+            withAnimation(motion) {
+                proxy.scrollTo(selectedTabID)
+            }
+        } else {
+            proxy.scrollTo(selectedTabID)
+        }
     }
 
     /// Closing a tab collapses it along the bar's axis so neighbors slide
@@ -340,6 +435,16 @@ private struct NativeTabCollapse: ViewModifier {
     }
 }
 
+/// Geometry-affecting snapshot of a tab. Changes to these fields (count, order,
+/// selection, pin state) drive an animated refresh; title-only changes do not.
+/// Deliberately omits `title`: programs rewrite titles rapidly, and a title
+/// change does not move anything in a fixed-width tab.
+struct TabStructureSignature: Equatable {
+    let id: ObjectIdentifier
+    let isSelected: Bool
+    let isPinned: Bool
+}
+
 /// Plays a one-shot expand-and-fade entrance for a freshly opened tab (or the
 /// tab bar itself). Each native tab is a separate window with its own chrome,
 /// so opening a tab presents a freshly mounted chrome where ForEach insertion
@@ -350,6 +455,7 @@ private struct NativeTabEntrance<Content: View>: View {
     private let alignment: Alignment
     private let content: Content
     @State private var isCollapsed: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(
         animatesEntrance: Bool,
@@ -376,7 +482,7 @@ private struct NativeTabEntrance<Content: View>: View {
                 guard isCollapsed else {
                     return
                 }
-                withAnimation(NativeTabChromeView.chromeAnimation) {
+                withAnimation(reduceMotion ? nil : NativeTabChromeView.chromeAnimation) {
                     isCollapsed = false
                 }
             }

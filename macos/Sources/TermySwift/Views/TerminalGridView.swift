@@ -161,6 +161,24 @@ final class TerminalGridNSView: NSView {
         )
     }
 
+    override func setFrameSize(_ newSize: NSSize) {
+        let oldSize = frame.size
+        super.setFrameSize(newSize)
+        guard oldSize != newSize else {
+            return
+        }
+        invalidateBackingStoreForGeometryChange()
+    }
+
+    override func setBoundsSize(_ newSize: NSSize) {
+        let oldSize = bounds.size
+        super.setBoundsSize(newSize)
+        guard oldSize != newSize else {
+            return
+        }
+        invalidateBackingStoreForGeometryChange()
+    }
+
     /// An occluded window (e.g. a background native tab) doesn't need this
     /// view's layer backing store — a full window-size retina bitmap that runs
     /// 10-25 MB per tab. Drop it and the typeset-line cache while hidden; the
@@ -172,6 +190,13 @@ final class TerminalGridNSView: NSView {
             layer?.contents = nil
             lineCache.removeAll()
         }
+    }
+
+    private func invalidateBackingStoreForGeometryChange() {
+        layer?.contents = nil
+        lineCache.removeAll()
+        needsDisplay = true
+        layer?.setNeedsDisplay()
     }
 
     func update(
@@ -491,54 +516,11 @@ final class TerminalGridNSView: NSView {
     /// Rounded corners: a short straight stub on each cell edge (aligned with
     /// adjacent straight box lines) connected by a quarter-circle cubic arc.
     private func strokeRoundedCorner(_ glyph: Character, in cell: CGRect, strokeWidth: CGFloat) {
-        let radius = max(min(cell.width, cell.height) - strokeWidth, 0) / 2
-        let ctrlOffset = radius / 4
-        let centerX = snappedStrokeCenter(origin: cell.minX, size: cell.width, strokeWidth: strokeWidth)
-        let centerY = snappedStrokeCenter(origin: cell.minY, size: cell.height, strokeWidth: strokeWidth)
-        let leftCenter = CGPoint(x: cell.minX, y: centerY)
-        let rightCenter = CGPoint(x: cell.maxX, y: centerY)
-        let topCenter = CGPoint(x: centerX, y: cell.minY)
-        let bottomCenter = CGPoint(x: centerX, y: cell.maxY)
-
-        let spec: (start: CGPoint, curveStart: CGPoint, controlA: CGPoint, controlB: CGPoint, curveEnd: CGPoint, end: CGPoint)
-        switch glyph {
-        case "\u{256D}": // ╭
-            spec = (
-                bottomCenter,
-                CGPoint(x: centerX, y: centerY + radius),
-                CGPoint(x: centerX, y: centerY + ctrlOffset),
-                CGPoint(x: centerX + ctrlOffset, y: centerY),
-                CGPoint(x: centerX + radius, y: centerY),
-                rightCenter
-            )
-        case "\u{256E}": // ╮
-            spec = (
-                bottomCenter,
-                CGPoint(x: centerX, y: centerY + radius),
-                CGPoint(x: centerX, y: centerY + ctrlOffset),
-                CGPoint(x: centerX - ctrlOffset, y: centerY),
-                CGPoint(x: centerX - radius, y: centerY),
-                leftCenter
-            )
-        case "\u{256F}": // ╯
-            spec = (
-                topCenter,
-                CGPoint(x: centerX, y: centerY - radius),
-                CGPoint(x: centerX, y: centerY - ctrlOffset),
-                CGPoint(x: centerX - ctrlOffset, y: centerY),
-                CGPoint(x: centerX - radius, y: centerY),
-                leftCenter
-            )
-        case "\u{2570}": // ╰
-            spec = (
-                topCenter,
-                CGPoint(x: centerX, y: centerY - radius),
-                CGPoint(x: centerX, y: centerY - ctrlOffset),
-                CGPoint(x: centerX + ctrlOffset, y: centerY),
-                CGPoint(x: centerX + radius, y: centerY),
-                rightCenter
-            )
-        default:
+        guard let spec = TerminalBoxDrawing.roundedCornerPathSpec(
+            for: glyph,
+            in: cell,
+            strokeWidth: strokeWidth
+        ) else {
             return
         }
 
@@ -585,16 +567,6 @@ final class TerminalGridNSView: NSView {
             path.lineWidth = strokeWidth
             path.stroke()
         }
-    }
-
-    /// Midpoint of a stroke pixel-snapped to integer boundaries: rounds both
-    /// stroke edges independently, then averages. Prevents sub-pixel shimmer on
-    /// odd-width strokes across HiDPI scales.
-    private func snappedStrokeCenter(origin: CGFloat, size: CGFloat, strokeWidth: CGFloat) -> CGFloat {
-        let center = origin + size / 2
-        let minEdge = (center - strokeWidth / 2).rounded()
-        let maxEdge = (center + strokeWidth / 2).rounded()
-        return (minEdge + maxEdge) / 2
     }
 
     private func drawText(in dirtyRect: NSRect, dirtyBounds: DirtyGridBounds) {

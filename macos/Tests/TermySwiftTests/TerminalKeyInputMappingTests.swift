@@ -32,4 +32,38 @@ final class TerminalKeyInputMappingTests: XCTestCase {
         // keyCode 0 ('a' on US layouts) is not in the special table.
         XCTAssertNil(KeyboardCaptureView.specialKey(for: 0))
     }
+
+    func testNavigationKeysBypassInputContextWhenNotComposing() {
+        XCTAssertFalse(KeyboardCaptureView.shouldRouteThroughInputContext(
+            keyCode: 125,
+            modifierFlags: [],
+            hasMarkedText: false
+        ))
+        XCTAssertFalse(KeyboardCaptureView.shouldRouteThroughInputContext(
+            keyCode: 126,
+            modifierFlags: [],
+            hasMarkedText: false
+        ))
+    }
+
+    func testNavigationKeysStillRouteToInputContextDuringComposition() {
+        XCTAssertTrue(KeyboardCaptureView.shouldRouteThroughInputContext(
+            keyCode: 125,
+            modifierFlags: [],
+            hasMarkedText: true
+        ))
+    }
+
+    func testTextKeysStillRouteToInputContext() {
+        XCTAssertTrue(KeyboardCaptureView.shouldRouteThroughInputContext(
+            keyCode: 0,
+            modifierFlags: [],
+            hasMarkedText: false
+        ))
+        XCTAssertTrue(KeyboardCaptureView.shouldRouteThroughInputContext(
+            keyCode: 49,
+            modifierFlags: [],
+            hasMarkedText: false
+        ))
+    }
 }

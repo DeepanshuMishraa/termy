@@ -363,8 +363,7 @@ final class KeyboardCaptureView: NSView {
         // composing, or for plain/shift keys — `option` stays meta and `command`
         // stays a shortcut. Non-IME keys produce no marked text and fall through
         // to the terminal encoder below unchanged.
-        let flags = event.modifierFlags
-        if hasMarkedText() || !flags.contains(.command) && !flags.contains(.option) {
+        if shouldRouteThroughInputContext(event) {
             if processIMEKeyDown(event) {
                 return
             }
@@ -409,6 +408,34 @@ final class KeyboardCaptureView: NSView {
         // True only if a composition just ended (e.g. Escape canceled it), so
         // the cancel key isn't also sent to the terminal.
         return composingBeforeEvent
+    }
+
+    private func shouldRouteThroughInputContext(_ event: NSEvent) -> Bool {
+        Self.shouldRouteThroughInputContext(
+            keyCode: event.keyCode,
+            modifierFlags: event.modifierFlags,
+            hasMarkedText: hasMarkedText()
+        )
+    }
+
+    nonisolated static func shouldRouteThroughInputContext(
+        keyCode: UInt16,
+        modifierFlags: NSEvent.ModifierFlags,
+        hasMarkedText: Bool
+    ) -> Bool {
+        if hasMarkedText {
+            return true
+        }
+
+        if modifierFlags.contains(.command) || modifierFlags.contains(.option) {
+            return false
+        }
+
+        if let special = specialKey(for: keyCode) {
+            return special.usesCharacter
+        }
+
+        return true
     }
 
     // Special keys are encoded by the terminal path, not AppKit's text-editing
@@ -757,7 +784,7 @@ final class KeyboardCaptureView: NSView {
 
 }
 
-private enum MacKeyCode: UInt16 {
+enum MacKeyCode: UInt16 {
     case returnKey = 36
     case keypadEnter = 76
     case tab = 48

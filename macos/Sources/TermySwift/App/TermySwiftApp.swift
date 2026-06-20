@@ -329,7 +329,7 @@ struct TermySwiftApp: App {
 
         Window("\(AppMetadata.displayName) Settings", id: Self.settingsWindowID) {
             SettingsRootView()
-                .termyUIFont()
+                .termySettingsUIFont()
         }
         .defaultSize(width: 860, height: 600)
         .windowResizability(.contentMinSize)
@@ -412,6 +412,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return nil
             }
 
+            if Self.handleTerminalLineEditingShortcut(event) {
+                return nil
+            }
+
             if Self.handleDefaultFontZoomShortcut(event) {
                 return nil
             }
@@ -458,6 +462,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func newWindowForTab(_ sender: Any?) {
         NativeTabWindowManager.shared.openNativeTab()
+    }
+
+    private static func handleTerminalLineEditingShortcut(_ event: NSEvent) -> Bool {
+        let window = event.window ?? NSApp.keyWindow
+        guard let inputView = window?.firstResponder as? KeyboardCaptureView,
+              inputView.isInputEnabled,
+              let keyInput = NativeKeyEventClassifier.terminalLineEditingInput(for: event),
+              let store = TerminalCommandRouter.shared.focusedStore(for: event),
+              !store.isSearchInputFocused,
+              !store.isCommandPaletteVisible,
+              let terminal = store.focusedTerminal
+        else {
+            return false
+        }
+
+        terminal.sendKey(keyInput)
+        return true
     }
 
     private static func handleDefaultFontZoomShortcut(_ event: NSEvent) -> Bool {
@@ -521,6 +542,138 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+enum NativeKeyEventClassifier {
+    static func canonicalTriggers(for event: NSEvent) -> Set<String> {
+        guard let key = keyName(for: event) else {
+            return []
+        }
+
+        let flags = event.modifierFlags
+        var baseModifiers: [String] = []
+        if flags.contains(.control) {
+            baseModifiers.append("ctrl")
+        }
+        if flags.contains(.option) {
+            baseModifiers.append("alt")
+        }
+        if flags.contains(.shift) {
+            baseModifiers.append("shift")
+        }
+
+        var triggers = Set<String>()
+        if flags.contains(.command) {
+            triggers.insert((baseModifiers + ["cmd", key]).joined(separator: "-"))
+            triggers.insert((baseModifiers + ["secondary", key]).joined(separator: "-"))
+        } else {
+            triggers.insert((baseModifiers + [key]).joined(separator: "-"))
+        }
+        return triggers
+    }
+
+    static func keyName(for event: NSEvent) -> String? {
+        if let digit = digitName(for: event.keyCode) {
+            return digit
+        }
+
+        switch MacKeyCode(rawValue: event.keyCode) {
+        case .returnKey, .keypadEnter:
+            return "enter"
+        case .tab:
+            return "tab"
+        case .escape:
+            return "escape"
+        case .space:
+            return "space"
+        case .leftArrow:
+            return "left"
+        case .rightArrow:
+            return "right"
+        case .downArrow:
+            return "down"
+        case .upArrow:
+            return "up"
+        case .home:
+            return "home"
+        case .end:
+            return "end"
+        case .deleteBackward:
+            return "backspace"
+        case .forwardDelete:
+            return "delete"
+        case nil, .pageUp, .pageDown, .f1, .f2, .f3, .f4, .f5, .f6, .f7, .f8, .f9, .f10, .f11, .f12:
+            break
+        }
+
+        guard let characters = event.charactersIgnoringModifiers?.lowercased(),
+              let scalar = characters.unicodeScalars.first
+        else {
+            return nil
+        }
+        return String(scalar)
+    }
+
+    static func terminalLineEditingInput(for event: NSEvent) -> TerminalKeyInput? {
+        let flags = event.modifierFlags
+        guard flags.contains(.command),
+              !flags.contains(.control),
+              !flags.contains(.option),
+              !flags.contains(.shift),
+              let key = terminalLineEditingKeyName(for: event.keyCode)
+        else {
+            return nil
+        }
+
+        return TerminalKeyInput(
+            key: key,
+            platform: true,
+            eventKind: event.isARepeat ? .repeat : .press
+        )
+    }
+
+    private static func digitName(for keyCode: UInt16) -> String? {
+        switch keyCode {
+        case 18, 83:
+            return "1"
+        case 19, 84:
+            return "2"
+        case 20, 85:
+            return "3"
+        case 21, 86:
+            return "4"
+        case 23, 87:
+            return "5"
+        case 22, 88:
+            return "6"
+        case 26, 89:
+            return "7"
+        case 28, 91:
+            return "8"
+        case 25, 92:
+            return "9"
+        case 29, 82:
+            return "0"
+        default:
+            return nil
+        }
+    }
+
+    private static func terminalLineEditingKeyName(for keyCode: UInt16) -> String? {
+        switch MacKeyCode(rawValue: keyCode) {
+        case .leftArrow, .home:
+            return "left"
+        case .rightArrow, .end:
+            return "right"
+        case .deleteBackward:
+            return "backspace"
+        case .forwardDelete:
+            return "delete"
+        case nil, .returnKey, .keypadEnter, .tab, .escape, .pageUp, .pageDown, .downArrow, .upArrow,
+             .f1, .f2, .f3, .f4, .f5, .f6, .f7, .f8, .f9, .f10, .f11, .f12, .space:
+            return nil
+        }
+    }
+}
+
 @MainActor
 private final class ConfiguredKeybindRouter {
     static let shared = ConfiguredKeybindRouter()
@@ -541,7 +694,7 @@ private final class ConfiguredKeybindRouter {
     }
 
     func handle(_ event: NSEvent) -> Bool {
-        let triggers = canonicalTriggers(for: event)
+        let triggers = NativeKeyEventClassifier.canonicalTriggers(for: event)
         guard !triggers.isEmpty,
               let keybind = configuration.keybinds.first(where: { triggers.contains($0.trigger) })
         else {
@@ -667,61 +820,6 @@ private final class ConfiguredKeybindRouter {
             return false
         }
     }
-
-    private func canonicalTriggers(for event: NSEvent) -> Set<String> {
-        guard let key = keyName(for: event) else {
-            return []
-        }
-
-        let flags = event.modifierFlags
-        var baseModifiers: [String] = []
-        if flags.contains(.control) {
-            baseModifiers.append("ctrl")
-        }
-        if flags.contains(.option) {
-            baseModifiers.append("alt")
-        }
-        if flags.contains(.shift) {
-            baseModifiers.append("shift")
-        }
-
-        var triggers = Set<String>()
-        if flags.contains(.command) {
-            triggers.insert((baseModifiers + ["cmd", key]).joined(separator: "-"))
-            triggers.insert((baseModifiers + ["secondary", key]).joined(separator: "-"))
-        } else {
-            triggers.insert((baseModifiers + [key]).joined(separator: "-"))
-        }
-        return triggers
-    }
-
-    private func keyName(for event: NSEvent) -> String? {
-        switch event.keyCode {
-        case 36, 76:
-            return "enter"
-        case 48:
-            return "tab"
-        case 53:
-            return "escape"
-        case 49:
-            return "space"
-        case 123:
-            return "left"
-        case 124:
-            return "right"
-        case 125:
-            return "down"
-        case 126:
-            return "up"
-        default:
-            guard let characters = event.charactersIgnoringModifiers?.lowercased(),
-                  let scalar = characters.unicodeScalars.first
-            else {
-                return nil
-            }
-            return String(scalar)
-        }
-    }
 }
 
 private final class LocalEventMonitor {
@@ -780,6 +878,7 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
 
     private var retainedWindows: [NSWindow] = []
     private var configuredWindowIDs = Set<ObjectIdentifier>()
+    private var windowLifecycleObservers: [ObjectIdentifier: [NSObjectProtocol]] = [:]
     private let tabbingIdentifier = "\(AppMetadata.bundleIdentifier).native-tabs"
     private var entranceTabID: ObjectIdentifier?
     private var entranceIncludesBar = false
@@ -791,8 +890,9 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
         window.collectionBehavior.insert(.fullScreenPrimary)
 
         let identifier = ObjectIdentifier(window)
+        registerWindowLifecycleObservers(for: window)
         guard !configuredWindowIDs.contains(identifier) else {
-            showSystemTabBarIfNeeded(for: window)
+            hideSystemTabBarIfNeeded(for: window)
             applyFocusedTerminalChrome(for: window)
             return
         }
@@ -810,7 +910,7 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
             ),
             to: window
         )
-        showSystemTabBarIfNeeded(for: window)
+        hideSystemTabBarIfNeeded(for: window)
         window.setContentSize(TermyConfigurationStore.shared.configuration.windowSize)
         window.center()
         postTabsChanged()
@@ -829,8 +929,9 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
 
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        showSystemTabBarIfNeeded(for: window)
+        hideSystemTabBarIfNeeded(for: window)
         applyFocusedTerminalChrome(for: window)
+        applyFocusedTerminalChromeSoon(for: window)
         postTabsChanged()
     }
 
@@ -895,8 +996,9 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
         }
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        showSystemTabBarIfNeeded(for: window)
+        hideSystemTabBarIfNeeded(for: window)
         applyFocusedTerminalChrome(for: window)
+        applyFocusedTerminalChromeSoon(for: window)
         postTabsChanged()
     }
 
@@ -933,7 +1035,7 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
         }
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        showSystemTabBarIfNeeded(for: window)
+        hideSystemTabBarIfNeeded(for: window)
         applyFocusedTerminalChrome(for: window)
         postTabsChanged()
     }
@@ -997,8 +1099,9 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
         let anchorWindow = tabbedWindows[targetIndex]
         anchorWindow.addTabbedWindow(movingWindow, ordered: offset < 0 ? .below : .above)
         movingWindow.makeKeyAndOrderFront(nil)
-        showSystemTabBarIfNeeded(for: movingWindow)
+        hideSystemTabBarIfNeeded(for: movingWindow)
         applyFocusedTerminalChrome(for: movingWindow)
+        applyFocusedTerminalChromeSoon(for: movingWindow)
         postTabsChanged()
     }
 
@@ -1023,8 +1126,9 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
         let anchorWindow = tabbedWindows[clamped]
         anchorWindow.addTabbedWindow(movingWindow, ordered: clamped < currentIndex ? .below : .above)
         movingWindow.makeKeyAndOrderFront(nil)
-        showSystemTabBarIfNeeded(for: movingWindow)
+        hideSystemTabBarIfNeeded(for: movingWindow)
         applyFocusedTerminalChrome(for: movingWindow)
+        applyFocusedTerminalChromeSoon(for: movingWindow)
         postTabsChanged()
     }
 
@@ -1034,7 +1138,7 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
         else {
             return false
         }
-        showSystemTabBarIfNeeded(for: window)
+        hideSystemTabBarIfNeeded(for: window)
         applyFocusedTerminalChrome(for: window)
         return true
     }
@@ -1043,16 +1147,26 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
         guard let window = notification.object as? NSWindow else {
             return
         }
+        handleWindowWillClose(window)
+    }
+
+    private func handleWindowWillClose(_ window: NSWindow) {
         retainedWindows.removeAll { $0 === window }
         configuredWindowIDs.remove(ObjectIdentifier(window))
+        unregisterWindowLifecycleObservers(for: window)
         postTabsChanged()
     }
 
     func windowDidBecomeKey(_ notification: Notification) {
         if let window = notification.object as? NSWindow {
-            showSystemTabBarIfNeeded(for: window)
-            applyFocusedTerminalChrome(for: window)
+            handleWindowDidBecomeKey(window)
         }
+    }
+
+    private func handleWindowDidBecomeKey(_ window: NSWindow) {
+        hideSystemTabBarIfNeeded(for: window)
+        applyFocusedTerminalChrome(for: window)
+        applyFocusedTerminalChromeSoon(for: window)
         postTabsChanged()
     }
 
@@ -1065,8 +1179,14 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
         else {
             return
         }
+        handleWindowDidChangeOcclusionState(window, store: store)
+    }
+
+    private func handleWindowDidChangeOcclusionState(_ window: NSWindow, store: TerminalWorkspaceStore) {
         if window.occlusionState.contains(.visible) {
             store.resumeRefresh()
+            applyFocusedTerminalChrome(for: window)
+            applyFocusedTerminalChromeSoon(for: window)
         } else {
             store.suspendRefresh()
         }
@@ -1083,7 +1203,6 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
         window.center()
         window.contentViewController = NSHostingController(rootView: TerminalWorkspaceView(initialTask: startupTask))
         window.isReleasedWhenClosed = false
-        window.delegate = self
         configure(window)
         return window
     }
@@ -1099,7 +1218,26 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
     }
 
     private func nativeTabWindows(for sourceWindow: NSWindow) -> [NSWindow] {
-        let windows = sourceWindow.tabbedWindows ?? [sourceWindow]
+        var windows: [NSWindow] = []
+        var seen = Set<ObjectIdentifier>()
+
+        func append(_ window: NSWindow) {
+            let identifier = ObjectIdentifier(window)
+            guard seen.insert(identifier).inserted else {
+                return
+            }
+            windows.append(window)
+        }
+
+        append(sourceWindow)
+        if let tabGroup = sourceWindow.tabGroup {
+            tabGroup.windows.forEach(append)
+            NSApp.windows
+                .filter { $0.tabGroup === tabGroup }
+                .forEach(append)
+        }
+        sourceWindow.tabbedWindows?.forEach(append)
+
         return windows.filter(isNativeTerminalTabWindow)
     }
 
@@ -1107,10 +1245,9 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
         window.tabbingIdentifier == tabbingIdentifier
     }
 
-    private func showSystemTabBarIfNeeded(for window: NSWindow) {
+    private func hideSystemTabBarIfNeeded(for window: NSWindow) {
         guard isNativeTerminalTabWindow(window),
-              nativeTabWindows(for: window).count > 1,
-              window.tabGroup?.isTabBarVisible == false
+              window.tabGroup?.isTabBarVisible == true
         else {
             return
         }
@@ -1127,7 +1264,7 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
             return false
         }
 
-        let titleChanged = TerminalWindowChromeApplier.applyFocusedChrome(
+        return applyTerminalChrome(
             TerminalWindowChromeState(
                 title: store.tabDisplayTitle,
                 isFocused: true,
@@ -1135,12 +1272,115 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
                 backgroundOpacity: renderConfig.backgroundOpacity,
                 backgroundBlur: renderConfig.backgroundBlur
             ),
-            to: window
+            for: window
         )
+    }
+
+    @discardableResult
+    func applyTerminalChrome(
+        _ state: TerminalWindowChromeState,
+        for window: NSWindow,
+        requireVisible: Bool = false
+    ) -> Bool {
+        guard isNativeTerminalTabWindow(window) else {
+            return false
+        }
+        guard !requireVisible || isPresentedNativeTabWindow(window) else {
+            return false
+        }
+
+        var titleChanged = false
+        for target in nativeTabWindows(for: window) {
+            // AppKit's native tab group can draw the shared titlebar from the
+            // first/group window rather than the selected tab window. Keep the
+            // titlebar appearance synchronized across the group, but only update
+            // the selected tab's title so inactive tabs keep their own names.
+            titleChanged = TerminalWindowChromeApplier.applyFocusedChrome(
+                state,
+                to: target,
+                updatesTitle: target === window
+            ) || titleChanged
+        }
         if titleChanged {
             postTabsChanged()
         }
         return true
+    }
+
+    private func isPresentedNativeTabWindow(_ window: NSWindow) -> Bool {
+        if let selectedWindow = window.tabGroup?.selectedWindow {
+            return selectedWindow === window
+        }
+        return window.occlusionState.contains(.visible)
+    }
+
+    private func applyFocusedTerminalChromeSoon(for window: NSWindow) {
+        Task { @MainActor [weak self, weak window] in
+            guard let self, let window else {
+                return
+            }
+            self.applyFocusedTerminalChrome(for: window)
+        }
+    }
+
+    private func registerWindowLifecycleObservers(for window: NSWindow) {
+        let identifier = ObjectIdentifier(window)
+        guard windowLifecycleObservers[identifier] == nil else {
+            return
+        }
+
+        let center = NotificationCenter.default
+        let observers = [
+            center.addObserver(
+                forName: NSWindow.willCloseNotification,
+                object: window,
+                queue: .main
+            ) { [weak self, weak window] _ in
+                Task { @MainActor in
+                    guard let self, let window else {
+                        return
+                    }
+                    self.handleWindowWillClose(window)
+                }
+            },
+            center.addObserver(
+                forName: NSWindow.didBecomeKeyNotification,
+                object: window,
+                queue: .main
+            ) { [weak self, weak window] _ in
+                Task { @MainActor in
+                    guard let self, let window else {
+                        return
+                    }
+                    self.handleWindowDidBecomeKey(window)
+                }
+            },
+            center.addObserver(
+                forName: NSWindow.didChangeOcclusionStateNotification,
+                object: window,
+                queue: .main
+            ) { [weak self, weak window] _ in
+                Task { @MainActor in
+                    guard let self, let window,
+                          let store = TerminalCommandRouter.shared.store(forWindow: window)
+                    else {
+                        return
+                    }
+                    self.handleWindowDidChangeOcclusionState(window, store: store)
+                }
+            }
+        ]
+        windowLifecycleObservers[identifier] = observers
+    }
+
+    private func unregisterWindowLifecycleObservers(for window: NSWindow) {
+        let identifier = ObjectIdentifier(window)
+        guard let observers = windowLifecycleObservers.removeValue(forKey: identifier) else {
+            return
+        }
+        for observer in observers {
+            NotificationCenter.default.removeObserver(observer)
+        }
     }
 
     private func postTabsChanged() {
