@@ -842,7 +842,7 @@ mod tests {
     }
 
     #[test]
-    fn deeplink_command_input_preserves_command_without_submitting() {
+    fn deeplink_command_input_does_not_append_newline() {
         assert_eq!(
             deeplink_command_terminal_input("git status").as_deref(),
             Some("git status")
