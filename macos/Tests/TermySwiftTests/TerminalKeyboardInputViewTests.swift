@@ -74,6 +74,13 @@ final class TerminalKeyboardInputViewTests: XCTestCase {
         XCTAssertNil(view.hitTest(NSPoint(x: 50, y: 50)))
     }
 
+    func testDropInputRejectsTerminalControlCharactersInPaths() {
+        XCTAssertFalse(TerminalDropInput.containsTerminalControlCharacter("/tmp/safe file's name.txt"))
+        XCTAssertTrue(TerminalDropInput.containsTerminalControlCharacter("/tmp/\u{15}open -a Calculator\n"))
+        XCTAssertTrue(TerminalDropInput.containsTerminalControlCharacter("/tmp/carriage\rreturn"))
+        XCTAssertTrue(TerminalDropInput.containsTerminalControlCharacter("/tmp/delete\u{7f}char"))
+    }
+
     private static func escapeEvent() -> NSEvent {
         NSEvent.keyEvent(
             with: .keyDown,

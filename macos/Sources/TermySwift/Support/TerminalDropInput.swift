@@ -63,11 +63,20 @@ enum TerminalDropInput {
         guard !paths.isEmpty else {
             return nil
         }
+        guard paths.allSatisfy({ !containsTerminalControlCharacter($0) }) else {
+            return nil
+        }
 
         let text = paths
             .map(shellQuotePath)
             .joined(separator: " ") + " "
         return Array(text.utf8)
+    }
+
+    static func containsTerminalControlCharacter(_ path: String) -> Bool {
+        path.unicodeScalars.contains { scalar in
+            scalar.value < 0x20 || scalar.value == 0x7F
+        }
     }
 
     private static func shellQuotePath(_ path: String) -> String {
