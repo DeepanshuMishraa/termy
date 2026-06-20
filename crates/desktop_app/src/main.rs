@@ -746,7 +746,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn new_tab_deeplink_passes_optional_command(cx: &mut TestAppContext) {
+    fn new_tab_deeplink_ignores_optional_command(cx: &mut TestAppContext) {
         let handled = RefCell::new(Vec::new());
 
         cx.update(|app| {
@@ -762,20 +762,11 @@ mod tests {
         });
 
         assert_eq!(cx.windows().len(), 1);
-        assert_eq!(
-            *handled.borrow(),
-            vec![(
-                DeepLinkRoute::NewTab,
-                Some(DeepLinkArgument::NewTab(NewTabDeepLink {
-                    command: Some("git status".to_string()),
-                    dir: None,
-                }))
-            )]
-        );
+        assert_eq!(*handled.borrow(), vec![(DeepLinkRoute::NewTab, None)]);
     }
 
     #[gpui::test]
-    fn new_tab_deeplink_passes_optional_command_and_dir(cx: &mut TestAppContext) {
+    fn new_tab_deeplink_ignores_optional_command_and_passes_dir(cx: &mut TestAppContext) {
         let handled = RefCell::new(Vec::new());
 
         cx.update(|app| {
@@ -798,7 +789,7 @@ mod tests {
             vec![(
                 DeepLinkRoute::NewTab,
                 Some(DeepLinkArgument::NewTab(NewTabDeepLink {
-                    command: Some("git status".to_string()),
+                    command: None,
                     dir: Some("/tmp/demo".to_string()),
                 }))
             )]

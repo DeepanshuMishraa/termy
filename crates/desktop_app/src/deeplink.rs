@@ -1,6 +1,5 @@
 use url::Url;
 
-const MAX_DEEPLINK_COMMAND_LEN: usize = 4096;
 const MAX_DEEPLINK_DIR_LEN: usize = 4096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,9 +54,9 @@ impl DeepLinkRoute {
         match segments.as_slice() {
             [] => Ok((Self::Activate, None)),
             ["new"] => {
-                let command = parse_query_value(&url, "cmd")
-                    .map(|value| validate_deeplink_text(value, "cmd", MAX_DEEPLINK_COMMAND_LEN))
-                    .transpose()?;
+                // Do not honor ?cmd= from external URL protocol launches. Writing
+                // deeplink-controlled bytes into a PTY can execute commands.
+                let command = None;
                 let dir = parse_query_value(&url, "dir")
                     .map(|value| validate_deeplink_text(value, "dir", MAX_DEEPLINK_DIR_LEN))
                     .transpose()?;
@@ -139,20 +138,14 @@ mod tests {
         assert_eq!(DeepLinkRoute::parse("termy://new"), Ok((NewTab, None)));
         assert_eq!(
             DeepLinkRoute::parse("termy://new?cmd=git%20status"),
-            Ok((
-                NewTab,
-                Some(DeepLinkArgument::NewTab(NewTabDeepLink {
-                    command: Some("git status".to_string()),
-                    dir: None,
-                }))
-            ))
+            Ok((NewTab, None))
         );
         assert_eq!(
             DeepLinkRoute::parse("termy://new?cmd=git%20status&dir=%2Ftmp%2Fdemo"),
             Ok((
                 NewTab,
                 Some(DeepLinkArgument::NewTab(NewTabDeepLink {
-                    command: Some("git status".to_string()),
+                    command: None,
                     dir: Some("/tmp/demo".to_string()),
                 }))
             ))
@@ -160,8 +153,15 @@ mod tests {
     }
 
     #[test]
+    fn ignores_new_tab_command_values() {
+        assert_eq!(
+            DeepLinkRoute::parse("termy://new?cmd=git%20status%0A"),
+            Ok((NewTab, None))
+        );
+    }
+
+    #[test]
     fn rejects_new_tab_control_characters() {
-        assert!(DeepLinkRoute::parse("termy://new?cmd=git%20status%0A").is_err());
         assert!(DeepLinkRoute::parse("termy://new?dir=%2Ftmp%2Fdemo%0D").is_err());
     }
 
