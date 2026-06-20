@@ -14,4 +14,4 @@ serde_json = { workspace = true }
 tempfile = { workspace = true }
 termy_command_core = { path = "../command_core" }
 termy_config_core = { path = "../config_core" }
-termy_terminal_ui = { path = "../terminal_ui" }
+termy_core = { path = "../core" }
