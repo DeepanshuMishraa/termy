@@ -13,7 +13,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-use termy_terminal_ui::monotonic_now_ns;
+use termy_core::monotonic_now_ns;
 
 const DEFAULT_DURATION_SECS: u64 = 13;
 // Give launched apps enough room to finish the benchmark command, flush metrics,
