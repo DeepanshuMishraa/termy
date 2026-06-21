@@ -34,7 +34,7 @@ pub(super) struct BrowserTabState {
 }
 
 impl BrowserTabState {
-    fn new(url: &str) -> Self {
+    pub(super) fn new(url: &str) -> Self {
         Self {
             #[cfg(target_os = "macos")]
             webview: None,
@@ -59,26 +59,6 @@ impl BrowserTabState {
     }
 }
 
-impl TerminalTab {
-    pub(super) fn is_browser(&self) -> bool {
-        matches!(self.kind, TabKind::Browser(_))
-    }
-
-    pub(super) fn browser_state(&self) -> Option<&BrowserTabState> {
-        match &self.kind {
-            TabKind::Browser(state) => Some(state),
-            TabKind::Terminal => None,
-        }
-    }
-
-    pub(super) fn browser_state_mut(&mut self) -> Option<&mut BrowserTabState> {
-        match &mut self.kind {
-            TabKind::Browser(state) => Some(state),
-            TabKind::Terminal => None,
-        }
-    }
-}
-
 impl TerminalView {
     pub(crate) fn add_browser_tab(&mut self, cx: &mut Context<Self>) {
         if !self.browser_tabs_enabled {
@@ -98,6 +78,7 @@ impl TerminalView {
         }
 
         let tab_id = self.allocate_tab_id();
+        let pane_id = format!("%browser-{tab_id}");
         let title = "New Tab".to_string();
         let display_width = Self::tab_display_width_for_text_px_with_max(0.0, TAB_MAX_WIDTH);
         let sticky_title_width =
@@ -106,9 +87,15 @@ impl TerminalView {
             id: tab_id,
             window_id: format!("@browser-{tab_id}"),
             window_index: 0,
-            kind: TabKind::Browser(Box::new(BrowserTabState::new(BROWSER_DEFAULT_URL))),
-            panes: Vec::new(),
-            active_pane_id: String::new(),
+            panes: vec![TerminalPane::new_browser(
+                pane_id.clone(),
+                0,
+                0,
+                120,
+                40,
+                BROWSER_DEFAULT_URL,
+            )],
+            active_pane_id: pane_id,
             pinned: false,
             manual_title: Some(title.clone()),
             explicit_title: None,
@@ -137,24 +124,23 @@ impl TerminalView {
         cx.notify();
     }
 
-    pub(super) fn active_tab_is_browser(&self) -> bool {
-        self.active_tab_ref().is_some_and(TerminalTab::is_browser)
-    }
-
     pub(super) fn browser_url_editing(&self) -> bool {
-        self.active_tab_ref()
-            .and_then(TerminalTab::browser_state)
+        self.active_browser_state()
             .is_some_and(|state| state.editing_url)
     }
 
     pub(super) fn active_browser_state(&self) -> Option<&BrowserTabState> {
-        self.active_tab_ref().and_then(TerminalTab::browser_state)
+        self.active_pane_ref().and_then(TerminalPane::browser_state)
     }
 
     fn active_browser_state_mut(&mut self) -> Option<&mut BrowserTabState> {
         self.tabs
             .get_mut(self.active_tab)
-            .and_then(TerminalTab::browser_state_mut)
+            .and_then(|tab| {
+                tab.active_pane_index()
+                    .and_then(|index| tab.panes.get_mut(index))
+            })
+            .and_then(TerminalPane::browser_state_mut)
     }
 
     pub(super) fn begin_browser_url_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -172,6 +158,16 @@ impl TerminalView {
         self.reset_cursor_blink_phase();
         self.inline_input_selecting = false;
         cx.notify();
+    }
+
+    pub(super) fn begin_browser_url_edit_for_pane(
+        &mut self,
+        pane_id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let _ = self.focus_pane_target(pane_id.as_str(), cx);
+        self.begin_browser_url_edit(window, cx);
     }
 
     /// Drop any in-progress URL edit on the active tab without committing,
@@ -260,11 +256,46 @@ impl TerminalView {
         }
     }
 
+    #[cfg(target_os = "macos")]
+    fn browser_pane_webview_layouts(&self, window: &Window) -> Vec<BrowserPaneWebviewLayout> {
+        let Some(active_tab) = self.active_tab_ref() else {
+            return Vec::new();
+        };
+        let Some(content_bounds) = self.terminal_content_bounds(window) else {
+            return Vec::new();
+        };
+        active_tab
+            .panes
+            .iter()
+            .filter(|pane| pane.is_browser())
+            .filter_map(|pane| {
+                let layout = self.terminal_pane_layout(active_tab, pane, content_bounds)?;
+                let host_x = layout.content_frame.origin_x;
+                let host_y = layout.content_frame.origin_y + BROWSER_URL_BAR_HEIGHT;
+                let host_width = layout.content_frame.width.max(0.0);
+                let host_height = (layout.content_frame.height - BROWSER_URL_BAR_HEIGHT).max(0.0);
+                (host_width >= 1.0 && host_height >= 1.0).then(|| BrowserPaneWebviewLayout {
+                    pane_id: pane.id.clone(),
+                    bounds: (
+                        host_x.round() as i32,
+                        host_y.round() as i32,
+                        host_width.round() as i32,
+                        host_height.round() as i32,
+                    ),
+                })
+            })
+            .collect()
+    }
+
     /// Push page titles from the webview callbacks into the tab strip.
     pub(super) fn sync_browser_tab_titles(&mut self) {
         for index in 0..self.tabs.len() {
             let next_title = {
-                let Some(state) = self.tabs[index].browser_state() else {
+                let Some(state) = self.tabs[index]
+                    .panes
+                    .iter()
+                    .find_map(TerminalPane::browser_state)
+                else {
                     continue;
                 };
                 let title = state
@@ -278,7 +309,11 @@ impl TerminalView {
                 }
                 title
             };
-            if let Some(state) = self.tabs[index].browser_state_mut() {
+            if let Some(state) = self.tabs[index]
+                .panes
+                .iter_mut()
+                .find_map(TerminalPane::browser_state_mut)
+            {
                 state.applied_title = next_title.clone();
             }
             self.tabs[index].manual_title = Some(Self::truncate_tab_title(&next_title));
@@ -291,13 +326,6 @@ impl TerminalView {
     /// render pass.
     #[cfg(target_os = "macos")]
     pub(super) fn sync_browser_webviews(&mut self, window: &Window) {
-        let viewport = window.viewport_size();
-        let viewport_width: f32 = viewport.width.into();
-        let viewport_height: f32 = viewport.height.into();
-        let host_x = self.workspace_sidebar_width();
-        let host_y = self.terminal_content_top_inset() + BROWSER_URL_BAR_HEIGHT;
-        let host_width = (viewport_width - host_x - self.effective_sidebar_width()).max(0.0);
-        let host_height = (viewport_height - host_y - self.inspector_bottom_inset()).max(0.0);
         // Native views paint above all gpui content, so hide the webview
         // whenever a gpui overlay needs the area.
         let overlay_open = self.is_command_palette_open()
@@ -305,58 +333,72 @@ impl TerminalView {
             || self.new_tab_menu_anchor.is_some();
         let active_tab = self.active_tab;
         let wakeup = self.event_wakeup_tx.clone();
+        let browser_layouts = if overlay_open {
+            Vec::new()
+        } else {
+            self.browser_pane_webview_layouts(window)
+        };
 
         for (index, tab) in self.tabs.iter_mut().enumerate() {
-            let Some(state) = tab.browser_state_mut() else {
-                continue;
-            };
-            let show =
-                index == active_tab && !overlay_open && host_width >= 1.0 && host_height >= 1.0;
-            if show {
-                if state.webview.is_none() {
-                    state.webview = create_browser_webview(
-                        window,
-                        &state.shared,
-                        &state.current_url(),
-                        wakeup.clone(),
-                    );
-                }
-                let Some(webview) = &state.webview else {
+            for pane in &mut tab.panes {
+                let pane_id = pane.id.clone();
+                let Some(state) = pane.browser_state_mut() else {
                     continue;
                 };
-                let bounds = (
-                    host_x.round() as i32,
-                    host_y.round() as i32,
-                    host_width.round() as i32,
-                    host_height.round() as i32,
-                );
-                if state.last_bounds != bounds {
-                    let _ = webview.set_bounds(wry::Rect {
-                        position: wry::dpi::LogicalPosition::new(bounds.0, bounds.1).into(),
-                        size: wry::dpi::LogicalSize::new(bounds.2, bounds.3).into(),
-                    });
-                    state.last_bounds = bounds;
-                }
-                if !state.visible {
-                    let _ = webview.set_visible(true);
-                    state.visible = true;
-                }
-            } else if state.visible {
-                if let Some(webview) = &state.webview {
-                    let _ = webview.set_visible(false);
-                }
-                state.visible = false;
-            }
-        }
-        for entry in &mut self.workspaces {
-            for tab in &mut entry.tabs {
-                if let Some(state) = tab.browser_state_mut()
-                    && state.visible
-                {
+                let layout = (index == active_tab)
+                    .then(|| {
+                        browser_layouts
+                            .iter()
+                            .find(|layout| layout.pane_id == pane_id)
+                    })
+                    .flatten();
+                if let Some(layout) = layout {
+                    if state.webview.is_none() {
+                        state.webview = create_browser_webview(
+                            window,
+                            &state.shared,
+                            &state.current_url(),
+                            wakeup.clone(),
+                        );
+                    }
+                    let Some(webview) = &state.webview else {
+                        continue;
+                    };
+                    if state.last_bounds != layout.bounds {
+                        let _ = webview.set_bounds(wry::Rect {
+                            position: wry::dpi::LogicalPosition::new(
+                                layout.bounds.0,
+                                layout.bounds.1,
+                            )
+                            .into(),
+                            size: wry::dpi::LogicalSize::new(layout.bounds.2, layout.bounds.3)
+                                .into(),
+                        });
+                        state.last_bounds = layout.bounds;
+                    }
+                    if !state.visible {
+                        let _ = webview.set_visible(true);
+                        state.visible = true;
+                    }
+                } else if state.visible {
                     if let Some(webview) = &state.webview {
                         let _ = webview.set_visible(false);
                     }
                     state.visible = false;
+                }
+            }
+        }
+        for entry in &mut self.workspaces {
+            for tab in &mut entry.tabs {
+                for pane in &mut tab.panes {
+                    if let Some(state) = pane.browser_state_mut()
+                        && state.visible
+                    {
+                        if let Some(webview) = &state.webview {
+                            let _ = webview.set_visible(false);
+                        }
+                        state.visible = false;
+                    }
                 }
             }
         }
@@ -404,14 +446,18 @@ impl TerminalView {
     /// The browser tab's URL bar: back / forward / reload plus an address
     /// field that flips into an inline text input while editing.
     pub(super) fn render_browser_chrome(
-        &mut self,
+        &self,
+        pane_id: String,
         colors: &TerminalColors,
         ui_font_family: &SharedString,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let editing = self.browser_url_editing();
+        let editing = self.active_pane_id() == Some(pane_id.as_str()) && self.browser_url_editing();
         let current_url = self
-            .active_browser_state()
+            .tabs
+            .get(self.active_tab)
+            .and_then(|tab| tab.panes.iter().find(|pane| pane.id == pane_id))
+            .and_then(TerminalPane::browser_state)
             .map(BrowserTabState::current_url)
             .unwrap_or_default();
         let mut stroke = colors.foreground;
@@ -459,9 +505,9 @@ impl TerminalView {
                 .cursor_text()
                 .on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(|this, _event: &MouseDownEvent, window, cx| {
+                    cx.listener(move |this, _event: &MouseDownEvent, window, cx| {
                         window.prevent_default();
-                        this.begin_browser_url_edit(window, cx);
+                        this.begin_browser_url_edit_for_pane(pane_id.clone(), window, cx);
                         cx.stop_propagation();
                     }),
                 )
@@ -522,6 +568,12 @@ impl TerminalView {
             )
             .into_any_element()
     }
+}
+
+#[cfg(target_os = "macos")]
+struct BrowserPaneWebviewLayout {
+    pane_id: String,
+    bounds: (i32, i32, i32, i32),
 }
 
 #[cfg(target_os = "macos")]

@@ -397,7 +397,10 @@ impl TerminalView {
                     cell_width: pane_cell_size.width.into(),
                     cell_height: pane_cell_size.height.into(),
                 };
-                let current = pane.terminal.size();
+                let Some(terminal) = pane.maybe_terminal() else {
+                    continue;
+                };
+                let current = terminal.size();
                 let needs_resize = current.cols != next_size.cols
                     || current.rows != next_size.rows
                     || current.cell_width != next_size.cell_width
@@ -405,19 +408,19 @@ impl TerminalView {
 
                 if needs_resize {
                     if can_resize {
-                        pane.terminal.resize(next_size);
+                        terminal.resize(next_size);
                         self.last_resize_applied_at = Some(now);
                     } else {
                         needs_throttle_follow_up = true;
                     }
                 }
 
-                let alt_screen = pane.terminal.alternate_screen_mode();
+                let alt_screen = terminal.alternate_screen_mode();
                 let prev_alt_screen = pane.last_alternate_screen.get();
                 if alt_screen != prev_alt_screen {
                     pane.last_alternate_screen.set(alt_screen);
                     if alt_screen {
-                        pane.terminal.nudge_resize();
+                        terminal.nudge_resize();
                     }
                 }
             }
@@ -447,7 +450,7 @@ mod tests {
             pane_zoom_steps: 0,
             degraded: false,
             progress_state: ProgressState::default(),
-            terminal: test_terminal(),
+            content: PaneContent::Terminal(test_terminal()),
             render_cache: RefCell::new(TerminalPaneRenderCache::default()),
             last_alternate_screen: Cell::new(false),
             cached_element_ids: PaneCachedElementIds::new(id),
@@ -470,7 +473,6 @@ mod tests {
     #[test]
     fn repair_native_tab_active_pane_for_resize_falls_back_to_first_pane() {
         let mut tab = TerminalTab {
-            kind: TabKind::Terminal,
             id: 1,
             window_id: "@native-1".to_string(),
             window_index: 0,
@@ -502,7 +504,6 @@ mod tests {
     #[test]
     fn aggregate_progress_state_picks_highest_severity_across_panes() {
         let mut tab = TerminalTab {
-            kind: TabKind::Terminal,
             id: 1,
             window_id: "@native-1".to_string(),
             window_index: 0,
@@ -554,7 +555,6 @@ mod tests {
     #[test]
     fn aggregate_progress_state_falls_back_to_indeterminate() {
         let mut tab = TerminalTab {
-            kind: TabKind::Terminal,
             id: 1,
             window_id: "@native-1".to_string(),
             window_index: 0,

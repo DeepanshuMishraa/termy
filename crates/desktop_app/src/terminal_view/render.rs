@@ -2533,8 +2533,10 @@ impl Render for TerminalView {
         let command_palette_open = self.is_command_palette_open();
         let palette_backdrop_transform =
             command_palette_open.then(command_palette_backdrop_transform);
-        let terminal_cursor_active =
-            !command_palette_open && self.renaming_tab.is_none() && !self.search_open;
+        let terminal_cursor_active = !command_palette_open
+            && self.renaming_tab.is_none()
+            && self.renaming_workspace.is_none()
+            && !self.search_open;
         let cursor_visible = terminal_cursor_active
             && self.cursor_visible_for_focus(self.focus_handle.is_focused(window));
 
@@ -2590,7 +2592,35 @@ impl Render for TerminalView {
                 .iter()
                 .zip(active_pane_font_sizes.iter().copied())
             {
-                let terminal = &pane.terminal;
+                if pane.is_browser() {
+                    let Some(pane_layout) =
+                        self.terminal_pane_layout(active_tab, pane, content_bounds)
+                    else {
+                        continue;
+                    };
+                    let pane_left = pane_layout.content_frame.origin_x;
+                    let pane_top = pane_layout.content_frame.origin_y;
+                    let pane_width = pane_layout.content_frame.width;
+                    let pane_height = pane_layout.content_frame.height;
+                    let pane_id = pane.id.clone();
+                    let chrome = self.render_browser_chrome(pane_id, &colors, &ui_font_family, cx);
+                    pane_layers.push(
+                        div()
+                            .id(pane.cached_element_ids.pane.clone())
+                            .absolute()
+                            .left(px(pane_left))
+                            .top(px(pane_top))
+                            .w(px(pane_width))
+                            .h(px(pane_height))
+                            .cursor_text()
+                            .bg(terminal_surface_bg)
+                            .child(chrome)
+                            .into_any_element(),
+                    );
+                    continue;
+                }
+
+                let terminal = pane.terminal();
                 let terminal_size = terminal.size();
                 let cols = terminal_size.cols as usize;
                 let rows = terminal_size.rows as usize;
@@ -3052,11 +3082,14 @@ impl Render for TerminalView {
         let workspace_sidebar = self
             .workspace_sidebar_visible()
             .then(|| self.render_workspace_sidebar(&colors, &ui_font_family, tabbar_bg, cx));
+        let workspace_sidebar_overlay = self.workspace_sidebar_overlay_visible().then(|| {
+            self.render_workspace_sidebar_overlay(&colors, &ui_font_family, tabbar_bg, cx)
+        });
+        let workspace_sidebar_edge_peek = self
+            .workspace_sidebar_edge_peek_enabled()
+            .then(|| self.render_workspace_sidebar_edge_peek_target(cx));
         self.sync_browser_tab_titles();
         self.sync_browser_webviews(window);
-        let browser_chrome = self
-            .active_tab_is_browser()
-            .then(|| self.render_browser_chrome(&colors, &ui_font_family, cx));
         let hidden_titlebar_branding = Self::should_render_hidden_titlebar_branding(
             self.auto_hide_tabbar,
             self.tabs.len(),
@@ -3237,6 +3270,7 @@ impl Render for TerminalView {
                     .on_action(cx.listener(Self::handle_restart_app_action))
                     .on_action(cx.listener(Self::handle_rename_tab_action))
                     .on_action(cx.listener(Self::handle_check_for_updates_action))
+                    .on_action(cx.listener(Self::handle_toggle_workspace_sidebar_action))
                     .on_action(cx.listener(Self::handle_new_tab_action))
                     .on_action(cx.listener(Self::handle_close_tab_action))
                     .on_action(cx.listener(Self::handle_close_pane_or_tab_action))
@@ -3324,7 +3358,6 @@ impl Render for TerminalView {
                                     .flex_1()
                                     .h_full()
                                     .overflow_hidden()
-                                    .children(browser_chrome)
                                     .child(
                                         div()
                                             .id("terminal-surface")
@@ -3391,6 +3424,8 @@ impl Render for TerminalView {
                             .children(tab_sidebar),
                     ),
             )
+            .children(workspace_sidebar_edge_peek)
+            .children(workspace_sidebar_overlay)
             .child(overlay_view);
 
         #[cfg(target_os = "macos")]
@@ -3570,13 +3605,13 @@ mod tests {
             pane_zoom_steps: 0,
             degraded: false,
             progress_state: ProgressState::default(),
-            terminal: Terminal::new_tmux(
+            content: PaneContent::Terminal(Terminal::new_tmux(
                 size,
                 TerminalOptions {
                     scrollback_history: 128,
                     ..TerminalOptions::default()
                 },
-            ),
+            )),
             render_cache: std::cell::RefCell::new(TerminalPaneRenderCache::default()),
             last_alternate_screen: std::cell::Cell::new(false),
             cached_element_ids: PaneCachedElementIds::new(id),

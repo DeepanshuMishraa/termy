@@ -152,7 +152,9 @@ impl TerminalView {
         if reuse_existing_terminals {
             for mut tab in old_tabs {
                 for pane in tab.panes.drain(..) {
-                    existing_terminals.insert(pane.id.clone(), pane.terminal);
+                    if let PaneContent::Terminal(terminal) = pane.content {
+                        existing_terminals.insert(pane.id, terminal);
+                    }
                 }
             }
         }
@@ -284,7 +286,9 @@ impl TerminalView {
                 inactive_options.unwrap_or(active_options)
             };
             for pane in &tab.panes {
-                pane.terminal.set_term_options(options);
+                if let Some(terminal) = pane.maybe_terminal() {
+                    terminal.set_term_options(options);
+                }
             }
         }
         self.mark_tab_strip_layout_dirty();

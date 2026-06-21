@@ -62,6 +62,7 @@ macro_rules! termy_command_catalog {
             (ToggleSearchRegex, "toggle_search_regex"),
             (InstallCli, "install_cli"),
             (ToggleTabBarVisibility, "toggle_tab_bar_visibility"),
+            (ToggleWorkspaceSidebar, "toggle_workspace_sidebar"),
             (ToggleInspector, "toggle_inspector"),
         }
     };

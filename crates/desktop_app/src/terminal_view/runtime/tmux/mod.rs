@@ -90,7 +90,7 @@ impl TerminalPane {
             pane_zoom_steps: 0,
             degraded,
             progress_state: ProgressState::default(),
-            terminal,
+            content: PaneContent::Terminal(terminal),
             render_cache: std::cell::RefCell::new(TerminalPaneRenderCache::default()),
             last_alternate_screen: std::cell::Cell::new(false),
             cached_element_ids,
@@ -113,7 +113,6 @@ impl TerminalTab {
 
         Self {
             id,
-            kind: TabKind::Terminal,
             window_id: window.id.clone(),
             window_index: window.index,
             active_pane_id: window

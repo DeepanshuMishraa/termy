@@ -41,10 +41,12 @@ impl TerminalView {
         orientation: TabStripOrientation,
         tab_index: usize,
         click_count: usize,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.disarm_titlebar_window_move();
         self.switch_tab(tab_index, cx);
+        self.focus_terminal_after_tab_activation(window, cx);
         self.begin_tab_drag(tab_index, orientation);
         if Self::should_begin_tab_rename(orientation, click_count) {
             self.begin_rename_tab(tab_index, cx);

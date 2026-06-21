@@ -41,6 +41,7 @@ fn ime_candidate_bounds(
 enum InlineInputTarget {
     CommandPalette,
     RenameTab,
+    RenameWorkspace,
     Search,
     BrowserUrl,
 }
@@ -984,6 +985,7 @@ impl TerminalView {
         match target {
             InlineInputTarget::CommandPalette => InlineInputNotifyTarget::Overlay,
             InlineInputTarget::RenameTab
+            | InlineInputTarget::RenameWorkspace
             | InlineInputTarget::Search
             | InlineInputTarget::BrowserUrl => InlineInputNotifyTarget::Parent,
         }
@@ -1011,6 +1013,8 @@ impl TerminalView {
             Some(InlineInputTarget::Search)
         } else if self.renaming_tab.is_some() {
             Some(InlineInputTarget::RenameTab)
+        } else if self.renaming_workspace.is_some() {
+            Some(InlineInputTarget::RenameWorkspace)
         } else if self.browser_url_editing() {
             Some(InlineInputTarget::BrowserUrl)
         } else {
@@ -1068,6 +1072,7 @@ impl TerminalView {
             InlineInputTarget::CommandPalette => Some(self.command_palette_input()),
             InlineInputTarget::Search => Some(&self.search_input),
             InlineInputTarget::RenameTab => Some(&self.rename_input),
+            InlineInputTarget::RenameWorkspace => Some(&self.workspace_rename_input),
             InlineInputTarget::BrowserUrl => {
                 self.active_browser_state().map(|state| &state.url_input)
             }
@@ -1079,10 +1084,15 @@ impl TerminalView {
             InlineInputTarget::CommandPalette => Some(self.command_palette_input_mut()),
             InlineInputTarget::Search => Some(&mut self.search_input),
             InlineInputTarget::RenameTab => Some(&mut self.rename_input),
+            InlineInputTarget::RenameWorkspace => Some(&mut self.workspace_rename_input),
             InlineInputTarget::BrowserUrl => self
                 .tabs
                 .get_mut(self.active_tab)
-                .and_then(TerminalTab::browser_state_mut)
+                .and_then(|tab| {
+                    tab.active_pane_index()
+                        .and_then(|index| tab.panes.get_mut(index))
+                })
+                .and_then(TerminalPane::browser_state_mut)
                 .map(|state| &mut state.url_input),
         }
     }
@@ -1107,6 +1117,21 @@ impl TerminalView {
         self.rename_input.set_text(truncated);
     }
 
+    fn enforce_workspace_rename_limit(&mut self) {
+        let current_chars = self.workspace_rename_input.text().chars().count();
+        if current_chars <= MAX_TAB_TITLE_CHARS {
+            return;
+        }
+
+        let truncated: String = self
+            .workspace_rename_input
+            .text()
+            .chars()
+            .take(MAX_TAB_TITLE_CHARS)
+            .collect();
+        self.workspace_rename_input.set_text(truncated);
+    }
+
     fn apply_inline_input_mutation(
         &mut self,
         mutate: impl FnOnce(&mut InlineInputState),
@@ -1128,11 +1153,20 @@ impl TerminalView {
                 self.enforce_tab_rename_limit();
                 self.notify_for_inline_input_target(InlineInputTarget::RenameTab, cx);
             }
+            Some(InlineInputTarget::RenameWorkspace) => {
+                mutate(&mut self.workspace_rename_input);
+                self.enforce_workspace_rename_limit();
+                self.notify_for_inline_input_target(InlineInputTarget::RenameWorkspace, cx);
+            }
             Some(InlineInputTarget::BrowserUrl) => {
                 if let Some(state) = self
                     .tabs
                     .get_mut(self.active_tab)
-                    .and_then(TerminalTab::browser_state_mut)
+                    .and_then(|tab| {
+                        tab.active_pane_index()
+                            .and_then(|index| tab.panes.get_mut(index))
+                    })
+                    .and_then(TerminalPane::browser_state_mut)
                 {
                     mutate(&mut state.url_input);
                 }
@@ -1366,12 +1400,13 @@ impl TerminalView {
     pub(super) fn ime_cursor_bounds(&self) -> Option<Bounds<Pixels>> {
         let geometry = self.terminal_viewport_geometry()?;
         let pane = self.active_pane_ref()?;
-        let size = pane.terminal.size();
+        let terminal = pane.maybe_terminal()?;
+        let size = terminal.size();
         let cell_width: f32 = size.cell_width;
         let cell_height: f32 = size.cell_height;
         // Use cursor_position() instead of cursor_state() so that IME
         // preedit is shown even when the TUI app hides the cursor.
-        let (cursor_col, cursor_row) = pane.terminal.cursor_position();
+        let (cursor_col, cursor_row) = terminal.cursor_position();
         let x = geometry.origin_x + (cursor_col as f32) * cell_width;
         let y = geometry.origin_y + (cursor_row as f32) * cell_height;
         Some(Bounds::new(
@@ -1500,7 +1535,8 @@ impl EntityInputHandler for TerminalView {
         let cursor = self.ime_cursor_bounds()?;
         let cell_width: f32 = self
             .active_pane_ref()
-            .map(|pane| pane.terminal.size().cell_width)
+            .and_then(TerminalPane::maybe_terminal)
+            .map(|terminal| terminal.size().cell_width)
             .unwrap_or_default();
         Some(ime_candidate_bounds(
             cursor,

@@ -111,6 +111,9 @@ impl TerminalView {
         if self.renaming_tab.is_some() {
             self.cancel_rename_tab(cx);
         }
+        if self.renaming_workspace.is_some() {
+            self.cancel_rename_workspace(cx);
+        }
 
         self.search_open = true;
         self.search_state.open();
@@ -354,8 +357,6 @@ impl TerminalView {
                     .bg(input_bg)
                     .border_1()
                     .border_color(if has_error { error_color } else { input_border })
-                    .pl(px(32.0))
-                    .pr(px(if counter_label.is_some() { 58.0 } else { 10.0 }))
                     .flex()
                     .items_center()
                     .child(
@@ -364,8 +365,10 @@ impl TerminalView {
                             .left(px(10.0))
                             .top_0()
                             .bottom_0()
+                            .w(px(14.0))
                             .flex()
                             .items_center()
+                            .justify_center()
                             .child(
                                 gpui::svg()
                                     .path(gpui::SharedString::from("icons/settings/search.svg"))
@@ -373,21 +376,31 @@ impl TerminalView {
                                     .text_color(button_text),
                             ),
                     )
-                    .child(self.render_inline_input_layer(
-                        Font {
-                            family: self.ui_font_family.clone(),
-                            ..Font::default()
-                        },
-                        px(13.0),
-                        strong_text.into(),
-                        {
-                            overlay_style
-                                .chrome_panel_cursor(SEARCH_INPUT_SELECTION_ALPHA)
-                                .into()
-                        },
-                        InlineInputAlignment::Left,
-                        cx,
-                    ))
+                    .child(
+                        div()
+                            .absolute()
+                            .left(px(32.0))
+                            .right(px(if counter_label.is_some() { 58.0 } else { 10.0 }))
+                            .top_0()
+                            .bottom_0()
+                            .relative()
+                            .overflow_hidden()
+                            .child(self.render_inline_input_layer(
+                                Font {
+                                    family: self.ui_font_family.clone(),
+                                    ..Font::default()
+                                },
+                                px(13.0),
+                                strong_text.into(),
+                                {
+                                    overlay_style
+                                        .chrome_panel_cursor(SEARCH_INPUT_SELECTION_ALPHA)
+                                        .into()
+                                },
+                                InlineInputAlignment::Left,
+                                cx,
+                            )),
+                    )
                     .children(counter_label.map(|label| {
                         div()
                             .absolute()

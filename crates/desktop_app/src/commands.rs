@@ -993,6 +993,22 @@ define_commands!(
         ))
     ),
     (
+        ToggleWorkspaceSidebar,
+        TERMINAL_CONTEXT,
+        Some(palette(
+            "Toggle Workspace Sidebar",
+            "workspace sidebar show hide fade edge peek",
+            CommandPaletteVisibility::Always
+        )),
+        Some(menu(
+            MenuRoot::View,
+            0,
+            "Workspace Sidebar",
+            MenuVisibility::Always,
+            MenuActionRole::Normal
+        ))
+    ),
+    (
         ToggleInspector,
         TERMINAL_CONTEXT,
         Some(palette(

@@ -654,7 +654,7 @@ struct TerminalPane {
     height: u16,
     pane_zoom_steps: i16,
     degraded: bool,
-    terminal: Terminal,
+    content: PaneContent,
     // Progress reported by this pane's shell via OSC 9;4; the tab strip shows
     // the per-tab aggregate (TerminalTab::aggregate_progress_state).
     progress_state: ProgressState,
@@ -664,6 +664,11 @@ struct TerminalPane {
     last_alternate_screen: Cell<bool>,
     /// Pre-computed element IDs to avoid per-frame `format!()` allocations.
     cached_element_ids: PaneCachedElementIds,
+}
+
+enum PaneContent {
+    Terminal(Terminal),
+    Browser(Box<browser::BrowserTabState>),
 }
 
 /// Pre-computed GPUI element IDs for a terminal pane, avoiding `format!()`
@@ -709,27 +714,78 @@ impl TerminalPane {
             pane_zoom_steps: 0,
             degraded: false,
             progress_state: ProgressState::default(),
-            terminal,
+            content: PaneContent::Terminal(terminal),
             render_cache: RefCell::new(TerminalPaneRenderCache::default()),
             last_alternate_screen: Cell::new(false),
             cached_element_ids,
         }
     }
-}
 
-/// What a tab hosts: terminal panes (the default) or an embedded browser.
-/// Browser tabs have an empty `panes` vec; the pane-oriented machinery
-/// treats them as pane-less and the render path swaps in the browser chrome.
-enum TabKind {
-    Terminal,
-    Browser(Box<browser::BrowserTabState>),
+    fn new_browser(id: String, left: u16, top: u16, width: u16, height: u16, url: &str) -> Self {
+        let cached_element_ids = PaneCachedElementIds::new(&id);
+        Self {
+            id,
+            left,
+            top,
+            width,
+            height,
+            pane_zoom_steps: 0,
+            degraded: false,
+            content: PaneContent::Browser(Box::new(browser::BrowserTabState::new(url))),
+            progress_state: ProgressState::default(),
+            render_cache: RefCell::new(TerminalPaneRenderCache::default()),
+            last_alternate_screen: Cell::new(false),
+            cached_element_ids,
+        }
+    }
+
+    fn maybe_terminal(&self) -> Option<&Terminal> {
+        match &self.content {
+            PaneContent::Terminal(terminal) => Some(terminal),
+            PaneContent::Browser(_) => None,
+        }
+    }
+
+    fn maybe_terminal_mut(&mut self) -> Option<&mut Terminal> {
+        match &mut self.content {
+            PaneContent::Terminal(terminal) => Some(terminal),
+            PaneContent::Browser(_) => None,
+        }
+    }
+
+    fn terminal(&self) -> &Terminal {
+        self.maybe_terminal()
+            .expect("terminal-only path received a browser pane")
+    }
+
+    fn terminal_mut(&mut self) -> &mut Terminal {
+        self.maybe_terminal_mut()
+            .expect("terminal-only path received a browser pane")
+    }
+
+    fn browser_state(&self) -> Option<&browser::BrowserTabState> {
+        match &self.content {
+            PaneContent::Browser(state) => Some(state),
+            PaneContent::Terminal(_) => None,
+        }
+    }
+
+    fn browser_state_mut(&mut self) -> Option<&mut browser::BrowserTabState> {
+        match &mut self.content {
+            PaneContent::Browser(state) => Some(state),
+            PaneContent::Terminal(_) => None,
+        }
+    }
+
+    fn is_browser(&self) -> bool {
+        matches!(self.content, PaneContent::Browser(_))
+    }
 }
 
 struct TerminalTab {
     id: TabId,
     window_id: String,
     window_index: i32,
-    kind: TabKind,
     panes: Vec<TerminalPane>,
     active_pane_id: String,
     pinned: bool,
@@ -818,7 +874,7 @@ impl TerminalTab {
     fn active_terminal(&self) -> Option<&Terminal> {
         self.active_pane_index()
             .and_then(|index| self.panes.get(index))
-            .map(|pane| &pane.terminal)
+            .and_then(TerminalPane::maybe_terminal)
     }
 
     fn active_pane_id(&self) -> Option<&str> {
@@ -860,6 +916,10 @@ pub struct TerminalView {
     workspace_sidebar_enabled: bool,
     workspace_sidebar_width: f32,
     workspace_sidebar_resize_drag: Option<workspaces::WorkspaceSidebarResizeDragState>,
+    workspace_sidebar_collapsed: bool,
+    workspace_sidebar_peek_visible: bool,
+    renaming_workspace: Option<usize>,
+    workspace_rename_input: InlineInputState,
     browser_tabs_enabled: bool,
     native_pane_zoom_snapshots: HashMap<TabId, NativePaneZoomSnapshot>,
     native_pane_layout_trees: HashMap<TabId, NativePaneLayoutTree>,
@@ -2121,7 +2181,6 @@ impl TerminalView {
             id: tab_id,
             window_id: format!("@native-{tab_id}"),
             window_index: 0,
-            kind: TabKind::Terminal,
             panes: vec![pane],
             active_pane_id: pane_id,
             pinned: false,
@@ -2147,7 +2206,7 @@ impl TerminalView {
             .iter()
             .flat_map(|tab| tab.panes.iter())
             .find(|pane| pane.id == pane_id)
-            .map(|pane| &pane.terminal)
+            .and_then(TerminalPane::maybe_terminal)
     }
 
     fn is_active_pane_id(&self, pane_id: &str) -> bool {
@@ -2823,17 +2882,6 @@ impl TerminalView {
             return None;
         }
 
-        let terminal_size = pane.terminal.size();
-        if terminal_size.cols == 0 || terminal_size.rows == 0 {
-            return None;
-        }
-
-        let cell_width: f32 = terminal_size.cell_width;
-        let cell_height: f32 = terminal_size.cell_height;
-        if cell_width <= f32::EPSILON || cell_height <= f32::EPSILON {
-            return None;
-        }
-
         let (outer_padding_x, outer_padding_y) = self.effective_terminal_padding();
         let (content_padding_x, content_padding_y) = self.native_split_content_padding();
         let frame = TerminalContentRect::new(
@@ -2842,11 +2890,31 @@ impl TerminalView {
             f32::from(pane.width) * layout_cell_width,
             f32::from(pane.height) * layout_cell_height,
         )?;
+        let (content_width, content_height) = if let Some(terminal) = pane.maybe_terminal() {
+            let terminal_size = terminal.size();
+            if terminal_size.cols == 0 || terminal_size.rows == 0 {
+                return None;
+            }
+            let cell_width: f32 = terminal_size.cell_width;
+            let cell_height: f32 = terminal_size.cell_height;
+            if cell_width <= f32::EPSILON || cell_height <= f32::EPSILON {
+                return None;
+            }
+            (
+                f32::from(terminal_size.cols) * cell_width,
+                f32::from(terminal_size.rows) * cell_height,
+            )
+        } else {
+            (
+                (frame.width - (content_padding_x * 2.0)).max(0.0),
+                (frame.height - (content_padding_y * 2.0)).max(0.0),
+            )
+        };
         let content_frame = TerminalContentRect::new(
             frame.origin_x + content_padding_x,
             frame.origin_y + content_padding_y,
-            f32::from(terminal_size.cols) * cell_width,
-            f32::from(terminal_size.rows) * cell_height,
+            content_width,
+            content_height,
         )?;
         let gaps = Self::pane_neighbor_gaps(pane, &tab.panes);
         let pane_right = u32::from(pane.left).saturating_add(u32::from(pane.width));
@@ -2910,6 +2978,7 @@ impl TerminalView {
         let tab = self.active_tab_ref()?;
         let pane_index = tab.active_pane_index()?;
         let pane = tab.panes.get(pane_index)?;
+        pane.maybe_terminal()?;
         self.terminal_pane_layout(tab, pane, content_bounds)
     }
 
@@ -2917,10 +2986,11 @@ impl TerminalView {
         let tab = self.active_tab_ref()?;
         let pane_index = tab.active_pane_index()?;
         let pane = tab.panes.get(pane_index)?;
+        let terminal = pane.maybe_terminal()?;
         let layout_cell_size = self.layout_cell_size();
         let layout_cell_width: f32 = layout_cell_size.width.into();
         let layout_cell_height: f32 = layout_cell_size.height.into();
-        let size = pane.terminal.size();
+        let size = terminal.size();
         if layout_cell_width <= f32::EPSILON
             || layout_cell_height <= f32::EPSILON
             || size.cols == 0
@@ -3246,6 +3316,7 @@ impl TerminalView {
                             if view.tick_cursor_blink()
                                 && !view.is_command_palette_open()
                                 && view.renaming_tab.is_none()
+                                && view.renaming_workspace.is_none()
                             {
                                 cx.notify();
                             }
@@ -3328,6 +3399,10 @@ impl TerminalView {
             workspace_sidebar_enabled: config.sidebar_enabled,
             workspace_sidebar_width: Self::clamp_workspace_sidebar_width(config.sidebar_width),
             workspace_sidebar_resize_drag: None,
+            workspace_sidebar_collapsed: false,
+            workspace_sidebar_peek_visible: false,
+            renaming_workspace: None,
+            workspace_rename_input: InlineInputState::new(String::new()),
             browser_tabs_enabled: config.browser_tabs_enabled,
             native_pane_zoom_snapshots: HashMap::new(),
             native_pane_layout_trees: HashMap::new(),
@@ -3683,6 +3758,8 @@ impl TerminalView {
         self.workspace_sidebar_enabled = config.sidebar_enabled;
         self.browser_tabs_enabled = config.browser_tabs_enabled;
         if !self.workspace_sidebar_enabled {
+            self.workspace_sidebar_collapsed = false;
+            self.workspace_sidebar_peek_visible = false;
             // Stashed workspaces would be unreachable without the sidebar.
             self.collapse_workspaces_into_active();
         }
@@ -3831,9 +3908,10 @@ impl TerminalView {
                 inactive_options.unwrap_or(active_options)
             };
             for pane in &tab.panes {
-                pane.terminal.set_term_options(options);
-                pane.terminal
-                    .set_query_colors(self.terminal_runtime.query_colors);
+                if let Some(terminal) = pane.maybe_terminal() {
+                    terminal.set_term_options(options);
+                    terminal.set_query_colors(self.terminal_runtime.query_colors);
+                }
             }
         }
 
@@ -4030,9 +4108,10 @@ impl TerminalView {
             for pane_index in 0..self.tabs[tab_index].panes.len() {
                 let pane_id = self.tabs[tab_index].panes[pane_index].id.clone();
                 let pane_is_active = pane_id.as_str() == active_pane_id.as_str();
-                let (events, has_more) = self.tabs[tab_index].panes[pane_index]
-                    .terminal
-                    .drain_events(&mut reply_host);
+                let Some(terminal) = self.tabs[tab_index].panes[pane_index].maybe_terminal() else {
+                    continue;
+                };
+                let (events, has_more) = terminal.drain_events(&mut reply_host);
                 if has_more {
                     terminal_events_remain = true;
                     if tab_index == active_tab {

@@ -72,6 +72,49 @@ impl TerminalView {
             .into_any_element()
     }
 
+    pub(crate) fn render_workspace_sidebar_edge_peek_target(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        div()
+            .id("workspace-sidebar-edge-peek-target")
+            .absolute()
+            .left_0()
+            .top_0()
+            .bottom_0()
+            .w(px(8.0))
+            .on_hover(cx.listener(|this, hovering: &bool, _window, cx| {
+                if *hovering {
+                    this.set_workspace_sidebar_peek_visible(true, cx);
+                }
+            }))
+            .into_any_element()
+    }
+
+    pub(crate) fn render_workspace_sidebar_overlay(
+        &mut self,
+        colors: &TerminalColors,
+        font_family: &SharedString,
+        sidebar_bg: gpui::Rgba,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let sidebar_width = self.workspace_sidebar_width;
+        div()
+            .id("workspace-sidebar-overlay")
+            .absolute()
+            .left_0()
+            .top_0()
+            .bottom_0()
+            .w(px(sidebar_width))
+            .opacity(0.96)
+            .shadow_lg()
+            .on_hover(cx.listener(|this, hovering: &bool, _window, cx| {
+                this.set_workspace_sidebar_peek_visible(*hovering, cx);
+            }))
+            .child(self.render_workspace_sidebar(colors, font_family, sidebar_bg, cx))
+            .into_any_element()
+    }
+
     /// Bell / search / new-workspace actions rendered inside the tab strip's
     /// left inset lane, so they sit in the titlebar row directly above the
     /// sidebar (after the platform window controls).
@@ -180,7 +223,9 @@ impl TerminalView {
 
         for index in 0..self.workspaces.len() {
             let is_active = index == self.active_workspace;
+            let is_renaming = self.renaming_workspace == Some(index);
             let name = self.workspaces[index].name.clone();
+            let pinned = self.workspaces[index].pinned;
             let tab_count = if is_active {
                 self.tabs.len()
             } else {
@@ -200,6 +245,9 @@ impl TerminalView {
             let hover_bg = palette.hovered_tab_bg;
             let mut count_text = row_text;
             count_text.a = (count_text.a * 0.65).min(1.0);
+            let mut pin_text = row_text;
+            pin_text.a = if pinned { 0.95 } else { 0.45 };
+            let pin_hover_bg = palette.hovered_tab_bg;
 
             rows = rows.child(
                 div()
@@ -218,7 +266,11 @@ impl TerminalView {
                         MouseButton::Left,
                         cx.listener(move |this, _event: &MouseDownEvent, window, cx| {
                             window.prevent_default();
-                            this.switch_workspace(index, cx);
+                            if _event.click_count >= 2 {
+                                this.begin_rename_workspace(index, cx);
+                            } else {
+                                this.switch_workspace(index, cx);
+                            }
                             cx.stop_propagation();
                         }),
                     )
@@ -226,13 +278,64 @@ impl TerminalView {
                         div()
                             .flex_1()
                             .min_w(px(0.0))
+                            .h_full()
+                            .relative()
                             .overflow_hidden()
-                            .text_ellipsis()
-                            .whitespace_nowrap()
-                            .font_family(font_family.clone())
-                            .text_size(px(TAB_TITLE_FONT_SIZE))
-                            .text_color(row_text)
-                            .child(name),
+                            .child(if is_renaming {
+                                self.render_inline_input_layer(
+                                    Font {
+                                        family: font_family.clone(),
+                                        weight: FontWeight::NORMAL,
+                                        ..Default::default()
+                                    },
+                                    px(TAB_TITLE_FONT_SIZE),
+                                    row_text.into(),
+                                    palette.close_button_hover_bg.into(),
+                                    InlineInputAlignment::Left,
+                                    cx,
+                                )
+                            } else {
+                                div()
+                                    .size_full()
+                                    .flex()
+                                    .items_center()
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .whitespace_nowrap()
+                                    .font_family(font_family.clone())
+                                    .text_size(px(TAB_TITLE_FONT_SIZE))
+                                    .text_color(row_text)
+                                    .child(name)
+                                    .into_any_element()
+                            }),
+                    )
+                    .child(
+                        div()
+                            .id(("workspace-sidebar-pin", index))
+                            .flex_none()
+                            .w(px(20.0))
+                            .h(px(20.0))
+                            .ml(px(4.0))
+                            .rounded(px(TAB_ITEM_RADIUS))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_color(pin_text)
+                            .hover(move |style| style.bg(pin_hover_bg))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _event: &MouseDownEvent, window, cx| {
+                                    window.prevent_default();
+                                    let _ = this.toggle_workspace_pinned(index, cx);
+                                    cx.stop_propagation();
+                                }),
+                            )
+                            .child(
+                                gpui::svg()
+                                    .path(gpui::SharedString::from("icons/command_palette/pin.svg"))
+                                    .size(px(11.0))
+                                    .text_color(pin_text),
+                            ),
                     )
                     .child(
                         div()

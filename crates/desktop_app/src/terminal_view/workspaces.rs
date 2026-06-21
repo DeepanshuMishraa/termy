@@ -7,6 +7,7 @@ use super::*;
 pub(crate) struct WorkspaceEntry {
     pub(crate) id: u64,
     pub(crate) name: String,
+    pub(crate) pinned: bool,
     pub(crate) tabs: Vec<TerminalTab>,
     pub(crate) active_tab: usize,
 }
@@ -22,6 +23,7 @@ impl WorkspaceEntry {
         Self {
             id,
             name: format!("Workspace {id}"),
+            pinned: false,
             tabs: Vec::new(),
             active_tab: 0,
         }
@@ -42,6 +44,22 @@ impl TerminalView {
 
     pub(crate) fn workspace_sidebar_visible(&self) -> bool {
         self.workspace_sidebar_enabled
+            && !self.workspace_sidebar_collapsed
+            && !self.simple_mode
+            && self.effective_tab_bar_visibility() != TabBarVisibility::ForceHidden
+    }
+
+    pub(crate) fn workspace_sidebar_overlay_visible(&self) -> bool {
+        self.workspace_sidebar_enabled
+            && self.workspace_sidebar_collapsed
+            && self.workspace_sidebar_peek_visible
+            && !self.simple_mode
+            && self.effective_tab_bar_visibility() != TabBarVisibility::ForceHidden
+    }
+
+    pub(crate) fn workspace_sidebar_edge_peek_enabled(&self) -> bool {
+        self.workspace_sidebar_enabled
+            && self.workspace_sidebar_collapsed
             && !self.simple_mode
             && self.effective_tab_bar_visibility() != TabBarVisibility::ForceHidden
     }
@@ -54,6 +72,30 @@ impl TerminalView {
         } else {
             0.0
         }
+    }
+
+    pub(crate) fn set_workspace_sidebar_peek_visible(
+        &mut self,
+        visible: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.workspace_sidebar_peek_visible == visible {
+            return;
+        }
+        self.workspace_sidebar_peek_visible = visible;
+        cx.notify();
+    }
+
+    pub(crate) fn toggle_workspace_sidebar_collapsed(&mut self, cx: &mut Context<Self>) {
+        if !self.workspace_sidebar_enabled {
+            self.workspace_sidebar_enabled = true;
+        }
+        self.workspace_sidebar_collapsed = !self.workspace_sidebar_collapsed;
+        if !self.workspace_sidebar_collapsed {
+            self.workspace_sidebar_peek_visible = false;
+        }
+        self.mark_tab_strip_layout_dirty();
+        cx.notify();
     }
 
     pub(crate) fn begin_workspace_sidebar_resize_drag(&mut self, window_x: f32) {
@@ -117,14 +159,36 @@ impl TerminalView {
         self.workspaces.len() > 1
     }
 
+    fn reorder_workspaces_for_pins(&mut self) {
+        if self.workspaces.len() <= 1 {
+            return;
+        }
+        let active_id = self
+            .workspaces
+            .get(self.active_workspace)
+            .map(|entry| entry.id);
+        self.workspaces
+            .sort_by_key(|entry| (!entry.pinned, entry.id));
+        if let Some(active_id) = active_id
+            && let Some(next_active) = self
+                .workspaces
+                .iter()
+                .position(|entry| entry.id == active_id)
+        {
+            self.active_workspace = next_active;
+        }
+    }
+
     fn stash_active_workspace_tabs(&mut self) {
         let active_tab = self.active_tab;
         if let Some(entry) = self.workspaces.get_mut(self.active_workspace) {
             entry.tabs = std::mem::take(&mut self.tabs);
             entry.active_tab = active_tab;
             for tab in &mut entry.tabs {
-                if let Some(state) = tab.browser_state_mut() {
-                    state.editing_url = false;
+                for pane in &mut tab.panes {
+                    if let Some(state) = pane.browser_state_mut() {
+                        state.editing_url = false;
+                    }
                 }
             }
         }
@@ -150,13 +214,16 @@ impl TerminalView {
         };
         if let Some(tab) = self.tabs.get(tab_index) {
             for pane in &tab.panes {
-                pane.terminal.set_term_options(options);
+                if let Some(terminal) = pane.maybe_terminal() {
+                    terminal.set_term_options(options);
+                }
             }
         }
     }
 
     fn reset_view_state_after_workspace_change(&mut self, cx: &mut Context<Self>) {
         self.reset_tab_rename_state();
+        self.reset_workspace_rename_state();
         self.reset_tab_drag_state();
         self.clear_selection();
         self.clear_hovered_link();
@@ -183,6 +250,93 @@ impl TerminalView {
             self.add_tab(cx);
         }
         self.reset_view_state_after_workspace_change(cx);
+    }
+
+    pub(crate) fn set_workspace_pinned(
+        &mut self,
+        index: usize,
+        pinned: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(entry) = self.workspaces.get_mut(index) else {
+            return false;
+        };
+        if entry.pinned == pinned {
+            return false;
+        }
+
+        entry.pinned = pinned;
+        self.reorder_workspaces_for_pins();
+        self.mark_tab_strip_layout_dirty();
+        self.schedule_persist_native_workspace();
+        cx.notify();
+        true
+    }
+
+    pub(crate) fn toggle_workspace_pinned(&mut self, index: usize, cx: &mut Context<Self>) -> bool {
+        let Some(pinned) = self.workspaces.get(index).map(|entry| entry.pinned) else {
+            return false;
+        };
+        self.set_workspace_pinned(index, !pinned, cx)
+    }
+
+    pub(crate) fn reset_workspace_rename_state(&mut self) -> bool {
+        let was_renaming = self.renaming_workspace.take().is_some();
+        let had_text = !self.workspace_rename_input.text().is_empty();
+        let was_selecting = self.inline_input_selecting;
+        self.workspace_rename_input.clear();
+        self.inline_input_selecting = false;
+        let changed = was_renaming || had_text || was_selecting;
+        if changed {
+            self.reset_cursor_blink_phase();
+        }
+        changed
+    }
+
+    pub(crate) fn begin_rename_workspace(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index >= self.workspaces.len() {
+            return;
+        }
+
+        if self.is_command_palette_open() {
+            self.close_command_palette(cx);
+        }
+        if self.search_open {
+            self.close_search(cx);
+        }
+
+        self.reset_tab_rename_state();
+        self.renaming_workspace = Some(index);
+        self.workspace_rename_input
+            .set_text(self.workspaces[index].name.clone());
+        self.reset_cursor_blink_phase();
+        self.inline_input_selecting = false;
+        cx.notify();
+    }
+
+    pub(crate) fn commit_rename_workspace(&mut self, cx: &mut Context<Self>) {
+        let Some(index) = self.renaming_workspace else {
+            return;
+        };
+        let trimmed = self.workspace_rename_input.text().trim();
+        if let Some(entry) = self.workspaces.get_mut(index)
+            && !trimmed.is_empty()
+        {
+            entry.name = Self::truncate_tab_title(trimmed);
+            self.schedule_persist_native_workspace();
+        }
+
+        self.reset_workspace_rename_state();
+        cx.notify();
+    }
+
+    pub(crate) fn cancel_rename_workspace(&mut self, cx: &mut Context<Self>) {
+        if self.renaming_workspace.is_none() {
+            return;
+        }
+
+        self.reset_workspace_rename_state();
+        cx.notify();
     }
 
     pub(crate) fn add_workspace(&mut self, cx: &mut Context<Self>) {
@@ -287,7 +441,10 @@ impl TerminalView {
         for entry in &mut self.workspaces {
             for tab in &mut entry.tabs {
                 for pane in &mut tab.panes {
-                    let (events, has_more) = pane.terminal.drain_events(reply_host);
+                    let Some(terminal) = pane.maybe_terminal() else {
+                        continue;
+                    };
+                    let (events, has_more) = terminal.drain_events(reply_host);
                     if has_more {
                         events_remain = true;
                     }

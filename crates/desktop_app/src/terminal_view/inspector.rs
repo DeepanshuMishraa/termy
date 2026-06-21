@@ -365,10 +365,11 @@ impl TerminalView {
         let active_pane_id = tab.active_pane_id.as_str();
         tab.panes
             .iter()
-            .map(|pane| {
-                let size = pane.terminal.size();
-                let (display_offset, history_size) = pane.terminal.scroll_state();
-                InspectorPaneSnapshot {
+            .filter_map(|pane| {
+                let terminal = pane.maybe_terminal()?;
+                let size = terminal.size();
+                let (display_offset, history_size) = terminal.scroll_state();
+                Some(InspectorPaneSnapshot {
                     id: pane.id.clone(),
                     is_active: pane.id == active_pane_id,
                     cols: size.cols,
@@ -376,16 +377,16 @@ impl TerminalView {
                     cell_geometry: (pane.left, pane.top, pane.width, pane.height),
                     display_offset,
                     history_size,
-                    alternate_screen: pane.terminal.alternate_screen_mode(),
-                    bracketed_paste: pane.terminal.bracketed_paste_mode(),
-                    mouse_mode: pane.terminal.mouse_mode(),
-                    keyboard_mode: pane.terminal.keyboard_mode(),
-                    cursor_state: pane.terminal.cursor_state(),
-                    child_pid: pane.terminal.child_pid(),
+                    alternate_screen: terminal.alternate_screen_mode(),
+                    bracketed_paste: terminal.bracketed_paste_mode(),
+                    mouse_mode: terminal.mouse_mode(),
+                    keyboard_mode: terminal.keyboard_mode(),
+                    cursor_state: terminal.cursor_state(),
+                    child_pid: terminal.child_pid(),
                     zoom_steps: pane.pane_zoom_steps,
                     degraded: pane.degraded,
                     progress: pane.progress_state,
-                }
+                })
             })
             .collect()
     }
@@ -761,6 +762,8 @@ impl TerminalView {
             "search"
         } else if self.renaming_tab.is_some() {
             "tab rename"
+        } else if self.renaming_workspace.is_some() {
+            "workspace rename"
         } else if self.terminal_context_menu.is_some() {
             "terminal context menu"
         } else if self.tab_context_menu.is_some() {

@@ -205,7 +205,8 @@ fn pane_cell_for_position(
     clamp: bool,
     allow_clamp_outside: bool,
 ) -> Option<CellPos> {
-    let size = pane.terminal.size();
+    let terminal = pane.maybe_terminal()?;
+    let size = terminal.size();
     if size.cols == 0 || size.rows == 0 {
         return None;
     }
@@ -432,7 +433,7 @@ impl TerminalView {
     ) -> Option<SelectionPos> {
         let tab = self.tabs.get(self.active_tab)?;
         let pane = tab.panes.iter().find(|pane| pane.id == pane_id)?;
-        let (display_offset, _) = pane.terminal.scroll_state();
+        let (display_offset, _) = pane.maybe_terminal()?.scroll_state();
         Self::selection_pos_for_cell_with_display_offset(cell, display_offset)
     }
 
@@ -447,12 +448,15 @@ impl TerminalView {
         let Some(pane) = tab.panes.iter().find(|pane| pane.id == pane_id) else {
             return false;
         };
-        let cols = usize::from(pane.terminal.size().cols);
+        let Some(terminal) = pane.maybe_terminal() else {
+            return false;
+        };
+        let cols = usize::from(terminal.size().cols);
         if cols == 0 || cell.col >= cols {
             return false;
         }
 
-        let line = row_text_from_terminal(&pane.terminal, cell.row, cols);
+        let line = row_text_from_terminal(terminal, cell.row, cols);
         line_clickable_end_col(&line).is_some_and(|end_col| cell.col <= end_col)
     }
 
@@ -1163,7 +1167,7 @@ mod tests {
                 pane_zoom_steps: 0,
                 degraded: false,
                 progress_state: ProgressState::default(),
-                terminal: left_terminal,
+                content: PaneContent::Terminal(left_terminal),
                 render_cache: std::cell::RefCell::new(TerminalPaneRenderCache::default()),
                 last_alternate_screen: std::cell::Cell::new(false),
                 cached_element_ids: PaneCachedElementIds::new("%left"),
@@ -1177,15 +1181,15 @@ mod tests {
                 pane_zoom_steps: 0,
                 degraded: false,
                 progress_state: ProgressState::default(),
-                terminal: right_terminal,
+                content: PaneContent::Terminal(right_terminal),
                 render_cache: std::cell::RefCell::new(TerminalPaneRenderCache::default()),
                 last_alternate_screen: std::cell::Cell::new(false),
                 cached_element_ids: PaneCachedElementIds::new("%right"),
             },
         ];
 
-        let cell_width: f32 = panes[0].terminal.size().cell_width;
-        let cell_height: f32 = panes[0].terminal.size().cell_height;
+        let cell_width: f32 = panes[0].terminal().size().cell_width;
+        let cell_height: f32 = panes[0].terminal().size().cell_height;
         let pointer_x = (2.0 * cell_width) + 0.5;
         let pointer_y = (3.0 * cell_height) + 0.5;
 
@@ -1246,7 +1250,7 @@ mod tests {
                 pane_zoom_steps: 0,
                 degraded: false,
                 progress_state: ProgressState::default(),
-                terminal: left_terminal,
+                content: PaneContent::Terminal(left_terminal),
                 render_cache: std::cell::RefCell::new(TerminalPaneRenderCache::default()),
                 last_alternate_screen: std::cell::Cell::new(false),
                 cached_element_ids: PaneCachedElementIds::new("%left"),
@@ -1260,7 +1264,7 @@ mod tests {
                 pane_zoom_steps: 0,
                 degraded: false,
                 progress_state: ProgressState::default(),
-                terminal: right_terminal,
+                content: PaneContent::Terminal(right_terminal),
                 render_cache: std::cell::RefCell::new(TerminalPaneRenderCache::default()),
                 last_alternate_screen: std::cell::Cell::new(false),
                 cached_element_ids: PaneCachedElementIds::new("%right"),
@@ -1268,7 +1272,7 @@ mod tests {
         ];
 
         let active_pane = &panes[0];
-        let size = active_pane.terminal.size();
+        let size = active_pane.terminal().size();
         let cell_width: f32 = size.cell_width;
         let cell_height: f32 = size.cell_height;
         let padding_x = 0.0;
@@ -1355,7 +1359,7 @@ mod tests {
                 pane_zoom_steps: 0,
                 degraded: false,
                 progress_state: ProgressState::default(),
-                terminal: left_terminal,
+                content: PaneContent::Terminal(left_terminal),
                 render_cache: std::cell::RefCell::new(TerminalPaneRenderCache::default()),
                 last_alternate_screen: std::cell::Cell::new(false),
                 cached_element_ids: PaneCachedElementIds::new("%left"),
@@ -1369,7 +1373,7 @@ mod tests {
                 pane_zoom_steps: 2,
                 degraded: false,
                 progress_state: ProgressState::default(),
-                terminal: right_terminal,
+                content: PaneContent::Terminal(right_terminal),
                 render_cache: std::cell::RefCell::new(TerminalPaneRenderCache::default()),
                 last_alternate_screen: std::cell::Cell::new(false),
                 cached_element_ids: PaneCachedElementIds::new("%right"),

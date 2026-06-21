@@ -159,9 +159,14 @@ fn overlay_owns_terminal_input_state(
     command_palette_open: bool,
     search_open: bool,
     renaming_tab: Option<usize>,
+    renaming_workspace: Option<usize>,
     browser_url_editing: bool,
 ) -> bool {
-    command_palette_open || search_open || renaming_tab.is_some() || browser_url_editing
+    command_palette_open
+        || search_open
+        || renaming_tab.is_some()
+        || renaming_workspace.is_some()
+        || browser_url_editing
 }
 
 fn terminal_modifier_transition_events(
@@ -213,6 +218,7 @@ impl TerminalView {
             self.is_command_palette_open(),
             self.search_open,
             self.renaming_tab,
+            self.renaming_workspace,
             self.browser_url_editing(),
         )
     }
@@ -673,12 +679,20 @@ impl TerminalView {
 
             match key {
                 "enter" => {
-                    self.commit_rename_tab(cx);
+                    if self.renaming_workspace.is_some() {
+                        self.commit_rename_workspace(cx);
+                    } else {
+                        self.commit_rename_tab(cx);
+                    }
                     self.remember_consumed_key_release(key);
                     return;
                 }
                 "escape" => {
-                    self.cancel_rename_tab(cx);
+                    if self.renaming_workspace.is_some() {
+                        self.cancel_rename_workspace(cx);
+                    } else {
+                        self.cancel_rename_tab(cx);
+                    }
                     self.remember_consumed_key_release(key);
                     return;
                 }

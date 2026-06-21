@@ -152,6 +152,9 @@ impl TerminalView {
                     cx.notify();
                 }
             }
+            CommandAction::ToggleWorkspaceSidebar => {
+                self.toggle_workspace_sidebar_collapsed(cx);
+            }
             CommandAction::ToggleInspector => {
                 self.toggle_inspector(cx);
             }
@@ -304,6 +307,15 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) {
         self.execute_command_action(CommandAction::ToggleTabBarVisibility, true, window, cx);
+    }
+
+    pub(in super::super) fn handle_toggle_workspace_sidebar_action(
+        &mut self,
+        _: &commands::ToggleWorkspaceSidebar,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.execute_command_action(CommandAction::ToggleWorkspaceSidebar, true, window, cx);
     }
 
     pub(in super::super) fn handle_toggle_inspector_action(

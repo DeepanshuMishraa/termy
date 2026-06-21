@@ -69,6 +69,10 @@ pub fn default_keybinds_for_platform(platform: KeybindPlatform) -> Vec<DefaultKe
             action: CommandId::ClosePaneOrTab,
         },
         DefaultKeybind {
+            trigger: "secondary-b",
+            action: CommandId::ToggleWorkspaceSidebar,
+        },
+        DefaultKeybind {
             trigger: "ctrl-tab",
             action: CommandId::CycleTabs,
         },
@@ -552,6 +556,21 @@ mod tests {
                     .iter()
                     .any(|binding| binding.action == CommandId::ToggleTabBarVisibility),
                 "unexpected default binding for toggle_tab_bar_visibility on {}",
+                platform.as_str()
+            );
+        }
+    }
+
+    #[test]
+    fn default_keybinds_toggle_workspace_sidebar_on_secondary_b() {
+        for platform in KeybindPlatform::ALL {
+            let defaults = default_keybinds_for_platform(platform);
+            assert!(
+                defaults.iter().any(|binding| {
+                    binding.trigger == "secondary-b"
+                        && binding.action == CommandId::ToggleWorkspaceSidebar
+                }),
+                "missing secondary-b -> toggle_workspace_sidebar on {}",
                 platform.as_str()
             );
         }

@@ -37,6 +37,7 @@ pub(crate) struct StoredTab {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct StoredWorkspace {
     pub(crate) name: String,
+    pub(crate) pinned: bool,
     pub(crate) active_tab: usize,
     pub(crate) tabs: Vec<StoredTab>,
 }
@@ -61,6 +62,7 @@ CREATE TABLE IF NOT EXISTS workspaces (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     position INTEGER NOT NULL,
     name TEXT NOT NULL,
+    pinned INTEGER NOT NULL DEFAULT 0,
     active_tab INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS tabs (
@@ -96,6 +98,23 @@ fn store_error(context: &str, error: sqlx::Error) -> String {
     format!("{context}: {error}")
 }
 
+async fn ensure_workspace_columns(pool: &SqlitePool) -> Result<(), String> {
+    let columns = sqlx::query("PRAGMA table_info(workspaces)")
+        .fetch_all(pool)
+        .await
+        .map_err(|error| store_error("Failed to inspect workspace store schema", error))?;
+    let has_pinned = columns
+        .iter()
+        .any(|row| row.get::<String, _>("name") == "pinned");
+    if !has_pinned {
+        sqlx::query("ALTER TABLE workspaces ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
+            .execute(pool)
+            .await
+            .map_err(|error| store_error("Failed to migrate workspace pinned state", error))?;
+    }
+    Ok(())
+}
+
 impl WorkspaceStore {
     pub(crate) fn open(path: &Path) -> Result<Self, String> {
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -119,6 +138,7 @@ impl WorkspaceStore {
                 .execute(&pool)
                 .await
                 .map_err(|error| store_error("Failed to initialize workspace store", error))?;
+            ensure_workspace_columns(&pool).await?;
             Ok::<_, String>(pool)
         })?;
         Ok(Self { runtime, pool })
@@ -161,10 +181,11 @@ impl WorkspaceStore {
 
             for (workspace_position, workspace) in session.workspaces.iter().enumerate() {
                 let workspace_id = sqlx::query(
-                    "INSERT INTO workspaces(position, name, active_tab) VALUES(?1, ?2, ?3)",
+                    "INSERT INTO workspaces(position, name, pinned, active_tab) VALUES(?1, ?2, ?3, ?4)",
                 )
                 .bind(workspace_position as i64)
                 .bind(workspace.name.as_str())
+                .bind(workspace.pinned)
                 .bind(workspace.active_tab as i64)
                 .execute(&mut *tx)
                 .await
@@ -225,11 +246,12 @@ impl WorkspaceStore {
 
     pub(crate) fn load_session(&self) -> Result<Option<StoredSession>, String> {
         self.runtime.block_on(async {
-            let workspace_rows =
-                sqlx::query("SELECT id, name, active_tab FROM workspaces ORDER BY position")
-                    .fetch_all(&self.pool)
-                    .await
-                    .map_err(|error| store_error("Failed to read workspaces", error))?;
+            let workspace_rows = sqlx::query(
+                "SELECT id, name, pinned, active_tab FROM workspaces ORDER BY position",
+            )
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|error| store_error("Failed to read workspaces", error))?;
             if workspace_rows.is_empty() {
                 return Ok(None);
             }
@@ -290,6 +312,7 @@ impl WorkspaceStore {
                 }
                 workspaces.push(StoredWorkspace {
                     name: row.get("name"),
+                    pinned: row.get("pinned"),
                     active_tab: row.get::<i64, _>("active_tab").max(0) as usize,
                     tabs,
                 });
@@ -476,6 +499,7 @@ mod tests {
             workspaces: vec![
                 StoredWorkspace {
                     name: "Workspace 1".to_string(),
+                    pinned: true,
                     active_tab: 1,
                     tabs: vec![
                         StoredTab {
@@ -517,6 +541,7 @@ mod tests {
                 },
                 StoredWorkspace {
                     name: "Workspace 2".to_string(),
+                    pinned: false,
                     active_tab: 0,
                     tabs: vec![StoredTab {
                         pinned: false,

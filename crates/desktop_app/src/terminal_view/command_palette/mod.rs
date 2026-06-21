@@ -60,7 +60,7 @@ fn command_icon_path(id: termy_command_core::CommandId) -> &'static str {
         ToggleCommandPalette => "icons/command_palette/command.svg",
         Copy | Paste => "icons/command_palette/clipboard.svg",
         InstallCli => "icons/command_palette/cli.svg",
-        ToggleTabBarVisibility => "icons/command_palette/sidebar.svg",
+        ToggleTabBarVisibility | ToggleWorkspaceSidebar => "icons/command_palette/sidebar.svg",
         ToggleInspector => "icons/command_palette/info.svg",
     }
 }
@@ -1561,6 +1561,7 @@ impl TerminalView {
             | CommandAction::MinimizeWindow
             | CommandAction::InstallCli
             | CommandAction::ToggleTabBarVisibility
+            | CommandAction::ToggleWorkspaceSidebar
             | CommandAction::ToggleInspector => {}
         }
     }

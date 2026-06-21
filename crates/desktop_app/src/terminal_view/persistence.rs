@@ -358,6 +358,7 @@ impl TerminalView {
     ) -> StoredWorkspace {
         StoredWorkspace {
             name,
+            pinned: false,
             active_tab: workspace.active_tab,
             tabs: workspace
                 .tabs
@@ -387,7 +388,8 @@ impl TerminalView {
 
     fn persisted_workspace_from_stored(
         workspace: StoredWorkspace,
-    ) -> (String, PersistedNativeWorkspace) {
+    ) -> (String, bool, PersistedNativeWorkspace) {
+        let pinned = workspace.pinned;
         let tabs = workspace
             .tabs
             .into_iter()
@@ -415,6 +417,7 @@ impl TerminalView {
             .collect::<Vec<_>>();
         (
             workspace.name,
+            pinned,
             PersistedNativeWorkspace {
                 tabs,
                 active_tab: workspace.active_tab,
@@ -464,6 +467,9 @@ impl TerminalView {
                 entry.name.clone(),
                 workspace,
             ));
+            if let Some(stored) = workspaces.last_mut() {
+                stored.pinned = entry.pinned;
+            }
         }
         if workspaces.is_empty() {
             return None;
@@ -495,7 +501,10 @@ impl TerminalView {
                         top: pane.top,
                         width: pane.width.max(1),
                         height: pane.height.max(1),
-                        buffer: self.extract_persisted_buffer_text(&pane.terminal),
+                        buffer: pane
+                            .maybe_terminal()
+                            .map(|terminal| self.extract_persisted_buffer_text(terminal))
+                            .unwrap_or_default(),
                     })
                     .collect::<Vec<_>>();
                 let pane_indices = tab
@@ -767,7 +776,7 @@ impl TerminalView {
                 if self.native_buffer_persistence
                     && let Some(buffer) = first_pane.buffer.as_deref()
                 {
-                    first.terminal.hydrate_output(buffer.as_bytes());
+                    first.terminal_mut().hydrate_output(buffer.as_bytes());
                 }
             }
 
@@ -801,7 +810,7 @@ impl TerminalView {
                     pane_zoom_steps: 0,
                     degraded: false,
                     progress_state: ProgressState::default(),
-                    terminal,
+                    content: PaneContent::Terminal(terminal),
                     render_cache: RefCell::new(TerminalPaneRenderCache::default()),
                     last_alternate_screen: Cell::new(false),
                     cached_element_ids,
@@ -875,7 +884,7 @@ impl TerminalView {
         let mut active_entry: Option<usize> = None;
 
         for (index, stored_workspace) in session.workspaces.into_iter().enumerate() {
-            let (name, workspace) = Self::persisted_workspace_from_stored(stored_workspace);
+            let (name, pinned, workspace) = Self::persisted_workspace_from_stored(stored_workspace);
             let (tabs, layout_trees, active_tab) = match self.build_restored_tabs(workspace) {
                 Ok(restored) => restored,
                 Err(error) => {
@@ -890,6 +899,7 @@ impl TerminalView {
             entries.push(workspaces::WorkspaceEntry {
                 id: entries.len() as u64 + 1,
                 name,
+                pinned,
                 tabs,
                 active_tab,
             });

@@ -72,23 +72,23 @@ impl TerminalView {
                 true
             }
             CommandAction::SwitchTabLeft => {
-                self.switch_active_tab_left(cx);
+                self.switch_active_tab_left(window, cx);
                 true
             }
             CommandAction::SwitchTabRight => {
-                self.switch_active_tab_right(cx);
+                self.switch_active_tab_right(window, cx);
                 true
             }
-            CommandAction::CycleTabs => self.cycle_active_tab(cx),
-            CommandAction::SwitchToTab1 => self.switch_to_tab_position(1, cx),
-            CommandAction::SwitchToTab2 => self.switch_to_tab_position(2, cx),
-            CommandAction::SwitchToTab3 => self.switch_to_tab_position(3, cx),
-            CommandAction::SwitchToTab4 => self.switch_to_tab_position(4, cx),
-            CommandAction::SwitchToTab5 => self.switch_to_tab_position(5, cx),
-            CommandAction::SwitchToTab6 => self.switch_to_tab_position(6, cx),
-            CommandAction::SwitchToTab7 => self.switch_to_tab_position(7, cx),
-            CommandAction::SwitchToTab8 => self.switch_to_tab_position(8, cx),
-            CommandAction::SwitchToTab9 => self.switch_to_tab_position(9, cx),
+            CommandAction::CycleTabs => self.cycle_active_tab(window, cx),
+            CommandAction::SwitchToTab1 => self.switch_to_tab_position(1, window, cx),
+            CommandAction::SwitchToTab2 => self.switch_to_tab_position(2, window, cx),
+            CommandAction::SwitchToTab3 => self.switch_to_tab_position(3, window, cx),
+            CommandAction::SwitchToTab4 => self.switch_to_tab_position(4, window, cx),
+            CommandAction::SwitchToTab5 => self.switch_to_tab_position(5, window, cx),
+            CommandAction::SwitchToTab6 => self.switch_to_tab_position(6, window, cx),
+            CommandAction::SwitchToTab7 => self.switch_to_tab_position(7, window, cx),
+            CommandAction::SwitchToTab8 => self.switch_to_tab_position(8, window, cx),
+            CommandAction::SwitchToTab9 => self.switch_to_tab_position(9, window, cx),
             CommandAction::SplitPaneVertical => self.split_active_pane_vertical(cx),
             CommandAction::SplitPaneHorizontal => self.split_active_pane_horizontal(cx),
             CommandAction::ClosePane => self.close_active_pane(cx),
@@ -107,7 +107,12 @@ impl TerminalView {
         }
     }
 
-    fn switch_to_tab_position(&mut self, position: usize, cx: &mut Context<Self>) -> bool {
+    fn switch_to_tab_position(
+        &mut self,
+        position: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let Some(target_index) = position.checked_sub(1) else {
             return false;
         };
@@ -115,6 +120,7 @@ impl TerminalView {
             return false;
         }
         self.switch_tab(target_index, cx);
+        self.focus_terminal_after_tab_activation(window, cx);
         true
     }
 
@@ -233,7 +239,11 @@ impl TerminalView {
         self.reorder_tab(self.active_tab, target_index, cx)
     }
 
-    pub(crate) fn switch_active_tab_left(&mut self, cx: &mut Context<Self>) -> bool {
+    pub(crate) fn switch_active_tab_left(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let Some(target_index) = Self::adjacent_tab_index(self.active_tab, self.tabs.len(), false)
         else {
             return false;
@@ -243,12 +253,17 @@ impl TerminalView {
             RuntimeKind::Tmux => self.tmux_switch_active_tab_left(cx),
             RuntimeKind::Native => {
                 self.switch_tab(target_index, cx);
+                self.focus_terminal_after_tab_activation(window, cx);
                 true
             }
         }
     }
 
-    pub(crate) fn switch_active_tab_right(&mut self, cx: &mut Context<Self>) -> bool {
+    pub(crate) fn switch_active_tab_right(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let Some(target_index) = Self::adjacent_tab_index(self.active_tab, self.tabs.len(), true)
         else {
             return false;
@@ -258,12 +273,13 @@ impl TerminalView {
             RuntimeKind::Tmux => self.tmux_switch_active_tab_right(cx),
             RuntimeKind::Native => {
                 self.switch_tab(target_index, cx);
+                self.focus_terminal_after_tab_activation(window, cx);
                 true
             }
         }
     }
 
-    pub(crate) fn cycle_active_tab(&mut self, cx: &mut Context<Self>) -> bool {
+    pub(crate) fn cycle_active_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let Some(target_index) = Self::cycled_tab_index(self.active_tab, self.tabs.len()) else {
             return false;
         };
@@ -272,6 +288,7 @@ impl TerminalView {
             RuntimeKind::Tmux => self.tmux_switch_active_tab_right(cx),
             RuntimeKind::Native => {
                 self.switch_tab(target_index, cx);
+                self.focus_terminal_after_tab_activation(window, cx);
                 true
             }
         }
@@ -369,12 +386,16 @@ impl TerminalView {
                         active_options.with_scrollback_history(inactive_scrollback);
                     if let Some(tab) = self.tabs.get(old_active_tab) {
                         for pane in &tab.panes {
-                            pane.terminal.set_term_options(inactive_options);
+                            if let Some(terminal) = pane.maybe_terminal() {
+                                terminal.set_term_options(inactive_options);
+                            }
                         }
                     }
                     if let Some(tab) = self.tabs.get(new_tab_index) {
                         for pane in &tab.panes {
-                            pane.terminal.set_term_options(active_options);
+                            if let Some(terminal) = pane.maybe_terminal() {
+                                terminal.set_term_options(active_options);
+                            }
                         }
                     }
                 }
@@ -506,6 +527,7 @@ impl TerminalView {
             self.close_search(cx);
         }
 
+        self.reset_workspace_rename_state();
         if self.active_tab != index {
             self.switch_tab(index, cx);
         }
@@ -546,10 +568,14 @@ impl TerminalView {
                     let inactive_options =
                         active_options.with_scrollback_history(inactive_scrollback);
                     for pane in &self.tabs[old_active].panes {
-                        pane.terminal.set_term_options(inactive_options);
+                        if let Some(terminal) = pane.maybe_terminal() {
+                            terminal.set_term_options(inactive_options);
+                        }
                     }
                     for pane in &self.tabs[index].panes {
-                        pane.terminal.set_term_options(active_options);
+                        if let Some(terminal) = pane.maybe_terminal() {
+                            terminal.set_term_options(active_options);
+                        }
                     }
                 }
 
@@ -561,6 +587,15 @@ impl TerminalView {
                 cx.notify();
             }
         }
+    }
+
+    pub(crate) fn focus_terminal_after_tab_activation(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.focus_handle.focus(window, cx);
+        self.reset_cursor_blink_phase();
     }
 
     pub(crate) fn commit_rename_tab(&mut self, cx: &mut Context<Self>) {
@@ -1134,13 +1169,15 @@ impl TerminalView {
             active_pane.top = current_size.1;
             active_pane.width = current_size.2;
             active_pane.height = current_size.3;
-            // Resize terminal before the first render so pane geometry and grid size match.
-            active_pane.terminal.resize(TerminalSize {
-                cols: current_size.2,
-                rows: current_size.3,
-                cell_width: cell_size.width.into(),
-                cell_height: cell_size.height.into(),
-            });
+            if let Some(terminal) = active_pane.maybe_terminal_mut() {
+                // Resize terminal before the first render so pane geometry and grid size match.
+                terminal.resize(TerminalSize {
+                    cols: current_size.2,
+                    rows: current_size.3,
+                    cell_width: cell_size.width.into(),
+                    cell_height: cell_size.height.into(),
+                });
+            }
         }
 
         let cached_element_ids = PaneCachedElementIds::new(&pane_id);
@@ -1153,7 +1190,7 @@ impl TerminalView {
             pane_zoom_steps,
             degraded: false,
             progress_state: ProgressState::default(),
-            terminal,
+            content: PaneContent::Terminal(terminal),
             render_cache: RefCell::new(TerminalPaneRenderCache::default()),
             last_alternate_screen: Cell::new(false),
             cached_element_ids,
@@ -1690,7 +1727,7 @@ mod tests {
             pane_zoom_steps: 0,
             degraded: false,
             progress_state: ProgressState::default(),
-            terminal: test_terminal(),
+            content: PaneContent::Terminal(test_terminal()),
             render_cache: RefCell::new(TerminalPaneRenderCache::default()),
             last_alternate_screen: Cell::new(false),
             cached_element_ids: PaneCachedElementIds::new(id),
