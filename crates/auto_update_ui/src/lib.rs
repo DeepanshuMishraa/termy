@@ -104,7 +104,7 @@ impl UpdateBannerModel {
             UpdateState::InstallerLaunched { version } => Some(Self {
                 badge: "Installer",
                 message: format!("Version {version} installer launched"),
-                detail: Some("Termy will quit so the installer can finish the update.".to_string()),
+                detail: Some("Termy will quit and reopen when setup finishes.".to_string()),
                 progress_percent: None,
                 tone: UpdateBannerTone::Info,
                 buttons: vec![],
@@ -184,6 +184,10 @@ mod tests {
         .expect("installer launched state should render an update banner");
 
         assert_eq!(model.badge, "Installer");
+        assert_eq!(
+            model.detail.as_deref(),
+            Some("Termy will quit and reopen when setup finishes.")
+        );
         assert!(model.buttons.is_empty());
     }
 }

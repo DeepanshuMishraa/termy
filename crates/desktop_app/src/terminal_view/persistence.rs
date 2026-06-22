@@ -1,6 +1,7 @@
 use super::*;
 use crate::workspace_store::{
-    StoredPane, StoredSession, StoredTab, StoredWorkspace, WORKSPACE_STORE_FILE, WorkspaceStore,
+    StoredPane, StoredPaneKind, StoredSession, StoredTab, StoredWorkspace, WORKSPACE_STORE_FILE,
+    WorkspaceStore,
 };
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Line};
@@ -13,11 +14,13 @@ const NATIVE_WORKSPACE_STATE_FILE: &str = "native-tabs.json";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PersistedNativePane {
+    kind: StoredPaneKind,
     left: u16,
     top: u16,
     width: u16,
     height: u16,
     buffer: Option<String>,
+    browser_url: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -257,8 +260,12 @@ impl TerminalView {
 
     fn should_sync_persisted_native_workspace(&self) -> bool {
         self.runtime_kind() == RuntimeKind::Native
-            && (self.native_tab_persistence
+            && (self.should_persist_last_native_session()
                 || (self.native_layout_autosave && self.current_named_layout.is_some()))
+    }
+
+    fn should_persist_last_native_session(&self) -> bool {
+        self.native_tab_persistence || self.workspace_sidebar_enabled
     }
 
     fn persisted_native_workspace_path() -> Result<PathBuf, String> {
@@ -374,11 +381,13 @@ impl TerminalView {
                         .panes
                         .into_iter()
                         .map(|pane| StoredPane {
+                            kind: pane.kind,
                             left: pane.left,
                             top: pane.top,
                             width: pane.width,
                             height: pane.height,
                             buffer: pane.buffer,
+                            browser_url: pane.browser_url,
                         })
                         .collect(),
                 })
@@ -406,11 +415,13 @@ impl TerminalView {
                     .panes
                     .into_iter()
                     .map(|pane| PersistedNativePane {
+                        kind: pane.kind,
                         left: pane.left,
                         top: pane.top,
                         width: pane.width,
                         height: pane.height,
                         buffer: pane.buffer,
+                        browser_url: pane.browser_url,
                     })
                     .collect(),
             })
@@ -496,15 +507,26 @@ impl TerminalView {
                 let panes = tab
                     .panes
                     .iter()
-                    .map(|pane| PersistedNativePane {
-                        left: pane.left,
-                        top: pane.top,
-                        width: pane.width.max(1),
-                        height: pane.height.max(1),
-                        buffer: pane
-                            .maybe_terminal()
-                            .map(|terminal| self.extract_persisted_buffer_text(terminal))
-                            .unwrap_or_default(),
+                    .map(|pane| {
+                        let (kind, buffer, browser_url) = match &pane.content {
+                            PaneContent::Terminal(terminal) => (
+                                StoredPaneKind::Terminal,
+                                self.extract_persisted_buffer_text(terminal),
+                                None,
+                            ),
+                            PaneContent::Browser(state) => {
+                                (StoredPaneKind::Browser, None, Some(state.current_url()))
+                            }
+                        };
+                        PersistedNativePane {
+                            kind,
+                            left: pane.left,
+                            top: pane.top,
+                            width: pane.width.max(1),
+                            height: pane.height.max(1),
+                            buffer,
+                            browser_url,
+                        }
                     })
                     .collect::<Vec<_>>();
                 let pane_indices = tab
@@ -551,11 +573,13 @@ impl TerminalView {
                     "layout_tree": tab.layout_tree.map(Self::persisted_layout_tree_to_value),
                     "panes": tab.panes.into_iter().map(|pane| {
                         json!({
+                            "kind": pane.kind.as_str(),
                             "left": pane.left,
                             "top": pane.top,
                             "width": pane.width,
                             "height": pane.height,
                             "buffer": pane.buffer,
+                            "browser_url": pane.browser_url,
                         })
                     }).collect::<Vec<_>>(),
                 })
@@ -589,7 +613,13 @@ impl TerminalView {
 
             let mut panes = Vec::with_capacity(panes_value.len());
             for (pane_index, pane_value) in panes_value.iter().enumerate() {
+                let kind = pane_value
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .map(StoredPaneKind::from_str)
+                    .unwrap_or(StoredPaneKind::Terminal);
                 panes.push(PersistedNativePane {
+                    kind,
                     left: value_u16(
                         pane_value.get("left").ok_or_else(|| {
                             format!("workspace tab {tab_index} pane {pane_index} is missing 'left'")
@@ -625,6 +655,11 @@ impl TerminalView {
                         .and_then(Value::as_str)
                         .map(str::to_string)
                         .filter(|buffer| !buffer.is_empty()),
+                    browser_url: pane_value
+                        .get("browser_url")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                        .filter(|url| !url.trim().is_empty()),
                 });
             }
 
@@ -726,8 +761,124 @@ impl TerminalView {
         }
     }
 
-    /// Spawn terminals and rebuild tabs for one persisted workspace without
-    /// touching the view state.
+    fn restored_pane_id(tab_id: TabId, pane_index: usize, kind: &StoredPaneKind) -> String {
+        let prefix = match kind {
+            StoredPaneKind::Terminal => "native",
+            StoredPaneKind::Browser => "browser",
+        };
+        if pane_index == 0 {
+            format!("%{prefix}-{tab_id}")
+        } else {
+            format!("%{prefix}-restored-{tab_id}-{}", pane_index + 1)
+        }
+    }
+
+    fn build_restored_pane(
+        &self,
+        tab_id: TabId,
+        pane_index: usize,
+        pane: &PersistedNativePane,
+        working_dir: Option<&str>,
+    ) -> Result<TerminalPane, String> {
+        let pane_id = Self::restored_pane_id(tab_id, pane_index, &pane.kind);
+        let width = pane.width.max(1);
+        let height = pane.height.max(1);
+        match pane.kind {
+            StoredPaneKind::Terminal => {
+                let terminal = Terminal::new_native(
+                    TerminalSize {
+                        cols: width,
+                        rows: height,
+                        ..TerminalSize::default()
+                    },
+                    working_dir,
+                    Some(self.event_wakeup_tx.clone()),
+                    Some(&self.tab_shell_integration),
+                    Some(&self.terminal_runtime),
+                    None,
+                )
+                .map_err(|error| format!("Failed to restore saved pane: {error}"))?;
+                if self.native_buffer_persistence
+                    && let Some(buffer) = pane.buffer.as_deref()
+                {
+                    terminal.hydrate_output(buffer.as_bytes());
+                }
+                Ok(TerminalPane::new_native(
+                    pane_id, pane.left, pane.top, width, height, terminal,
+                ))
+            }
+            StoredPaneKind::Browser => Ok(TerminalPane::new_browser(
+                pane_id,
+                pane.left,
+                pane.top,
+                width,
+                height,
+                pane.browser_url
+                    .as_deref()
+                    .unwrap_or(browser::BROWSER_DEFAULT_URL),
+            )),
+        }
+    }
+
+    fn create_restored_tab(
+        tab_id: TabId,
+        first_pane: TerminalPane,
+        predicted_prompt_title: Option<String>,
+        manual_title: Option<&str>,
+    ) -> TerminalTab {
+        let is_browser = first_pane.is_browser();
+        let title = manual_title
+            .filter(|title| !title.trim().is_empty())
+            .or_else(|| {
+                (!is_browser)
+                    .then_some(predicted_prompt_title.as_deref())
+                    .flatten()
+            })
+            .unwrap_or(if is_browser {
+                "New Tab"
+            } else {
+                DEFAULT_TAB_TITLE
+            })
+            .to_string();
+        let title_text_width = 0.0;
+        let sticky_title_width = Self::tab_display_width_for_text_px_without_close_with_max(
+            title_text_width,
+            TAB_MAX_WIDTH,
+        );
+        let display_width =
+            Self::tab_display_width_for_text_px_with_max(title_text_width, TAB_MAX_WIDTH);
+        let active_pane_id = first_pane.id.clone();
+        let explicit_title = (!is_browser).then_some(predicted_prompt_title).flatten();
+        let explicit_title_is_prediction = explicit_title.is_some();
+        TerminalTab {
+            id: tab_id,
+            window_id: if is_browser {
+                format!("@browser-{tab_id}")
+            } else {
+                format!("@native-{tab_id}")
+            },
+            window_index: 0,
+            panes: vec![first_pane],
+            active_pane_id,
+            pinned: false,
+            manual_title: None,
+            explicit_title,
+            explicit_title_is_prediction,
+            shell_title: None,
+            current_command: None,
+            pending_command_title: None,
+            pending_command_token: 0,
+            last_prompt_cwd: None,
+            title,
+            title_text_width,
+            sticky_title_width,
+            display_width,
+            running_process: false,
+            command_lifecycle: CommandLifecycle::default(),
+        }
+    }
+
+    /// Rebuild tabs for one persisted workspace without touching view state.
     fn build_restored_tabs(
         &mut self,
         workspace: PersistedNativeWorkspace,
@@ -747,74 +898,24 @@ impl TerminalView {
                 .panes
                 .first()
                 .ok_or_else(|| "workspace tab is missing panes".to_string())?;
-            let first_terminal = Terminal::new_native(
-                TerminalSize {
-                    cols: first_pane.width.max(1),
-                    rows: first_pane.height.max(1),
-                    ..TerminalSize::default()
-                },
-                working_dir.as_deref(),
-                Some(self.event_wakeup_tx.clone()),
-                Some(&self.tab_shell_integration),
-                Some(&self.terminal_runtime),
-                None,
-            )
-            .map_err(|error| format!("Failed to restore saved tab: {error}"))?;
             let tab_id = self.allocate_tab_id();
-            let mut tab = Self::create_native_tab(
+            let first_pane =
+                self.build_restored_pane(tab_id, 0, first_pane, working_dir.as_deref())?;
+            let manual_title = persisted_tab.manual_title.clone();
+            let mut tab = Self::create_restored_tab(
                 tab_id,
-                first_terminal,
-                first_pane.width,
-                first_pane.height,
+                first_pane,
                 predicted_title.clone(),
+                manual_title.as_deref(),
             );
-            if let Some(first) = tab.panes.first_mut() {
-                first.left = first_pane.left;
-                first.top = first_pane.top;
-                first.width = first_pane.width.max(1);
-                first.height = first_pane.height.max(1);
-                if self.native_buffer_persistence
-                    && let Some(buffer) = first_pane.buffer.as_deref()
-                {
-                    first.terminal_mut().hydrate_output(buffer.as_bytes());
-                }
-            }
 
             for (pane_index, pane) in persisted_tab.panes.iter().enumerate().skip(1) {
-                let terminal = Terminal::new_native(
-                    TerminalSize {
-                        cols: pane.width.max(1),
-                        rows: pane.height.max(1),
-                        ..TerminalSize::default()
-                    },
+                tab.panes.push(self.build_restored_pane(
+                    tab_id,
+                    pane_index,
+                    pane,
                     working_dir.as_deref(),
-                    Some(self.event_wakeup_tx.clone()),
-                    Some(&self.tab_shell_integration),
-                    Some(&self.terminal_runtime),
-                    None,
-                )
-                .map_err(|error| format!("Failed to restore saved pane: {error}"))?;
-                if self.native_buffer_persistence
-                    && let Some(buffer) = pane.buffer.as_deref()
-                {
-                    terminal.hydrate_output(buffer.as_bytes());
-                }
-                let pane_id = format!("%native-restored-{tab_id}-{}", pane_index + 1);
-                let cached_element_ids = PaneCachedElementIds::new(&pane_id);
-                tab.panes.push(TerminalPane {
-                    id: pane_id,
-                    left: pane.left,
-                    top: pane.top,
-                    width: pane.width.max(1),
-                    height: pane.height.max(1),
-                    pane_zoom_steps: 0,
-                    degraded: false,
-                    progress_state: ProgressState::default(),
-                    content: PaneContent::Terminal(terminal),
-                    render_cache: RefCell::new(TerminalPaneRenderCache::default()),
-                    last_alternate_screen: Cell::new(false),
-                    cached_element_ids,
-                });
+                )?);
             }
 
             tab.active_pane_id = tab
@@ -824,7 +925,7 @@ impl TerminalView {
                 .map(|pane| pane.id.clone())
                 .ok_or_else(|| "restored tab has no panes".to_string())?;
             tab.pinned = persisted_tab.pinned;
-            tab.manual_title = persisted_tab.manual_title;
+            tab.manual_title = manual_title;
             let pane_ids = tab
                 .panes
                 .iter()
@@ -972,7 +1073,7 @@ impl TerminalView {
             store,
             session,
             named_layout_autosave,
-            persist_last_session: self.native_tab_persistence,
+            persist_last_session: self.should_persist_last_native_session(),
         })
     }
 
@@ -1137,7 +1238,8 @@ impl TerminalView {
         &mut self,
         cx: &mut Context<Self>,
     ) -> Result<bool, String> {
-        if self.runtime_kind() != RuntimeKind::Native || !self.native_tab_persistence {
+        if self.runtime_kind() != RuntimeKind::Native || !self.should_persist_last_native_session()
+        {
             return Ok(false);
         }
         let Some(session) = self.require_workspace_store()?.load_session()? else {
@@ -1152,6 +1254,7 @@ impl TerminalView {
 mod tests {
     use super::{PersistedNativeLayoutNode, TerminalView};
     use crate::terminal_view::PaneResizeAxis;
+    use crate::workspace_store::StoredPaneKind;
 
     #[test]
     fn persisted_native_workspace_parser_accepts_legacy_v1_shape() {
@@ -1313,6 +1416,45 @@ mod tests {
             .expect("state should include last session");
         assert_eq!(workspace.tabs.len(), 1);
         assert!(workspace.tabs[0].pinned);
+    }
+
+    #[test]
+    fn persisted_native_workspace_parser_reads_browser_panes() {
+        let state = TerminalView::parse_persisted_native_workspace_state(
+            r#"{
+  "version": 3,
+  "last_session": {
+    "active_tab": 0,
+    "tabs": [
+      {
+        "active_pane": 0,
+        "manual_title": "Docs",
+        "panes": [
+          {
+            "kind": "browser",
+            "left": 0,
+            "top": 0,
+            "width": 80,
+            "height": 24,
+            "browser_url": "https://example.com/docs"
+          }
+        ]
+      }
+    ]
+  },
+  "layouts": []
+}"#,
+        )
+        .expect("workspace state should parse");
+
+        let workspace = state
+            .last_session
+            .expect("state should include last session");
+        assert_eq!(workspace.tabs[0].panes[0].kind, StoredPaneKind::Browser);
+        assert_eq!(
+            workspace.tabs[0].panes[0].browser_url.as_deref(),
+            Some("https://example.com/docs")
+        );
     }
 
     #[test]

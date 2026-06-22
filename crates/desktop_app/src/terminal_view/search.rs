@@ -383,22 +383,23 @@ impl TerminalView {
                             .right(px(if counter_label.is_some() { 58.0 } else { 10.0 }))
                             .top_0()
                             .bottom_0()
-                            .relative()
                             .overflow_hidden()
-                            .child(self.render_inline_input_layer(
-                                Font {
-                                    family: self.ui_font_family.clone(),
-                                    ..Font::default()
-                                },
-                                px(13.0),
-                                strong_text.into(),
-                                {
-                                    overlay_style
-                                        .chrome_panel_cursor(SEARCH_INPUT_SELECTION_ALPHA)
-                                        .into()
-                                },
-                                InlineInputAlignment::Left,
-                                cx,
+                            .child(div().relative().size_full().child(
+                                self.render_inline_input_layer(
+                                    Font {
+                                        family: self.ui_font_family.clone(),
+                                        ..Font::default()
+                                    },
+                                    px(13.0),
+                                    strong_text.into(),
+                                    {
+                                        overlay_style
+                                            .chrome_panel_cursor(SEARCH_INPUT_SELECTION_ALPHA)
+                                            .into()
+                                    },
+                                    InlineInputAlignment::Left,
+                                    cx,
+                                ),
                             )),
                     )
                     .children(counter_label.map(|label| {

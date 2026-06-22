@@ -18,6 +18,12 @@ pub(crate) struct WorkspaceSidebarResizeDragState {
     start_width: f32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct WorkspaceDragState {
+    source_index: usize,
+    drop_slot: Option<usize>,
+}
+
 impl WorkspaceEntry {
     pub(crate) fn new(id: u64) -> Self {
         Self {
@@ -159,6 +165,145 @@ impl TerminalView {
         self.workspaces.len() > 1
     }
 
+    pub(crate) fn begin_workspace_drag(&mut self, index: usize) {
+        if index >= self.workspaces.len() || self.renaming_workspace.is_some() {
+            return;
+        }
+        self.workspace_drag = Some(WorkspaceDragState {
+            source_index: index,
+            drop_slot: None,
+        });
+    }
+
+    pub(crate) fn update_workspace_drag_over(
+        &mut self,
+        hover_index: usize,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(drag) = self.workspace_drag else {
+            return;
+        };
+        if hover_index >= self.workspaces.len() || drag.source_index >= self.workspaces.len() {
+            return;
+        }
+
+        let raw_slot = if hover_index > drag.source_index {
+            hover_index.saturating_add(1)
+        } else {
+            hover_index
+        };
+        let clamped_slot = self.clamp_workspace_drop_slot_to_pin_group(drag.source_index, raw_slot);
+        let next_drop_slot = Self::normalized_workspace_drop_slot(drag.source_index, clamped_slot);
+        let Some(drag) = self.workspace_drag.as_mut() else {
+            return;
+        };
+        if drag.drop_slot == next_drop_slot {
+            return;
+        }
+
+        drag.drop_slot = next_drop_slot;
+        cx.notify();
+    }
+
+    pub(crate) fn finish_workspace_drag(&mut self) -> bool {
+        self.workspace_drag.take().is_some()
+    }
+
+    pub(crate) fn workspace_drop_marker_side(
+        &self,
+        index: usize,
+    ) -> Option<crate::terminal_view::tab_strip::state::TabDropMarkerSide> {
+        if index >= self.workspaces.len() {
+            return None;
+        }
+        let drop_slot = self.workspace_drag.and_then(|drag| drag.drop_slot)?;
+        if drop_slot == index {
+            Some(crate::terminal_view::tab_strip::state::TabDropMarkerSide::Leading)
+        } else if drop_slot == index.saturating_add(1) {
+            Some(crate::terminal_view::tab_strip::state::TabDropMarkerSide::Trailing)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn commit_workspace_drag(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(WorkspaceDragState {
+            source_index,
+            drop_slot: Some(drop_slot),
+        }) = self.workspace_drag.take()
+        else {
+            return false;
+        };
+        if source_index >= self.workspaces.len() {
+            return false;
+        }
+        let target_index =
+            Self::workspace_reorder_target_index_for_drop_slot(source_index, drop_slot);
+        if target_index >= self.workspaces.len() || source_index == target_index {
+            return false;
+        }
+
+        let active_id = self
+            .workspaces
+            .get(self.active_workspace)
+            .map(|entry| entry.id);
+        let entry = self.workspaces.remove(source_index);
+        self.workspaces.insert(target_index, entry);
+        if let Some(active_id) = active_id
+            && let Some(next_active) = self
+                .workspaces
+                .iter()
+                .position(|entry| entry.id == active_id)
+        {
+            self.active_workspace = next_active;
+        }
+        self.schedule_persist_native_workspace();
+        cx.notify();
+        true
+    }
+
+    fn normalized_workspace_drop_slot(source_index: usize, raw_slot: usize) -> Option<usize> {
+        if raw_slot == source_index || raw_slot == source_index.saturating_add(1) {
+            return None;
+        }
+        Some(raw_slot)
+    }
+
+    fn workspace_reorder_target_index_for_drop_slot(
+        source_index: usize,
+        drop_slot: usize,
+    ) -> usize {
+        if drop_slot > source_index {
+            drop_slot - 1
+        } else {
+            drop_slot
+        }
+    }
+
+    fn workspace_pin_group_bounds(&self, source_index: usize) -> (usize, usize) {
+        let Some(source) = self.workspaces.get(source_index) else {
+            return (0, self.workspaces.len());
+        };
+        let mut start = source_index;
+        while start > 0 && self.workspaces[start - 1].pinned == source.pinned {
+            start -= 1;
+        }
+        let mut end = source_index + 1;
+        while end < self.workspaces.len() && self.workspaces[end].pinned == source.pinned {
+            end += 1;
+        }
+        (start, end)
+    }
+
+    fn clamp_workspace_drop_slot_to_pin_group(
+        &self,
+        source_index: usize,
+        raw_slot: usize,
+    ) -> usize {
+        let (start, end) = self.workspace_pin_group_bounds(source_index);
+        raw_slot.clamp(start, end)
+    }
+
     fn reorder_workspaces_for_pins(&mut self) {
         if self.workspaces.len() <= 1 {
             return;
@@ -224,6 +369,7 @@ impl TerminalView {
     fn reset_view_state_after_workspace_change(&mut self, cx: &mut Context<Self>) {
         self.reset_tab_rename_state();
         self.reset_workspace_rename_state();
+        self.finish_workspace_drag();
         self.reset_tab_drag_state();
         self.clear_selection();
         self.clear_hovered_link();
@@ -266,6 +412,7 @@ impl TerminalView {
         }
 
         entry.pinned = pinned;
+        self.finish_workspace_drag();
         self.reorder_workspaces_for_pins();
         self.mark_tab_strip_layout_dirty();
         self.schedule_persist_native_workspace();
@@ -306,6 +453,7 @@ impl TerminalView {
         }
 
         self.reset_tab_rename_state();
+        self.finish_workspace_drag();
         self.renaming_workspace = Some(index);
         self.workspace_rename_input
             .set_text(self.workspaces[index].name.clone());

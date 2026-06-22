@@ -827,6 +827,13 @@ impl TerminalView {
             return;
         }
 
+        if self.workspace_drag.is_some() {
+            if !event.dragging() {
+                self.commit_workspace_drag(cx);
+            }
+            return;
+        }
+
         match Self::global_tab_drag_pointer_action(self.tab_strip.drag.is_some(), event.dragging())
         {
             GlobalTabDragPointerAction::None => {}
@@ -880,6 +887,11 @@ impl TerminalView {
 
         if event.button == MouseButton::Left && self.finish_inspector_resize_drag() {
             cx.notify();
+            return true;
+        }
+
+        if event.button == MouseButton::Left && self.workspace_drag.is_some() {
+            self.commit_workspace_drag(cx);
             return true;
         }
 
@@ -1078,6 +1090,9 @@ impl TerminalView {
         if self.tab_strip.drag.is_some() && !event.dragging() {
             self.commit_tab_drag(cx);
         }
+        if self.workspace_drag.is_some() && !event.dragging() {
+            self.commit_workspace_drag(cx);
+        }
 
         if self.clear_tab_hover_state() {
             cx.notify();
@@ -1185,6 +1200,12 @@ impl TerminalView {
         if event.button == MouseButton::Left && self.finish_workspace_sidebar_resize_drag() {
             cx.stop_propagation();
             cx.notify();
+            return;
+        }
+
+        if event.button == MouseButton::Left && self.workspace_drag.is_some() {
+            self.commit_workspace_drag(cx);
+            cx.stop_propagation();
             return;
         }
 

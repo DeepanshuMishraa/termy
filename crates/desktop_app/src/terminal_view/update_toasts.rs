@@ -33,7 +33,9 @@ fn update_toast_effect(state: Option<&UpdateState>) -> UpdateToastEffect {
         Some(UpdateState::InstallerLaunched { version }) => {
             UpdateToastEffect::FinishProgressOrEnqueue {
                 kind: termy_toast::ToastKind::Info,
-                message: format!("Installer launched for v{version}; Termy will quit"),
+                message: format!(
+                    "Installer launched for v{version}; Termy will reopen when setup finishes"
+                ),
             }
         }
         Some(UpdateState::Installed { version }) => UpdateToastEffect::FinishProgressOrEnqueue {
@@ -176,7 +178,8 @@ mod tests {
             })),
             UpdateToastEffect::FinishProgressOrEnqueue {
                 kind: termy_toast::ToastKind::Info,
-                message: "Installer launched for v0.1.79; Termy will quit".to_string(),
+                message: "Installer launched for v0.1.79; Termy will reopen when setup finishes"
+                    .to_string(),
             }
         );
     }

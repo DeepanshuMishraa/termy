@@ -14,13 +14,37 @@ use std::path::Path;
 
 pub(crate) const WORKSPACE_STORE_FILE: &str = "workspaces.db";
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StoredPaneKind {
+    Terminal,
+    Browser,
+}
+
+impl StoredPaneKind {
+    pub(crate) fn as_str(&self) -> &'static str {
+        match self {
+            Self::Terminal => "terminal",
+            Self::Browser => "browser",
+        }
+    }
+
+    pub(crate) fn from_str(value: &str) -> Self {
+        match value {
+            "browser" => Self::Browser,
+            _ => Self::Terminal,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct StoredPane {
+    pub(crate) kind: StoredPaneKind,
     pub(crate) left: u16,
     pub(crate) top: u16,
     pub(crate) width: u16,
     pub(crate) height: u16,
     pub(crate) buffer: Option<String>,
+    pub(crate) browser_url: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -78,11 +102,13 @@ CREATE TABLE IF NOT EXISTS panes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     tab_id INTEGER NOT NULL REFERENCES tabs(id) ON DELETE CASCADE,
     position INTEGER NOT NULL,
+    pane_kind TEXT NOT NULL DEFAULT 'terminal',
     pane_left INTEGER NOT NULL,
     pane_top INTEGER NOT NULL,
     pane_width INTEGER NOT NULL,
     pane_height INTEGER NOT NULL,
-    buffer TEXT
+    buffer TEXT,
+    browser_url TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_tabs_workspace ON tabs(workspace_id, position);
 CREATE INDEX IF NOT EXISTS idx_panes_tab ON panes(tab_id, position);
@@ -98,19 +124,34 @@ fn store_error(context: &str, error: sqlx::Error) -> String {
     format!("{context}: {error}")
 }
 
-async fn ensure_workspace_columns(pool: &SqlitePool) -> Result<(), String> {
-    let columns = sqlx::query("PRAGMA table_info(workspaces)")
+async fn table_has_column(pool: &SqlitePool, table: &str, column: &str) -> Result<bool, String> {
+    let columns = sqlx::query(&format!("PRAGMA table_info({table})"))
         .fetch_all(pool)
         .await
         .map_err(|error| store_error("Failed to inspect workspace store schema", error))?;
-    let has_pinned = columns
+    Ok(columns
         .iter()
-        .any(|row| row.get::<String, _>("name") == "pinned");
-    if !has_pinned {
+        .any(|row| row.get::<String, _>("name") == column))
+}
+
+async fn ensure_workspace_columns(pool: &SqlitePool) -> Result<(), String> {
+    if !table_has_column(pool, "workspaces", "pinned").await? {
         sqlx::query("ALTER TABLE workspaces ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
             .execute(pool)
             .await
             .map_err(|error| store_error("Failed to migrate workspace pinned state", error))?;
+    }
+    if !table_has_column(pool, "panes", "pane_kind").await? {
+        sqlx::query("ALTER TABLE panes ADD COLUMN pane_kind TEXT NOT NULL DEFAULT 'terminal'")
+            .execute(pool)
+            .await
+            .map_err(|error| store_error("Failed to migrate pane kind", error))?;
+    }
+    if !table_has_column(pool, "panes", "browser_url").await? {
+        sqlx::query("ALTER TABLE panes ADD COLUMN browser_url TEXT")
+            .execute(pool)
+            .await
+            .map_err(|error| store_error("Failed to migrate browser pane URL", error))?;
     }
     Ok(())
 }
@@ -210,16 +251,19 @@ impl WorkspaceStore {
 
                     for (pane_position, pane) in tab.panes.iter().enumerate() {
                         sqlx::query(
-                            "INSERT INTO panes(tab_id, position, pane_left, pane_top, \
-                             pane_width, pane_height, buffer) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                            "INSERT INTO panes(tab_id, position, pane_kind, pane_left, pane_top, \
+                             pane_width, pane_height, buffer, browser_url) \
+                             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                         )
                         .bind(tab_id)
                         .bind(pane_position as i64)
+                        .bind(pane.kind.as_str())
                         .bind(i64::from(pane.left))
                         .bind(i64::from(pane.top))
                         .bind(i64::from(pane.width))
                         .bind(i64::from(pane.height))
                         .bind(pane.buffer.as_deref())
+                        .bind(pane.browser_url.as_deref())
                         .execute(&mut *tx)
                         .await
                         .map_err(|error| store_error("Failed to write pane", error))?;
@@ -264,7 +308,7 @@ impl WorkspaceStore {
             .await
             .map_err(|error| store_error("Failed to read tabs", error))?;
             let pane_rows = sqlx::query(
-                "SELECT tab_id, pane_left, pane_top, pane_width, pane_height, buffer \
+                "SELECT tab_id, pane_kind, pane_left, pane_top, pane_width, pane_height, buffer, browser_url \
                  FROM panes ORDER BY tab_id, position",
             )
             .fetch_all(&self.pool)
@@ -274,12 +318,18 @@ impl WorkspaceStore {
             let mut panes_by_tab: HashMap<i64, Vec<StoredPane>> = HashMap::new();
             for row in pane_rows {
                 let tab_id: i64 = row.get("tab_id");
+                let kind = StoredPaneKind::from_str(&row.get::<String, _>("pane_kind"));
+                let browser_url = row
+                    .get::<Option<String>, _>("browser_url")
+                    .filter(|url| !url.trim().is_empty());
                 panes_by_tab.entry(tab_id).or_default().push(StoredPane {
+                    kind,
                     left: clamp_cell(row.get::<i64, _>("pane_left")),
                     top: clamp_cell(row.get::<i64, _>("pane_top")),
                     width: clamp_cell(row.get::<i64, _>("pane_width")).max(1),
                     height: clamp_cell(row.get::<i64, _>("pane_height")).max(1),
                     buffer: row.get("buffer"),
+                    browser_url,
                 });
             }
 
@@ -508,11 +558,13 @@ mod tests {
                             active_pane: 0,
                             layout_tree_json: None,
                             panes: vec![StoredPane {
+                                kind: StoredPaneKind::Terminal,
                                 left: 0,
                                 top: 0,
                                 width: 80,
                                 height: 24,
                                 buffer: Some("hello".to_string()),
+                                browser_url: None,
                             }],
                         },
                         StoredTab {
@@ -522,18 +574,22 @@ mod tests {
                             layout_tree_json: Some("{\"kind\":\"leaf\",\"pane\":0}".to_string()),
                             panes: vec![
                                 StoredPane {
+                                    kind: StoredPaneKind::Terminal,
                                     left: 0,
                                     top: 0,
                                     width: 40,
                                     height: 24,
                                     buffer: None,
+                                    browser_url: None,
                                 },
                                 StoredPane {
+                                    kind: StoredPaneKind::Terminal,
                                     left: 40,
                                     top: 0,
                                     width: 40,
                                     height: 24,
                                     buffer: None,
+                                    browser_url: None,
                                 },
                             ],
                         },
@@ -545,15 +601,17 @@ mod tests {
                     active_tab: 0,
                     tabs: vec![StoredTab {
                         pinned: false,
-                        manual_title: None,
+                        manual_title: Some("Docs".to_string()),
                         active_pane: 0,
                         layout_tree_json: None,
                         panes: vec![StoredPane {
+                            kind: StoredPaneKind::Browser,
                             left: 0,
                             top: 0,
                             width: 80,
                             height: 24,
                             buffer: None,
+                            browser_url: Some("https://example.com/docs".to_string()),
                         }],
                     }],
                 },

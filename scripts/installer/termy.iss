@@ -67,3 +67,5 @@ Root: HKCR; Subkey: "termy\shell\open\command"; ValueType: string; ValueName: ""
 
 [Run]
 Filename: "{app}\{#MyExeName}"; Description: "Launch Termy"; Flags: nowait postinstall skipifsilent
+; Silent auto-updates quit Termy before setup finishes, so relaunch after install.
+Filename: "{app}\{#MyExeName}"; Flags: nowait runasoriginaluser skipifnotsilent

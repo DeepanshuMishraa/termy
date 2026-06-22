@@ -1,6 +1,6 @@
 use super::super::*;
 use super::render_palette::TabStripPalette;
-use super::state::TabStripOrientation;
+use super::state::{TabDropMarkerSide, TabStripOrientation};
 use gpui::prelude::FluentBuilder as _;
 
 impl TerminalView {
@@ -248,10 +248,29 @@ impl TerminalView {
             let mut pin_text = row_text;
             pin_text.a = if pinned { 0.95 } else { 0.45 };
             let pin_hover_bg = palette.hovered_tab_bg;
+            let drop_marker = self.workspace_drop_marker_side(index).map(|side| {
+                let marker_y = match side {
+                    TabDropMarkerSide::Leading => 0.0,
+                    TabDropMarkerSide::Trailing => {
+                        WORKSPACE_SIDEBAR_ROW_HEIGHT - TAB_DROP_MARKER_WIDTH
+                    }
+                }
+                .max(0.0);
+
+                div()
+                    .absolute()
+                    .left(px(4.0))
+                    .right(px(4.0))
+                    .top(px(marker_y))
+                    .h(px(TAB_DROP_MARKER_WIDTH))
+                    .rounded_full()
+                    .bg(palette.tab_drop_marker_color)
+            });
 
             rows = rows.child(
                 div()
                     .id(("workspace-sidebar-row", index))
+                    .relative()
                     .w_full()
                     .h(px(WORKSPACE_SIDEBAR_ROW_HEIGHT))
                     .flex()
@@ -270,8 +289,17 @@ impl TerminalView {
                                 this.begin_rename_workspace(index, cx);
                             } else {
                                 this.switch_workspace(index, cx);
+                                this.begin_workspace_drag(index);
                             }
                             cx.stop_propagation();
+                        }),
+                    )
+                    .on_mouse_move(
+                        cx.listener(move |this, event: &MouseMoveEvent, _window, cx| {
+                            if event.dragging() {
+                                this.update_workspace_drag_over(index, cx);
+                                cx.stop_propagation();
+                            }
                         }),
                     )
                     .child(
@@ -344,7 +372,8 @@ impl TerminalView {
                             .text_size(px(10.0))
                             .text_color(count_text)
                             .child(format!("{tab_count}")),
-                    ),
+                    )
+                    .children(drop_marker),
             );
         }
 

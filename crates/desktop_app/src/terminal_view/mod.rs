@@ -758,11 +758,6 @@ impl TerminalPane {
             .expect("terminal-only path received a browser pane")
     }
 
-    fn terminal_mut(&mut self) -> &mut Terminal {
-        self.maybe_terminal_mut()
-            .expect("terminal-only path received a browser pane")
-    }
-
     fn browser_state(&self) -> Option<&browser::BrowserTabState> {
         match &self.content {
             PaneContent::Browser(state) => Some(state),
@@ -918,6 +913,7 @@ pub struct TerminalView {
     workspace_sidebar_resize_drag: Option<workspaces::WorkspaceSidebarResizeDragState>,
     workspace_sidebar_collapsed: bool,
     workspace_sidebar_peek_visible: bool,
+    workspace_drag: Option<workspaces::WorkspaceDragState>,
     renaming_workspace: Option<usize>,
     workspace_rename_input: InlineInputState,
     browser_tabs_enabled: bool,
@@ -3401,6 +3397,7 @@ impl TerminalView {
             workspace_sidebar_resize_drag: None,
             workspace_sidebar_collapsed: false,
             workspace_sidebar_peek_visible: false,
+            workspace_drag: None,
             renaming_workspace: None,
             workspace_rename_input: InlineInputState::new(String::new()),
             browser_tabs_enabled: config.browser_tabs_enabled,
@@ -3813,12 +3810,15 @@ impl TerminalView {
         self.tmux_show_active_pane_border = config.tmux_show_active_pane_border;
         self.configured_working_dir = config.working_dir.clone();
         self.terminal_runtime = Self::runtime_config_from_app_config(&config, &self.colors);
-        if native_tab_persistence_changed
+        if workspace_sidebar_enabled_changed
+            || native_tab_persistence_changed
             || native_layout_autosave_changed
             || native_buffer_persistence_changed
         {
-            if native_tab_persistence_changed
-                && !self.native_tab_persistence
+            let should_persist_last_native_session =
+                self.native_tab_persistence || self.workspace_sidebar_enabled;
+            if (workspace_sidebar_enabled_changed || native_tab_persistence_changed)
+                && !should_persist_last_native_session
                 && let Err(error) = self.clear_persisted_native_workspace()
             {
                 log::error!("Failed to clear saved native tab workspace: {error}");
@@ -3831,9 +3831,8 @@ impl TerminalView {
                     "Failed to rewrite saved native tab workspace without buffers: {error}"
                 );
             }
-            if self.native_tab_persistence
-                || self.native_layout_autosave
-                || self.native_buffer_persistence
+            if should_persist_last_native_session
+                || (self.native_layout_autosave && self.current_named_layout.is_some())
             {
                 self.sync_persisted_native_workspace();
             }
