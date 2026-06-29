@@ -922,18 +922,29 @@ private struct TerminalPaneLeafView: View {
                     }
                 )
 
-                if isDropTargeted, activeDropPlacement != nil {
-                    TerminalPaneDropPlacementOverlay(activePlacement: activeDropPlacement)
-                        .transition(.opacity)
-                        .allowsHitTesting(false)
+                // While any pane is being dragged, show the four drop bands on
+                // every other pane so the available placements are visible; the
+                // pane under the cursor highlights its nearest band.
+                if let draggingID = store.draggingPaneID, draggingID != pane.id {
+                    TerminalPaneDropPlacementOverlay(
+                        activePlacement: isDropTargeted ? activeDropPlacement : nil
+                    )
+                    .transition(.opacity)
+                    .allowsHitTesting(false)
                 }
 
                 if dragEnabled {
-                    TerminalPaneDragHandle(isSuppressed: isDropTargeted) {
-                        store.focus(pane)
-                        store.beginDraggingPane(pane.id)
-                        return TerminalPaneDragPayload.itemProvider(for: pane.id)
-                    }
+                    TerminalPaneDragHandle(
+                        isSuppressed: store.draggingPaneID != nil,
+                        onBegin: {
+                            store.focus(pane)
+                            store.beginDraggingPane(pane.id)
+                            return TerminalPaneDragPayload.pasteboardItem(for: pane.id)
+                        },
+                        onEnd: {
+                            store.endDraggingPane()
+                        }
+                    )
                     .padding(.top, 5)
                 }
 
@@ -944,6 +955,7 @@ private struct TerminalPaneLeafView: View {
                         .allowsHitTesting(false)
                 }
             }
+            .animation(.easeOut(duration: 0.12), value: store.draggingPaneID)
             .onDrop(
                 of: [UTType.termyPaneDrag],
                 delegate: TerminalPaneDropDelegate(
@@ -969,16 +981,16 @@ private extension UTType {
 }
 
 private enum TerminalPaneDragPayload {
-    static func itemProvider(for paneID: UUID) -> NSItemProvider {
-        let provider = NSItemProvider()
-        provider.registerDataRepresentation(
-            forTypeIdentifier: UTType.termyPaneDrag.identifier,
-            visibility: .ownProcess
-        ) { completion in
-            completion(Data(paneID.uuidString.utf8), nil)
-            return nil
-        }
-        return provider
+    /// The drag carries the pane id under our custom UTType so SwiftUI's
+    /// `.onDrop` validates it. `NSPasteboardItem` (unlike `NSItemProvider`)
+    /// conforms to `NSPasteboardWriting`, so it can back an `NSDraggingItem`.
+    static func pasteboardItem(for paneID: UUID) -> NSPasteboardItem {
+        let item = NSPasteboardItem()
+        item.setData(
+            Data(paneID.uuidString.utf8),
+            forType: NSPasteboard.PasteboardType(UTType.termyPaneDrag.identifier)
+        )
+        return item
     }
 }
 
@@ -1060,38 +1072,34 @@ private struct TerminalPaneDropDelegate: DropDelegate {
 
 private struct TerminalPaneDragHandle: View {
     let isSuppressed: Bool
-    let itemProvider: () -> NSItemProvider
+    let onBegin: () -> NSPasteboardItem
+    let onEnd: () -> Void
 
     @State private var isHovered = false
 
-    var body: some View {
-        dots(opacity: 0.86)
-        .frame(width: 34, height: 18)
-        .contentShape(Rectangle())
-        .opacity(isVisible ? 1 : 0)
-        .scaleEffect(isVisible ? 1 : 0.94)
-        .animation(.easeOut(duration: 0.1), value: isVisible)
-        .allowsHitTesting(!isSuppressed)
-        .onHover { hovering in
-            isHovered = hovering
-            if hovering {
-                NSCursor.pointingHand.set()
-            } else {
-                NSCursor.arrow.set()
-            }
-        }
-        .onDrag {
-            itemProvider()
-        } preview: {
-            dots(opacity: 1)
-                .frame(width: 26, height: 12)
-        }
-        .accessibilityLabel("Move pane")
-        .help("Move Pane")
-    }
-
     private var isVisible: Bool {
         isHovered && !isSuppressed
+    }
+
+    var body: some View {
+        dots(opacity: 0.86)
+            .frame(width: 34, height: 18)
+            .opacity(isVisible ? 1 : 0)
+            .scaleEffect(isVisible ? 1 : 0.94)
+            .animation(.easeOut(duration: 0.1), value: isVisible)
+            // A transparent AppKit view sits on top to own hit-testing, the grab
+            // cursor, and the drag itself — SwiftUI's `.onDrag`/`.onHover` never
+            // fire here because the terminal surface NSView consumes the mouse.
+            .overlay(
+                PaneDragSourceRepresentable(
+                    isEnabled: !isSuppressed,
+                    onHoverChange: { isHovered = $0 },
+                    onBegin: onBegin,
+                    onEnd: onEnd
+                )
+            )
+            .accessibilityLabel("Move pane")
+            .help("Move Pane")
     }
 
     private func dots(opacity: Double) -> some View {
@@ -1101,6 +1109,142 @@ private struct TerminalPaneDragHandle: View {
                     .fill(Color.secondary.opacity(opacity))
                     .frame(width: 3, height: 3)
             }
+        }
+    }
+}
+
+private struct PaneDragSourceRepresentable: NSViewRepresentable {
+    let isEnabled: Bool
+    let onHoverChange: (Bool) -> Void
+    let onBegin: () -> NSPasteboardItem
+    let onEnd: () -> Void
+
+    func makeNSView(context: Context) -> PaneDragSourceView {
+        let view = PaneDragSourceView()
+        apply(to: view)
+        return view
+    }
+
+    func updateNSView(_ view: PaneDragSourceView, context: Context) {
+        apply(to: view)
+        if !isEnabled {
+            view.onHoverChange(false)
+        }
+    }
+
+    private func apply(to view: PaneDragSourceView) {
+        view.onHoverChange = onHoverChange
+        view.onBegin = onBegin
+        view.onEnd = onEnd
+        view.isEnabledForDrag = isEnabled
+    }
+}
+
+/// Transparent overlay that starts a real AppKit drag session for a pane. Using
+/// an NSView (rather than SwiftUI `.onDrag`) is required: the terminal surface
+/// view consumes `mouseDown` before SwiftUI gestures see it. Being the topmost
+/// sibling in the ZStack, this view wins hit-testing for its small footprint.
+final class PaneDragSourceView: NSView, NSDraggingSource {
+    var isEnabledForDrag = true
+    var onHoverChange: (Bool) -> Void = { _ in }
+    var onBegin: () -> NSPasteboardItem = { NSPasteboardItem() }
+    var onEnd: () -> Void = {}
+
+    override var isFlipped: Bool { true }
+
+    // Allow grabbing the handle even when the window isn't key yet.
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard isEnabledForDrag, !isHidden else { return nil }
+        return super.hitTest(point)
+    }
+
+    // `cursorUpdate` runs in the window's cursor-management pass, which fires
+    // after the terminal view's per-move `NSCursor.set()`, so the open hand wins.
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for area in trackingAreas {
+            removeTrackingArea(area)
+        }
+        addTrackingArea(NSTrackingArea(
+            rect: .zero,
+            options: [.activeInActiveApp, .inVisibleRect, .mouseEnteredAndExited, .cursorUpdate],
+            owner: self
+        ))
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        onHoverChange(true)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        onHoverChange(false)
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        NSCursor.openHand.set()
+    }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .openHand)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard isEnabledForDrag else {
+            super.mouseDown(with: event)
+            return
+        }
+
+        // `onBegin` focuses the pane, marks it dragging, and returns the pasteboard
+        // item carrying the pane UTType that the SwiftUI `.onDrop` side validates.
+        let item = NSDraggingItem(pasteboardWriter: onBegin())
+        let image = Self.dotsImage()
+        let local = convert(event.locationInWindow, from: nil)
+        item.setDraggingFrame(
+            NSRect(
+                x: local.x - image.size.width / 2,
+                y: local.y - image.size.height / 2,
+                width: image.size.width,
+                height: image.size.height
+            ),
+            contents: image
+        )
+        NSCursor.closedHand.set()
+        beginDraggingSession(with: [item], event: event, source: self)
+    }
+
+    func draggingSession(
+        _ session: NSDraggingSession,
+        sourceOperationMaskFor context: NSDraggingContext
+    ) -> NSDragOperation {
+        .move
+    }
+
+    func draggingSession(_ session: NSDraggingSession, willBeginAt screenPoint: NSPoint) {
+        NSCursor.closedHand.set()
+    }
+
+    // Fires on drop, cancel, and drop-outside-any-pane — the canonical teardown,
+    // so the placement overlay always clears even if `performDrop` never runs.
+    func draggingSession(
+        _ session: NSDraggingSession,
+        endedAt screenPoint: NSPoint,
+        operation: NSDragOperation
+    ) {
+        NSCursor.openHand.set()
+        onEnd()
+    }
+
+    private static func dotsImage() -> NSImage {
+        let size = NSSize(width: 26, height: 12)
+        return NSImage(size: size, flipped: false) { _ in
+            NSColor.secondaryLabelColor.setFill()
+            for index in 0..<3 {
+                let x = CGFloat(index) * 9 + 4
+                NSBezierPath(ovalIn: NSRect(x: x, y: 4.5, width: 3, height: 3)).fill()
+            }
+            return true
         }
     }
 }
