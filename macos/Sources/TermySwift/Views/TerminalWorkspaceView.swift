@@ -36,6 +36,9 @@ struct TerminalWorkspaceView: View {
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
                 persistWorkspace()
             }
+            .onReceive(NotificationCenter.default.publisher(for: .termyNativeTabsChanged)) { _ in
+                NativeTabWindowManager.shared.applyFocusedTerminalChrome(for: store)
+            }
             .onReceive(configurationStore.$loadErrorMessage) { message in
                 appConfigurationError = message
             }
