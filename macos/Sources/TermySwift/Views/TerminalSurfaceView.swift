@@ -463,6 +463,7 @@ enum TerminalWindowChromeApplier {
         }
         window.titlebarAppearsTransparent = true
         window.backgroundColor = state.chromeBackgroundColor
+        TerminalWindowBlur.sync(state, in: window)
         let isOpaque = !state.requiresTransparentWindow
         if window.isOpaque != isOpaque {
             window.isOpaque = isOpaque
@@ -488,6 +489,10 @@ enum TerminalWindowChromeApplier {
             return true
         }
 
+        if TerminalWindowBlur.shouldInstall(for: state) != TerminalWindowBlur.contains(in: window) {
+            return true
+        }
+
         let expectedColor = state.chromeBackgroundColor.usingColorSpace(.sRGB)
         let actualColor = window.backgroundColor.usingColorSpace(.sRGB)
         guard let expectedColor, let actualColor else {
@@ -497,6 +502,62 @@ enum TerminalWindowChromeApplier {
             || abs(actualColor.greenComponent - expectedColor.greenComponent) > 0.001
             || abs(actualColor.blueComponent - expectedColor.blueComponent) > 0.001
             || abs(actualColor.alphaComponent - expectedColor.alphaComponent) > 0.001
+    }
+}
+
+@MainActor
+enum TerminalWindowBlur {
+    private static let identifier = NSUserInterfaceItemIdentifier("TermyWindowBlur")
+
+    static func shouldInstall(for state: TerminalWindowChromeState) -> Bool {
+        state.backgroundBlur && state.effectiveBackgroundAlpha < 0.999
+    }
+
+    static func contains(in window: NSWindow) -> Bool {
+        blurView(in: window) != nil
+    }
+
+    static func sync(_ state: TerminalWindowChromeState, in window: NSWindow) {
+        guard shouldInstall(for: state) else {
+            blurView(in: window)?.removeFromSuperview()
+            return
+        }
+        guard let container = window.contentView else {
+            return
+        }
+        let blurView = blurView(in: window) ?? makeBlurView(for: container)
+        if blurView.superview == nil {
+            container.addSubview(blurView, positioned: .below, relativeTo: container.subviews.first)
+        }
+        blurView.frame = container.bounds
+    }
+
+    private static func makeBlurView(for container: NSView) -> NSVisualEffectView {
+        let blurView = NSVisualEffectView(frame: container.bounds)
+        blurView.identifier = identifier
+        blurView.autoresizingMask = [.width, .height]
+        blurView.blendingMode = .behindWindow
+        blurView.material = .underWindowBackground
+        blurView.state = .active
+        return blurView
+    }
+
+    private static func blurView(in window: NSWindow) -> NSVisualEffectView? {
+        window.contentView?.firstDescendant(identifier: identifier) as? NSVisualEffectView
+    }
+}
+
+private extension NSView {
+    func firstDescendant(identifier: NSUserInterfaceItemIdentifier) -> NSView? {
+        for subview in subviews {
+            if subview.identifier == identifier {
+                return subview
+            }
+            if let found = subview.firstDescendant(identifier: identifier) {
+                return found
+            }
+        }
+        return nil
     }
 }
 
