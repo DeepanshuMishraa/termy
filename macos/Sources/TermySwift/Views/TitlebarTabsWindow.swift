@@ -96,8 +96,29 @@ final class TitlebarTabsWindow: NSWindow, NSToolbarDelegate {
         // is main, moving it on focus changes — so re-pin it every time we gain
         // main. `setupTabBar` is idempotent.
         if titlebarTabs {
+            // Defer a tick so the sync sees the post-transition tab-bar state
+            // (e.g. after closing the key tab, this window only learns it is now
+            // alone via becoming main — there is no accessory-removal callback).
+            DispatchQueue.main.async { [weak self] in
+                self?.syncTitleVisibility()
+            }
             setupTabBar()
         }
+    }
+
+    /// True when the native tab bar is occupying the titlebar row. We gate the
+    /// centered title on the bar's *visibility*, not the tab count: a force-shown
+    /// bar (System Settings "Prefer tabs: Always", or View ▸ Show Tab Bar) leaves
+    /// a lone window at count 1 with a visible bar, so a count-based gate would
+    /// draw the title on top of the strip. `isTabBarVisible` also stays false for
+    /// a leftover empty bar, preserving the no-blank-title intent.
+    private var isTabBarOccupyingRow: Bool {
+        tabGroup?.isTabBarVisible ?? false
+    }
+
+    /// Show the centered window title only when the tab bar is not on the row.
+    private func syncTitleVisibility() {
+        titleField.isHidden = isTabBarOccupyingRow
     }
 
     override func resignMain() {
@@ -161,8 +182,11 @@ final class TitlebarTabsWindow: NSWindow, NSToolbarDelegate {
         super.removeTitlebarAccessoryViewController(at: index)
         if wasTabBar {
             tabBarObserver = nil
-            // Back to a single tab: show the centered title again.
-            titleField.isHidden = false
+            // Back to a single tab: show the centered title again. Defer a tick so
+            // `tabbedWindows` reflects the post-removal count, not the stale group.
+            DispatchQueue.main.async { [weak self] in
+                self?.syncTitleVisibility()
+            }
         }
     }
 
@@ -177,7 +201,7 @@ final class TitlebarTabsWindow: NSWindow, NSToolbarDelegate {
               let tabBarView = self.tabBarView
         else {
             // No tab bar present (single tab): show the centered title.
-            titleField.isHidden = false
+            syncTitleVisibility()
             return
         }
 
@@ -194,8 +218,9 @@ final class TitlebarTabsWindow: NSWindow, NSToolbarDelegate {
             return
         }
 
-        // A tab bar exists: hide the centered title so it doesn't overlap.
-        titleField.isHidden = true
+        // A tab bar exists: hide the centered title so it doesn't overlap (unless
+        // this is a lone window with a leftover empty bar).
+        syncTitleVisibility()
 
         // Keep the tab bar from being vertically stretched: AppKit sizes the new
         // tab button square, so match the bar height to its width.

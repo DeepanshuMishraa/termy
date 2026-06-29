@@ -238,6 +238,12 @@ final class TerminalViewModel: ObservableObject {
         }
     }
 
+    /// While a tab is suspended (its window is occluded), we deliberately keep the
+    /// wakeup monitor running and drain PTY events without presenting a frame.
+    /// This is intentional: a fully-stopped backgrounded shell would block once
+    /// the PTY buffer fills (e.g. a build logging in a hidden tab), so we consume
+    /// output to keep it flowing. Draining without rendering is far cheaper than a
+    /// full `pollAndPresent`, so the occlusion CPU savings are largely preserved.
     private func drainEventsWhileSuspended() {
         do {
             handle(try terminal?.drainEvents() ?? [])
