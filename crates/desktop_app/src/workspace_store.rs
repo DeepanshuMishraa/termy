@@ -21,7 +21,7 @@ pub(crate) enum StoredPaneKind {
 }
 
 impl StoredPaneKind {
-    pub(crate) fn as_str(&self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Terminal => "terminal",
             Self::Browser => "browser",
@@ -357,13 +357,16 @@ impl WorkspaceStore {
             for row in workspace_rows {
                 let workspace_id: i64 = row.get("id");
                 let tabs = tabs_by_workspace.remove(&workspace_id).unwrap_or_default();
-                if tabs.is_empty() {
-                    continue;
-                }
+                let active_tab = if tabs.is_empty() {
+                    0
+                } else {
+                    (row.get::<i64, _>("active_tab").max(0) as usize)
+                        .min(tabs.len().saturating_sub(1))
+                };
                 workspaces.push(StoredWorkspace {
                     name: row.get("name"),
                     pinned: row.get("pinned"),
-                    active_tab: row.get::<i64, _>("active_tab").max(0) as usize,
+                    active_tab,
                     tabs,
                 });
             }
@@ -631,6 +634,22 @@ mod tests {
         assert!(!store.is_fresh().expect("fresh check"));
         let loaded = store.load_session().expect("load").expect("session");
         assert_eq!(loaded, session);
+    }
+
+    #[test]
+    fn session_round_trips_empty_workspace() {
+        let (_dir, store) = test_store();
+        let mut session = sample_session();
+        session.workspaces.push(StoredWorkspace {
+            name: "Empty".to_string(),
+            pinned: true,
+            active_tab: 0,
+            tabs: Vec::new(),
+        });
+        session.active_workspace = 2;
+
+        store.save_session(&session).expect("save");
+        assert_eq!(store.load_session().expect("load"), Some(session));
     }
 
     #[test]

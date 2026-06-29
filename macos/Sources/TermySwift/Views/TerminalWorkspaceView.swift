@@ -9,7 +9,6 @@ struct TerminalWorkspaceView: View {
     @State private var workspacePersistenceError: String?
     @State private var didRestoreWorkspace = false
     @State private var persistenceSaveTask: Task<Void, Never>?
-    @State private var currentWindow: NSWindow?
     private let workspacePersistence = TerminalWorkspacePersistence()
     private let shouldRestorePersistedWorkspace: Bool
 
@@ -19,12 +18,9 @@ struct TerminalWorkspaceView: View {
     }
 
     var body: some View {
-        workspaceWithChrome
+        terminalContent
             .background(TerminalWorkspaceRoutingView(
-                store: store,
-                onWindowChanged: { window in
-                    currentWindow = window
-                }
+                store: store
             ))
             .focusedValue(\.terminalCommands, commandSet)
             .onAppear {
@@ -43,32 +39,12 @@ struct TerminalWorkspaceView: View {
             .onReceive(configurationStore.$loadErrorMessage) { message in
                 appConfigurationError = message
             }
-    }
-
-    private var workspaceWithChrome: some View {
-        let chrome = NativeTabChromeView(
-            window: currentWindow,
-            configuration: configurationStore.configuration,
-            renderConfig: focusedRenderConfig
-        )
-
-        return Group {
-            switch configurationStore.configuration.native.tabBarPosition {
-            case .top:
-                VStack(spacing: 0) {
-                    chrome
-                    workspaceContent
-                }
-            case .right:
-                HStack(spacing: 0) {
-                    workspaceContent
-                    chrome
-                }
+            .onReceive(configurationStore.$configuration) { _ in
+                NativeTabWindowManager.shared.applyNativeTabPlacementToVisibleWindows()
             }
-        }
     }
 
-    private var workspaceContent: some View {
+    private var terminalContent: some View {
         ZStack {
             if let zoomedPane = store.zoomedPane {
                 TerminalPaneLeafView(pane: zoomedPane, store: store)
@@ -119,10 +95,6 @@ struct TerminalWorkspaceView: View {
             TermyToastOverlay()
                 .zIndex(20)
         }
-    }
-
-    private var focusedRenderConfig: TerminalRenderConfig {
-        store.focusedTerminal?.renderConfig ?? TerminalRenderConfig.default
     }
 
     /// A top-leading error banner with a dismiss button, overlaid on the workspace.
@@ -581,15 +553,13 @@ private struct PaletteCommand: Identifiable {
 
 private struct TerminalWorkspaceRoutingView: NSViewRepresentable {
     @ObservedObject var store: TerminalWorkspaceStore
-    let onWindowChanged: (NSWindow?) -> Void
 
     func makeNSView(context: Context) -> RoutingRegistrationView {
-        RoutingRegistrationView(store: store, onWindowChanged: onWindowChanged)
+        RoutingRegistrationView(store: store)
     }
 
     func updateNSView(_ view: RoutingRegistrationView, context: Context) {
         view.store = store
-        view.onWindowChanged = onWindowChanged
         view.registerCurrentWindow()
     }
 }
@@ -597,11 +567,9 @@ private struct TerminalWorkspaceRoutingView: NSViewRepresentable {
 private final class RoutingRegistrationView: NSView {
     weak var store: TerminalWorkspaceStore?
     private weak var registeredWindow: NSWindow?
-    var onWindowChanged: (NSWindow?) -> Void
 
-    init(store: TerminalWorkspaceStore, onWindowChanged: @escaping (NSWindow?) -> Void) {
+    init(store: TerminalWorkspaceStore) {
         self.store = store
-        self.onWindowChanged = onWindowChanged
         super.init(frame: .zero)
     }
 
@@ -612,7 +580,6 @@ private final class RoutingRegistrationView: NSView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        onWindowChanged(window)
         registerCurrentWindow()
     }
 
@@ -623,13 +590,11 @@ private final class RoutingRegistrationView: NSView {
         }
 
         guard let window, let store else {
-            onWindowChanged(window)
             return
         }
         registeredWindow = window
         TerminalCommandRouter.shared.register(store, for: window)
         NativeTabWindowManager.shared.applyFocusedTerminalChrome(for: window)
-        onWindowChanged(window)
     }
 }
 

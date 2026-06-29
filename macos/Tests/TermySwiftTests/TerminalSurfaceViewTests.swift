@@ -145,6 +145,75 @@ final class TerminalSurfaceViewTests: XCTestCase {
         assertColor(window.backgroundColor, matches: background, alpha: 1.0)
     }
 
+    func testChromeApplierInstallsBehindWindowBlurForBlurredTranslucentBackground() {
+        let window = makeTitledWindow()
+        var appliedState: TerminalWindowChromeState?
+        let state = TerminalWindowChromeState(
+            title: "Blurred",
+            isFocused: true,
+            background: TerminalRGBA(redByte: 10, greenByte: 20, blueByte: 30, alphaByte: 255),
+            backgroundOpacity: 0.5,
+            backgroundBlur: true
+        )
+
+        XCTAssertFalse(TerminalWindowBlur.contains(in: window))
+        XCTAssertTrue(TerminalWindowChromeApplier.apply(state, to: window, appliedState: &appliedState))
+        XCTAssertTrue(TerminalWindowBlur.contains(in: window))
+        XCTAssertFalse(window.isOpaque)
+    }
+
+    func testChromeApplierRemovesBehindWindowBlurWhenBlurDisabled() {
+        let window = makeTitledWindow()
+        var appliedState: TerminalWindowChromeState?
+        let blurred = TerminalWindowChromeState(
+            title: "Blurred",
+            isFocused: true,
+            background: TerminalRGBA(redByte: 10, greenByte: 20, blueByte: 30, alphaByte: 255),
+            backgroundOpacity: 0.5,
+            backgroundBlur: true
+        )
+        let solid = TerminalWindowChromeState(
+            title: "Solid",
+            isFocused: true,
+            background: TerminalRGBA(redByte: 10, greenByte: 20, blueByte: 30, alphaByte: 255),
+            backgroundOpacity: 0.5,
+            backgroundBlur: false
+        )
+
+        XCTAssertTrue(TerminalWindowChromeApplier.apply(blurred, to: window, appliedState: &appliedState))
+        XCTAssertTrue(TerminalWindowBlur.contains(in: window))
+
+        XCTAssertTrue(TerminalWindowChromeApplier.apply(solid, to: window, appliedState: &appliedState))
+        XCTAssertFalse(TerminalWindowBlur.contains(in: window))
+    }
+
+    func testChromeApplierSkipsBehindWindowBlurForOpaqueBackground() {
+        let window = makeTitledWindow()
+        var appliedState: TerminalWindowChromeState?
+        let state = TerminalWindowChromeState(
+            title: "Opaque Blur",
+            isFocused: true,
+            background: TerminalRGBA(redByte: 10, greenByte: 20, blueByte: 30, alphaByte: 255),
+            backgroundOpacity: 1.0,
+            backgroundBlur: true
+        )
+
+        XCTAssertTrue(TerminalWindowChromeApplier.apply(state, to: window, appliedState: &appliedState))
+        // The window is non-opaque (so the titlebar can be transparent) but the
+        // vibrancy view stays hidden because the opaque background would cover it.
+        XCTAssertFalse(TerminalWindowBlur.contains(in: window))
+        XCTAssertFalse(window.isOpaque)
+    }
+
+    private func makeTitledWindow() -> NSWindow {
+        NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 200, height: 120),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+    }
+
     private func makeWindow() -> NSWindow {
         NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 200, height: 120),

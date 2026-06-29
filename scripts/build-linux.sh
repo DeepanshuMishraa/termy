@@ -35,6 +35,27 @@ require_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "'$1' is required"
 }
 
+check_linux_build_dependencies() {
+  local missing=()
+
+  require_cmd pkg-config
+
+  if ! pkg-config --exists gtk+-3.0; then
+    missing+=("gtk+-3.0")
+  fi
+  if ! pkg-config --exists webkit2gtk-4.1; then
+    missing+=("webkit2gtk-4.1")
+  fi
+
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    die "Missing Linux desktop build dependencies: ${missing[*]}
+Install them with:
+  Debian/Ubuntu: sudo apt install pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev
+  Fedora:        sudo dnf install pkgconf-pkg-config gtk3-devel webkit2gtk4.1-devel
+  Arch:          sudo pacman -S pkgconf gtk3 webkit2gtk-4.1"
+  fi
+}
+
 read_version_from_cargo_toml() {
   awk '
     /^\[package\]$/ { in_package = 1; next }
@@ -131,6 +152,7 @@ BINARY_PATH="$TARGET_RELEASE_DIR/$APP_NAME_LOWER"
 APPIMAGETOOL_BIN="${APPIMAGETOOL:-appimagetool}"
 
 require_cmd cargo
+check_linux_build_dependencies
 if [[ "$FORMAT" == "appimage" ]]; then
   if [[ "$APPIMAGETOOL_BIN" == */* ]]; then
     [[ -x "$APPIMAGETOOL_BIN" ]] || die "AppImage tool not executable: $APPIMAGETOOL_BIN"
@@ -158,8 +180,19 @@ case "$FORMAT" in
     rm -rf "$STAGING_DIR"
     mkdir -p "$STAGING_DIR/$APP_NAME_LOWER"
 
-    cp "$BINARY_PATH" "$STAGING_DIR/$APP_NAME_LOWER/"
+    cp "$BINARY_PATH" "$STAGING_DIR/$APP_NAME_LOWER/termy-bin"
     cp "$CLI_BINARY_PATH" "$STAGING_DIR/$APP_NAME_LOWER/"
+    cat > "$STAGING_DIR/$APP_NAME_LOWER/$APP_NAME_LOWER" <<'LAUNCHER'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ -z "${GDK_BACKEND:-}" && -n "${DISPLAY:-}" ]]; then
+  export GDK_BACKEND=x11
+fi
+
+exec "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/termy-bin" "$@"
+LAUNCHER
+    chmod +x "$STAGING_DIR/$APP_NAME_LOWER/$APP_NAME_LOWER" "$STAGING_DIR/$APP_NAME_LOWER/termy-bin"
 
     if [[ -d "$REPO_ROOT/assets" ]]; then
       mkdir -p "$STAGING_DIR/$APP_NAME_LOWER/assets"
@@ -174,12 +207,60 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_DIR="${1:-$HOME/.local/bin}"
 
+print_browser_dependency_note() {
+  local has_webkitgtk="unknown"
+
+  if command -v pkg-config >/dev/null 2>&1; then
+    if pkg-config --exists webkit2gtk-4.1 gtk+-3.0 2>/dev/null; then
+      has_webkitgtk="yes"
+    else
+      has_webkitgtk="no"
+    fi
+  elif command -v ldconfig >/dev/null 2>&1; then
+    if ldconfig -p 2>/dev/null | grep -q 'libwebkit2gtk-4.1'; then
+      has_webkitgtk="yes"
+    else
+      has_webkitgtk="no"
+    fi
+  fi
+
+  if [[ "$has_webkitgtk" == "yes" ]]; then
+    return
+  fi
+
+  echo ""
+  echo "NOTE: Embedded browser tabs on Linux require an X11 GTK backend plus WebKitGTK/GTK."
+  echo "This installer creates a launcher that sets GDK_BACKEND=x11 when an X11 display is available."
+  echo "Install the package for your distro if browser tabs fail to open:"
+  echo ""
+  echo "  Debian/Ubuntu: sudo apt install libwebkit2gtk-4.1-0"
+  echo "  Fedora:        sudo dnf install webkit2gtk4.1"
+  echo "  Arch:          sudo pacman -S webkit2gtk-4.1"
+}
+
 mkdir -p "$INSTALL_DIR"
-cp "$SCRIPT_DIR/termy" "$SCRIPT_DIR/termy-cli" "$INSTALL_DIR/"
-chmod +x "$INSTALL_DIR/termy" "$INSTALL_DIR/termy-cli"
+rm -f "$INSTALL_DIR/termy" "$INSTALL_DIR/termy-bin" "$INSTALL_DIR/termy-cli"
+if [[ -f "$SCRIPT_DIR/termy-bin" ]]; then
+  cp "$SCRIPT_DIR/termy-bin" "$INSTALL_DIR/termy-bin"
+else
+  cp "$SCRIPT_DIR/termy" "$INSTALL_DIR/termy-bin"
+fi
+cp "$SCRIPT_DIR/termy-cli" "$INSTALL_DIR/termy-cli"
+cat > "$INSTALL_DIR/termy" <<'LAUNCHER'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ -z "${GDK_BACKEND:-}" && -n "${DISPLAY:-}" ]]; then
+  export GDK_BACKEND=x11
+fi
+
+exec "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/termy-bin" "$@"
+LAUNCHER
+chmod +x "$INSTALL_DIR/termy" "$INSTALL_DIR/termy-bin" "$INSTALL_DIR/termy-cli"
 
 echo "Installed termy and termy-cli to $INSTALL_DIR/"
 echo "Make sure $INSTALL_DIR is in your PATH"
+print_browser_dependency_note
 INSTALL_SCRIPT
     chmod +x "$STAGING_DIR/$APP_NAME_LOWER/install.sh"
 
@@ -239,6 +320,11 @@ EOF
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+if [[ -z "${GDK_BACKEND:-}" && -n "${DISPLAY:-}" ]]; then
+  export GDK_BACKEND=x11
+fi
+
 exec "$HERE/usr/bin/termy" "$@"
 APP_RUN
     chmod +x "$APPDIR/AppRun"

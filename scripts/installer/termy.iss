@@ -54,6 +54,7 @@ RestartApplications=no
 [Files]
 Source: "..\..\target\{#MyTarget}\release\{#MyExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\target\{#MyTarget}\release\{#MyCliExeName}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\target\windows-runtime\MicrosoftEdgeWebView2Setup.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
 
 [Icons]
 Name: "{group}\Termy"; Filename: "{app}\{#MyExeName}"
@@ -66,6 +67,36 @@ Root: HKCR; Subkey: "termy\DefaultIcon"; ValueType: string; ValueName: ""; Value
 Root: HKCR; Subkey: "termy\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyExeName}"" ""%1"""
 
 [Run]
+Filename: "{tmp}\MicrosoftEdgeWebView2Setup.exe"; Parameters: "/silent /install"; StatusMsg: "Installing Microsoft Edge WebView2 Runtime..."; Check: NeedsWebView2Runtime; Flags: waituntilterminated runhidden
 Filename: "{app}\{#MyExeName}"; Description: "Launch Termy"; Flags: nowait postinstall skipifsilent
 ; Silent auto-updates quit Termy before setup finishes, so relaunch after install.
 Filename: "{app}\{#MyExeName}"; Flags: nowait runasoriginaluser skipifnotsilent
+
+[Code]
+function IsValidWebView2Version(Value: String): Boolean;
+begin
+  Result := (Value <> '') and (Value <> '0.0.0.0');
+end;
+
+function HasWebView2Runtime(): Boolean;
+var
+  Version: String;
+begin
+  Result := False;
+  if RegQueryStringValue(HKLM, 'SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}', 'pv', Version) and IsValidWebView2Version(Version) then begin
+    Result := True;
+    exit;
+  end;
+  if RegQueryStringValue(HKLM, 'SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}', 'pv', Version) and IsValidWebView2Version(Version) then begin
+    Result := True;
+    exit;
+  end;
+  if RegQueryStringValue(HKCU, 'Software\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}', 'pv', Version) and IsValidWebView2Version(Version) then begin
+    Result := True;
+  end;
+end;
+
+function NeedsWebView2Runtime(): Boolean;
+begin
+  Result := not HasWebView2Runtime();
+end;

@@ -22,6 +22,7 @@ final class TermyConfigurationParityTests: XCTestCase {
         tab_close_visibility = always
         tab_width_mode = active_grow_sticky
         tab_bar_position = right
+        native_tab_placement = sidebar
         tab_switch_modifier_hints = false
         ui_font_family = Avenir Next
         chrome_contrast = true
@@ -62,6 +63,7 @@ final class TermyConfigurationParityTests: XCTestCase {
         XCTAssertEqual(native.tabCloseVisibility, .always)
         XCTAssertEqual(native.tabWidthMode, .activeGrowSticky)
         XCTAssertEqual(native.tabBarPosition, .right)
+        XCTAssertEqual(native.nativeTabPlacement, .sidebar)
         XCTAssertEqual(native.tabSwitchModifierHints, false)
         XCTAssertEqual(native.chromeContrast, true)
         XCTAssertEqual(native.commandPaletteShowKeybinds, false)
@@ -112,6 +114,7 @@ final class TermyConfigurationParityTests: XCTestCase {
                     XCTAssertEqual(configuration.native.tabCloseVisibility, .hover)
                     XCTAssertEqual(configuration.native.tabWidthMode, .uniform)
                     XCTAssertEqual(configuration.native.tabBarPosition, .top)
+                    XCTAssertEqual(configuration.native.nativeTabPlacement, .nativeTabbar)
                     XCTAssertEqual(configuration.native.appIcon, .old)
                 }
             ),
@@ -121,12 +124,14 @@ final class TermyConfigurationParityTests: XCTestCase {
                 tab_close_visibility = active_hover
                 tab_width_mode = stable
                 tab_bar_position = top
+                native_tab_placement = native_tabbar
                 app_icon = default
                 """,
                 assert: { configuration in
                     XCTAssertEqual(configuration.native.tabCloseVisibility, .activeHover)
                     XCTAssertEqual(configuration.native.tabWidthMode, .stable)
                     XCTAssertEqual(configuration.native.tabBarPosition, .top)
+                    XCTAssertEqual(configuration.native.nativeTabPlacement, .nativeTabbar)
                     XCTAssertEqual(configuration.native.appIcon, .default)
                 }
             ),
@@ -136,12 +141,14 @@ final class TermyConfigurationParityTests: XCTestCase {
                 tab_close_visibility = hover
                 tab_width_mode = active_grow
                 tab_bar_position = right
+                native_tab_placement = sidebar
                 app_icon = old
                 """,
                 assert: { configuration in
                     XCTAssertEqual(configuration.native.tabCloseVisibility, .hover)
                     XCTAssertEqual(configuration.native.tabWidthMode, .activeGrow)
                     XCTAssertEqual(configuration.native.tabBarPosition, .right)
+                    XCTAssertEqual(configuration.native.nativeTabPlacement, .sidebar)
                     XCTAssertEqual(configuration.native.appIcon, .old)
                 }
             )

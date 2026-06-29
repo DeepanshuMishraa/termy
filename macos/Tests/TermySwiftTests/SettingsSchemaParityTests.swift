@@ -24,6 +24,7 @@ final class SettingsSchemaParityTests: XCTestCase {
             "tab_close_visibility",
             "tab_width_mode",
             "tab_bar_position",
+            "native_tab_placement",
             "tab_switch_modifier_hints",
             "ui_font_family",
             "chrome_contrast",
@@ -50,6 +51,7 @@ final class SettingsSchemaParityTests: XCTestCase {
         tab_close_visibility = always
         tab_width_mode = active_grow_sticky
         tab_bar_position = right
+        native_tab_placement = sidebar
         ui_font_family = Avenir Next
         app_icon = default
         """)
@@ -61,6 +63,7 @@ final class SettingsSchemaParityTests: XCTestCase {
         XCTAssertEqual(settingsByKey["tab_close_visibility"]?.value, "always")
         XCTAssertEqual(settingsByKey["tab_width_mode"]?.value, "active_grow_sticky")
         XCTAssertEqual(settingsByKey["tab_bar_position"]?.value, "right")
+        XCTAssertEqual(settingsByKey["native_tab_placement"]?.value, "sidebar")
         XCTAssertEqual(settingsByKey["ui_font_family"]?.value, "Avenir Next")
         XCTAssertEqual(settingsByKey["app_icon"]?.value, "default")
     }
@@ -80,6 +83,10 @@ final class SettingsSchemaParityTests: XCTestCase {
         XCTAssertEqual(
             settingsByKey["tab_bar_position"]?.choices?.map(\.value),
             ["top", "right"]
+        )
+        XCTAssertEqual(
+            settingsByKey["native_tab_placement"]?.choices?.map(\.value),
+            ["native_tabbar", "sidebar"]
         )
         XCTAssertEqual(
             settingsByKey["app_icon"]?.choices?.map(\.value),

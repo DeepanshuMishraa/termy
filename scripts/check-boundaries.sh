@@ -98,6 +98,7 @@ require_path "crates/desktop_app/Cargo.toml"
 require_path "scripts/build-dmg.sh"
 require_path "scripts/build-setup.ps1"
 require_path "scripts/build-linux.sh"
+require_path "scripts/check-platform-builds.sh"
 require_path "crates/README.md"
 require_path "scripts/README.md"
 require_path "docs/architecture/project-layout.md"
@@ -118,6 +119,90 @@ require_pattern './scripts/build-dmg\.sh' \
 require_pattern 'dist/Termy-\$\{\{ env.VERSION \}\}-macos-\$\{\{ matrix.arch \}\}\.dmg' \
   ".github/workflows/release.yml" \
   "release workflow must upload the documented macOS DMG path"
+require_pattern 'LinkId=2124703' \
+  "scripts/build-setup.ps1" \
+  "Windows setup build must download the Microsoft WebView2 Evergreen Bootstrapper"
+require_pattern 'MicrosoftEdgeWebView2Setup\.exe' \
+  "scripts/installer/termy.iss" \
+  "Windows installer must package the WebView2 Evergreen Bootstrapper"
+require_pattern 'NeedsWebView2Runtime' \
+  "scripts/installer/termy.iss" \
+  "Windows installer must install WebView2 only when the runtime is missing"
+require_pattern 'WebView2 Evergreen' \
+  "docs/architecture/release-packaging.md" \
+  "release packaging docs must document the Windows WebView2 runtime contract"
+require_pattern 'GDK_BACKEND=x11' \
+  "scripts/build-linux.sh" \
+  "Linux package launchers must prefer the X11 GTK backend when available"
+require_pattern 'pkg-config --exists gtk\+-3\.0' \
+  "scripts/build-linux.sh" \
+  "Linux build script must preflight GTK development metadata"
+require_pattern 'pkg-config --exists webkit2gtk-4\.1' \
+  "scripts/build-linux.sh" \
+  "Linux build script must preflight WebKitGTK development metadata"
+require_pattern 'pkg-config' \
+  ".github/workflows/architecture-checks.yml" \
+  "architecture checks must install pkg-config for Linux desktop builds"
+require_pattern 'libgtk-3-dev' \
+  ".github/workflows/architecture-checks.yml" \
+  "architecture checks must install GTK development headers for Linux desktop builds"
+require_pattern 'xvfb' \
+  ".github/workflows/architecture-checks.yml" \
+  "architecture checks must install Xvfb for Linux browser support probing"
+require_pattern 'pkg-config' \
+  ".github/workflows/release.yml" \
+  "release workflow must install pkg-config for Linux desktop builds"
+require_pattern 'libgtk-3-dev' \
+  ".github/workflows/release.yml" \
+  "release workflow must install GTK development headers for Linux desktop builds"
+require_pattern './scripts/check-platform-builds\.sh --native' \
+  ".github/workflows/architecture-checks.yml" \
+  "architecture checks must run the shared native platform verifier"
+require_pattern 'cargo check -p termy -p termy_cli' \
+  "scripts/check-platform-builds.sh" \
+  "platform verifier must check desktop and CLI crates"
+require_pattern 'terminal_view::browser::tests' \
+  "scripts/check-platform-builds.sh" \
+  "platform verifier must run desktop browser helper tests"
+require_pattern 'TERMY_CHECK_XWIN_MSVC' \
+  "scripts/check-platform-builds.sh" \
+  "platform verifier must expose an opt-in Windows MSVC cross-check"
+require_pattern 'cargo xwin check --cross-compiler clang' \
+  "scripts/check-platform-builds.sh" \
+  "platform verifier must use the working cargo-xwin clang backend for MSVC checks"
+require_pattern 'xvfb-run -a env GDK_BACKEND=x11 TERMY_EXPECT_BROWSER_TABS_SUPPORTED=1' \
+  ".github/workflows/architecture-checks.yml" \
+  "architecture checks must run the Linux verifier under an X11 browser-support probe"
+require_pattern 'linux_real_environment_reports_support_when_expected' \
+  "crates/command_core/src/browser_support.rs" \
+  "command core must include an opt-in real Linux browser support probe"
+require_pattern 'cp "\$BINARY_PATH" "\$STAGING_DIR/\$APP_NAME_LOWER/termy-bin"' \
+  "scripts/build-linux.sh" \
+  "Linux tarballs must ship the real GUI binary as termy-bin behind the launcher"
+require_pattern 'rm -f "\$INSTALL_DIR/termy" "\$INSTALL_DIR/termy-bin" "\$INSTALL_DIR/termy-cli"' \
+  "scripts/build-linux.sh" \
+  "Linux tarball installer must unlink existing install targets before writing replacements"
+require_pattern 'GDK_BACKEND=x11' \
+  "scripts/install-linux.sh" \
+  "Linux install helper must prefer the X11 GTK backend when available"
+require_pattern 'rm -f "\$INSTALL_DIR/termy" "\$INSTALL_DIR/termy-bin" "\$INSTALL_DIR/termy-cli"' \
+  "scripts/install-linux.sh" \
+  "Linux install helper must unlink existing install targets before writing replacements"
+require_pattern 'cp "\$CLI_BINARY_PATH" "\$INSTALL_DIR/termy-cli"' \
+  "scripts/install-linux.sh" \
+  "Linux install helper must install the CLI sibling needed by desktop delegation"
+require_pattern '\|\| true' \
+  "scripts/install-linux.sh" \
+  "Linux install helper release asset fallback must survive grep misses under pipefail"
+require_pattern 'grep -Eo.*\|\| true' \
+  "scripts/install-linux.sh" \
+  "Linux install helper portable release JSON extraction must survive missing keys under pipefail"
+require_pattern 'grep -Ev.*x86_64.*aarch64' \
+  "scripts/install-linux.sh" \
+  "Linux install helper generic fallback must not install an asset for the wrong architecture"
+require_pattern 'packaged Linux launchers set' \
+  "docs/architecture/release-packaging.md" \
+  "release packaging docs must document the Linux browser launcher contract"
 
 check_forbidden_dep "termy_command_core" "gpui"
 check_forbidden_dep "termy_command_core" "termy_config_core"

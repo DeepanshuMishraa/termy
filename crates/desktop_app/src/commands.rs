@@ -1382,6 +1382,7 @@ mod tests {
             tmux_runtime_active: false,
             install_cli_available: true,
             browser_tabs_enabled: true,
+            browser_tabs_supported: true,
         };
         let availability = CommandAction::ResizePaneLeft.availability(caps);
         assert!(availability.enabled);

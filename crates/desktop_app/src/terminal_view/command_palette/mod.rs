@@ -214,6 +214,8 @@ impl TerminalView {
             CommandUnavailableReason::RequiresTmuxRuntime => "tmux required",
             CommandUnavailableReason::InstallCliAlreadyInstalled => "Installed",
             CommandUnavailableReason::BrowserTabsDisabled => "Disabled",
+            CommandUnavailableReason::BrowserTabsUnsupported => "Unsupported",
+            CommandUnavailableReason::BrowserTabsUnavailableInTmux => "Native runtime",
         }
     }
 
@@ -1449,6 +1451,12 @@ impl TerminalView {
             Some(CommandUnavailableReason::BrowserTabsDisabled) => {
                 "Enable Browser Tabs in Settings to use this command"
             }
+            Some(CommandUnavailableReason::BrowserTabsUnsupported) => {
+                TerminalView::browser_tabs_unsupported_message()
+            }
+            Some(CommandUnavailableReason::BrowserTabsUnavailableInTmux) => {
+                "Browser tabs are not available with the tmux runtime"
+            }
             None => "Command is currently unavailable",
         }
     }
@@ -1480,6 +1488,19 @@ impl TerminalView {
     ) {
         if action == CommandAction::AppInfo {
             self.set_command_palette_mode(CommandPaletteMode::AppInfo, false, cx);
+            return;
+        }
+
+        let availability = Self::command_palette_action_availability_for_state(
+            action,
+            self.command_capabilities(),
+        );
+        if !availability.enabled {
+            termy_toast::info(Self::command_palette_disabled_action_message_for_state(
+                action,
+                self.command_capabilities(),
+            ));
+            self.notify_overlay(cx);
             return;
         }
 
@@ -1696,6 +1717,7 @@ mod tests {
             tmux_runtime_active: tmux_enabled,
             install_cli_available,
             browser_tabs_enabled: true,
+            browser_tabs_supported: true,
         }
     }
 

@@ -666,6 +666,7 @@ struct TerminalPane {
     cached_element_ids: PaneCachedElementIds,
 }
 
+#[allow(clippy::large_enum_variant)]
 enum PaneContent {
     Terminal(Terminal),
     Browser(Box<browser::BrowserTabState>),

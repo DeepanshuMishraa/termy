@@ -64,10 +64,30 @@ jobs:
 
 
   workspace-tests:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Install Linux desktop dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            clang \
+            pkg-config \
+            libfontconfig-dev \
+            libgtk-3-dev \
+            libwayland-dev \
+            libwebkit2gtk-4.1-dev \
+            libx11-xcb-dev \
+            libxkbcommon-x11-dev \
+            libssl-dev \
+            libzstd-dev \
+            libasound2-dev \
+            libvulkan1 \
+            xvfb
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
@@ -79,6 +99,59 @@ jobs:
 
       - name: Run workspace tests
         run: cargo test --workspace --release
+
+  desktop-platform-check:
+    name: Desktop platform check (${{ matrix.os }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows
+            runner: windows-latest
+          - os: linux
+            runner: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Install Linux desktop dependencies
+        if: matrix.os == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            clang \
+            pkg-config \
+            libfontconfig-dev \
+            libgtk-3-dev \
+            libwayland-dev \
+            libwebkit2gtk-4.1-dev \
+            libx11-xcb-dev \
+            libxkbcommon-x11-dev \
+            libssl-dev \
+            libzstd-dev \
+            libasound2-dev \
+            libvulkan1 \
+            xvfb
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: Check platform browser support
+        shell: bash
+        run: |
+          if [[ "${{ matrix.os }}" == "linux" ]]; then
+            xvfb-run -a env GDK_BACKEND=x11 TERMY_EXPECT_BROWSER_TABS_SUPPORTED=1 ./scripts/check-platform-builds.sh --native
+          else
+            ./scripts/check-platform-builds.sh --native
+          fi
 
   tmux-integration:
     runs-on: macos-latest

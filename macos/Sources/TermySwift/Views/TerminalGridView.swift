@@ -108,6 +108,17 @@ final class TerminalGridNSView: NSView {
 
     override var isFlipped: Bool { true }
 
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard bounds.contains(point) else { return nil }
+        if let window, let superview {
+            let windowPoint = superview.convert(point, to: nil)
+            if !window.contentLayoutRect.contains(windowPoint) {
+                return nil
+            }
+        }
+        return super.hitTest(point)
+    }
+
     // Expose the visible grid as a text area so VoiceOver can read terminal
     // output; the value is recomputed live from the current frame.
     override func isAccessibilityElement() -> Bool { true }

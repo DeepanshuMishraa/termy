@@ -33,6 +33,23 @@ just build-setup -- -Version 0.3.0 -Arch x64 -Target x86_64-pc-windows-msvc
 
 Use `scripts/build-dmg-signed.sh` when a Developer ID signing identity is required. Unsigned DMGs should use `scripts/build-dmg.sh` directly.
 
+## Browser Runtime Dependencies
+
+Browser tabs use Wry native webviews:
+
+- macOS packages use the system WebKit framework.
+- Windows setup packages include the Microsoft Edge WebView2 Evergreen
+  Bootstrapper and run it when the WebView2 Runtime is not installed. The
+  Windows setup build downloads the bootstrapper into `target/windows-runtime/`
+  before invoking Inno Setup.
+- Linux packages require WebKitGTK/GTK with an X11 GTK backend. The Linux
+  build script requires `pkg-config`, `gtk+-3.0`, and `webkit2gtk-4.1` before
+  invoking cargo. Install helpers warn when `webkit2gtk-4.1`/GTK are not
+  detectable, but tarballs and AppImages do not bundle WebKitGTK.
+  Wayland/XWayland sessions need `GDK_BACKEND=x11` for embedded browser tabs;
+  packaged Linux launchers set it automatically when `DISPLAY` exists and
+  `GDK_BACKEND` is unset.
+
 ## Boundary Rules
 
 - Keep packaging scripts in `scripts/`.

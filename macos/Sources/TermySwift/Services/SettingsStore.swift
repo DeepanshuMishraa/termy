@@ -139,6 +139,61 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    func resetSetting(key: String) {
+        values.removeValue(forKey: key)
+        commit {
+            try SettingsBridge.resetRoot(key: key)
+        }
+    }
+
+    // MARK: - Structured keybind management
+
+    struct KeybindEntry: Identifiable, Equatable {
+        var trigger: String
+        var action: String
+        var id: String { "\(trigger)=\(action)" }
+    }
+
+    var keybindEntries: [KeybindEntry] {
+        keybindsText
+            .components(separatedBy: "\n")
+            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .map { line in
+                let parts = line.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+                let trigger = parts.first.map { String($0).trimmingCharacters(in: .whitespaces) } ?? ""
+                let action = parts.count > 1 ? String(parts[1]).trimmingCharacters(in: .whitespaces) : ""
+                return KeybindEntry(trigger: trigger, action: action)
+            }
+    }
+
+    func updateKeybindTrigger(action: String, oldTrigger: String, newTrigger: String) {
+        var entries = keybindEntries
+        if let index = entries.firstIndex(where: { $0.trigger == oldTrigger && $0.action == action }) {
+            entries[index] = KeybindEntry(trigger: newTrigger, action: action)
+        } else {
+            entries.append(KeybindEntry(trigger: newTrigger, action: action))
+        }
+        keybindsText = entries.map { "\($0.trigger)=\($0.action)" }.joined(separator: "\n")
+        commitKeybinds()
+    }
+
+    func deleteKeybind(trigger: String, action: String) {
+        var entries = keybindEntries
+        entries.removeAll { $0.trigger == trigger && $0.action == action }
+        keybindsText = entries.map { "\($0.trigger)=\($0.action)" }.joined(separator: "\n")
+        commitKeybinds()
+    }
+
+    func addKeybind(trigger: String, action: String) {
+        var entries = keybindEntries
+        guard !entries.contains(where: { $0.trigger == trigger && $0.action == action }) else {
+            return
+        }
+        entries.append(KeybindEntry(trigger: trigger, action: action))
+        keybindsText = entries.map { "\($0.trigger)=\($0.action)" }.joined(separator: "\n")
+        commitKeybinds()
+    }
+
     private func commit(_ write: () throws -> Void) {
         do {
             try write()

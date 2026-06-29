@@ -93,15 +93,23 @@ impl TerminalView {
     }
 
     pub(crate) fn toggle_workspace_sidebar_collapsed(&mut self, cx: &mut Context<Self>) {
-        if !self.workspace_sidebar_enabled {
-            self.workspace_sidebar_enabled = true;
-        }
-        self.workspace_sidebar_collapsed = !self.workspace_sidebar_collapsed;
+        let Some(collapsed) = Self::next_workspace_sidebar_collapsed(
+            self.workspace_sidebar_enabled,
+            self.workspace_sidebar_collapsed,
+        ) else {
+            return;
+        };
+
+        self.workspace_sidebar_collapsed = collapsed;
         if !self.workspace_sidebar_collapsed {
             self.workspace_sidebar_peek_visible = false;
         }
         self.mark_tab_strip_layout_dirty();
         cx.notify();
+    }
+
+    fn next_workspace_sidebar_collapsed(enabled: bool, collapsed: bool) -> Option<bool> {
+        enabled.then_some(!collapsed)
     }
 
     pub(crate) fn begin_workspace_sidebar_resize_drag(&mut self, window_x: f32) {
@@ -389,12 +397,6 @@ impl TerminalView {
         self.stash_active_workspace_tabs();
         self.restore_workspace_tabs(index);
         self.set_tab_scrollback_options(self.active_tab, true);
-        if self.tabs.is_empty() {
-            // Defensive: a workspace should never be empty, but if tab
-            // restoration ever leaves one bare, give it a fresh tab instead
-            // of rendering a dead surface.
-            self.add_tab(cx);
-        }
         self.reset_view_state_after_workspace_change(cx);
     }
 
@@ -511,13 +513,9 @@ impl TerminalView {
         self.reset_view_state_after_workspace_change(cx);
     }
 
-    /// Close the active workspace (dropping its tabs) and activate a
-    /// neighbor. Used when the last tab of a workspace is closed or exits.
+    /// Clear the active workspace's tabs while keeping the workspace itself.
+    /// Used when the last tab of a workspace is closed or exits.
     pub(crate) fn close_active_workspace(&mut self, cx: &mut Context<Self>) {
-        if !self.has_other_workspaces() {
-            return;
-        }
-
         let removed_pane_ids = self
             .tabs
             .iter()
@@ -530,14 +528,11 @@ impl TerminalView {
             self.native_pane_layout_trees.remove(&tab_id);
         }
 
-        let removed_index = self.active_workspace;
         self.tabs.clear();
-        self.workspaces.remove(removed_index);
-        let target = removed_index.min(self.workspaces.len() - 1);
-        self.restore_workspace_tabs(target);
-        self.set_tab_scrollback_options(self.active_tab, true);
-        if self.tabs.is_empty() {
-            self.add_tab(cx);
+        self.active_tab = 0;
+        if let Some(entry) = self.workspaces.get_mut(self.active_workspace) {
+            entry.tabs.clear();
+            entry.active_tab = 0;
         }
         self.reset_view_state_after_workspace_change(cx);
     }
@@ -662,15 +657,8 @@ impl TerminalView {
         if entry.active_tab >= entry.tabs.len() {
             entry.active_tab = entry.tabs.len().saturating_sub(1);
         }
-        let entry_is_empty = entry.tabs.is_empty();
         self.native_pane_layout_trees.remove(&tab_id);
         self.native_pane_zoom_snapshots.remove(&tab_id);
-        if entry_is_empty {
-            self.workspaces.remove(workspace_index);
-            if workspace_index < self.active_workspace {
-                self.active_workspace -= 1;
-            }
-        }
         self.schedule_persist_native_workspace();
     }
 
@@ -715,6 +703,22 @@ mod tests {
         assert_eq!(
             TerminalView::clamp_workspace_sidebar_width(f32::NAN),
             termy_config_core::DEFAULT_SIDEBAR_WIDTH
+        );
+    }
+
+    #[test]
+    fn workspace_sidebar_toggle_respects_disabled_setting() {
+        assert_eq!(
+            TerminalView::next_workspace_sidebar_collapsed(false, false),
+            None
+        );
+        assert_eq!(
+            TerminalView::next_workspace_sidebar_collapsed(true, false),
+            Some(true)
+        );
+        assert_eq!(
+            TerminalView::next_workspace_sidebar_collapsed(true, true),
+            Some(false)
         );
     }
 }

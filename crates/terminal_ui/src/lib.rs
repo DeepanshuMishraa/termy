@@ -5,6 +5,7 @@ mod locale;
 mod mouse_protocol;
 mod osc_intercept;
 mod pane_terminal;
+#[cfg(unix)]
 mod path_env;
 mod protocol;
 mod render_metrics;

@@ -343,6 +343,7 @@ struct TermyNativeConfiguration {
     var tabCloseVisibility: TermyTabCloseVisibility
     var tabWidthMode: TermyTabWidthMode
     var tabBarPosition: TermyTabBarPosition
+    var nativeTabPlacement: TermyNativeTabPlacement
     var tabSwitchModifierHints: Bool
     var chromeContrast: Bool
     var commandPaletteShowKeybinds: Bool
@@ -363,6 +364,7 @@ struct TermyNativeConfiguration {
         tabCloseVisibility: .hover,
         tabWidthMode: .uniform,
         tabBarPosition: .top,
+        nativeTabPlacement: .nativeTabbar,
         tabSwitchModifierHints: true,
         chromeContrast: false,
         commandPaletteShowKeybinds: true,
@@ -384,6 +386,7 @@ struct TermyNativeConfiguration {
         tabCloseVisibility: TermyTabCloseVisibility,
         tabWidthMode: TermyTabWidthMode,
         tabBarPosition: TermyTabBarPosition,
+        nativeTabPlacement: TermyNativeTabPlacement,
         tabSwitchModifierHints: Bool,
         chromeContrast: Bool,
         commandPaletteShowKeybinds: Bool,
@@ -403,6 +406,7 @@ struct TermyNativeConfiguration {
         self.tabCloseVisibility = tabCloseVisibility
         self.tabWidthMode = tabWidthMode
         self.tabBarPosition = tabBarPosition
+        self.nativeTabPlacement = nativeTabPlacement
         self.tabSwitchModifierHints = tabSwitchModifierHints
         self.chromeContrast = chromeContrast
         self.commandPaletteShowKeybinds = commandPaletteShowKeybinds
@@ -424,6 +428,7 @@ struct TermyNativeConfiguration {
         tabCloseVisibility = TermyTabCloseVisibility(rawValue: ffiConfig.tab_close_visibility) ?? .hover
         tabWidthMode = TermyTabWidthMode(rawValue: ffiConfig.tab_width_mode) ?? .uniform
         tabBarPosition = TermyTabBarPosition(rawValue: ffiConfig.tab_bar_position) ?? .top
+        nativeTabPlacement = TermyNativeTabPlacement(rawValue: ffiConfig.native_tab_placement) ?? .nativeTabbar
         tabSwitchModifierHints = ffiConfig.tab_switch_modifier_hints
         chromeContrast = ffiConfig.chrome_contrast
         commandPaletteShowKeybinds = ffiConfig.command_palette_show_keybinds
@@ -456,6 +461,11 @@ enum TermyTabWidthMode: UInt32 {
 enum TermyTabBarPosition: UInt32 {
     case top = 0
     case right = 1
+}
+
+enum TermyNativeTabPlacement: UInt32 {
+    case nativeTabbar = 0
+    case sidebar = 1
 }
 
 struct TermyTaskConfiguration: Codable, Equatable, Identifiable, Hashable {

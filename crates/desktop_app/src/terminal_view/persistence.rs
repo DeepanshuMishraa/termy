@@ -449,7 +449,7 @@ impl TerminalView {
         if self.runtime_kind() != RuntimeKind::Native {
             return None;
         }
-        self.collect_persisted_workspace_from_tabs(&self.tabs, self.active_tab)
+        Some(self.collect_persisted_workspace_from_tabs(&self.tabs, self.active_tab))
     }
 
     /// Snapshot of every workspace — the visible strip plus stashed
@@ -467,10 +467,7 @@ impl TerminalView {
             } else {
                 (entry.tabs.as_slice(), entry.active_tab)
             };
-            let Some(workspace) = self.collect_persisted_workspace_from_tabs(tabs, active_tab)
-            else {
-                continue;
-            };
+            let workspace = self.collect_persisted_workspace_from_tabs(tabs, active_tab);
             if index == self.active_workspace {
                 active_position = workspaces.len();
             }
@@ -496,11 +493,7 @@ impl TerminalView {
         &self,
         source_tabs: &[TerminalTab],
         active_tab: usize,
-    ) -> Option<PersistedNativeWorkspace> {
-        if source_tabs.is_empty() {
-            return None;
-        }
-
+    ) -> PersistedNativeWorkspace {
         let tabs = source_tabs
             .iter()
             .map(|tab| {
@@ -556,10 +549,12 @@ impl TerminalView {
             })
             .collect::<Vec<_>>();
 
-        Some(PersistedNativeWorkspace {
-            tabs,
-            active_tab: active_tab.min(source_tabs.len().saturating_sub(1)),
-        })
+        let active_tab = if source_tabs.is_empty() {
+            0
+        } else {
+            active_tab.min(source_tabs.len().saturating_sub(1))
+        };
+        PersistedNativeWorkspace { tabs, active_tab }
     }
 
     fn persisted_workspace_to_value(workspace: PersistedNativeWorkspace) -> Value {
@@ -616,8 +611,7 @@ impl TerminalView {
                 let kind = pane_value
                     .get("kind")
                     .and_then(Value::as_str)
-                    .map(StoredPaneKind::from_str)
-                    .unwrap_or(StoredPaneKind::Terminal);
+                    .map_or(StoredPaneKind::Terminal, StoredPaneKind::from_str);
                 panes.push(PersistedNativePane {
                     kind,
                     left: value_u16(
@@ -692,16 +686,13 @@ impl TerminalView {
             });
         }
 
-        if tabs.is_empty() {
-            return Err("workspace state does not contain any tabs".to_string());
-        }
-
         let active_tab = root
             .get("active_tab")
             .and_then(Value::as_u64)
             .and_then(|value| usize::try_from(value).ok())
             .unwrap_or(0)
             .min(tabs.len().saturating_sub(1));
+        let active_tab = if tabs.is_empty() { 0 } else { active_tab };
 
         Ok(PersistedNativeWorkspace { tabs, active_tab })
     }
@@ -761,7 +752,7 @@ impl TerminalView {
         }
     }
 
-    fn restored_pane_id(tab_id: TabId, pane_index: usize, kind: &StoredPaneKind) -> String {
+    fn restored_pane_id(tab_id: TabId, pane_index: usize, kind: StoredPaneKind) -> String {
         let prefix = match kind {
             StoredPaneKind::Terminal => "native",
             StoredPaneKind::Browser => "browser",
@@ -780,7 +771,7 @@ impl TerminalView {
         pane: &PersistedNativePane,
         working_dir: Option<&str>,
     ) -> Result<TerminalPane, String> {
-        let pane_id = Self::restored_pane_id(tab_id, pane_index, &pane.kind);
+        let pane_id = Self::restored_pane_id(tab_id, pane_index, pane.kind);
         let width = pane.width.max(1);
         let height = pane.height.max(1);
         match pane.kind {
@@ -943,13 +934,13 @@ impl TerminalView {
             restored_tabs.push(tab);
         }
 
-        if restored_tabs.is_empty() {
-            return Err("workspace state does not contain any restorable tabs".to_string());
-        }
-
-        let active_tab = workspace
-            .active_tab
-            .min(restored_tabs.len().saturating_sub(1));
+        let active_tab = if restored_tabs.is_empty() {
+            0
+        } else {
+            workspace
+                .active_tab
+                .min(restored_tabs.len().saturating_sub(1))
+        };
         Ok((restored_tabs, restored_layout_trees, active_tab))
     }
 
@@ -1326,6 +1317,27 @@ mod tests {
         assert_eq!(state.layouts[0].name, "Main");
         assert_eq!(state.layouts[0].workspace.tabs.len(), 1);
         assert!(!state.layouts[0].workspace.tabs[0].pinned);
+    }
+
+    #[test]
+    fn persisted_native_workspace_parser_accepts_empty_workspace() {
+        let state = TerminalView::parse_persisted_native_workspace_state(
+            r#"{
+  "version": 3,
+  "last_session": {
+    "active_tab": 4,
+    "tabs": []
+  },
+  "layouts": []
+}"#,
+        )
+        .expect("workspace state should parse");
+
+        let workspace = state
+            .last_session
+            .expect("state should include last session");
+        assert!(workspace.tabs.is_empty());
+        assert_eq!(workspace.active_tab, 0);
     }
 
     #[test]

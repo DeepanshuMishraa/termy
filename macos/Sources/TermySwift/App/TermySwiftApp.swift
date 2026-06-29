@@ -394,7 +394,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
         NSWindow.allowsAutomaticWindowTabbing = true
         AppLogoManager.shared.applyToDock()
-        OnboardingPresenter.shared.presentIfNeeded()
         if TermyConfigurationStore.shared.configuration.native.autoUpdate {
             Task { await AppUpdater.shared.checkForUpdates(userInitiated: false) }
         }
@@ -892,7 +891,7 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
         let identifier = ObjectIdentifier(window)
         registerWindowLifecycleObservers(for: window)
         guard !configuredWindowIDs.contains(identifier) else {
-            hideSystemTabBarIfNeeded(for: window)
+            applyNativeTabPlacement(for: window)
             applyFocusedTerminalChrome(for: window)
             return
         }
@@ -910,7 +909,7 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
             ),
             to: window
         )
-        hideSystemTabBarIfNeeded(for: window)
+        applyNativeTabPlacement(for: window)
         window.setContentSize(TermyConfigurationStore.shared.configuration.windowSize)
         window.center()
         postTabsChanged()
@@ -929,7 +928,7 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
 
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        hideSystemTabBarIfNeeded(for: window)
+        applyNativeTabPlacement(for: window)
         applyFocusedTerminalChrome(for: window)
         applyFocusedTerminalChromeSoon(for: window)
         postTabsChanged()
@@ -996,7 +995,7 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
         }
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        hideSystemTabBarIfNeeded(for: window)
+        applyNativeTabPlacement(for: window)
         applyFocusedTerminalChrome(for: window)
         applyFocusedTerminalChromeSoon(for: window)
         postTabsChanged()
@@ -1035,7 +1034,7 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
         }
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        hideSystemTabBarIfNeeded(for: window)
+        applyNativeTabPlacement(for: window)
         applyFocusedTerminalChrome(for: window)
         postTabsChanged()
     }
@@ -1099,7 +1098,7 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
         let anchorWindow = tabbedWindows[targetIndex]
         anchorWindow.addTabbedWindow(movingWindow, ordered: offset < 0 ? .below : .above)
         movingWindow.makeKeyAndOrderFront(nil)
-        hideSystemTabBarIfNeeded(for: movingWindow)
+        applyNativeTabPlacement(for: movingWindow)
         applyFocusedTerminalChrome(for: movingWindow)
         applyFocusedTerminalChromeSoon(for: movingWindow)
         postTabsChanged()
@@ -1126,7 +1125,7 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
         let anchorWindow = tabbedWindows[clamped]
         anchorWindow.addTabbedWindow(movingWindow, ordered: clamped < currentIndex ? .below : .above)
         movingWindow.makeKeyAndOrderFront(nil)
-        hideSystemTabBarIfNeeded(for: movingWindow)
+        applyNativeTabPlacement(for: movingWindow)
         applyFocusedTerminalChrome(for: movingWindow)
         applyFocusedTerminalChromeSoon(for: movingWindow)
         postTabsChanged()
@@ -1138,7 +1137,7 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
         else {
             return false
         }
-        hideSystemTabBarIfNeeded(for: window)
+        applyNativeTabPlacement(for: window)
         applyFocusedTerminalChrome(for: window)
         return true
     }
@@ -1164,7 +1163,7 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
     }
 
     private func handleWindowDidBecomeKey(_ window: NSWindow) {
-        hideSystemTabBarIfNeeded(for: window)
+        applyNativeTabPlacement(for: window)
         applyFocusedTerminalChrome(for: window)
         applyFocusedTerminalChromeSoon(for: window)
         postTabsChanged()
@@ -1194,7 +1193,7 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
 
     private func makeWindow(startupTask: TermyTaskConfiguration? = nil) -> NSWindow {
         let windowSize = TermyConfigurationStore.shared.configuration.windowSize
-        let window = NSWindow(
+        let window = TitlebarTabsWindow(
             contentRect: NSRect(x: 0, y: 0, width: windowSize.width, height: windowSize.height),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
@@ -1245,13 +1244,41 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
         window.tabbingIdentifier == tabbingIdentifier
     }
 
-    private func hideSystemTabBarIfNeeded(for window: NSWindow) {
-        guard isNativeTerminalTabWindow(window),
-              window.tabGroup?.isTabBarVisible == true
-        else {
+    /// Applies the configured native-tab placement to `window`.
+    ///
+    /// Hiding the window title is what makes AppKit promote the native tab bar
+    /// up into the traffic-light row instead of drawing it as a second strip
+    /// below a visible title — that removes the standalone titlebar entirely.
+    /// The system tab bar is then shown for `.nativeTabbar` (the pills are the
+    /// tab UI) or hidden for `.sidebar` (tabs render in a custom sidebar).
+    private func applyNativeTabPlacement(for window: NSWindow) {
+        guard isNativeTerminalTabWindow(window) else {
             return
         }
-        window.toggleTabBar(nil)
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+
+        let titlebarTabsWindow = window as? TitlebarTabsWindow
+        switch TermyConfigurationStore.shared.configuration.native.nativeTabPlacement {
+        case .nativeTabbar:
+            // Merge the native tab bar onto the traffic-light row. Enabling this
+            // installs the unified-compact toolbar; AppKit then routes the tab
+            // accessory through the window's relocation override.
+            titlebarTabsWindow?.titlebarTabs = true
+        case .sidebar:
+            titlebarTabsWindow?.titlebarTabs = false
+            if window.tabGroup?.isTabBarVisible == true {
+                window.toggleTabBar(nil)
+            }
+        }
+    }
+
+    /// Re-applies native-tab placement to every native terminal window, so a
+    /// live `native_tab_placement` config change takes effect immediately.
+    func applyNativeTabPlacementToVisibleWindows() {
+        for window in NSApp.windows where isNativeTerminalTabWindow(window) {
+            applyNativeTabPlacement(for: window)
+        }
     }
 
     @discardableResult

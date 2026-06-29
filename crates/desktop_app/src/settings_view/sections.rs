@@ -232,7 +232,7 @@ impl SettingsWindow {
         ];
         let padding_group = self.render_settings_group("PADDING", padding_rows);
 
-        let mut content = div()
+        let content = div()
             .flex()
             .flex_col()
             .gap(px(CARD_GAP))
@@ -244,9 +244,8 @@ impl SettingsWindow {
             ))
             .child(theme_group);
         #[cfg(target_os = "macos")]
-        {
-            content = content.child(app_group);
-        }
+        let content = content.child(app_group);
+
         content
             .child(chrome_group)
             .child(window_group)
@@ -775,14 +774,33 @@ impl SettingsWindow {
 
     pub(super) fn render_tabs_browser_group(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let browser_tabs_enabled = self.config.browser_tabs_enabled;
-        let rows = vec![self.render_root_bool_setting_row(
-            "browser_tabs_enabled",
-            "browser_tabs_enabled-toggle",
-            RootSettingId::BrowserTabsEnabled,
-            browser_tabs_enabled,
-            "Saved",
-            cx,
-        )];
+        let rows = vec![
+            if crate::terminal_view::TerminalView::browser_tabs_supported() {
+                self.render_root_bool_setting_row(
+                    "browser_tabs_enabled",
+                    "browser_tabs_enabled-toggle",
+                    RootSettingId::BrowserTabsEnabled,
+                    browser_tabs_enabled,
+                    "Saved",
+                    cx,
+                )
+            } else {
+                let metadata = Self::setting_metadata_or_fallback("browser_tabs_enabled");
+                self.render_setting_row(
+                    "browser_tabs_enabled",
+                    "browser_tabs_enabled-toggle",
+                    metadata.title,
+                    crate::terminal_view::TerminalView::browser_tabs_unsupported_message(),
+                    false,
+                    cx,
+                    |_view, _window, _cx| {
+                        termy_toast::info(
+                            crate::terminal_view::TerminalView::browser_tabs_unsupported_message(),
+                        );
+                    },
+                )
+            },
+        ];
 
         self.render_settings_group("BROWSER", rows)
     }

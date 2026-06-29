@@ -2092,7 +2092,7 @@ impl TerminalView {
                             cx,
                             |view, cx| view.add_tab(cx),
                         ))
-                        .when(self.browser_tabs_enabled, |panel| {
+                        .when(self.browser_tabs_available(), |panel| {
                             panel.child(menu_row(
                                 "new-tab-menu-browser",
                                 "New Browser Tab",
@@ -2604,6 +2604,17 @@ impl Render for TerminalView {
                     let pane_height = pane_layout.content_frame.height;
                     let pane_id = pane.id.clone();
                     let chrome = self.render_browser_chrome(pane_id, &colors, &ui_font_family, cx);
+                    let fallback = pane.browser_state().and_then(|state| {
+                        state.webview_creation_error().map(|error| {
+                            self.render_browser_fallback(
+                                pane.id.clone(),
+                                error,
+                                &colors,
+                                &ui_font_family,
+                                cx,
+                            )
+                        })
+                    });
                     pane_layers.push(
                         div()
                             .id(pane.cached_element_ids.pane.clone())
@@ -2615,6 +2626,7 @@ impl Render for TerminalView {
                             .cursor_text()
                             .bg(terminal_surface_bg)
                             .child(chrome)
+                            .children(fallback)
                             .into_any_element(),
                     );
                     continue;
@@ -3058,6 +3070,31 @@ impl Render for TerminalView {
             }
         }
 
+        if self.tabs.is_empty()
+            && let Some(content_bounds) = self.terminal_content_bounds(window)
+        {
+            let mut empty_text = colors.foreground;
+            empty_text.a = self.scaled_chrome_alpha(0.52);
+            pane_layers.push(
+                div()
+                    .id("empty-workspace")
+                    .absolute()
+                    .left(px(content_bounds.origin_x))
+                    .top(px(content_bounds.origin_y))
+                    .w(px(content_bounds.width))
+                    .h(px(content_bounds.height))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .font_family(ui_font_family.clone())
+                    .text_size(px(13.0))
+                    .font_weight(FontWeight::NORMAL)
+                    .text_color(empty_text)
+                    .child("No tabs found in here")
+                    .into_any_element(),
+            );
+        }
+
         if self
             .tab_strip
             .switch_hints
@@ -3089,7 +3126,7 @@ impl Render for TerminalView {
             .workspace_sidebar_edge_peek_enabled()
             .then(|| self.render_workspace_sidebar_edge_peek_target(cx));
         self.sync_browser_tab_titles();
-        self.sync_browser_webviews(window);
+        self.sync_browser_webviews(window, cx);
         let hidden_titlebar_branding = Self::should_render_hidden_titlebar_branding(
             self.auto_hide_tabbar,
             self.tabs.len(),

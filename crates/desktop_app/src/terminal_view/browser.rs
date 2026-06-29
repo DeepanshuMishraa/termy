@@ -1,13 +1,16 @@
-//! Embedded browser tabs. A browser tab hosts a native webview (wry /
-//! WKWebView on macOS) layered as a child view over the gpui
-//! window. gpui renders the chrome (URL bar, buttons); every frame the
-//! webview's bounds and visibility are synced to the tab content area, and
-//! hidden whenever its tab is not the visible one (or an overlay like the
-//! command palette is open, since native views always paint above gpui).
+//! Embedded browser tabs. A browser tab hosts a native wry webview layered as
+//! a child view over the gpui window. gpui renders the chrome (URL bar,
+//! buttons); every frame the webview's bounds and visibility are synced to the
+//! tab content area, and hidden whenever its tab is not the visible one (or an
+//! overlay like the command palette is open, since native views always paint
+//! above gpui).
 
 use super::*;
 use gpui::prelude::FluentBuilder as _;
 use std::sync::Mutex;
+#[cfg(target_os = "linux")]
+use std::sync::OnceLock;
+use termy_command_core::{browser_tabs_supported, browser_tabs_unsupported_message};
 
 pub(super) const BROWSER_DEFAULT_URL: &str = "https://www.google.com/";
 pub(super) const BROWSER_URL_BAR_HEIGHT: f32 = 34.0;
@@ -21,8 +24,7 @@ pub(super) struct BrowserShared {
 }
 
 pub(super) struct BrowserTabState {
-    #[cfg(target_os = "macos")]
-    webview: Option<wry::WebView>,
+    webview: Option<BrowserWebview>,
     pub(super) shared: Arc<BrowserShared>,
     pub(super) url_input: InlineInputState,
     pub(super) editing_url: bool,
@@ -31,12 +33,12 @@ pub(super) struct BrowserTabState {
     /// Last bounds handed to the webview (logical px, rounded).
     last_bounds: (i32, i32, i32, i32),
     visible: bool,
+    webview_creation_error: Option<String>,
 }
 
 impl BrowserTabState {
     pub(super) fn new(url: &str) -> Self {
         Self {
-            #[cfg(target_os = "macos")]
             webview: None,
             shared: Arc::new(BrowserShared {
                 url: Mutex::new(url.to_string()),
@@ -47,6 +49,7 @@ impl BrowserTabState {
             applied_title: String::new(),
             last_bounds: (0, 0, 0, 0),
             visible: false,
+            webview_creation_error: None,
         }
     }
 
@@ -57,17 +60,33 @@ impl BrowserTabState {
             .map(|url| url.clone())
             .unwrap_or_default()
     }
+
+    pub(super) fn webview_creation_error(&self) -> Option<&str> {
+        self.webview_creation_error.as_deref()
+    }
 }
 
 impl TerminalView {
+    pub(crate) fn browser_tabs_available(&self) -> bool {
+        self.browser_tabs_enabled && Self::browser_tabs_supported()
+    }
+
+    pub(crate) fn browser_tabs_supported() -> bool {
+        browser_tabs_supported()
+    }
+
+    pub(crate) fn browser_tabs_unsupported_message() -> &'static str {
+        browser_tabs_unsupported_message()
+    }
+
     pub(crate) fn add_browser_tab(&mut self, cx: &mut Context<Self>) {
         if !self.browser_tabs_enabled {
             termy_toast::info("Enable Browser Tabs in Settings to use this command");
             self.notify_overlay(cx);
             return;
         }
-        if cfg!(not(target_os = "macos")) {
-            termy_toast::info("Browser tabs are only available on macOS for now");
+        if !Self::browser_tabs_supported() {
+            termy_toast::info(Self::browser_tabs_unsupported_message());
             self.notify_overlay(cx);
             return;
         }
@@ -203,7 +222,6 @@ impl TerminalView {
         if let Ok(mut shared_url) = state.shared.url.lock() {
             *shared_url = url.clone();
         }
-        #[cfg(target_os = "macos")]
         if let Some(webview) = &state.webview
             && let Err(error) = webview.load_url(&url)
         {
@@ -230,33 +248,29 @@ impl TerminalView {
     }
 
     pub(super) fn browser_history_back(&mut self) {
-        #[cfg(target_os = "macos")]
         if let Some(state) = self.active_browser_state()
             && let Some(webview) = &state.webview
         {
-            let _ = webview.evaluate_script("history.back()");
+            webview.evaluate_script("history.back()");
         }
     }
 
     pub(super) fn browser_history_forward(&mut self) {
-        #[cfg(target_os = "macos")]
         if let Some(state) = self.active_browser_state()
             && let Some(webview) = &state.webview
         {
-            let _ = webview.evaluate_script("history.forward()");
+            webview.evaluate_script("history.forward()");
         }
     }
 
     pub(super) fn browser_reload(&mut self) {
-        #[cfg(target_os = "macos")]
         if let Some(state) = self.active_browser_state()
             && let Some(webview) = &state.webview
         {
-            let _ = webview.reload();
+            webview.reload();
         }
     }
 
-    #[cfg(target_os = "macos")]
     fn browser_pane_webview_layouts(&self, window: &Window) -> Vec<BrowserPaneWebviewLayout> {
         let Some(active_tab) = self.active_tab_ref() else {
             return Vec::new();
@@ -324,8 +338,8 @@ impl TerminalView {
     /// Create/position/show the active browser webview and hide every other
     /// one (inactive tabs, stashed workspaces, overlay open). Called once per
     /// render pass.
-    #[cfg(target_os = "macos")]
-    pub(super) fn sync_browser_webviews(&mut self, window: &Window) {
+    pub(super) fn sync_browser_webviews(&mut self, window: &Window, cx: &mut Context<Self>) {
+        pump_linux_gtk_events();
         // Native views paint above all gpui content, so hide the webview
         // whenever a gpui overlay needs the area.
         let overlay_open = self.is_command_palette_open()
@@ -353,36 +367,37 @@ impl TerminalView {
                     })
                     .flatten();
                 if let Some(layout) = layout {
-                    if state.webview.is_none() {
-                        state.webview = create_browser_webview(
+                    if state.webview.is_none() && state.webview_creation_error.is_none() {
+                        match create_browser_webview(
                             window,
                             &state.shared,
                             &state.current_url(),
                             wakeup.clone(),
-                        );
+                        ) {
+                            Ok(webview) => state.webview = Some(webview),
+                            Err(error) => {
+                                termy_toast::error(format!(
+                                    "Failed to create browser view: {error}"
+                                ));
+                                state.webview_creation_error = Some(error);
+                                cx.notify();
+                            }
+                        }
                     }
                     let Some(webview) = &state.webview else {
                         continue;
                     };
                     if state.last_bounds != layout.bounds {
-                        let _ = webview.set_bounds(wry::Rect {
-                            position: wry::dpi::LogicalPosition::new(
-                                layout.bounds.0,
-                                layout.bounds.1,
-                            )
-                            .into(),
-                            size: wry::dpi::LogicalSize::new(layout.bounds.2, layout.bounds.3)
-                                .into(),
-                        });
+                        webview.set_bounds(layout.bounds);
                         state.last_bounds = layout.bounds;
                     }
                     if !state.visible {
-                        let _ = webview.set_visible(true);
+                        webview.set_visible(true);
                         state.visible = true;
                     }
                 } else if state.visible {
                     if let Some(webview) = &state.webview {
-                        let _ = webview.set_visible(false);
+                        webview.set_visible(false);
                     }
                     state.visible = false;
                 }
@@ -395,7 +410,7 @@ impl TerminalView {
                         && state.visible
                     {
                         if let Some(webview) = &state.webview {
-                            let _ = webview.set_visible(false);
+                            webview.set_visible(false);
                         }
                         state.visible = false;
                     }
@@ -403,9 +418,6 @@ impl TerminalView {
             }
         }
     }
-
-    #[cfg(not(target_os = "macos"))]
-    pub(super) fn sync_browser_webviews(&mut self, _window: &Window) {}
 
     fn browser_nav_button(
         &self,
@@ -568,68 +580,321 @@ impl TerminalView {
             )
             .into_any_element()
     }
+
+    pub(super) fn render_browser_fallback(
+        &self,
+        pane_id: String,
+        error: &str,
+        colors: &TerminalColors,
+        ui_font_family: &SharedString,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mut border = colors.foreground;
+        border.a = self.scaled_chrome_alpha(0.14);
+        let mut text = colors.foreground;
+        text.a = 0.82;
+        let mut muted = colors.foreground;
+        muted.a = 0.58;
+        let mut button_bg = colors.foreground;
+        button_bg.a = self.scaled_chrome_alpha(0.08);
+        let mut button_hover_bg = colors.foreground;
+        button_hover_bg.a = self.scaled_chrome_alpha(0.14);
+
+        let open_pane_id = pane_id.clone();
+        let retry_pane_id = pane_id;
+
+        div()
+            .id("browser-fallback")
+            .absolute()
+            .left_0()
+            .right_0()
+            .top(px(BROWSER_URL_BAR_HEIGHT))
+            .bottom_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .px(px(24.0))
+            .child(
+                div()
+                    .max_w(px(520.0))
+                    .p(px(16.0))
+                    .rounded(px(8.0))
+                    .border_1()
+                    .border_color(border)
+                    .font_family(ui_font_family.clone())
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.0))
+                    .child(
+                        div()
+                            .text_size(px(13.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(text)
+                            .child("Browser view unavailable"),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .line_height(px(17.0))
+                            .text_color(muted)
+                            .child(error.to_string()),
+                    )
+                    .child(
+                        div().mt(px(4.0)).flex().gap(px(8.0)).children([
+                            div()
+                                .px(px(10.0))
+                                .py(px(5.0))
+                                .rounded(px(5.0))
+                                .text_size(px(12.0))
+                                .text_color(text)
+                                .bg(button_bg)
+                                .hover(move |style| style.bg(button_hover_bg))
+                                .cursor_pointer()
+                                .child("Open in Browser")
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(
+                                        move |this, _event: &MouseDownEvent, _window, cx| {
+                                            this.open_browser_url_for_pane_externally(
+                                                open_pane_id.as_str(),
+                                                cx,
+                                            );
+                                            cx.stop_propagation();
+                                        },
+                                    ),
+                                )
+                                .into_any_element(),
+                            div()
+                                .px(px(10.0))
+                                .py(px(5.0))
+                                .rounded(px(5.0))
+                                .text_size(px(12.0))
+                                .text_color(text)
+                                .bg(button_bg)
+                                .hover(move |style| style.bg(button_hover_bg))
+                                .cursor_pointer()
+                                .child("Retry")
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(
+                                        move |this, _event: &MouseDownEvent, _window, cx| {
+                                            this.retry_browser_webview_for_pane(
+                                                retry_pane_id.as_str(),
+                                                cx,
+                                            );
+                                            cx.stop_propagation();
+                                        },
+                                    ),
+                                )
+                                .into_any_element(),
+                        ]),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    fn open_browser_url_for_pane_externally(&mut self, pane_id: &str, cx: &mut Context<Self>) {
+        let Some(url) = self
+            .tabs
+            .iter()
+            .flat_map(|tab| tab.panes.iter())
+            .find(|pane| pane.id == pane_id)
+            .and_then(TerminalPane::browser_state)
+            .map(BrowserTabState::current_url)
+            .filter(|url| !url.trim().is_empty())
+        else {
+            return;
+        };
+
+        match webbrowser::open(&url) {
+            Ok(()) => termy_toast::success("Opened in default browser"),
+            Err(error) => termy_toast::error(format!("Failed to open browser: {error}")),
+        }
+        self.notify_overlay(cx);
+    }
+
+    fn retry_browser_webview_for_pane(&mut self, pane_id: &str, cx: &mut Context<Self>) {
+        for tab in &mut self.tabs {
+            for pane in &mut tab.panes {
+                if pane.id != pane_id {
+                    continue;
+                }
+                if let Some(state) = pane.browser_state_mut() {
+                    state.webview_creation_error = None;
+                    state.visible = false;
+                    state.last_bounds = (0, 0, 0, 0);
+                    cx.notify();
+                    return;
+                }
+            }
+        }
+    }
 }
 
-#[cfg(target_os = "macos")]
 struct BrowserPaneWebviewLayout {
     pane_id: String,
     bounds: (i32, i32, i32, i32),
 }
 
-#[cfg(target_os = "macos")]
+struct BrowserWebview {
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    inner: wry::WebView,
+}
+
+impl BrowserWebview {
+    fn set_bounds(&self, bounds: (i32, i32, i32, i32)) {
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        {
+            let _ = self.inner.set_bounds(wry::Rect {
+                position: wry::dpi::LogicalPosition::new(bounds.0, bounds.1).into(),
+                size: wry::dpi::LogicalSize::new(bounds.2, bounds.3).into(),
+            });
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+        {
+            let _ = bounds;
+        }
+    }
+
+    fn set_visible(&self, visible: bool) {
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        {
+            let _ = self.inner.set_visible(visible);
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+        {
+            let _ = visible;
+        }
+    }
+
+    fn load_url(&self, url: &str) -> Result<(), String> {
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        {
+            self.inner.load_url(url).map_err(|error| error.to_string())
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+        {
+            let _ = url;
+            Err("browser webview backend is unsupported".to_string())
+        }
+    }
+
+    fn evaluate_script(&self, script: &str) {
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        {
+            let _ = self.inner.evaluate_script(script);
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+        {
+            let _ = script;
+        }
+    }
+
+    fn reload(&self) {
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        {
+            let _ = self.inner.reload();
+        }
+    }
+}
+
 fn create_browser_webview(
     window: &Window,
     shared: &Arc<BrowserShared>,
     url: &str,
     wakeup: Sender<()>,
-) -> Option<wry::WebView> {
-    let nav_shared = shared.clone();
-    let nav_wakeup = wakeup.clone();
-    let title_shared = shared.clone();
-    let title_wakeup = wakeup.clone();
-    let load_shared = shared.clone();
-    let load_wakeup = wakeup;
-    // Only nudge a redraw when a value actually changed: pages can mutate the
-    // URL (history API) and title on every keystroke, and an unconditional
-    // wakeup per event triggers full re-render storms that starve the
-    // webview's own main-thread work — the browser feels laggy.
-    fn store_if_changed(slot: &Mutex<String>, next: String, wakeup: &Sender<()>) {
-        let changed = slot.lock().is_ok_and(|mut current| {
-            if *current == next {
-                false
-            } else {
-                *current = next;
-                true
-            }
-        });
-        if changed {
-            let _ = wakeup.try_send(());
-        }
+) -> Result<BrowserWebview, String> {
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    {
+        let _ = (window, shared, url, wakeup);
+        return Err("browser webview backend is unsupported".to_string());
     }
 
-    let result = wry::WebViewBuilder::new()
-        .with_url(url)
-        .with_visible(false)
-        .with_bounds(wry::Rect {
-            position: wry::dpi::LogicalPosition::new(0, 0).into(),
-            size: wry::dpi::LogicalSize::new(0, 0).into(),
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    {
+        #[cfg(target_os = "linux")]
+        ensure_linux_gtk_initialized()?;
+
+        let nav_shared = shared.clone();
+        let nav_wakeup = wakeup.clone();
+        let title_shared = shared.clone();
+        let title_wakeup = wakeup.clone();
+        let load_shared = shared.clone();
+        let load_wakeup = wakeup;
+        // Only nudge a redraw when a value actually changed: pages can mutate the
+        // URL (history API) and title on every keystroke, and an unconditional
+        // wakeup per event triggers full re-render storms that starve the
+        // webview's own main-thread work — the browser feels laggy.
+        fn store_if_changed(slot: &Mutex<String>, next: String, wakeup: &Sender<()>) {
+            let changed = slot.lock().is_ok_and(|mut current| {
+                if *current == next {
+                    false
+                } else {
+                    *current = next;
+                    true
+                }
+            });
+            if changed {
+                let _ = wakeup.try_send(());
+            }
+        }
+
+        let result = wry::WebViewBuilder::new()
+            .with_url(url)
+            .with_visible(false)
+            .with_bounds(wry::Rect {
+                position: wry::dpi::LogicalPosition::new(0, 0).into(),
+                size: wry::dpi::LogicalSize::new(0, 0).into(),
+            })
+            .with_navigation_handler(move |url| {
+                store_if_changed(&nav_shared.url, url, &nav_wakeup);
+                true
+            })
+            .with_document_title_changed_handler(move |title| {
+                store_if_changed(&title_shared.title, title, &title_wakeup);
+            })
+            .with_on_page_load_handler(move |_event, url| {
+                store_if_changed(&load_shared.url, url, &load_wakeup);
+            })
+            .build_as_child(window);
+        match result {
+            Ok(webview) => Ok(BrowserWebview { inner: webview }),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn ensure_linux_gtk_initialized() -> Result<(), String> {
+    static GTK_INIT: OnceLock<Result<(), String>> = OnceLock::new();
+    GTK_INIT
+        .get_or_init(|| {
+            use gtk::prelude::DisplayExtManual;
+
+            gtk::init()
+                .map_err(|error| format!("failed to initialize GTK for browser tabs: {error}"))?;
+            let Some(display) = gtk::gdk::Display::default() else {
+                return Err("failed to initialize GTK display for browser tabs".to_string());
+            };
+            if display.backend().is_wayland() {
+                return Err(
+                    "browser tabs need GTK to run on X11; Wayland embedding is not supported yet"
+                        .to_string(),
+                );
+            }
+            Ok(())
         })
-        .with_navigation_handler(move |url| {
-            store_if_changed(&nav_shared.url, url, &nav_wakeup);
-            true
-        })
-        .with_document_title_changed_handler(move |title| {
-            store_if_changed(&title_shared.title, title, &title_wakeup);
-        })
-        .with_on_page_load_handler(move |_event, url| {
-            store_if_changed(&load_shared.url, url, &load_wakeup);
-        })
-        .build_as_child(window);
-    match result {
-        Ok(webview) => Some(webview),
-        Err(error) => {
-            termy_toast::error(format!("Failed to create browser view: {error}"));
-            None
+        .clone()
+}
+
+fn pump_linux_gtk_events() {
+    #[cfg(target_os = "linux")]
+    {
+        if !gtk::is_initialized_main_thread() {
+            return;
+        }
+        while gtk::events_pending() {
+            gtk::main_iteration_do(false);
         }
     }
 }

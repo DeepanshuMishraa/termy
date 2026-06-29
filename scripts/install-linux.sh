@@ -20,6 +20,43 @@ require_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "'$1' is required but not found"
 }
 
+json_string_values() {
+  local key="$1"
+  { grep -Eo "\"${key}\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" || true; } \
+    | sed -n 's/.*"[[:space:]]*:[[:space:]]*"\([^"]*\)"$/\1/p'
+}
+
+print_browser_dependency_note() {
+  local has_webkitgtk="unknown"
+
+  if command -v pkg-config >/dev/null 2>&1; then
+    if pkg-config --exists webkit2gtk-4.1 gtk+-3.0 2>/dev/null; then
+      has_webkitgtk="yes"
+    else
+      has_webkitgtk="no"
+    fi
+  elif command -v ldconfig >/dev/null 2>&1; then
+    if ldconfig -p 2>/dev/null | grep -q 'libwebkit2gtk-4.1'; then
+      has_webkitgtk="yes"
+    else
+      has_webkitgtk="no"
+    fi
+  fi
+
+  if [[ "$has_webkitgtk" == "yes" ]]; then
+    return
+  fi
+
+  echo ""
+  echo "NOTE: Embedded browser tabs on Linux require an X11 GTK backend plus WebKitGTK/GTK."
+  echo "This installer creates a launcher that sets GDK_BACKEND=x11 when an X11 display is available."
+  echo "Install the package for your distro if browser tabs fail to open:"
+  echo ""
+  echo "  Debian/Ubuntu: sudo apt install libwebkit2gtk-4.1-0"
+  echo "  Fedora:        sudo dnf install webkit2gtk4.1"
+  echo "  Arch:          sudo pacman -S webkit2gtk-4.1"
+}
+
 detect_arch() {
   local arch
   arch="$(uname -m)"
@@ -33,6 +70,7 @@ detect_arch() {
 require_cmd curl
 require_cmd tar
 require_cmd grep
+require_cmd sed
 
 log "Detecting system architecture..."
 ARCH="$(detect_arch)"
@@ -41,16 +79,29 @@ log "Architecture: $ARCH"
 log "Fetching latest release from GitHub..."
 RELEASE_JSON="$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest")"
 
-TAG="$(echo "$RELEASE_JSON" | grep -oP '"tag_name":\s*"\K[^"]+')"
+TAG="$(printf '%s\n' "$RELEASE_JSON" | json_string_values "tag_name" | head -n1)"
 if [[ -z "$TAG" ]]; then
   die "Could not determine latest release tag"
 fi
 log "Latest version: $TAG"
 
-DOWNLOAD_URL="$(echo "$RELEASE_JSON" | grep -oP '"browser_download_url":\s*"\K[^"]+' | grep -E "linux.*${ARCH}.*\.tar\.gz$" | head -n1)"
+DOWNLOAD_URL="$(
+  printf '%s\n' "$RELEASE_JSON" \
+    | json_string_values "browser_download_url" \
+    | grep -E "linux.*${ARCH}.*\.tar\.gz$" \
+    | head -n1 \
+    || true
+)"
 
 if [[ -z "$DOWNLOAD_URL" ]]; then
-  DOWNLOAD_URL="$(echo "$RELEASE_JSON" | grep -oP '"browser_download_url":\s*"\K[^"]+' | grep -E "linux.*\.tar\.gz$" | head -n1)"
+  DOWNLOAD_URL="$(
+    printf '%s\n' "$RELEASE_JSON" \
+      | json_string_values "browser_download_url" \
+      | grep -E "linux.*\.tar\.gz$" \
+      | grep -Ev 'linux.*(x86_64|amd64|aarch64|arm64).*\.tar\.gz$' \
+      | head -n1 \
+      || true
+  )"
 fi
 
 if [[ -z "$DOWNLOAD_URL" ]]; then
@@ -71,25 +122,53 @@ log "Extracting..."
 tar -xzf "$TARBALL_PATH" -C "$TEMP_DIR"
 
 BINARY_PATH=""
-if [[ -f "$TEMP_DIR/termy/termy" ]]; then
+if [[ -f "$TEMP_DIR/termy/termy-bin" ]]; then
+  BINARY_PATH="$TEMP_DIR/termy/termy-bin"
+elif [[ -f "$TEMP_DIR/termy/termy" ]]; then
   BINARY_PATH="$TEMP_DIR/termy/termy"
+elif [[ -f "$TEMP_DIR/termy-bin" ]]; then
+  BINARY_PATH="$TEMP_DIR/termy-bin"
 elif [[ -f "$TEMP_DIR/termy" ]]; then
   BINARY_PATH="$TEMP_DIR/termy"
 else
-  BINARY_PATH="$(find "$TEMP_DIR" -name "termy" -type f -executable 2>/dev/null | head -n1)"
+  BINARY_PATH="$(find "$TEMP_DIR" \( -name "termy-bin" -o -name "termy" \) -type f -executable 2>/dev/null | head -n1)"
 fi
 
 if [[ -z "$BINARY_PATH" || ! -f "$BINARY_PATH" ]]; then
   die "Could not find termy binary in downloaded tarball"
 fi
 
+CLI_BINARY_PATH=""
+if [[ -f "$TEMP_DIR/termy/termy-cli" ]]; then
+  CLI_BINARY_PATH="$TEMP_DIR/termy/termy-cli"
+else
+  CLI_BINARY_PATH="$(find "$TEMP_DIR" -name "termy-cli" -type f -executable 2>/dev/null | head -n1)"
+fi
+
+if [[ -z "$CLI_BINARY_PATH" || ! -f "$CLI_BINARY_PATH" ]]; then
+  die "Could not find termy-cli binary in downloaded tarball"
+fi
+
 mkdir -p "$INSTALL_DIR"
 
 log "Installing to $INSTALL_DIR/termy..."
-cp "$BINARY_PATH" "$INSTALL_DIR/termy"
-chmod +x "$INSTALL_DIR/termy"
+rm -f "$INSTALL_DIR/termy" "$INSTALL_DIR/termy-bin" "$INSTALL_DIR/termy-cli"
+cp "$BINARY_PATH" "$INSTALL_DIR/termy-bin"
+cp "$CLI_BINARY_PATH" "$INSTALL_DIR/termy-cli"
+cat > "$INSTALL_DIR/termy" <<'LAUNCHER'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ -z "${GDK_BACKEND:-}" && -n "${DISPLAY:-}" ]]; then
+  export GDK_BACKEND=x11
+fi
+
+exec "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/termy-bin" "$@"
+LAUNCHER
+chmod +x "$INSTALL_DIR/termy" "$INSTALL_DIR/termy-bin" "$INSTALL_DIR/termy-cli"
 
 log "Termy $TAG installed successfully!"
+print_browser_dependency_note
 
 if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
   echo ""

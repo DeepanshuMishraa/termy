@@ -149,7 +149,16 @@ final class KeyboardCaptureView: NSView {
         guard isInputEnabled || isSearchVisible else {
             return nil
         }
-        return bounds.contains(point) ? self : nil
+        guard bounds.contains(point) else { return nil }
+
+        if let window, let superview {
+            let windowPoint = superview.convert(point, to: nil)
+            if !window.contentLayoutRect.contains(windowPoint) {
+                return nil
+            }
+        }
+
+        return self
     }
 
     override func viewDidMoveToWindow() {

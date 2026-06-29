@@ -280,6 +280,21 @@ pub fn clear_current_app_bundle_file_icon() -> bool {
     }
 }
 
+/// Whether macOS "Reduce transparency" (System Settings → Accessibility →
+/// Display) is enabled. When it is on, AppKit flattens `NSVisualEffectView`
+/// vibrancy, so window-background blur cannot render and callers should fall
+/// back to plain transparency. Always `false` on non-macOS platforms.
+pub fn macos_reduce_transparency() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        objc2_app_kit::NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceTransparency()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
+
 pub fn show_alert(title: &str, message: &str) {
     #[cfg(target_os = "macos")]
     {

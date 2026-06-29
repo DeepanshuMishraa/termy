@@ -31,9 +31,10 @@ pub use schema::{
 };
 pub use types::{
     AppConfig, AppIcon, AppearanceMode, CursorStyle, CustomColors, KeybindConfigLine,
-    PaneFocusEffect, Rgb8, SystemAppearance, TabBarPosition, TabCloseVisibility, TabTitleConfig,
-    TabTitleMode, TabTitleSource, TabWidthMode, TaskConfig, TerminalScrollbarStyle,
-    TerminalScrollbarVisibility, ThemeId, WindowsShell, WorkingDirFallback, resolve_active_theme,
+    NativeTabPlacement, PaneFocusEffect, Rgb8, SystemAppearance, TabBarPosition,
+    TabCloseVisibility, TabTitleConfig, TabTitleMode, TabTitleSource, TabWidthMode, TaskConfig,
+    TerminalScrollbarStyle, TerminalScrollbarVisibility, ThemeId, WindowsShell, WorkingDirFallback,
+    resolve_active_theme,
 };
 
 pub fn format_line_height(value: f32) -> String {

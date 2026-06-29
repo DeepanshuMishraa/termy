@@ -4,13 +4,13 @@ const MAX_THEME_SUGGESTIONS: usize = 16;
 const MAX_FONT_SUGGESTIONS: usize = 200;
 const PANE_FOCUS_MAX: f32 = 2.0;
 
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum EditableField {
     Theme,
     ThemeMode,
     ThemeLight,
     ThemeDark,
+    #[cfg_attr(target_os = "windows", allow(dead_code))]
     AppIcon,
     BackgroundOpacity,
     FontFamily,
@@ -19,10 +19,12 @@ pub(super) enum EditableField {
     LineHeight,
     PaddingX,
     PaddingY,
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     WindowsShell,
     Shell,
     Term,
     Colorterm,
+    #[cfg_attr(target_os = "windows", allow(dead_code))]
     TmuxBinary,
     ScrollbackHistory,
     InactiveTabScrollback,

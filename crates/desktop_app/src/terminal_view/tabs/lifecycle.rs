@@ -301,7 +301,7 @@ impl TerminalView {
     /// "+" button entry point: with browser tabs enabled it opens a dropdown
     /// to choose the tab kind; otherwise it creates a terminal tab directly.
     pub(crate) fn handle_new_tab_button(&mut self, anchor: (f32, f32), cx: &mut Context<Self>) {
-        if self.browser_tabs_enabled && self.runtime_kind() == RuntimeKind::Native {
+        if self.browser_tabs_available() && self.runtime_kind() == RuntimeKind::Native {
             self.toggle_new_tab_menu(anchor, cx);
         } else {
             self.add_tab(cx);
@@ -429,21 +429,14 @@ impl TerminalView {
             RuntimeKind::Native => {}
         };
 
-        if self.tabs.len() <= 1 {
-            // Closing the last tab of a workspace closes the workspace when
-            // others remain; the window-close path handles the final tab.
-            if self.has_other_workspaces() {
-                self.close_active_workspace(cx);
-            }
-            return;
-        }
-
         self.tabs.remove(index);
         self.native_pane_zoom_snapshots.remove(&removed_tab_id);
         self.native_pane_layout_trees.remove(&removed_tab_id);
         self.mark_tab_strip_layout_dirty();
 
-        if self.active_tab > index {
+        if self.tabs.is_empty() {
+            self.active_tab = 0;
+        } else if self.active_tab > index {
             self.active_tab -= 1;
         } else if self.active_tab >= self.tabs.len() {
             self.active_tab = self.tabs.len() - 1;

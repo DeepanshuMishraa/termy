@@ -6736,6 +6736,7 @@ dependencies = [
  "flume",
  "fs4",
  "gpui",
+ "gtk",
  "libsqlite3-sys",
  "log",
  "objc",

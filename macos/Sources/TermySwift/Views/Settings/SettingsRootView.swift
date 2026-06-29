@@ -5,16 +5,19 @@ struct SettingsRootView: View {
     @StateObject private var store = SettingsStore()
     @State private var selection: String?
     @State private var searchText = ""
+    @State private var debouncedQuery = ""
+    @State private var cachedSections: [SettingsSectionModel] = []
+    @State private var debounceTask: Task<Void, Never>?
 
     var body: some View {
         NavigationSplitView {
-            SettingsSidebarView(sections: supportedSections, selection: $selection)
+            SettingsSidebarView(sections: cachedSections, selection: $selection)
         } detail: {
-            if searchText.trimmingCharacters(in: .whitespaces).isEmpty {
+            if debouncedQuery.trimmingCharacters(in: .whitespaces).isEmpty {
                 SettingsDetailView(section: selectedSection, store: store)
             } else {
                 SettingsSearchResultsView(
-                    results: SettingsSearch.results(in: supportedSections, query: searchText),
+                    results: SettingsSearch.results(in: cachedSections, query: debouncedQuery),
                     store: store
                 )
             }
@@ -23,10 +26,13 @@ struct SettingsRootView: View {
         .frame(minWidth: 760, minHeight: 520)
         .onAppear {
             store.load()
-            selectDefaultSectionIfNeeded()
+            rebuildCachedSections()
         }
         .onChange(of: store.schema?.sections.map(\.id) ?? []) { _, _ in
-            selectDefaultSectionIfNeeded()
+            rebuildCachedSections()
+        }
+        .onChange(of: searchText) { _, newValue in
+            debounceSearch(newValue)
         }
         .alert(
             "Settings Error",
@@ -41,125 +47,48 @@ struct SettingsRootView: View {
         }
     }
 
-    private var supportedSections: [SettingsSectionModel] {
-        store.schema?.nativeSettingsSections.filter(\.hasSupportedSettings) ?? []
+    private var selectedSection: SettingsSectionModel? {
+        cachedSections.first { $0.id == selection }
     }
 
-    private var selectedSection: SettingsSectionModel? {
-        supportedSections.first { $0.id == selection }
+    private func rebuildCachedSections() {
+        let sections = store.schema?.nativeSettingsSections.filter(\.hasSupportedSettings) ?? []
+        cachedSections = sections
+        selectDefaultSectionIfNeeded()
     }
 
     private func selectDefaultSectionIfNeeded() {
-        let sections = supportedSections
-        guard !sections.isEmpty else {
+        guard !cachedSections.isEmpty else {
             selection = nil
             return
         }
-        if selection == nil || !sections.contains(where: { $0.id == selection }) {
-            selection = sections[0].id
+        if selection == nil || !cachedSections.contains(where: { $0.id == selection }) {
+            selection = cachedSections[0].id
         }
     }
-}
 
-private struct SettingsSidebarView: View {
-    let sections: [SettingsSectionModel]
-    @Binding var selection: String?
-
-    var body: some View {
-        List(selection: $selection) {
-            Section {
-                ForEach(sections) { section in
-                    SettingsSidebarRow(section: section)
-                        .tag(section.id as String?)
-                }
+    private func debounceSearch(_ query: String) {
+        debounceTask?.cancel()
+        let trimmed = query.trimmingCharacters(in: .whitespaces)
+        if trimmed.isEmpty {
+            debouncedQuery = ""
+            return
+        }
+        debounceTask = Task {
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                debouncedQuery = query
             }
         }
-        .listStyle(.sidebar)
-        .navigationSplitViewColumnWidth(min: 176, ideal: 192, max: 230)
     }
 }
 
-private struct SettingsSidebarRow: View {
-    let section: SettingsSectionModel
-
-    var body: some View {
-        Label(section.label, systemImage: section.systemImage)
-            .lineLimit(1)
-    }
-}
-
-private struct SettingsSearchResultsView: View {
-    let results: [SettingsSearchResult]
-    @ObservedObject var store: SettingsStore
-
-    var body: some View {
-        Group {
-            if results.isEmpty {
-                ContentUnavailableView.search
-            } else {
-                Form {
-                    Section("Results") {
-                        ForEach(results) { result in
-                            SettingRow(setting: result.setting, store: store)
-                        }
-                    }
-                }
-            }
-        }
-        .frame(minWidth: 500, maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
-
-private struct SettingsDetailView: View {
-    let section: SettingsSectionModel?
-    @ObservedObject var store: SettingsStore
-
-    var body: some View {
-        Group {
-            if let section {
-                SettingsSectionView(section: section, store: store)
-            } else {
-                ContentUnavailableView(
-                    "Settings",
-                    systemImage: "gearshape",
-                    description: Text("No supported settings are available.")
-                )
-            }
-        }
-        .frame(minWidth: 500, maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
-
-private struct SettingsSectionView: View {
-    let section: SettingsSectionModel
-    @ObservedObject var store: SettingsStore
-
-    var body: some View {
-        Form {
-            if section.id == SettingsSectionModel.themesSectionID {
-                ThemeSettingsContent(section: section, store: store)
-            } else if let colors = section.colors {
-                ColorSettingsContent(colors: colors, store: store)
-            } else if section.keybinds != nil {
-                KeybindSettingsContent(store: store)
-            } else {
-                ForEach(section.groups ?? []) { group in
-                    Section(group.label) {
-                        ForEach(group.settings) { setting in
-                            SettingRow(setting: setting, store: store)
-                        }
-                    }
-                }
-            }
-        }
-        .formStyle(.grouped)
-        .navigationTitle(section.label)
-    }
-}
-
-private extension SettingsSchema {
+extension SettingsSchema {
     var nativeSettingsSections: [SettingsSectionModel] {
-        var sections = sections.map(\.withoutThemeSettings)
+        let hiddenKeys = SettingsSectionModel.hiddenNativeTabStripKeys
+        var sections = sections
+            .map { $0.withoutThemeSettings.filteringHiddenSettings(hiddenKeys) }
         if let themesSection {
             let insertIndex = sections.firstIndex { $0.id == "colors" } ?? sections.count
             sections.insert(themesSection, at: insertIndex)
@@ -182,14 +111,30 @@ private extension SettingsSchema {
             id: SettingsSectionModel.themesSectionID,
             label: "Themes",
             systemImage: "paintpalette.fill",
-            groups: [SettingsGroup(label: "THEME", settings: settings)],
+            groups: [SettingsGroup(label: "Theme", settings: settings)],
             colors: nil,
             keybinds: nil
         )
     }
 }
 
-private extension SettingsSectionModel {
+extension SettingsSectionModel {
+    static let hiddenNativeTabStripKeys: Set<String> = [
+        "tab_close_visibility",
+        "tab_width_mode",
+        "tab_bar_position",
+        "tab_switch_modifier_hints",
+        "auto_hide_tabbar",
+        "show_termy_in_titlebar",
+        "onboarding_complete",
+        "sidebar_enabled",
+        "sidebar_width",
+        "browser_tabs_enabled",
+        "native_tab_placement",
+    ]
+}
+
+extension SettingsSectionModel {
     static let themesSectionID = "themes"
     static let themeSettingKeys: Set<String> = [
         "theme",
@@ -197,6 +142,24 @@ private extension SettingsSectionModel {
         "theme_light",
         "theme_dark",
     ]
+
+    func filteringHiddenSettings(_ hiddenKeys: Set<String>) -> SettingsSectionModel {
+        guard let groups else {
+            return self
+        }
+        let filteredGroups = groups.compactMap { group -> SettingsGroup? in
+            let settings = group.settings.filter { !hiddenKeys.contains($0.key) }
+            return settings.isEmpty ? nil : SettingsGroup(label: group.label, settings: settings)
+        }
+        return SettingsSectionModel(
+            id: id,
+            label: label,
+            systemImage: systemImage,
+            groups: filteredGroups,
+            colors: colors,
+            keybinds: keybinds
+        )
+    }
 
     var hasSupportedSettings: Bool {
         !(groups?.flatMap(\.settings).isEmpty ?? true)
@@ -221,565 +184,5 @@ private extension SettingsSectionModel {
             colors: colors,
             keybinds: keybinds
         )
-    }
-}
-
-// MARK: - Themes
-
-private struct ThemeSettingsContent: View {
-    let section: SettingsSectionModel
-    @ObservedObject var store: SettingsStore
-    @State private var showThemeStore = false
-
-    private var settingsByKey: [String: Setting] {
-        Dictionary(uniqueKeysWithValues: (section.groups ?? [])
-            .flatMap(\.settings)
-            .map { ($0.key, $0) })
-    }
-
-    private var themeChoices: [SettingEnumChoice] {
-        settingsByKey["theme"]?.choices ?? []
-    }
-
-    private var filteredThemeChoices: [SettingEnumChoice] {
-        let choices = themeChoices.filter { $0.value != "shell-decide" }
-        return choices.isEmpty ? themeChoices : choices
-    }
-
-    private func selectableChoices(for setting: Setting) -> [SettingEnumChoice] {
-        let choices = setting.choices ?? []
-        return choices.filter { choice in
-            choice.installed == true || choice.value == setting.value
-        }
-    }
-
-    var body: some View {
-        Section("Mode") {
-            if let mode = settingsByKey["theme_mode"] {
-                Picker(selection: store.enumBinding(mode.key)) {
-                    ForEach(mode.choices ?? []) { choice in
-                        Text(choice.label).tag(choice.value)
-                    }
-                } label: {
-                    SettingLabelView(setting: mode)
-                }
-                .pickerStyle(.segmented)
-            }
-        }
-
-        Section("Active Theme") {
-            if let theme = settingsByKey["theme"] {
-                Picker(selection: store.enumBinding(theme.key)) {
-                    ForEach(selectableChoices(for: theme)) { choice in
-                        Text(choice.label).tag(choice.value)
-                    }
-                } label: {
-                    SettingLabelView(setting: theme)
-                }
-            }
-        }
-
-        Section("System Appearance") {
-            if let light = settingsByKey["theme_light"] {
-                Picker(selection: store.enumBinding(light.key)) {
-                    ForEach(selectableChoices(for: light)) { choice in
-                        Text(choice.label).tag(choice.value)
-                    }
-                } label: {
-                    SettingLabelView(setting: light)
-                }
-            }
-
-            if let dark = settingsByKey["theme_dark"] {
-                Picker(selection: store.enumBinding(dark.key)) {
-                    ForEach(selectableChoices(for: dark)) { choice in
-                        Text(choice.label).tag(choice.value)
-                    }
-                } label: {
-                    SettingLabelView(setting: dark)
-                }
-            }
-        }
-
-        Section("Available Themes") {
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 10)], spacing: 10) {
-                ForEach(filteredThemeChoices) { choice in
-                    ThemeChoiceButton(
-                        choice: choice,
-                        isSelected: store.value(for: "theme") == choice.value,
-                        isInstalling: store.installingThemeIDs.contains(choice.value),
-                        onSelect: {
-                            store.installThemeAndCommitRoot(choice: choice, key: "theme")
-                        }
-                    )
-                }
-            }
-            .padding(.vertical, 2)
-        }
-
-        Section {
-            Button {
-                showThemeStore = true
-            } label: {
-                Label("Browse Theme Store…", systemImage: "square.and.arrow.down")
-            }
-        }
-        .sheet(isPresented: $showThemeStore) {
-            ThemeStoreView(settingsStore: store)
-        }
-    }
-}
-
-private struct ThemeChoiceButton: View {
-    let choice: SettingEnumChoice
-    let isSelected: Bool
-    let isInstalling: Bool
-    let onSelect: () -> Void
-
-    private var isInstalled: Bool {
-        choice.installed ?? false
-    }
-
-    var body: some View {
-        Button(action: onSelect) {
-            HStack(spacing: 10) {
-                ThemeSwatch(hexColors: choice.swatches ?? [])
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(choice.label)
-                        .lineLimit(1)
-                    Text(choice.value)
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 0)
-                if isInstalling {
-                    ProgressView()
-                        .controlSize(.small)
-                } else if isSelected {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(.tint)
-                } else if !isInstalled {
-                    Text("Install")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .padding(10)
-            .frame(maxWidth: .infinity, minHeight: 58, alignment: .leading)
-            .contentShape(RoundedRectangle(cornerRadius: 8))
-        }
-        .buttonStyle(.plain)
-        .disabled(isInstalling)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(isSelected ? Color.accentColor : Color.secondary.opacity(0.25), lineWidth: isSelected ? 1.5 : 1)
-        }
-    }
-}
-
-private struct ThemeSwatch: View {
-    let hexColors: [String]
-
-    private var colors: [Color] {
-        let parsed = hexColors.compactMap(Color.init(hex:))
-        if parsed.isEmpty {
-            return [
-                Color(nsColor: .controlAccentColor),
-                Color(nsColor: .secondaryLabelColor),
-                Color(nsColor: .tertiaryLabelColor),
-                Color(nsColor: .quaternaryLabelColor),
-            ]
-        }
-        return Array(parsed.prefix(6))
-    }
-
-    var body: some View {
-        HStack(spacing: 0) {
-            ForEach(Array(colors.enumerated()), id: \.offset) { _, color in
-                color
-                    .frame(width: max(5, 32 / CGFloat(colors.count)))
-            }
-        }
-        .frame(width: 32, height: 32)
-        .clipShape(RoundedRectangle(cornerRadius: 5))
-        .overlay {
-            RoundedRectangle(cornerRadius: 5)
-                .stroke(Color.black.opacity(0.15), lineWidth: 1)
-        }
-    }
-}
-
-// MARK: - Generic root setting row
-
-private struct SettingRow: View {
-    let setting: Setting
-    @ObservedObject var store: SettingsStore
-
-    var body: some View {
-        switch setting.kind {
-        case .boolean:
-            Toggle(isOn: store.boolBinding(setting.key)) {
-                SettingLabelView(setting: setting)
-            }
-        case .enumeration:
-            ChoiceSettingRow(setting: setting, store: store)
-        case .numeric:
-            NumericSettingRow(setting: setting, store: store)
-        case .text:
-            CommittingTextFieldRow(setting: setting, store: store, maxWidth: 240)
-        case .special:
-            if setting.choices?.isEmpty == false {
-                ChoiceSettingRow(setting: setting, store: store)
-            } else {
-                CommittingTextFieldRow(setting: setting, store: store, maxWidth: 240)
-            }
-        }
-    }
-}
-
-private struct ChoiceSettingRow: View {
-    let setting: Setting
-    @ObservedObject var store: SettingsStore
-
-    var body: some View {
-        SettingLabeledContent(setting: setting) {
-            Picker(selection: store.enumBinding(setting.key)) {
-                ForEach(setting.choices ?? []) { choice in
-                    Text(choice.label).tag(choice.value)
-                }
-            } label: {
-                EmptyView()
-            }
-        }
-    }
-}
-
-private struct SettingLabeledContent<Content: View>: View {
-    let setting: Setting
-    @ViewBuilder var content: Content
-
-    var body: some View {
-        LabeledContent {
-            content
-        } label: {
-            SettingLabelView(setting: setting)
-        }
-    }
-}
-
-private struct SettingLabelView: View {
-    let title: String
-    let description: String
-
-    init(setting: Setting) {
-        title = setting.title
-        description = setting.description
-    }
-
-    init(color: ColorSetting) {
-        title = color.title
-        description = color.description
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title)
-            Text(description)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-    }
-}
-
-private struct NumericSettingRow: View {
-    let setting: Setting
-    @ObservedObject var store: SettingsStore
-
-    var body: some View {
-        if let range = Self.sliderRange(for: setting.key) {
-            SettingLabeledContent(setting: setting) {
-                HStack(spacing: 10) {
-                    Slider(
-                        value: Binding(
-                            get: { Double(store.value(for: setting.key)) ?? range.lowerBound },
-                            set: { store.commitRoot(key: setting.key, value: Self.format($0)) }
-                        ),
-                        in: range,
-                        step: Self.step(for: setting.key)
-                    )
-                    .frame(width: 180)
-                    Text(store.value(for: setting.key))
-                        .font(.system(.body, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 48, alignment: .trailing)
-                }
-            }
-        } else {
-            CommittingTextFieldRow(setting: setting, store: store, maxWidth: 120)
-        }
-    }
-
-    private static func sliderRange(for key: String) -> ClosedRange<Double>? {
-        switch key {
-        case "background_opacity":
-            return 0...1
-        case "pane_focus_strength":
-            return 0...2
-        case "line_height":
-            return 0.8...2.5
-        case "mouse_scroll_multiplier":
-            return 0.1...10
-        default:
-            return nil
-        }
-    }
-
-    private static func step(for key: String) -> Double {
-        key == "mouse_scroll_multiplier" ? 0.1 : 0.05
-    }
-
-    private static func format(_ value: Double) -> String {
-        String(format: "%.2f", value)
-    }
-}
-
-private struct CommittingTextFieldRow: View {
-    let setting: Setting
-    @ObservedObject var store: SettingsStore
-    let maxWidth: CGFloat
-
-    @State private var text: String = ""
-    @FocusState private var focused: Bool
-
-    var body: some View {
-        SettingLabeledContent(setting: setting) {
-            TextField(setting.title, text: $text)
-                .textFieldStyle(.roundedBorder)
-                .frame(maxWidth: maxWidth)
-                .focused($focused)
-                .onSubmit(commit)
-                .onChange(of: focused) { _, isFocused in
-                    if !isFocused {
-                        commit()
-                    }
-                }
-        }
-        .onAppear {
-            text = store.value(for: setting.key)
-        }
-        .onChange(of: store.value(for: setting.key)) { _, newValue in
-            if !focused {
-                text = newValue
-            }
-        }
-    }
-
-    private func commit() {
-        store.commitRoot(key: setting.key, value: text)
-    }
-}
-
-// MARK: - Colors
-
-private struct ColorSettingsContent: View {
-    let colors: [ColorSetting]
-    @ObservedObject var store: SettingsStore
-
-    var body: some View {
-        Section("Base") {
-            ForEach(colors.prefix(3)) { color in
-                ColorRow(color: color, store: store)
-            }
-        }
-        Section("ANSI Palette") {
-            ForEach(colors.dropFirst(3)) { color in
-                ColorRow(color: color, store: store)
-            }
-        }
-    }
-}
-
-private struct ColorRow: View {
-    let color: ColorSetting
-    @ObservedObject var store: SettingsStore
-
-    var body: some View {
-        LabeledContent {
-            HStack(spacing: 10) {
-                ColorPicker("", selection: pickerBinding, supportsOpacity: false)
-                    .labelsHidden()
-                if !store.colorHex(for: color.key).isEmpty {
-                    Button("Reset") {
-                        store.commitColor(key: color.key, hex: nil)
-                    }
-                    .buttonStyle(.borderless)
-                    .font(.caption)
-                } else {
-                    Text("theme")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-        } label: {
-            SettingLabelView(color: color)
-        }
-    }
-
-    private var pickerBinding: Binding<Color> {
-        Binding(
-            get: { Color(hex: store.colorHex(for: color.key)) ?? Color(white: 0.5) },
-            set: { newColor in
-                if let hex = newColor.hexString {
-                    store.commitColor(key: color.key, hex: hex)
-                }
-            }
-        )
-    }
-}
-
-// MARK: - Keybindings
-
-private struct KeybindSettingsContent: View {
-    @ObservedObject var store: SettingsStore
-    @ObservedObject private var configurationStore = TermyConfigurationStore.shared
-    @State private var search = ""
-
-    private var bindings: [TermyKeybindConfiguration] {
-        let all = configurationStore.configuration.keybinds
-            .sorted { $0.action < $1.action }
-        let query = search.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !query.isEmpty else {
-            return all
-        }
-        return all.filter {
-            $0.action.lowercased().contains(query) || $0.trigger.lowercased().contains(query)
-        }
-    }
-
-    private var conflictingTriggers: Set<String> {
-        TerminalKeybindConflicts.conflictingTriggers(in: configurationStore.configuration.keybinds)
-    }
-
-    var body: some View {
-        let conflicts = conflictingTriggers
-
-        Section("Active Keybindings") {
-            TextField("Filter actions or keys", text: $search)
-                .textFieldStyle(.roundedBorder)
-
-            if !conflicts.isEmpty {
-                Label(
-                    "\(conflicts.count) trigger\(conflicts.count == 1 ? "" : "s") bound more than once — only the first binding takes effect.",
-                    systemImage: "exclamationmark.triangle.fill"
-                )
-                .font(.caption)
-                .foregroundStyle(.orange)
-            }
-
-            if bindings.isEmpty {
-                Text("No keybindings match.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(bindings, id: \.self) { binding in
-                    LabeledContent {
-                        HStack(spacing: 6) {
-                            if conflicts.contains(binding.trigger) {
-                                Image(systemName: "exclamationmark.triangle.fill")
-                                    .foregroundStyle(.orange)
-                                    .help("This trigger is bound more than once.")
-                            }
-                            Text(binding.trigger)
-                                .font(.system(.body, design: .monospaced))
-                                .foregroundStyle(.secondary)
-                        }
-                    } label: {
-                        Text(Self.humanize(binding.action))
-                    }
-                }
-            }
-        }
-
-        Section("Edit Directives") {
-            Text("One directive per line, e.g. `cmd-k=clear_buffer`. Changes apply after pressing Apply Keybinds.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            TextEditor(text: $store.keybindsText)
-                .font(.system(.body, design: .monospaced))
-                .frame(minHeight: 180)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6)
-                        .stroke(Color.secondary.opacity(0.25), lineWidth: 1)
-                )
-
-            HStack {
-                Spacer()
-                Button("Apply Keybinds") {
-                    store.commitKeybinds()
-                }
-                .keyboardShortcut("s", modifiers: [.command])
-            }
-        }
-    }
-
-    private static func humanize(_ action: String) -> String {
-        action
-            .split(separator: "_")
-            .map { $0.prefix(1).uppercased() + $0.dropFirst() }
-            .joined(separator: " ")
-    }
-}
-
-// MARK: - Color hex helpers
-
-extension Color {
-    init?(hex: String) {
-        guard let rgb = RGBHexColor(hex: hex) else {
-            return nil
-        }
-        self = Color(
-            red: rgb.red,
-            green: rgb.green,
-            blue: rgb.blue
-        )
-    }
-
-    var hexString: String? {
-        guard let srgb = NSColor(self).usingColorSpace(.sRGB) else {
-            return nil
-        }
-        let r = Int((srgb.redComponent * 255).rounded())
-        let g = Int((srgb.greenComponent * 255).rounded())
-        let b = Int((srgb.blueComponent * 255).rounded())
-        return String(format: "#%02x%02x%02x", r, g, b)
-    }
-}
-
-private struct RGBHexColor {
-    var red: Double
-    var green: Double
-    var blue: Double
-
-    init?(hex: String) {
-        var value = hex.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !value.isEmpty else {
-            return nil
-        }
-        if value.hasPrefix("#") {
-            value.removeFirst()
-        }
-        guard value.count == 6, let packed = Int(value, radix: 16) else {
-            return nil
-        }
-        red = Self.component(packed >> 16)
-        green = Self.component(packed >> 8)
-        blue = Self.component(packed)
-    }
-
-    private static func component(_ packedComponent: Int) -> Double {
-        Double(packedComponent & 0xff) / 255.0
     }
 }
