@@ -1255,48 +1255,36 @@ private struct TerminalPaneDropPlacementOverlay: View {
     var body: some View {
         GeometryReader { proxy in
             ZStack {
+                // A thin outline marks every pane that can receive the drop.
                 RoundedRectangle(cornerRadius: 8)
-                    .stroke(Color.accentColor.opacity(0.58), lineWidth: 1)
-                    .padding(6)
+                    .strokeBorder(
+                        Color.accentColor.opacity(activePlacement == nil ? 0.3 : 0.55),
+                        lineWidth: 1
+                    )
 
-                ForEach(TerminalPaneDropPlacement.allCases, id: \.self) { placement in
-                    placementBand(placement, in: proxy.size)
+                // On the pane under the cursor, fill the half the dragged pane
+                // will occupy so the resulting split is obvious.
+                if let activePlacement {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color.accentColor.opacity(0.22))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 6)
+                                .strokeBorder(Color.accentColor.opacity(0.85), lineWidth: 1.5)
+                        }
+                        .frame(
+                            width: activePlacement.splitsHorizontally ? proxy.size.width / 2 : nil,
+                            height: activePlacement.splitsVertically ? proxy.size.height / 2 : nil
+                        )
+                        .frame(
+                            maxWidth: .infinity,
+                            maxHeight: .infinity,
+                            alignment: activePlacement.overlayAlignment
+                        )
+                        .transition(.opacity)
                 }
             }
-            .background(Color.accentColor.opacity(0.035))
-        }
-    }
-
-    private func placementBand(_ placement: TerminalPaneDropPlacement, in size: CGSize) -> some View {
-        RoundedRectangle(cornerRadius: 7)
-            .fill(Color.accentColor.opacity(placement == activePlacement ? 0.34 : 0.13))
-            .overlay {
-                RoundedRectangle(cornerRadius: 7)
-                    .stroke(Color.accentColor.opacity(placement == activePlacement ? 0.82 : 0.28), lineWidth: 1)
-            }
-            .frame(
-                width: placementBandWidth(placement, in: size),
-                height: placementBandHeight(placement, in: size)
-            )
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: placement.overlayAlignment)
-            .padding(12)
-    }
-
-    private func placementBandWidth(_ placement: TerminalPaneDropPlacement, in size: CGSize) -> CGFloat? {
-        switch placement {
-        case .left, .right:
-            return max(32, min(84, size.width * 0.24))
-        case .top, .bottom:
-            return nil
-        }
-    }
-
-    private func placementBandHeight(_ placement: TerminalPaneDropPlacement, in size: CGSize) -> CGFloat? {
-        switch placement {
-        case .left, .right:
-            return nil
-        case .top, .bottom:
-            return max(28, min(72, size.height * 0.22))
+            .padding(5)
+            .animation(.easeOut(duration: 0.1), value: activePlacement)
         }
     }
 }
@@ -1313,6 +1301,14 @@ private extension TerminalPaneDropPlacement {
         case .bottom:
             return .bottom
         }
+    }
+
+    var splitsHorizontally: Bool {
+        self == .left || self == .right
+    }
+
+    var splitsVertically: Bool {
+        self == .top || self == .bottom
     }
 }
 
