@@ -221,7 +221,7 @@ final class TerminalViewModel: ObservableObject {
         // `cat bigfile`) schedules an extra full poll per chunk on top of the
         // 60 Hz link — `pendingWakeupPoll` only coalesces within a single
         // runloop turn, so the effective poll rate is otherwise unbounded.
-        guard terminal != nil, !isSuspended, cadence != .active, !pendingWakeupPoll else {
+        guard terminal != nil, cadence != .active, !pendingWakeupPoll else {
             return
         }
         pendingWakeupPoll = true
@@ -230,7 +230,25 @@ final class TerminalViewModel: ObservableObject {
                 return
             }
             self.pendingWakeupPoll = false
-            self.pollAndPresent()
+            if self.isSuspended {
+                self.drainEventsWhileSuspended()
+            } else {
+                self.pollAndPresent()
+            }
+        }
+    }
+
+    /// While a tab is suspended (its window is occluded), we deliberately keep the
+    /// wakeup monitor running and drain PTY events without presenting a frame.
+    /// This is intentional: a fully-stopped backgrounded shell would block once
+    /// the PTY buffer fills (e.g. a build logging in a hidden tab), so we consume
+    /// output to keep it flowing. Draining without rendering is far cheaper than a
+    /// full `pollAndPresent`, so the occlusion CPU savings are largely preserved.
+    private func drainEventsWhileSuspended() {
+        do {
+            handle(try terminal?.drainEvents() ?? [])
+        } catch {
+            report(error)
         }
     }
 
@@ -299,7 +317,6 @@ final class TerminalViewModel: ObservableObject {
         applyConfiguredScrollbackLimit()
         refreshDriver?.stop()
         refreshDriver = nil
-        terminal?.stopWakeupMonitor()
         pendingResizeRefresh?.cancel()
         pendingResizeRefresh = nil
     }

@@ -39,6 +39,38 @@ final class NativeTabChromeApplierTests: XCTestCase {
         XCTAssertEqual(second.title, "Active Second")
     }
 
+    func testNativeTabDescriptorsKeepAppKitTabGroupOrderWhenSourceIsSecondTab() {
+        let manager = NativeTabWindowManager.shared
+        let first = makeBareWindow()
+        let second = makeBareWindow()
+        manager.configure(first)
+        manager.configure(second)
+        first.title = "First"
+        second.title = "Second"
+        first.addTabbedWindow(second, ordered: .above)
+
+        let descriptors = manager.tabDescriptors(for: second)
+
+        XCTAssertEqual(descriptors.map(\.title), ["First", "Second"])
+        XCTAssertEqual(descriptors.map(\.index), [0, 1])
+    }
+
+    func testStoreScopedChromeRefreshUpdatesInactiveTabWindowTitle() {
+        let manager = NativeTabWindowManager.shared
+        let window = makeBareWindow()
+        let store = TerminalWorkspaceStore()
+        manager.configure(window)
+        TerminalCommandRouter.shared.register(store, for: window)
+        defer {
+            TerminalCommandRouter.shared.unregister(window: window)
+        }
+
+        XCTAssertTrue(store.focusedTerminal?.applyTerminalTitle("background build") ?? false)
+        XCTAssertTrue(manager.applyFocusedTerminalChrome(for: store))
+
+        XCTAssertEqual(window.title, "background build")
+    }
+
     private func assertColor(
         _ color: NSColor,
         matches expected: TerminalRGBA,

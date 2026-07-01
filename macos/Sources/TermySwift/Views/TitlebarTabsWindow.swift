@@ -7,11 +7,15 @@ import AppKit
 /// AppKit normally adds the window tab bar as an `NSTitlebarAccessoryViewController`
 /// laid out as a full-width strip *below* the titlebar. Hiding the window title
 /// only collapses the (empty) title row; the tab strip still sits on its own
-/// line. To merge it into the traffic-light row we (1) install an empty
-/// `NSToolbar` with `toolbarStyle = .unifiedCompact` so the titlebar and toolbar
-/// share one band, and (2) flip the tab accessory's `layoutAttribute` to `.right`
-/// and constrain its clip view into that unified `NSToolbarView`, leaving a
-/// gutter on the left for the window buttons.
+/// line. To merge it into the traffic-light row we (1) install an `NSToolbar`
+/// with `toolbarStyle = .unifiedCompact` so the titlebar and toolbar share one
+/// band, and (2) flip the tab accessory's `layoutAttribute` to `.right` and
+/// constrain its clip view into that unified `NSToolbarView`, leaving a gutter on
+/// the left for the window buttons.
+///
+/// When there is only one tab (no tab bar), a centered toolbar item shows the
+/// window title instead — matching Ghostty. The title item collapses to nothing
+/// while the tab bar is present.
 ///
 /// This is the macOS 26 (Tahoe) technique, ported from Ghostty's
 /// `TitlebarTabsTahoeTerminalWindow`. It relies on private AppKit view-class
@@ -20,11 +24,14 @@ import AppKit
 /// lookup is guarded and early-returns on mismatch, so on an OS where the
 /// internal layout changes the merge simply no-ops and the tab bar falls back to
 /// the standard strip below the traffic lights — it never crashes.
-final class TitlebarTabsWindow: NSWindow {
+final class TitlebarTabsWindow: NSWindow, NSToolbarDelegate {
     static let tabBarIdentifier = NSUserInterfaceItemIdentifier("_termyTabBar")
 
     /// Left gutter reserved for the traffic-light buttons.
     private static let windowButtonsGutter: CGFloat = 70
+
+    /// The centered window-title label, shown only when there is no tab bar.
+    private let titleField = TitlebarTitleField(labelWithString: "")
 
     /// Observes the native tab bar's frame so we can re-pin our constraints when
     /// AppKit resizes it (appearance changes, tab open/close clear our layout).
@@ -60,33 +67,75 @@ final class TitlebarTabsWindow: NSWindow {
     }
 
     // Assigning `title` re-reveals the native title view on macOS 15+/26; re-hide
-    // it while titlebar tabs are active so the merged row stays clean.
+    // it while titlebar tabs are active (our custom toolbar item shows it instead).
     override var title: String {
         didSet {
-            if titlebarTabs {
-                titleVisibility = .hidden
-            }
+            guard titlebarTabs else { return }
+            titleVisibility = .hidden
+            titleField.stringValue = title
         }
     }
 
     private func generateToolbar() {
         guard toolbar == nil else { return }
         let toolbar = NSToolbar(identifier: "TermyTitlebarTabs")
+        toolbar.delegate = self
         toolbar.showsBaselineSeparator = false
+        toolbar.centeredItemIdentifiers.insert(.termyTitle)
         self.toolbar = toolbar
         toolbarStyle = .unifiedCompact
+        titleField.stringValue = title
     }
 
     // MARK: NSWindow
 
     override func becomeMain() {
         super.becomeMain()
+        titleField.textColor = .labelColor
         // AppKit only attaches the live NSTabBar to whichever window in the group
         // is main, moving it on focus changes — so re-pin it every time we gain
         // main. `setupTabBar` is idempotent.
         if titlebarTabs {
+            // Defer a tick so the sync sees the post-transition tab-bar state
+            // (e.g. after closing the key tab, this window only learns it is now
+            // alone via becoming main — there is no accessory-removal callback).
+            DispatchQueue.main.async { [weak self] in
+                self?.syncTitleVisibility()
+            }
             setupTabBar()
         }
+    }
+
+    /// True when the native tab bar is occupying the titlebar row. We gate the
+    /// centered title on the bar's *visibility*, not the tab count: a force-shown
+    /// bar (System Settings "Prefer tabs: Always", or View ▸ Show Tab Bar) leaves
+    /// a lone window at count 1 with a visible bar, so a count-based gate would
+    /// draw the title on top of the strip. `isTabBarVisible` also stays false for
+    /// a leftover empty bar, preserving the no-blank-title intent.
+    private var isTabBarOccupyingRow: Bool {
+        tabGroup?.isTabBarVisible ?? false
+    }
+
+    /// Show the centered window title only when the tab bar is not on the row.
+    private func syncTitleVisibility() {
+        titleField.isHidden = isTabBarOccupyingRow
+    }
+
+    override func resignMain() {
+        super.resignMain()
+        titleField.textColor = .tertiaryLabelColor
+    }
+
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .leftMouseDown,
+           event.clickCount == 2,
+           titlebarTabs,
+           shouldHandleTitlebarDoubleClick(at: event.locationInWindow)
+        {
+            performTitlebarDoubleClickAction()
+            return
+        }
+        super.sendEvent(event)
     }
 
     /// Matches AppKit's window tab bar accessory. AppKit first attaches an empty
@@ -133,6 +182,11 @@ final class TitlebarTabsWindow: NSWindow {
         super.removeTitlebarAccessoryViewController(at: index)
         if wasTabBar {
             tabBarObserver = nil
+            // Back to a single tab: show the centered title again. Defer a tick so
+            // `tabbedWindows` reflects the post-removal count, not the stale group.
+            DispatchQueue.main.async { [weak self] in
+                self?.syncTitleVisibility()
+            }
         }
     }
 
@@ -146,6 +200,8 @@ final class TitlebarTabsWindow: NSWindow {
         guard let titlebarView,
               let tabBarView = self.tabBarView
         else {
+            // No tab bar present (single tab): show the centered title.
+            syncTitleVisibility()
             return
         }
 
@@ -161,6 +217,10 @@ final class TitlebarTabsWindow: NSWindow {
         else {
             return
         }
+
+        // A tab bar exists: hide the centered title so it doesn't overlap (unless
+        // this is a lone window with a leftover empty bar).
+        syncTitleVisibility()
 
         // Keep the tab bar from being vertically stretched: AppKit sizes the new
         // tab button square, so match the bar height to its width.
@@ -200,6 +260,130 @@ final class TitlebarTabsWindow: NSWindow {
             }
         }
     }
+
+    // MARK: NSToolbarDelegate
+
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        [.termyTitle, .flexibleSpace, .space]
+    }
+
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        // Flexible spaces on both sides keep the title centered as it grows.
+        [.flexibleSpace, .termyTitle, .flexibleSpace]
+    }
+
+    func toolbar(
+        _ toolbar: NSToolbar,
+        itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
+        willBeInsertedIntoToolbar flag: Bool
+    ) -> NSToolbarItem? {
+        guard itemIdentifier == .termyTitle else {
+            return NSToolbarItem(itemIdentifier: itemIdentifier)
+        }
+        let item = NSToolbarItem(itemIdentifier: .termyTitle)
+        item.view = titleField
+        item.visibilityPriority = .user
+        item.isEnabled = false
+        // Avoids the glass capsule background NSToolbar draws around custom views.
+        item.isBordered = false
+        // Size to the text and let the flexible spaces center it. Hugging low so
+        // the field can grow toward (but not past) the available width.
+        titleField.translatesAutoresizingMaskIntoConstraints = false
+        titleField.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        titleField.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
+        titleField.heightAnchor.constraint(equalToConstant: 22).isActive = true
+        return item
+    }
+
+    private func shouldHandleTitlebarDoubleClick(at windowPoint: NSPoint) -> Bool {
+        guard isPointInTitlebarBand(windowPoint) else {
+            return false
+        }
+        if let hitView = contentView?.rootView.hitTest(windowPoint),
+           hitView.isInteractiveTitlebarTabControl
+        {
+            return false
+        }
+        return true
+    }
+
+    private func isPointInTitlebarBand(_ windowPoint: NSPoint) -> Bool {
+        let contentMaxY = contentLayoutRect.maxY
+        if windowPoint.y >= contentMaxY {
+            return true
+        }
+
+        if let titlebarView {
+            let titlebarFrame = titlebarView.convert(titlebarView.bounds, to: nil)
+            if titlebarFrame.contains(windowPoint) {
+                return true
+            }
+        }
+
+        if let toolbarView = titlebarView?.firstDescendant(withClassName: "NSToolbarView") {
+            let toolbarFrame = toolbarView.convert(toolbarView.bounds, to: nil)
+            if toolbarFrame.contains(windowPoint) {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    private func performTitlebarDoubleClickAction() {
+        switch UserDefaults.standard.string(forKey: "AppleActionOnDoubleClick")?.lowercased() {
+        case "minimize":
+            performMiniaturize(nil)
+        case "none":
+            return
+        default:
+            zoom(nil)
+        }
+    }
+}
+
+private extension NSView {
+    var isInteractiveTitlebarTabControl: Bool {
+        var view: NSView? = self
+        while let current = view {
+            if current.className == "NSTabBarButton"
+                || current.className == "NSTabBarNewTabButton"
+                || current.className == "NSButton"
+            {
+                return true
+            }
+            if current.className == "NSTitlebarView"
+                || current.className == "NSToolbarView"
+            {
+                return false
+            }
+            view = current.superview
+        }
+        return false
+    }
+}
+
+/// A non-interactive, vertically-centered titlebar label that passes clicks
+/// through so titlebar dragging and double-click-to-zoom keep working.
+private final class TitlebarTitleField: NSTextField {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func viewDidMoveToSuperview() {
+        super.viewDidMoveToSuperview()
+        isEditable = false
+        isSelectable = false
+        isBordered = false
+        drawsBackground = false
+        alignment = .center
+        lineBreakMode = .byTruncatingTail
+        cell?.truncatesLastVisibleLine = true
+        font = .titleBarFont(ofSize: NSFont.systemFontSize)
+        textColor = .labelColor
+    }
+}
+
+private extension NSToolbarItem.Identifier {
+    static let termyTitle = NSToolbarItem.Identifier("TermyTitle")
 }
 
 // MARK: - Private AppKit view-hierarchy access

@@ -1228,13 +1228,13 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
             windows.append(window)
         }
 
-        append(sourceWindow)
         if let tabGroup = sourceWindow.tabGroup {
             tabGroup.windows.forEach(append)
             NSApp.windows
                 .filter { $0.tabGroup === tabGroup }
                 .forEach(append)
         }
+        append(sourceWindow)
         sourceWindow.tabbedWindows?.forEach(append)
 
         return windows.filter(isNativeTerminalTabWindow)
@@ -1301,6 +1301,18 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
             ),
             for: window
         )
+    }
+
+    @discardableResult
+    func applyFocusedTerminalChrome(for store: TerminalWorkspaceStore) -> Bool {
+        var didApply = false
+        for window in NSApp.windows where isNativeTerminalTabWindow(window) {
+            guard TerminalCommandRouter.shared.store(forWindow: window) === store else {
+                continue
+            }
+            didApply = applyFocusedTerminalChrome(for: window) || didApply
+        }
+        return didApply
     }
 
     @discardableResult
