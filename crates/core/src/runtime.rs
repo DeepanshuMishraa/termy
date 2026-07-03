@@ -908,10 +908,12 @@ impl EventListener for JsonEventListener {
     }
 }
 
-/// Sized at 2× `NATIVE_EVENT_LOOP_MAX_LOCKED_READ`: enough to keep
-/// accumulating PTY output while the UI holds the terminal lock, without
-/// dirtying a full megabyte of stack per session thread.
-const NATIVE_EVENT_LOOP_READ_BUFFER_SIZE: usize = 0x2_0000;
+/// Sized to hold one `NATIVE_EVENT_LOOP_MAX_LOCKED_READ` parse budget: reads
+/// accumulate here while the UI holds the terminal lock, and once a full
+/// budget is buffered the reader blocks on the lock anyway (the kernel PTY
+/// buffer absorbs the rest), so larger sizes only dirty more per-pane thread
+/// stack for the lifetime of the session.
+const NATIVE_EVENT_LOOP_READ_BUFFER_SIZE: usize = 0x1_0000;
 const NATIVE_EVENT_LOOP_MAX_LOCKED_READ: usize = u16::MAX as usize;
 #[cfg(not(target_os = "windows"))]
 const NATIVE_EVENT_LOOP_READ_WRITE_TOKEN: usize = 0;
