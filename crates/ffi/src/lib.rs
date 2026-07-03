@@ -59,11 +59,12 @@ pub struct TermyFfiColor {
     pub a: u8,
 }
 
+/// One viewport cell. Carries no position: full frames are row-major
+/// (`index = row * cols + col`) and frame-update cells follow the dirty spans
+/// in order, so the host derives position from context.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TermyFfiCell {
-    pub col: usize,
-    pub row: usize,
     pub codepoint: u32,
     pub fg: TermyFfiColor,
     pub bg: TermyFfiColor,
@@ -357,8 +358,6 @@ impl From<TermyColor> for TermyFfiColor {
 impl From<TermyCell> for TermyFfiCell {
     fn from(cell: TermyCell) -> Self {
         Self {
-            col: cell.col,
-            row: cell.row,
             codepoint: cell.char as u32,
             fg: cell.fg.into(),
             bg: cell.bg.into(),

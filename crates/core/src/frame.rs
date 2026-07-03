@@ -26,10 +26,11 @@ pub struct TermyColor {
     pub a: u8,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// One viewport cell. Carries no position: full frames are row-major
+/// (`index = row * cols + col`) and partial updates list cells in dirty-span
+/// order, so position is derived from context on the consuming side.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TermyCell {
-    pub col: usize,
-    pub row: usize,
     pub char: char,
     pub fg: TermyColor,
     pub bg: TermyColor,
@@ -99,15 +100,8 @@ fn bold_foreground_color(color: AnsiColor) -> AnsiColor {
     }
 }
 
-fn default_cell(
-    col: usize,
-    row: usize,
-    live_colors: &Colors,
-    query_colors: TerminalQueryColors,
-) -> TermyCell {
+fn default_cell(live_colors: &Colors, query_colors: TerminalQueryColors) -> TermyCell {
     TermyCell {
-        col,
-        row,
         char: ' ',
         fg: color_to_rgba(
             AnsiColor::Named(NamedColor::Foreground),
@@ -126,8 +120,6 @@ fn default_cell(
 }
 
 fn cell_from_renderable_cell(
-    col: usize,
-    row: usize,
     cell: &Cell,
     live_colors: &Colors,
     query_colors: TerminalQueryColors,
@@ -153,8 +145,6 @@ fn cell_from_renderable_cell(
     }
 
     TermyCell {
-        col,
-        row,
         char: cell.c,
         fg,
         bg: color_to_rgba(bg, live_colors, query_colors),
@@ -176,19 +166,10 @@ pub(crate) fn snapshot_from_term<T: EventListener>(
     let cols = usize::from(size.cols);
     let rows = usize::from(size.rows);
     let live_colors = term.colors();
-    let mut cells = Vec::with_capacity(cols.saturating_mul(rows));
     // Resolving the default fg/bg colors costs several palette lookups per
-    // call; stamp coordinates onto one template instead of resolving per cell.
-    let template = default_cell(0, 0, live_colors, query_colors);
-    for row in 0..rows {
-        for col in 0..cols {
-            cells.push(TermyCell {
-                col,
-                row,
-                ..template.clone()
-            });
-        }
-    }
+    // call; resolve one template instead of resolving per cell.
+    let template = default_cell(live_colors, query_colors);
+    let mut cells = vec![template; cols.saturating_mul(rows)];
 
     let content = term.renderable_content();
     for indexed_cell in content.display_iter {
@@ -206,8 +187,7 @@ pub(crate) fn snapshot_from_term<T: EventListener>(
             .checked_mul(cols)
             .and_then(|base| base.checked_add(col))
             .expect("frame cell index must fit usize");
-        cells[idx] =
-            cell_from_renderable_cell(col, row, indexed_cell.cell, live_colors, query_colors);
+        cells[idx] = cell_from_renderable_cell(indexed_cell.cell, live_colors, query_colors);
     }
 
     let grid = term.grid();
@@ -248,7 +228,7 @@ pub(crate) fn snapshot_update_from_term<T: EventListener>(
         TerminalDamageSnapshot::Partial(spans) => {
             let mut update_spans = Vec::new();
             let mut cells = Vec::new();
-            let template = default_cell(0, 0, live_colors, query_colors);
+            let template = default_cell(live_colors, query_colors);
 
             for span in spans {
                 if span.row >= rows || cols == 0 {
@@ -266,13 +246,7 @@ pub(crate) fn snapshot_update_from_term<T: EventListener>(
                     right_col,
                     base_index,
                 });
-                for col in left_col..=right_col {
-                    cells.push(TermyCell {
-                        col,
-                        row: span.row,
-                        ..template.clone()
-                    });
-                }
+                cells.resize(cells.len() + (right_col - left_col + 1), template);
             }
 
             let display_offset = grid.display_offset() as i32;
@@ -281,8 +255,7 @@ pub(crate) fn snapshot_update_from_term<T: EventListener>(
                 for col in span.left_col..=span.right_col {
                     let index = span.base_index + (col - span.left_col);
                     let cell = &grid[line][Column(col)];
-                    cells[index] =
-                        cell_from_renderable_cell(col, span.row, cell, live_colors, query_colors);
+                    cells[index] = cell_from_renderable_cell(cell, live_colors, query_colors);
                 }
             }
 
@@ -471,23 +444,10 @@ mod tests {
                 right_col: 2,
             }])
         );
+        // Cells are listed in dirty-span order: (row 0, cols 1..=2).
         assert_eq!(update.cells.len(), 2);
-        assert_eq!(
-            (
-                update.cells[0].row,
-                update.cells[0].col,
-                update.cells[0].char
-            ),
-            (0, 1, 'b')
-        );
-        assert_eq!(
-            (
-                update.cells[1].row,
-                update.cells[1].col,
-                update.cells[1].char
-            ),
-            (0, 2, 'c')
-        );
+        assert_eq!(update.cells[0].char, 'b');
+        assert_eq!(update.cells[1].char, 'c');
     }
 
     #[test]
@@ -513,12 +473,9 @@ mod tests {
             }]),
         );
 
+        // One cell per dirty column (1..=3), all blanks.
         assert_eq!(update.cells.len(), 3);
         assert!(update.cells.iter().all(|cell| cell.char == ' '));
-        assert_eq!(
-            update.cells.iter().map(|cell| cell.col).collect::<Vec<_>>(),
-            vec![1, 2, 3]
-        );
     }
 
     #[test]
@@ -571,20 +528,14 @@ mod tests {
                 },
             ])
         );
+        // Cells follow the clipped spans in order: (0,1..=3) then (1,2..=4).
         assert_eq!(
             update
                 .cells
                 .iter()
-                .map(|cell| (cell.row, cell.col, cell.char))
+                .map(|cell| cell.char)
                 .collect::<Vec<_>>(),
-            vec![
-                (0, 1, 'b'),
-                (0, 2, 'c'),
-                (0, 3, 'd'),
-                (1, 2, 'h'),
-                (1, 3, 'i'),
-                (1, 4, 'j'),
-            ]
+            vec!['b', 'c', 'd', 'h', 'i', 'j']
         );
     }
 }

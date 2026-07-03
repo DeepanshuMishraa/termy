@@ -887,6 +887,11 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
         window.tabbingMode = .preferred
         window.tabbingIdentifier = tabbingIdentifier
         window.collectionBehavior.insert(.fullScreenPrimary)
+        // Terminal colors are 24-bit sRGB; without a pinned color space the
+        // Tahoe compositor backs the window with half-float (8 bytes/px)
+        // drawables, doubling window-surface memory (~42 MB → ~15 MB each
+        // for a full-screen window).
+        window.colorSpace = .sRGB
 
         let identifier = ObjectIdentifier(window)
         registerWindowLifecycleObservers(for: window)

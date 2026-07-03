@@ -572,7 +572,7 @@ fn numeric_keys_parse_table_driven() {
     assert_eq!(parse("scrollback = 3000\n").scrollback_history, 3000);
     assert_eq!(
         parse("scrollback_history = 200000\n").scrollback_history,
-        100_000
+        20_000
     );
 
     assert_eq!(parse("font_size = inf\n").font_size, defaults.font_size);

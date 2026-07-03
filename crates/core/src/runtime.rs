@@ -839,8 +839,46 @@ impl JsonEventListener {
     }
 
     fn send_terminal_event(&self, event: TerminalEvent) {
-        let _ = self.events_tx.send(RuntimeEvent::Terminal(event));
+        self.send_runtime_event(RuntimeEvent::Terminal(event));
         self.send_wake_signal();
+    }
+
+    /// Queues an event unless the host has stopped draining and the event is
+    /// safe to shed. The channel is unbounded because the producer may hold
+    /// the terminal lock while sending and the drain path takes the same lock,
+    /// so blocking backpressure could deadlock; this soft cap is what keeps a
+    /// non-draining host (hidden pane, stalled UI) from growing the queue
+    /// without bound instead.
+    fn send_runtime_event(&self, event: RuntimeEvent) {
+        if self.events_tx.len() >= EVENT_QUEUE_SOFT_CAP && droppable_when_backlogged(&event) {
+            return;
+        }
+        let _ = self.events_tx.send(event);
+    }
+}
+
+/// Soft cap on pending, undrained runtime events. Well above what a draining
+/// host ever accumulates (the per-frame drain batch is 2048), so shedding only
+/// starts once the host has clearly stopped consuming.
+const EVENT_QUEUE_SOFT_CAP: usize = 8192;
+
+/// Whether an event can be shed once the queue is backlogged. State-refresh
+/// events are safe: they either carry latest-wins state that the next
+/// occurrence re-synchronizes (title, working directory, progress) or are
+/// cosmetic (bell, cursor state, shell integration marks). Everything else —
+/// exit, clipboard, and the query events whose drain-time replies the child
+/// process may block on — is always queued.
+fn droppable_when_backlogged(event: &RuntimeEvent) -> bool {
+    match event {
+        RuntimeEvent::Alacritty(event) => matches!(
+            event,
+            AlacEvent::Title(_)
+                | AlacEvent::ResetTitle
+                | AlacEvent::Bell
+                | AlacEvent::CursorBlinkingChange
+                | AlacEvent::MouseCursorDirty
+        ),
+        RuntimeEvent::Terminal(_) => true,
     }
 }
 
@@ -864,16 +902,18 @@ impl EventListener for JsonEventListener {
             }
             return;
         }
-        let _ = self.events_tx.send(RuntimeEvent::Alacritty(event));
+        self.send_runtime_event(RuntimeEvent::Alacritty(event));
         // This channel only nudges the UI thread to drain terminal events promptly.
         self.send_wake_signal();
     }
 }
 
-/// Sized at 2× `NATIVE_EVENT_LOOP_MAX_LOCKED_READ`: enough to keep
-/// accumulating PTY output while the UI holds the terminal lock, without
-/// dirtying a full megabyte of stack per session thread.
-const NATIVE_EVENT_LOOP_READ_BUFFER_SIZE: usize = 0x2_0000;
+/// Sized to hold one `NATIVE_EVENT_LOOP_MAX_LOCKED_READ` parse budget: reads
+/// accumulate here while the UI holds the terminal lock, and once a full
+/// budget is buffered the reader blocks on the lock anyway (the kernel PTY
+/// buffer absorbs the rest), so larger sizes only dirty more per-pane thread
+/// stack for the lifetime of the session.
+const NATIVE_EVENT_LOOP_READ_BUFFER_SIZE: usize = 0x1_0000;
 const NATIVE_EVENT_LOOP_MAX_LOCKED_READ: usize = u16::MAX as usize;
 #[cfg(not(target_os = "windows"))]
 const NATIVE_EVENT_LOOP_READ_WRITE_TOKEN: usize = 0;
@@ -1775,10 +1815,10 @@ mod tests {
     #[cfg(target_os = "windows")]
     use super::quote_shell_program_if_needed;
     use super::{
-        DEFAULT_TERM, GHOSTTY_COMPAT_TERM_PROGRAM, GHOSTTY_COMPAT_TERM_PROGRAM_VERSION,
-        JsonEventListener, RuntimeEvent, TERMY_TERM_PROGRAM, TerminalCursorState,
-        TerminalCursorStyle, TerminalDamageSnapshot, TerminalEvent, TerminalRuntimeConfig,
-        TerminalSize, WindowsShell, WorkingDirFallback, apply_term_config,
+        DEFAULT_TERM, EVENT_QUEUE_SOFT_CAP, GHOSTTY_COMPAT_TERM_PROGRAM,
+        GHOSTTY_COMPAT_TERM_PROGRAM_VERSION, JsonEventListener, RuntimeEvent, TERMY_TERM_PROGRAM,
+        TerminalCursorState, TerminalCursorStyle, TerminalDamageSnapshot, TerminalEvent,
+        TerminalRuntimeConfig, TerminalSize, WindowsShell, WorkingDirFallback, apply_term_config,
         cursor_position_from_term, cursor_state_from_term, default_shell_launch,
         drain_runtime_events, normalize_working_directory_candidate, pty_env_overrides,
         resolve_launch_working_directory, resolve_shell_path, search_term_buffer,
@@ -2189,6 +2229,29 @@ mod tests {
         ));
 
         assert_eq!(wake_rx.try_iter().count(), 2);
+    }
+
+    #[test]
+    fn backlogged_event_queue_sheds_state_refresh_events_only() {
+        let (events_tx, events_rx) = unbounded();
+        let listener = JsonEventListener::new(events_tx, None);
+
+        for _ in 0..(EVENT_QUEUE_SOFT_CAP + 100) {
+            listener.send_event(alacritty_terminal::event::Event::Title("t".to_string()));
+        }
+        assert_eq!(events_rx.len(), EVENT_QUEUE_SOFT_CAP);
+
+        // OSC-derived terminal events shed under backlog too.
+        listener.send_terminal_event(TerminalEvent::Bell);
+        assert_eq!(events_rx.len(), EVENT_QUEUE_SOFT_CAP);
+
+        // Protocol-critical events are queued even while backlogged.
+        listener.send_event(alacritty_terminal::event::Event::Exit);
+        listener.send_event(alacritty_terminal::event::Event::ClipboardStore(
+            ClipboardType::Clipboard,
+            "x".to_string(),
+        ));
+        assert_eq!(events_rx.len(), EVENT_QUEUE_SOFT_CAP + 2);
     }
 
     #[test]

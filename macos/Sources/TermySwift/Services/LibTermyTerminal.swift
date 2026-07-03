@@ -4,6 +4,7 @@ import Foundation
 enum LibTermyError: Error, CustomStringConvertible {
     case missingTerminal
     case missingCells
+    case cellCountMismatch
 
     var description: String {
         switch self {
@@ -11,6 +12,8 @@ enum LibTermyError: Error, CustomStringConvertible {
             return "libtermy did not return a terminal handle"
         case .missingCells:
             return "libtermy returned a frame without cells"
+        case .cellCountMismatch:
+            return "libtermy returned a cell count that does not match the frame damage"
         }
     }
 }
@@ -382,8 +385,16 @@ final class LibTermyTerminal {
             throw LibTermyError.missingCells
         }
 
+        // Full frames are row-major; positions are derived from the index.
+        let cols = Int(frame.cols)
+        guard cols > 0, Int(frame.cells_len) == cols * Int(frame.rows) else {
+            throw LibTermyError.cellCountMismatch
+        }
         let cells = UnsafeBufferPointer(start: cellsPtr, count: Int(frame.cells_len))
-            .map(Self.cell(from:))
+            .enumerated()
+            .map { index, ffiCell in
+                Self.cell(from: ffiCell, col: index % cols, row: index / cols)
+            }
         let cursor = frame.cursor.visible
             ? TerminalCursor(
                 col: Int(frame.cursor.col),
@@ -414,17 +425,6 @@ final class LibTermyTerminal {
             _ = termy_frame_update_free(&update)
         }
 
-        let cells: [TerminalCell]
-        if update.cells_len > 0 {
-            guard let cellsPtr = update.cells_ptr else {
-                throw LibTermyError.missingCells
-            }
-            cells = UnsafeBufferPointer(start: cellsPtr, count: Int(update.cells_len))
-                .map(Self.cell(from:))
-        } else {
-            cells = []
-        }
-
         let damage: TerminalDamage
         switch update.damage_kind {
         case 1:
@@ -449,6 +449,46 @@ final class LibTermyTerminal {
             }
         default:
             damage = .none
+        }
+
+        // Cells carry no position over the FFI: a full update is row-major and
+        // a partial update lists cells in dirty-span order.
+        let cells: [TerminalCell]
+        if update.cells_len > 0 {
+            guard let cellsPtr = update.cells_ptr else {
+                throw LibTermyError.missingCells
+            }
+            let ffiCells = UnsafeBufferPointer(start: cellsPtr, count: Int(update.cells_len))
+            switch damage {
+            case .full:
+                let cols = Int(update.cols)
+                guard cols > 0, ffiCells.count == cols * Int(update.rows) else {
+                    throw LibTermyError.cellCountMismatch
+                }
+                cells = ffiCells.enumerated().map { index, ffiCell in
+                    Self.cell(from: ffiCell, col: index % cols, row: index / cols)
+                }
+            case .partial(let spans):
+                guard spans.allSatisfy({ $0.leftCol <= $0.rightCol }),
+                      ffiCells.count == spans.reduce(0, { $0 + ($1.rightCol - $1.leftCol + 1) })
+                else {
+                    throw LibTermyError.cellCountMismatch
+                }
+                var result: [TerminalCell] = []
+                result.reserveCapacity(ffiCells.count)
+                var index = 0
+                for span in spans {
+                    for col in span.leftCol...span.rightCol {
+                        result.append(Self.cell(from: ffiCells[index], col: col, row: span.row))
+                        index += 1
+                    }
+                }
+                cells = result
+            case .none:
+                throw LibTermyError.cellCountMismatch
+            }
+        } else {
+            cells = []
         }
 
         return TerminalFrameUpdate(
@@ -643,10 +683,10 @@ final class LibTermyTerminal {
         }
     }
 
-    private static func cell(from ffiCell: TermyFfiCell) -> TerminalCell {
+    private static func cell(from ffiCell: TermyFfiCell, col: Int, row: Int) -> TerminalCell {
         TerminalCell(
-            col: Int(ffiCell.col),
-            row: Int(ffiCell.row),
+            col: col,
+            row: row,
             codepoint: ffiCell.codepoint,
             foreground: TerminalRGBA(ffiCell.fg),
             background: TerminalRGBA(ffiCell.bg),
