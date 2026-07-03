@@ -52,12 +52,36 @@ final class AppLogoManager: ObservableObject {
         return image
     }
 
+    /// The logo already baked into the bundle as `CFBundleIconFile`; the Dock
+    /// shows it without any in-process image.
+    private static let bundleIconResourceName = "TermyIcon"
+
     /// Applies the selected logo to the running app's Dock / Cmd-Tab icon.
     /// Called on launch and whenever the selection changes.
+    ///
+    /// Setting `NSApp.applicationIconImage` makes AppKit render and retain a
+    /// process-lifetime snapshot at `image.size × screen scale` in deep color
+    /// (a 1024 pt image costs a 2048×2048×8B ≈ 32 MB bitmap). So the bundle's
+    /// own icon is restored with `nil` instead of re-assigned, and custom
+    /// logos are capped at 512 pt — the source PNGs are 1024 px, so the
+    /// snapshot stays pixel-identical at 4× less memory.
     func applyToDock() {
-        if let image = image(for: selected) {
-            NSApp.applicationIconImage = image
+        guard selected.resourceName != Self.bundleIconResourceName else {
+            NSApp.applicationIconImage = nil
+            return
         }
+        guard let image = image(for: selected), let dockImage = image.copy() as? NSImage else {
+            return
+        }
+        let maxSide: CGFloat = 512
+        if dockImage.size.width > maxSide || dockImage.size.height > maxSide {
+            let scale = maxSide / max(dockImage.size.width, dockImage.size.height)
+            dockImage.size = NSSize(
+                width: dockImage.size.width * scale,
+                height: dockImage.size.height * scale
+            )
+        }
+        NSApp.applicationIconImage = dockImage
     }
 
     func reloadFromConfig() {
