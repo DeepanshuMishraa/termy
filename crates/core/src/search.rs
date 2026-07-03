@@ -199,13 +199,11 @@ mod tests {
             a: 255,
         };
         let mut cells = Vec::new();
-        for (row, text) in rows.iter().enumerate() {
+        for text in rows {
             let mut chars = text.chars();
-            for col in 0..usize::from(cols) {
+            for _ in 0..usize::from(cols) {
                 let char = chars.next().unwrap_or(' ');
                 cells.push(TermyCell {
-                    col,
-                    row,
                     char,
                     fg: color,
                     bg: TermyColor::default(),

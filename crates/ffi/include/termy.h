@@ -62,9 +62,10 @@ typedef struct {
   uint8_t a;
 } TermyFfiColor;
 
+/* One viewport cell. Carries no position: full frames are row-major
+ * (index = row * cols + col) and frame-update cells follow the dirty spans
+ * in order, so the host derives position from context. */
 typedef struct {
-  size_t col;
-  size_t row;
   uint32_t codepoint;
   TermyFfiColor fg;
   TermyFfiColor bg;
