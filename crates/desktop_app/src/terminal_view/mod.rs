@@ -47,6 +47,7 @@ use termy_terminal_ui::{
     WindowsShell as RuntimeWindowsShell, WorkingDirFallback as RuntimeWorkingDirFallback,
     find_link_in_line, hyperlink_at_viewport_cell, keystroke_to_input,
     normalize_working_directory_candidate, resolve_launch_working_directory,
+    resolve_working_directory_path,
 };
 use termy_toast::ToastManager;
 
@@ -2061,6 +2062,16 @@ impl TerminalView {
         value
     }
 
+    fn inherited_working_dir_candidate(candidate: Option<&str>) -> Option<String> {
+        // Session-derived cwds (prompt/process/title) can name paths from another
+        // filesystem namespace — a shell inside WSL or over SSH reports its remote
+        // cwd. A candidate that does not resolve locally must fall through to the
+        // configured working_dir instead of shadowing it and collapsing to the
+        // home-directory fallback at spawn time (issue #336).
+        normalize_working_directory_candidate(candidate)
+            .filter(|value| resolve_working_directory_path(Some(value)).is_some())
+    }
+
     fn resolve_preferred_working_directory(
         explicit_working_dir: Option<&str>,
         prompt_cwd: Option<&str>,
@@ -2072,12 +2083,12 @@ impl TerminalView {
         // Keep tmux and native session creation on the same cwd precedence chain so
         // new tabs/panes do not drift based on which runtime happens to be active.
         let explicit_working_dir = normalize_working_directory_candidate(explicit_working_dir);
-        let prompt_cwd = normalize_working_directory_candidate(prompt_cwd);
-        let process_cwd = normalize_working_directory_candidate(process_cwd);
+        let prompt_cwd = Self::inherited_working_dir_candidate(prompt_cwd);
+        let process_cwd = Self::inherited_working_dir_candidate(process_cwd);
         let title_cwd = title_cwd
             .map(str::trim)
             .filter(|value| Self::looks_like_working_dir_path(value))
-            .and_then(|value| normalize_working_directory_candidate(Some(value)));
+            .and_then(|value| Self::inherited_working_dir_candidate(Some(value)));
 
         explicit_working_dir
             .or(prompt_cwd)
@@ -4745,25 +4756,32 @@ mod tests {
 
     #[test]
     fn preferred_working_directory_prefers_active_sources_before_configured_and_fallback() {
+        // Inherited candidates only count when they exist locally, so use two
+        // distinct real directories.
+        let prompt = std::env::temp_dir().to_string_lossy().into_owned();
+        let process = std::env::current_dir()
+            .expect("current dir")
+            .to_string_lossy()
+            .into_owned();
         let cwd = TerminalView::resolve_preferred_working_directory(
             None,
-            Some("/prompt"),
-            Some("/process"),
-            Some("/title"),
+            Some(prompt.as_str()),
+            Some(process.as_str()),
+            None,
             Some("/configured"),
             RuntimeWorkingDirFallback::Process,
         );
-        assert_eq!(cwd.as_deref(), Some("/prompt"));
+        assert_eq!(cwd.as_deref(), Some(prompt.as_str()));
 
         let cwd = TerminalView::resolve_preferred_working_directory(
             None,
             None,
-            Some("/process"),
-            Some("/title"),
+            Some(process.as_str()),
+            None,
             Some("/configured"),
             RuntimeWorkingDirFallback::Process,
         );
-        assert_eq!(cwd.as_deref(), Some("/process"));
+        assert_eq!(cwd.as_deref(), Some(process.as_str()));
     }
 
     #[test]
@@ -4847,15 +4865,36 @@ mod tests {
 
     #[test]
     fn attach_resolution_uses_active_working_directory_before_default_launch_dir() {
+        let active = std::env::current_dir()
+            .expect("current dir")
+            .to_string_lossy()
+            .into_owned();
         let cwd = TerminalView::resolve_preferred_working_directory(
             None,
-            Some("/active/project"),
+            Some(active.as_str()),
             None,
             None,
             Some("/configured"),
             RuntimeWorkingDirFallback::Process,
         );
-        assert_eq!(cwd.as_deref(), Some("/active/project"));
+        assert_eq!(cwd.as_deref(), Some(active.as_str()));
+    }
+
+    #[test]
+    fn non_local_prompt_cwd_falls_through_to_configured_working_directory() {
+        // A shell inside WSL or over SSH reports a cwd that does not exist on the
+        // host; new sessions must keep honoring the configured working_dir
+        // instead of collapsing to the home fallback (issue #336).
+        let configured = std::env::current_dir().expect("current dir");
+        let cwd = TerminalView::resolve_preferred_working_directory(
+            None,
+            Some("/home/kamr"),
+            Some("/also/not/a/local/path"),
+            None,
+            Some(configured.to_string_lossy().as_ref()),
+            RuntimeWorkingDirFallback::Home,
+        );
+        assert_eq!(cwd.as_deref(), Some(configured.to_string_lossy().as_ref()));
     }
 
     #[cfg(target_os = "macos")]

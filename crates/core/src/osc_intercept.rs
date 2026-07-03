@@ -4,6 +4,7 @@
 //! alacritty_terminal does not expose as events:
 //! - OSC 7: Working directory (file:// URL)
 //! - OSC 9;4: Progress indicator (ConEmu/Windows Terminal)
+//! - OSC 9;9: Working directory (ConEmu path form; WSL reports its cwd this way)
 //! - OSC 133: Shell integration (prompt/command lifecycle)
 
 use crate::shell_integration::ProgressState;
@@ -11,8 +12,9 @@ use crate::shell_integration::ProgressState;
 /// Events extracted from custom OSC sequences
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OscEvent {
-    /// OSC 7 - Working directory change
-    /// Format: ESC ] 7 ; file://hostname/path ST
+    /// OSC 7 / OSC 9;9 - Working directory change
+    /// Formats: ESC ] 7 ; file://hostname/path ST
+    ///          ESC ] 9 ; 9 ; path ST (path may be double-quoted; emitted by WSL)
     WorkingDirectory(String),
 
     /// OSC 9;4 - Progress indicator (ConEmu/Windows Terminal)
@@ -195,6 +197,15 @@ impl OscInterceptor {
             if let Some(progress_part) = rest.strip_prefix("4;") {
                 return parse_progress(progress_part);
             }
+            // OSC 9;9;path - ConEmu working directory report; WSL emits the
+            // Windows-visible cwd (e.g. \\wsl.localhost\...) this way, optionally
+            // wrapped in double quotes.
+            if let Some(cwd) = rest.strip_prefix("9;") {
+                let cwd = cwd.trim().trim_matches('"');
+                if !cwd.is_empty() {
+                    return Some(OscEvent::WorkingDirectory(cwd.to_string()));
+                }
+            }
             return None;
         }
 
@@ -294,6 +305,39 @@ mod tests {
             events,
             vec![OscEvent::WorkingDirectory("/home/user".to_string())]
         );
+    }
+
+    #[test]
+    fn parse_osc_9_9_working_directory() {
+        let mut interceptor = OscInterceptor::new();
+        let (output, events) = process_str(
+            &mut interceptor,
+            "\x1b]9;9;\\\\wsl.localhost\\Ubuntu\\home\\kamr\x07",
+        );
+        assert!(output.is_empty());
+        assert_eq!(
+            events,
+            vec![OscEvent::WorkingDirectory(
+                "\\\\wsl.localhost\\Ubuntu\\home\\kamr".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn parse_osc_9_9_working_directory_strips_quotes() {
+        let mut interceptor = OscInterceptor::new();
+        let (_, events) = process_str(&mut interceptor, "\x1b]9;9;\"C:\\Users\\kamr\"\x07");
+        assert_eq!(
+            events,
+            vec![OscEvent::WorkingDirectory("C:\\Users\\kamr".to_string())]
+        );
+    }
+
+    #[test]
+    fn parse_osc_9_9_working_directory_ignores_empty_path() {
+        let mut interceptor = OscInterceptor::new();
+        let (_, events) = process_str(&mut interceptor, "\x1b]9;9;\"\"\x07");
+        assert!(events.is_empty());
     }
 
     #[test]
