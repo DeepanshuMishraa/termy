@@ -1,5 +1,3 @@
-> Development of termy has been slowed down. Do to that i'm an student, i cannot afford to put that much effort into building termy at this point. Any support will be appriciated. I did not wish to come to this point. Love you all ❤️
-
 # Termy
 
 A fast, minimal terminal emulator built with [GPUI](https://gpui.rs) and [alacritty_terminal](https://alacritty.org).
