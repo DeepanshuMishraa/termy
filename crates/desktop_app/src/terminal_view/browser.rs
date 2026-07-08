@@ -294,10 +294,7 @@ impl TerminalView {
     /// Route a Copy/Paste action into the active browser pane's webview.
     /// Returns false when the active pane is not a browser page (URL bar
     /// editing is handled by the inline-input path before this).
-    pub(super) fn forward_edit_action_to_active_browser(
-        &self,
-        action: BrowserEditAction,
-    ) -> bool {
+    pub(super) fn forward_edit_action_to_active_browser(&self, action: BrowserEditAction) -> bool {
         let Some(state) = self.active_browser_state() else {
             return false;
         };
@@ -1137,106 +1134,93 @@ fn create_browser_webview(
             }
         }
 
-        let builder = wry::WebViewBuilder::new()
-            .with_url(url)
-            .with_visible(false)
-            .with_bounds(wry::Rect {
-                position: wry::dpi::LogicalPosition::new(0, 0).into(),
-                size: wry::dpi::LogicalSize::new(0, 0).into(),
-            })
-            // Without a Safari-style user agent (wry's default has no
-            // Version/Safari tokens) sites like Google serve their legacy
-            // fallback UI for unrecognized engines.
-            .with_user_agent(BROWSER_USER_AGENT)
-            // Match browser defaults: swipe to go back/forward, no autoplay
-            // without a user gesture, devtools via right-click → Inspect,
-            // clicks land even when the window is inactive.
-            .with_back_forward_navigation_gestures(true)
-            .with_autoplay(false)
-            .with_devtools(true)
-            .with_accept_first_mouse(true)
-            .with_clipboard(true)
-            .with_hotkeys_zoom(true)
-            .with_navigation_handler(move |url| match browser_navigation_policy(&url) {
-                BrowserNavigationPolicy::Load => {
-                    if browser_url_display_worthy(&url) {
-                        store_if_changed(&nav_shared.url, url, &nav_wakeup);
-                    }
-                    true
-                }
-                BrowserNavigationPolicy::OpenExternally => {
-                    let _ = webbrowser::open(&url);
-                    false
-                }
-                BrowserNavigationPolicy::Deny => false,
-            })
-            .with_new_window_req_handler(move |url, _features| {
-                // Never let the engine spawn its own native window; route the
-                // request into a Termy browser tab on the next frame instead.
-                match browser_navigation_policy(&url) {
+        let result = with_browser_builder(move |builder| {
+            builder
+                .with_url(url)
+                .with_visible(false)
+                .with_bounds(wry::Rect {
+                    position: wry::dpi::LogicalPosition::new(0, 0).into(),
+                    size: wry::dpi::LogicalSize::new(0, 0).into(),
+                })
+                // Without a Safari-style user agent (wry's default has no
+                // Version/Safari tokens) sites like Google serve their legacy
+                // fallback UI for unrecognized engines.
+                .with_user_agent(BROWSER_USER_AGENT)
+                // Match browser defaults: swipe to go back/forward, no autoplay
+                // without a user gesture, devtools via right-click → Inspect,
+                // clicks land even when the window is inactive.
+                .with_back_forward_navigation_gestures(true)
+                .with_autoplay(false)
+                .with_devtools(true)
+                .with_accept_first_mouse(true)
+                .with_clipboard(true)
+                .with_hotkeys_zoom(true)
+                .with_navigation_handler(move |url| match browser_navigation_policy(&url) {
                     BrowserNavigationPolicy::Load => {
-                        if let Ok(mut pending) = new_window_shared.pending_new_tab_urls.lock() {
-                            pending.push(url);
+                        if browser_url_display_worthy(&url) {
+                            store_if_changed(&nav_shared.url, url, &nav_wakeup);
                         }
-                        let _ = new_window_wakeup.try_send(());
+                        true
                     }
                     BrowserNavigationPolicy::OpenExternally => {
                         let _ = webbrowser::open(&url);
+                        false
                     }
-                    BrowserNavigationPolicy::Deny => {}
-                }
-                wry::NewWindowResponse::Deny
-            })
-            .with_document_title_changed_handler(move |title| {
-                store_if_changed(&title_shared.title, title, &title_wakeup);
-            })
-            .with_on_page_load_handler(move |_event, url| {
-                if browser_url_display_worthy(&url) {
-                    store_if_changed(&load_shared.url, url, &load_wakeup);
-                }
-            })
-            // Clicks inside the native webview never reach gpui's mouse
-            // handlers; report them so the view can drop an in-progress URL
-            // edit (and its focus ring) on the next frame.
-            .with_initialization_script(
-                "window.addEventListener('mousedown', function () { \
-                     window.ipc.postMessage('pointer-down'); \
-                 }, true);",
-            )
-            .with_initialization_script(WEBAUTHN_FALLBACK_SCRIPT)
-            .with_initialization_script(FUNCTION_KEY_INSERTION_FIX_SCRIPT)
-            .with_ipc_handler(move |request| match request.body().as_str() {
-                "pointer-down" => {
-                    ipc_shared
-                        .pointer_down
-                        .store(true, std::sync::atomic::Ordering::Relaxed);
-                    let _ = ipc_wakeup.try_send(());
-                }
-                "webauthn-attempt" => {
-                    termy_toast::info(
-                        "Passkeys aren't supported in Termy's browser yet — \
-                         use \u{201c}Open in Browser\u{201d} to sign in with one",
-                    );
-                    let _ = ipc_wakeup.try_send(());
-                }
-                _ => {}
-            });
-
-        // macOS persists cookies/localStorage in WKWebsiteDataStore's default
-        // store automatically. Windows (WebView2) and Linux (WebKitGTK) need
-        // an explicit profile directory shared by every browser tab, or each
-        // run starts from a blank session.
-        #[cfg(any(target_os = "windows", target_os = "linux"))]
-        let result = BROWSER_WEB_CONTEXT.with_borrow_mut(|slot| {
-            let context = slot.get_or_insert_with(|| {
-                wry::WebContext::new(
-                    dirs::data_local_dir().map(|dir| dir.join("termy").join("browser-profile")),
+                    BrowserNavigationPolicy::Deny => false,
+                })
+                .with_new_window_req_handler(move |url, _features| {
+                    // Never let the engine spawn its own native window; route the
+                    // request into a Termy browser tab on the next frame instead.
+                    match browser_navigation_policy(&url) {
+                        BrowserNavigationPolicy::Load => {
+                            if let Ok(mut pending) = new_window_shared.pending_new_tab_urls.lock() {
+                                pending.push(url);
+                            }
+                            let _ = new_window_wakeup.try_send(());
+                        }
+                        BrowserNavigationPolicy::OpenExternally => {
+                            let _ = webbrowser::open(&url);
+                        }
+                        BrowserNavigationPolicy::Deny => {}
+                    }
+                    wry::NewWindowResponse::Deny
+                })
+                .with_document_title_changed_handler(move |title| {
+                    store_if_changed(&title_shared.title, title, &title_wakeup);
+                })
+                .with_on_page_load_handler(move |_event, url| {
+                    if browser_url_display_worthy(&url) {
+                        store_if_changed(&load_shared.url, url, &load_wakeup);
+                    }
+                })
+                // Clicks inside the native webview never reach gpui's mouse
+                // handlers; report them so the view can drop an in-progress URL
+                // edit (and its focus ring) on the next frame.
+                .with_initialization_script(
+                    "window.addEventListener('mousedown', function () { \
+                         window.ipc.postMessage('pointer-down'); \
+                     }, true);",
                 )
-            });
-            builder.with_web_context(context).build_as_child(window)
+                .with_initialization_script(WEBAUTHN_FALLBACK_SCRIPT)
+                .with_initialization_script(FUNCTION_KEY_INSERTION_FIX_SCRIPT)
+                .with_ipc_handler(move |request| match request.body().as_str() {
+                    "pointer-down" => {
+                        ipc_shared
+                            .pointer_down
+                            .store(true, std::sync::atomic::Ordering::Relaxed);
+                        let _ = ipc_wakeup.try_send(());
+                    }
+                    "webauthn-attempt" => {
+                        termy_toast::info(
+                            "Passkeys aren't supported in Termy's browser yet — \
+                             use \u{201c}Open in Browser\u{201d} to sign in with one",
+                        );
+                        let _ = ipc_wakeup.try_send(());
+                    }
+                    _ => {}
+                })
+                .build_as_child(window)
         });
-        #[cfg(target_os = "macos")]
-        let result = builder.build_as_child(window);
 
         match result {
             Ok(webview) => Ok(BrowserWebview { inner: webview }),
@@ -1251,6 +1235,28 @@ thread_local! {
     /// thread-local is effectively a singleton here.
     static BROWSER_WEB_CONTEXT: std::cell::RefCell<Option<wry::WebContext>> =
         const { std::cell::RefCell::new(None) };
+}
+
+/// Hands `f` a platform-appropriate webview builder. macOS persists
+/// cookies/localStorage in WKWebsiteDataStore's default store automatically;
+/// Windows (WebView2) and Linux (WebKitGTK) need an explicit profile
+/// directory shared by every browser tab, or each run starts from a blank
+/// session — wry only accepts the context at construction time.
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn with_browser_builder<R>(f: impl for<'a> FnOnce(wry::WebViewBuilder<'a>) -> R) -> R {
+    BROWSER_WEB_CONTEXT.with_borrow_mut(|slot| {
+        let context = slot.get_or_insert_with(|| {
+            wry::WebContext::new(
+                dirs::data_local_dir().map(|dir| dir.join("termy").join("browser-profile")),
+            )
+        });
+        f(wry::WebViewBuilder::new_with_web_context(context))
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn with_browser_builder<R>(f: impl for<'a> FnOnce(wry::WebViewBuilder<'a>) -> R) -> R {
+    f(wry::WebViewBuilder::new())
 }
 
 #[cfg(target_os = "linux")]
@@ -1342,7 +1348,10 @@ mod tests {
             "data:text/plain;base64,aGk=",
             "HTTPS://UPPER.example/",
         ] {
-            assert_eq!(browser_navigation_policy(url), BrowserNavigationPolicy::Load);
+            assert_eq!(
+                browser_navigation_policy(url),
+                BrowserNavigationPolicy::Load
+            );
         }
     }
 
@@ -1366,7 +1375,10 @@ mod tests {
             "chrome://settings",
             "",
         ] {
-            assert_eq!(browser_navigation_policy(url), BrowserNavigationPolicy::Deny);
+            assert_eq!(
+                browser_navigation_policy(url),
+                BrowserNavigationPolicy::Deny
+            );
         }
     }
 
