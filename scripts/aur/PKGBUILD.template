@@ -1,0 +1,29 @@
+# Maintainer: Lasse Vestergaard <hello@lassejlv.dk>
+pkgname=termy-bin
+pkgver=@PKGVER@
+pkgrel=1
+pkgdesc="Minimal GPUI-powered terminal (pre-compiled binary)"
+arch=('x86_64')
+url="https://github.com/lassejlv/termy"
+license=('MIT')
+depends=('glibc' 'gcc-libs' 'freetype2' 'fontconfig' 'wayland' 'libxkbcommon' 'vulkan-icd-loader')
+provides=('termy')
+conflicts=('termy')
+source=("termy-${pkgver}.tar.gz::https://github.com/lassejlv/termy/releases/download/v${pkgver}/Termy-v${pkgver}-linux-x86_64.tar.gz"
+        "termy.desktop"
+        "termy_icon.png::https://raw.githubusercontent.com/lassejlv/termy/v${pkgver}/assets/termy_icon.png")
+b2sums=('@TARBALL_B2SUM@'
+        '@DESKTOP_B2SUM@'
+        '@ICON_B2SUM@')
+
+package() {
+  # The tarball extracts to a directory named "termy", and inside that is the "termy" binary
+  cd "$srcdir/termy"
+
+  # Install the binary
+  install -Dm755 "termy" "$pkgdir/usr/bin/termy"
+
+  # Install desktop file and icon
+  install -Dm644 "$srcdir/termy.desktop" "$pkgdir/usr/share/applications/termy.desktop"
+  install -Dm644 "$srcdir/termy_icon.png" "$pkgdir/usr/share/pixmaps/termy.png"
+}
