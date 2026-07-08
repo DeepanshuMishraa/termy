@@ -45,6 +45,32 @@ typedef enum {
   TERMY_FFI_PROGRESS_WARNING = 4,
 } TermyFfiProgressState;
 
+/*
+ * Opaque terminal handle. Created by one of the *_new constructors below and
+ * destroyed with the free function. Not copyable: free each handle exactly once
+ * and never use it afterward.
+ *
+ * THREAD SAFETY. A handle is not internally synchronized. With one exception,
+ * no two functions taking the same handle may run concurrently — the caller
+ * must serialize all access to a given handle (confine it to one thread, or
+ * hold an external lock). Distinct handles are independent and may be used from
+ * different threads simultaneously.
+ *
+ * The exception is the wake channel: wait_for_wakeup and notify_wakeup touch
+ * only an internal wake channel, never the terminal state, and are the only
+ * functions safe to call concurrently with the serialized calls above. The
+ * intended pattern is a single dedicated thread blocked in wait_for_wakeup
+ * while another thread drives the terminal; notify_wakeup may be called from
+ * any thread to wake that waiter.
+ *
+ * LIFETIME. The free function invalidates the handle and releases everything it
+ * owns, including the wake channel. The caller MUST guarantee that no other
+ * function — including a thread blocked in wait_for_wakeup — is executing on
+ * the handle when it is freed, and that none is called afterward. To tear down
+ * a handle that has a wakeup thread: stop issuing terminal calls, call
+ * notify_wakeup to release the blocked wait, JOIN that thread, then free.
+ * Freeing while a thread is inside wait_for_wakeup is a use-after-free.
+ */
 typedef struct TermyFfiTerminal TermyFfiTerminal;
 typedef struct TermyFfiConfig TermyFfiConfig;
 
@@ -413,6 +439,9 @@ void termy_tmux_control_close(TermyFfiTmuxControl *session);
 
 TermyFfiStatus termy_settings_prettify_config(void);
 TermyFfiStatus termy_terminal_reload_default_config_colors(TermyFfiTerminal *terminal);
+/* Destroy a terminal handle. See the handle contract above: any wakeup thread
+ * must be woken (notify) and joined before calling this; freeing while a thread
+ * is inside wait_for_wakeup is a use-after-free. Passing null is a no-op. */
 TermyFfiStatus termy_terminal_free(TermyFfiTerminal *terminal);
 TermyFfiStatus termy_terminal_write(
     TermyFfiTerminal *terminal,
@@ -434,6 +463,10 @@ TermyFfiStatus termy_terminal_resize(TermyFfiTerminal *terminal, TermyFfiSize si
 TermyFfiStatus termy_terminal_set_wakeup_enabled(
     TermyFfiTerminal *terminal,
     bool enabled);
+/* Block up to timeout_ms (0 = poll) for a wake signal, coalescing pending
+ * signals into one *out_woke. The one function meant to run on a dedicated
+ * thread concurrently with serialized terminal calls; must not be running when
+ * the handle is freed. */
 TermyFfiStatus termy_terminal_wait_for_wakeup(
     TermyFfiTerminal *terminal,
     uint64_t timeout_ms,

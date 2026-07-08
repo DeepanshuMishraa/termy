@@ -1171,6 +1171,9 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
         applyNativeTabPlacement(for: window)
         applyFocusedTerminalChrome(for: window)
         applyFocusedTerminalChromeSoon(for: window)
+        for tabWindow in nativeTabWindows(for: window) {
+            (tabWindow as? TitlebarTabsWindow)?.refreshTitlebarTabsLayout()
+        }
         postTabsChanged()
     }
 
@@ -1270,6 +1273,7 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
             // installs the unified-compact toolbar; AppKit then routes the tab
             // accessory through the window's relocation override.
             titlebarTabsWindow?.titlebarTabs = true
+            titlebarTabsWindow?.refreshTitlebarTabsLayout()
         case .sidebar:
             titlebarTabsWindow?.titlebarTabs = false
             if window.tabGroup?.isTabBarVisible == true {

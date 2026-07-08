@@ -41,12 +41,12 @@ Platform note: the Agent Sidebar/Workspace is currently unavailable on Windows b
 - Group: `CHROME`
 
 `font_family`
-- Default: `JetBrains Mono`
+- Default: `Menlo` (macOS), `Consolas` (Windows), `monospace` (Linux/other)
 - Font family used in terminal UI
 - Group: `FONT`
 
 `ui_font_family`
-- Default: `JetBrains Mono`
+- Default: `Menlo` (macOS), `Consolas` (Windows), `monospace` (Linux/other)
 - Font family used for tabs, command palette, and settings UI (not the terminal cells)
 - Group: `FONT`
 

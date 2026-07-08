@@ -244,6 +244,9 @@ fn root_default_display(defaults: &AppConfig, id: RootSettingId) -> String {
         RootSettingId::WorkingDirFallback => {
             "`home` (macOS/Windows), `process` (Linux/other)".to_string()
         }
+        RootSettingId::FontFamily | RootSettingId::UiFontFamily => {
+            "`Menlo` (macOS), `Consolas` (Windows), `monospace` (Linux/other)".to_string()
+        }
         RootSettingId::Keybind => "built-in platform defaults".to_string(),
         _ => root_setting_default_value(defaults, id)
             .map_or_else(|| "unset".to_string(), |value| format!("`{value}`")),
@@ -266,10 +269,15 @@ fn render_default_config_template() -> String {
             RootSettingId::WorkingDir
                 | RootSettingId::WorkingDirFallback
                 | RootSettingId::InactiveTabScrollback
+                | RootSettingId::FontFamily
+                | RootSettingId::UiFontFamily
         );
 
         let value = match spec.id {
             RootSettingId::WorkingDirFallback => "home".to_string(),
+            // Platform-dependent default; pin the macOS value so the generated
+            // template is identical on every platform.
+            RootSettingId::FontFamily | RootSettingId::UiFontFamily => "Menlo".to_string(),
             _ => {
                 root_setting_default_value(&defaults, spec.id).unwrap_or_else(|| "none".to_string())
             }

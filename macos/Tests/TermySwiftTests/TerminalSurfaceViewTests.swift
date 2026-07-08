@@ -87,8 +87,10 @@ final class TerminalSurfaceViewTests: XCTestCase {
         XCTAssertTrue(TerminalWindowChromeApplier.apply(state, to: window, appliedState: &appliedState))
         XCTAssertEqual(window.title, "Focused Shell")
         XCTAssertTrue(window.titlebarAppearsTransparent)
-        XCTAssertTrue(window.isOpaque)
-        assertColor(window.backgroundColor, matches: background, alpha: 1.0)
+        // Translucent background without blur still needs a transparent window,
+        // and a clear backing so the tint isn't composited twice.
+        XCTAssertFalse(window.isOpaque)
+        XCTAssertEqual(window.backgroundColor.usingColorSpace(.sRGB)?.alphaComponent ?? 1.0, 0.0, accuracy: 0.001)
         XCTAssertEqual(appliedState, state)
     }
 
@@ -130,19 +132,37 @@ final class TerminalSurfaceViewTests: XCTestCase {
             title: "Focused Shell",
             isFocused: true,
             background: background,
-            backgroundOpacity: 0.85,
+            backgroundOpacity: 1.0,
             backgroundBlur: false
         )
 
         XCTAssertTrue(TerminalWindowChromeApplier.apply(state, to: window, appliedState: &appliedState))
         window.titlebarAppearsTransparent = false
         window.backgroundColor = .white
-        window.isOpaque = true
+        window.isOpaque = false
 
         XCTAssertTrue(TerminalWindowChromeApplier.apply(state, to: window, appliedState: &appliedState))
         XCTAssertTrue(window.titlebarAppearsTransparent)
         XCTAssertTrue(window.isOpaque)
         assertColor(window.backgroundColor, matches: background, alpha: 1.0)
+    }
+
+    func testChromeApplierUsesTransparentWindowForTranslucentBackgroundWithoutBlur() {
+        let window = makeTitledWindow()
+        var appliedState: TerminalWindowChromeState?
+        let state = TerminalWindowChromeState(
+            title: "Translucent",
+            isFocused: true,
+            background: TerminalRGBA(redByte: 10, greenByte: 20, blueByte: 30, alphaByte: 255),
+            backgroundOpacity: 0.7,
+            backgroundBlur: false
+        )
+
+        XCTAssertTrue(TerminalWindowChromeApplier.apply(state, to: window, appliedState: &appliedState))
+        XCTAssertFalse(window.isOpaque)
+        // No blur requested: no vibrancy view, desktop shows through directly.
+        XCTAssertFalse(TerminalWindowBlur.contains(in: window))
+        XCTAssertEqual(window.backgroundColor.usingColorSpace(.sRGB)?.alphaComponent ?? 1.0, 0.0, accuracy: 0.001)
     }
 
     func testChromeApplierInstallsBehindWindowBlurForBlurredTranslucentBackground() {

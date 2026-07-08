@@ -33,8 +33,12 @@ final class NativeTabChromeApplierTests: XCTestCase {
         )
 
         XCTAssertTrue(manager.applyTerminalChrome(state, for: second))
-        assertColor(first.backgroundColor, matches: background, alpha: 1.0)
-        assertColor(second.backgroundColor, matches: background, alpha: 1.0)
+        // Translucent background: both tab windows get a clear backing and a
+        // transparent window (the SwiftUI surface paints the tint once).
+        assertClearBackground(first.backgroundColor)
+        assertClearBackground(second.backgroundColor)
+        XCTAssertFalse(first.isOpaque)
+        XCTAssertFalse(second.isOpaque)
         XCTAssertEqual(first.title, "First")
         XCTAssertEqual(second.title, "Active Second")
     }
@@ -71,17 +75,12 @@ final class NativeTabChromeApplierTests: XCTestCase {
         XCTAssertEqual(window.title, "background build")
     }
 
-    private func assertColor(
+    private func assertClearBackground(
         _ color: NSColor,
-        matches expected: TerminalRGBA,
-        alpha: CGFloat,
         file: StaticString = #filePath,
         line: UInt = #line
     ) {
         let color = color.usingColorSpace(.sRGB) ?? color
-        XCTAssertEqual(color.redComponent, CGFloat(expected.red), accuracy: 0.001, file: file, line: line)
-        XCTAssertEqual(color.greenComponent, CGFloat(expected.green), accuracy: 0.001, file: file, line: line)
-        XCTAssertEqual(color.blueComponent, CGFloat(expected.blue), accuracy: 0.001, file: file, line: line)
-        XCTAssertEqual(color.alphaComponent, alpha, accuracy: 0.001, file: file, line: line)
+        XCTAssertEqual(color.alphaComponent, 0.0, accuracy: 0.001, file: file, line: line)
     }
 }

@@ -73,6 +73,25 @@ impl Default for WorkingDirFallback {
 
 const DEFAULT_SCROLLBACK_HISTORY: usize = 1000;
 
+/// Upper clamp on scrollback lines, enforced at the point the value is applied
+/// to the live grid. The config-file parser (`config_core`) already bounds this
+/// at parse time, but the runtime/FFI setters (`with_scrollback_history`,
+/// `set_scrollback_history`) and directly-constructed `TerminalRuntimeConfig`s
+/// bypass that parser, so the core must self-defend: each pane eagerly grows its
+/// scrollback toward this cap, so an unbounded value plus hostile output is an
+/// unbounded memory leak. Kept in parity with `config_core`'s constant of the
+/// same name.
+const MAX_SCROLLBACK_HISTORY: usize = 20_000;
+
+/// Upper clamp on terminal dimensions. Real displays never approach this (an 8K
+/// display at a 4px font is ~1900 columns); it exists only to stop a buggy or
+/// hostile embedder from requesting a multi-gigabyte grid — `u16::MAX` on both
+/// axes is ~4.3 billion cells. Clamping each axis bounds the worst-case grid
+/// (and the frame snapshot allocated from it) to `MAX_TERMINAL_COLS` ×
+/// `MAX_TERMINAL_ROWS` cells.
+const MAX_TERMINAL_COLS: u16 = 4096;
+const MAX_TERMINAL_ROWS: u16 = 4096;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum WindowsShell {
     #[default]
@@ -146,7 +165,9 @@ impl TerminalOptions {
             TerminalCursorStyle::Block => CursorShape::Block,
         };
         TermConfig {
-            scrolling_history: self.scrollback_history,
+            // Every terminal build and live option change flows through here, so
+            // clamping once bounds the config, runtime-setter, and FFI paths.
+            scrolling_history: self.scrollback_history.min(MAX_SCROLLBACK_HISTORY),
             default_cursor_style: AlacrittyCursorStyle {
                 shape,
                 blinking: false,
@@ -850,7 +871,7 @@ impl JsonEventListener {
     /// non-draining host (hidden pane, stalled UI) from growing the queue
     /// without bound instead.
     fn send_runtime_event(&self, event: RuntimeEvent) {
-        if self.events_tx.len() >= EVENT_QUEUE_SOFT_CAP && droppable_when_backlogged(&event) {
+        if should_drop_event(self.events_tx.len(), &event) {
             return;
         }
         let _ = self.events_tx.send(event);
@@ -861,6 +882,32 @@ impl JsonEventListener {
 /// host ever accumulates (the per-frame drain batch is 2048), so shedding only
 /// starts once the host has clearly stopped consuming.
 const EVENT_QUEUE_SOFT_CAP: usize = 8192;
+
+/// Absolute ceiling on pending, undrained runtime events. Beyond the soft cap,
+/// reply-bearing events (query responses the child may block on) are normally
+/// never shed — but a host that has genuinely stopped draining (a hidden or
+/// stalled pane) running a child that spams device/color queries would grow the
+/// queue without bound, since those replies are exempt from the soft cap. This
+/// hard cap sheds *everything* once the backlog is this deep, trading a lost
+/// reply on an already-broken pane for a bounded memory footprint. A draining
+/// pane never approaches it (the per-frame drain batch is 2048, ~32x below
+/// this), so foreground correctness is unaffected.
+const EVENT_QUEUE_HARD_CAP: usize = 65_536;
+
+/// Decide whether a runtime event should be dropped rather than queued, given
+/// the current queue depth. Split out as a pure function so the shedding policy
+/// is unit-testable without a live event loop.
+fn should_drop_event(queue_len: usize, event: &RuntimeEvent) -> bool {
+    // Absolute ceiling: once the queue is this deep the host has clearly stopped
+    // draining, so shed even non-droppable (reply-bearing) events to keep memory
+    // bounded against a hostile child.
+    if queue_len >= EVENT_QUEUE_HARD_CAP {
+        return true;
+    }
+    // Soft cap: shed only latest-wins / cosmetic events; reply-bearing events
+    // stay queued so a responsive-but-busy host never loses a child's reply.
+    queue_len >= EVENT_QUEUE_SOFT_CAP && droppable_when_backlogged(event)
+}
 
 /// Whether an event can be shed once the queue is backlogged. State-refresh
 /// events are safe: they either carry latest-wins state that the next
@@ -1289,6 +1336,22 @@ impl Default for TerminalSize {
     }
 }
 
+impl TerminalSize {
+    /// Clamp the cell dimensions into the supported range. Applied at every
+    /// entry point that sizes the grid (`Terminal::new`, `new_display`,
+    /// `resize`) so a buggy or hostile embedder cannot request a grid large
+    /// enough to exhaust memory. The pixel cell metrics are left untouched.
+    /// Columns/rows are floored at 1 so downstream grid math never sees a zero
+    /// dimension.
+    fn clamped(self) -> Self {
+        Self {
+            cols: self.cols.clamp(1, MAX_TERMINAL_COLS),
+            rows: self.rows.clamp(1, MAX_TERMINAL_ROWS),
+            ..self
+        }
+    }
+}
+
 impl From<TerminalSize> for WindowSize {
     fn from(size: TerminalSize) -> Self {
         WindowSize {
@@ -1361,6 +1424,7 @@ impl Terminal {
         runtime_config: Option<&TerminalRuntimeConfig>,
         startup_command: Option<&str>,
     ) -> anyhow::Result<Self> {
+        let size = size.clamped();
         let (events_tx, events_rx) = unbounded();
         let runtime_config = runtime_config.cloned().unwrap_or_default();
         let shell = startup_shell(&runtime_config, startup_command);
@@ -1419,6 +1483,7 @@ impl Terminal {
     /// All rendering, sizing, and event draining work as for a normal terminal;
     /// input (`write`) is a no-op since there is no child process.
     pub fn new_display(size: TerminalSize, runtime_config: Option<&TerminalRuntimeConfig>) -> Self {
+        let size = size.clamped();
         let (events_tx, events_rx) = unbounded();
         let runtime_config = runtime_config.cloned().unwrap_or_default();
         let term_config = runtime_config.term_options().term_config();
@@ -1487,6 +1552,7 @@ impl Terminal {
 
     /// Resize the terminal
     pub fn resize(&mut self, new_size: TerminalSize) {
+        let new_size = new_size.clamped();
         self.size = new_size;
         if let Some(pty_tx) = &self.pty_tx {
             let _ = pty_tx.send(EventLoopMsg::Resize(new_size.into()));
@@ -1815,15 +1881,16 @@ mod tests {
     #[cfg(target_os = "windows")]
     use super::quote_shell_program_if_needed;
     use super::{
-        DEFAULT_TERM, EVENT_QUEUE_SOFT_CAP, GHOSTTY_COMPAT_TERM_PROGRAM,
-        GHOSTTY_COMPAT_TERM_PROGRAM_VERSION, JsonEventListener, RuntimeEvent, TERMY_TERM_PROGRAM,
+        DEFAULT_TERM, EVENT_QUEUE_HARD_CAP, EVENT_QUEUE_SOFT_CAP, GHOSTTY_COMPAT_TERM_PROGRAM,
+        GHOSTTY_COMPAT_TERM_PROGRAM_VERSION, JsonEventListener, MAX_SCROLLBACK_HISTORY,
+        MAX_TERMINAL_COLS, MAX_TERMINAL_ROWS, RuntimeEvent, TERMY_TERM_PROGRAM,
         TerminalCursorState, TerminalCursorStyle, TerminalDamageSnapshot, TerminalEvent,
-        TerminalRuntimeConfig, TerminalSize, WindowsShell, WorkingDirFallback, apply_term_config,
-        cursor_position_from_term, cursor_state_from_term, default_shell_launch,
+        TerminalOptions, TerminalRuntimeConfig, TerminalSize, WindowsShell, WorkingDirFallback,
+        apply_term_config, cursor_position_from_term, cursor_state_from_term, default_shell_launch,
         drain_runtime_events, normalize_working_directory_candidate, pty_env_overrides,
         resolve_launch_working_directory, resolve_shell_path, search_term_buffer,
-        take_term_damage_snapshot, terminal_event_from_osc, termmode_to_terminal_mouse_mode,
-        user_home_dir,
+        should_drop_event, take_term_damage_snapshot, terminal_event_from_osc,
+        termmode_to_terminal_mouse_mode, user_home_dir,
     };
     use crate::keyboard::{
         Keystroke, Modifiers, TerminalKeyEventKind, TerminalKeyboardMode, keystroke_to_input,
@@ -1831,7 +1898,7 @@ mod tests {
     use crate::protocol::{TerminalClipboardTarget, TerminalQueryColors, TerminalReplyHost};
     use crate::search::TermySearchOptions;
     use alacritty_terminal::{
-        event::{EventListener, VoidListener},
+        event::{Event as AlacEvent, EventListener, VoidListener},
         grid::{Dimensions, Scroll},
         sync::FairMutex,
         term::{ClipboardType, Config as TermConfig, LineDamageBounds, Term, TermMode},
@@ -1840,6 +1907,94 @@ mod tests {
     use flume::unbounded;
     use std::collections::HashMap;
     use std::sync::Arc;
+
+    #[test]
+    fn terminal_size_clamps_absurd_dimensions() {
+        let huge = TerminalSize {
+            cols: u16::MAX,
+            rows: u16::MAX,
+            cell_width: 8.0,
+            cell_height: 16.0,
+        }
+        .clamped();
+        assert_eq!(huge.cols, MAX_TERMINAL_COLS);
+        assert_eq!(huge.rows, MAX_TERMINAL_ROWS);
+    }
+
+    #[test]
+    fn terminal_size_clamp_leaves_realistic_dimensions_untouched() {
+        let clamped = TerminalSize {
+            cols: 200,
+            rows: 60,
+            cell_width: 9.0,
+            cell_height: 18.0,
+        }
+        .clamped();
+        assert_eq!(clamped.cols, 200);
+        assert_eq!(clamped.rows, 60);
+    }
+
+    #[test]
+    fn terminal_size_clamp_floors_zero_dimensions_at_one() {
+        let empty = TerminalSize {
+            cols: 0,
+            rows: 0,
+            cell_width: 9.0,
+            cell_height: 18.0,
+        }
+        .clamped();
+        assert_eq!(empty.cols, 1);
+        assert_eq!(empty.rows, 1);
+    }
+
+    #[test]
+    fn term_config_clamps_scrollback_history() {
+        let options = TerminalOptions {
+            scrollback_history: 10_000_000,
+            default_cursor_style: TerminalCursorStyle::Block,
+        };
+        assert_eq!(
+            options.term_config().scrolling_history,
+            MAX_SCROLLBACK_HISTORY
+        );
+    }
+
+    #[test]
+    fn term_config_preserves_in_range_scrollback_history() {
+        let options = TerminalOptions {
+            scrollback_history: 5_000,
+            default_cursor_style: TerminalCursorStyle::Block,
+        };
+        assert_eq!(options.term_config().scrolling_history, 5_000);
+    }
+
+    #[test]
+    fn hard_cap_sheds_reply_bearing_events_when_backlogged() {
+        // A device-attributes reply the child may block on: exempt from the soft
+        // cap, but the hard cap must shed it to keep memory bounded against a
+        // hostile child on a non-draining pane.
+        let reply = RuntimeEvent::Alacritty(AlacEvent::PtyWrite("\x1b[?6c".to_string()));
+        assert!(should_drop_event(EVENT_QUEUE_HARD_CAP, &reply));
+        assert!(should_drop_event(EVENT_QUEUE_HARD_CAP + 1, &reply));
+    }
+
+    #[test]
+    fn reply_bearing_events_survive_below_hard_cap() {
+        let reply = RuntimeEvent::Alacritty(AlacEvent::PtyWrite("\x1b[?6c".to_string()));
+        // Even past the soft cap, a reply stays queued for a responsive host
+        // until the absolute ceiling is reached.
+        assert!(!should_drop_event(0, &reply));
+        assert!(!should_drop_event(EVENT_QUEUE_SOFT_CAP, &reply));
+        assert!(!should_drop_event(EVENT_QUEUE_HARD_CAP - 1, &reply));
+    }
+
+    #[test]
+    fn cosmetic_events_shed_at_soft_cap() {
+        // Bell is latest-wins/cosmetic: shed once the soft cap is hit, kept below.
+        let bell = RuntimeEvent::Alacritty(AlacEvent::Bell);
+        assert!(!should_drop_event(EVENT_QUEUE_SOFT_CAP - 1, &bell));
+        assert!(should_drop_event(EVENT_QUEUE_SOFT_CAP, &bell));
+    }
 
     fn test_terminal_size() -> TerminalSize {
         TerminalSize {

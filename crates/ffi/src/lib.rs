@@ -267,6 +267,32 @@ pub struct TermyFfiNativeConfig {
     pub show_termy_in_titlebar: bool,
 }
 
+/// Opaque terminal handle passed across the C ABI as `*mut TermyFfiTerminal`.
+///
+/// # Thread safety
+///
+/// The handle is **not** internally synchronized. With a single exception, no
+/// two functions taking the same handle may execute concurrently — the caller
+/// must serialize all access (confine the handle to one thread, or guard it
+/// with an external lock). Distinct handles are independent.
+///
+/// The exception is the wake channel: `termy_terminal_wait_for_wakeup` and
+/// `termy_terminal_notify_wakeup` touch only the internal wake channel, never
+/// the terminal state, so they are the only functions safe to call concurrently
+/// with the serialized calls above. The intended pattern is one dedicated
+/// thread blocked in `termy_terminal_wait_for_wakeup` while another thread
+/// drives the terminal.
+///
+/// # Lifetime
+///
+/// `termy_terminal_free` consumes the handle and drops everything it owns,
+/// including the wake channel. The caller must ensure no other function —
+/// including a thread blocked in `termy_terminal_wait_for_wakeup` — is executing
+/// on the handle when it is freed, and that none is called afterward. Teardown
+/// for a handle that has a wakeup thread: stop terminal calls, call
+/// `termy_terminal_notify_wakeup` to release the blocked wait, join that thread,
+/// then call `termy_terminal_free`. Freeing while a thread is parked in
+/// `termy_terminal_wait_for_wakeup` is a use-after-free.
 pub struct TermyFfiTerminal {
     terminal: Terminal,
     wakeups_tx: Option<Sender<()>>,
@@ -2429,6 +2455,14 @@ pub unsafe extern "C" fn termy_terminal_reload_default_config_colors(
     })
 }
 
+/// Destroy a terminal handle created by one of the `*_new` constructors.
+///
+/// See [`TermyFfiTerminal`] for the full lifetime contract: the caller must
+/// guarantee no other function is running on `terminal` — in particular that
+/// any wakeup thread has been woken (via `termy_terminal_notify_wakeup`) and
+/// **joined** — before calling this. Freeing a handle while a thread is parked
+/// in `termy_terminal_wait_for_wakeup` is a use-after-free. Passing null is a
+/// no-op that returns `Null`; every non-null handle must be freed exactly once.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn termy_terminal_free(terminal: *mut TermyFfiTerminal) -> TermyFfiStatus {
     ffi_status_guard(|| {
@@ -2635,6 +2669,13 @@ pub unsafe extern "C" fn termy_terminal_set_wakeup_enabled(
     })
 }
 
+/// Block up to `timeout_ms` (0 = poll without blocking) for a terminal wake
+/// signal, coalescing all pending signals into a single `*out_woke = true`.
+///
+/// This is the one function designed to run on a **dedicated** thread
+/// concurrently with the serialized terminal calls — it reads only the internal
+/// wake channel, never terminal state. It must not still be executing when the
+/// handle is freed; see [`TermyFfiTerminal`] for the teardown ordering.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn termy_terminal_wait_for_wakeup(
     terminal: *mut TermyFfiTerminal,
@@ -2673,6 +2714,9 @@ pub unsafe extern "C" fn termy_terminal_wait_for_wakeup(
     })
 }
 
+/// Wake a thread blocked in `termy_terminal_wait_for_wakeup`. Safe to call from
+/// any thread; used both to nudge the host to drain events and, during teardown,
+/// to release the wakeup thread so it can be joined before `termy_terminal_free`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn termy_terminal_notify_wakeup(
     terminal: *mut TermyFfiTerminal,
@@ -3824,6 +3868,77 @@ mod tests {
         );
         assert!(!woke);
 
+        assert_eq!(unsafe { termy_terminal_free(terminal) }, TermyFfiStatus::Ok);
+    }
+
+    /// Wraps the raw handle so it can cross a thread boundary. The FFI contract
+    /// permits `termy_terminal_wait_for_wakeup` on a dedicated thread
+    /// concurrently with serialized terminal calls elsewhere.
+    struct SendTerminal(*mut TermyFfiTerminal);
+    // SAFETY: the wait thread only calls `wait_for_wakeup`, which touches the
+    // internal wake channel and never the terminal state mutated by the main
+    // thread. The handle is freed only after this thread is joined.
+    unsafe impl Send for SendTerminal {}
+
+    #[test]
+    fn wakeup_thread_runs_concurrently_with_terminal_calls_then_tears_down() {
+        let size = TermyFfiSize {
+            cols: 24,
+            rows: 6,
+            cell_width: 9.0,
+            cell_height: 18.0,
+        };
+        #[cfg(target_os = "windows")]
+        let command: &[u8] = b"";
+        #[cfg(not(target_os = "windows"))]
+        let command: &[u8] = b"sleep 1";
+        let mut terminal = ptr::null_mut();
+        assert_eq!(
+            unsafe { termy_terminal_new(size, command.as_ptr(), command.len(), &mut terminal) },
+            TermyFfiStatus::Ok
+        );
+
+        // A dedicated thread parks on the wake channel — the contract's wakeup
+        // thread — until told to stop.
+        let shutdown = std::sync::Arc::new(AtomicBool::new(false));
+        let waiter_shutdown = std::sync::Arc::clone(&shutdown);
+        let handle = SendTerminal(terminal);
+        let waiter = std::thread::spawn(move || {
+            // Rebind the whole wrapper so the closure captures `SendTerminal`
+            // (which is `Send`) rather than disjointly capturing the raw pointer
+            // field, which is not.
+            let handle = handle;
+            let mut woke = false;
+            while !waiter_shutdown.load(Ordering::Acquire) {
+                assert_eq!(
+                    unsafe { termy_terminal_wait_for_wakeup(handle.0, 25, &mut woke) },
+                    TermyFfiStatus::Ok
+                );
+            }
+        });
+
+        // Meanwhile drive the terminal from this thread only (serialized access
+        // to terminal state), concurrent with the parked wait thread above.
+        let input = b"echo hi\n";
+        for _ in 0..100 {
+            assert_eq!(
+                unsafe { termy_terminal_write(terminal, input.as_ptr(), input.len()) },
+                TermyFfiStatus::Ok
+            );
+            assert_eq!(
+                unsafe { termy_terminal_resize(terminal, size) },
+                TermyFfiStatus::Ok
+            );
+        }
+
+        // Teardown ordering from the contract: signal, wake the waiter, join it,
+        // then free — so nothing is inside `wait_for_wakeup` when the handle dies.
+        shutdown.store(true, Ordering::Release);
+        assert_eq!(
+            unsafe { termy_terminal_notify_wakeup(terminal) },
+            TermyFfiStatus::Ok
+        );
+        waiter.join().expect("wakeup thread joins cleanly");
         assert_eq!(unsafe { termy_terminal_free(terminal) }, TermyFfiStatus::Ok);
     }
 

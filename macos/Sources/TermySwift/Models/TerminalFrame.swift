@@ -98,7 +98,7 @@ struct TerminalRenderConfig: Equatable {
     var chromeContrast: Bool
 
     static let `default` = TerminalRenderConfig(
-        fontFamily: "JetBrains Mono",
+        fontFamily: "Menlo",
         activeTheme: "termy",
         foreground: .termyForeground,
         background: .termyBackground,

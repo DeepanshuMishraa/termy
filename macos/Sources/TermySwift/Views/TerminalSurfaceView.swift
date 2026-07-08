@@ -175,13 +175,6 @@ struct TerminalSurfaceView: View {
                 terminal.renderConfig.background.swiftUIColor
                     .opacity(terminal.renderConfig.backgroundOpacity)
             )
-            .background {
-                if terminal.renderConfig.backgroundBlur,
-                   terminal.renderConfig.backgroundOpacity < 1.0 {
-                    Rectangle()
-                        .fill(.ultraThinMaterial)
-                }
-            }
             .background(TerminalWindowChromeSyncView(
                 title: windowTitle,
                 isFocused: isFocused,
@@ -408,18 +401,20 @@ struct TerminalWindowChromeState: Equatable {
     }
 
     var requiresTransparentWindow: Bool {
-        backgroundBlur
+        backgroundBlur || effectiveBackgroundAlpha < 0.999
     }
 
     var chromeBackgroundColor: NSColor {
-        // Without blur, AppKit composites the transparent titlebar directly over
-        // whatever app is behind the window, while the terminal body is painted
-        // over Termy's own backing. Use an opaque titlebar backing so a hidden
-        // tab bar still matches the terminal surface instead of the desktop.
-        if !backgroundBlur {
-            return background.nsColor.withAlphaComponent(CGFloat(background.alpha))
+        // Translucent surface: the SwiftUI background paints the tint once; a
+        // colored window backing would tint the desktop show-through a second
+        // time (compositing to 1-(1-a)^2 instead of a).
+        if effectiveBackgroundAlpha < 0.999 {
+            return .clear
         }
-        return background.nsColor.withAlphaComponent(effectiveBackgroundAlpha)
+        // Opaque surface: AppKit composites the transparent titlebar over the
+        // window backing, so keep it matching the terminal color so a hidden
+        // tab bar blends with the terminal instead of the desktop.
+        return background.nsColor.withAlphaComponent(CGFloat(background.alpha))
     }
 }
 
@@ -471,6 +466,9 @@ enum TerminalWindowChromeApplier {
             // refresh it so a stale outline doesn't linger when blur flips.
             window.invalidateShadow()
         }
+        if let titlebarTabsWindow = window as? TitlebarTabsWindow {
+            titlebarTabsWindow.refreshTitlebarTabsLayout()
+        }
         return titleChanged
     }
 
@@ -505,61 +503,48 @@ enum TerminalWindowChromeApplier {
     }
 }
 
+/// Background blur via the window server (the same private CGS call Ghostty
+/// and Terminal.app-style transparency use). Unlike an `NSVisualEffectView`,
+/// it blurs everything behind the window's transparent pixels — titlebar
+/// included — with no view-hierarchy or frame-tracking games, and shows the
+/// actual desktop instead of a translucent material wash.
 @MainActor
 enum TerminalWindowBlur {
-    private static let identifier = NSUserInterfaceItemIdentifier("TermyWindowBlur")
+    private static let blurRadius = 20
+
+    /// Blur state we asked the window server for, per window. Weak keys so
+    /// closed windows drop out; also lets tests observe intent for windows
+    /// that were never ordered on screen (no valid window number).
+    private static let appliedBlur = NSMapTable<NSWindow, NSNumber>.weakToStrongObjects()
 
     static func shouldInstall(for state: TerminalWindowChromeState) -> Bool {
         state.backgroundBlur && state.effectiveBackgroundAlpha < 0.999
     }
 
     static func contains(in window: NSWindow) -> Bool {
-        blurView(in: window) != nil
+        appliedBlur.object(forKey: window)?.boolValue ?? false
     }
 
     static func sync(_ state: TerminalWindowChromeState, in window: NSWindow) {
-        guard shouldInstall(for: state) else {
-            blurView(in: window)?.removeFromSuperview()
-            return
+        let enabled = shouldInstall(for: state)
+        // Re-issue the CGS call even when intent is unchanged: the window may
+        // not have had a window-server number when we first recorded it.
+        if window.windowNumber > 0 {
+            _ = CGSSetWindowBackgroundBlurRadius(
+                CGSMainConnectionID(),
+                window.windowNumber,
+                enabled ? blurRadius : 0
+            )
         }
-        guard let container = window.contentView else {
-            return
-        }
-        let blurView = blurView(in: window) ?? makeBlurView(for: container)
-        if blurView.superview == nil {
-            container.addSubview(blurView, positioned: .below, relativeTo: container.subviews.first)
-        }
-        blurView.frame = container.bounds
-    }
-
-    private static func makeBlurView(for container: NSView) -> NSVisualEffectView {
-        let blurView = NSVisualEffectView(frame: container.bounds)
-        blurView.identifier = identifier
-        blurView.autoresizingMask = [.width, .height]
-        blurView.blendingMode = .behindWindow
-        blurView.material = .underWindowBackground
-        blurView.state = .active
-        return blurView
-    }
-
-    private static func blurView(in window: NSWindow) -> NSVisualEffectView? {
-        window.contentView?.firstDescendant(identifier: identifier) as? NSVisualEffectView
+        appliedBlur.setObject(NSNumber(value: enabled), forKey: window)
     }
 }
 
-private extension NSView {
-    func firstDescendant(identifier: NSUserInterfaceItemIdentifier) -> NSView? {
-        for subview in subviews {
-            if subview.identifier == identifier {
-                return subview
-            }
-            if let found = subview.firstDescendant(identifier: identifier) {
-                return found
-            }
-        }
-        return nil
-    }
-}
+@_silgen_name("CGSMainConnectionID")
+private func CGSMainConnectionID() -> Int32
+
+@_silgen_name("CGSSetWindowBackgroundBlurRadius")
+private func CGSSetWindowBackgroundBlurRadius(_ cid: Int32, _ wid: Int, _ radius: Int) -> Int32
 
 private final class TerminalWindowChromeSyncNSView: NSView {
     private var pendingState: TerminalWindowChromeState?

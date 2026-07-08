@@ -4,6 +4,14 @@ pub(crate) const DEFAULT_TAB_TITLE_FALLBACK: &str = "Terminal";
 pub(crate) const DEFAULT_TAB_TITLE_EXPLICIT_PREFIX: &str = "termy:tab:";
 pub(crate) const DEFAULT_TAB_TITLE_PROMPT_FORMAT: &str = "{cwd}";
 pub(crate) const DEFAULT_TAB_TITLE_COMMAND_FORMAT: &str = "{command}";
+/// Default terminal/UI font family: a monospace font guaranteed to ship with
+/// the platform, so fresh installs render without requiring a font download.
+#[cfg(target_os = "macos")]
+pub const DEFAULT_FONT_FAMILY: &str = "Menlo";
+#[cfg(target_os = "windows")]
+pub const DEFAULT_FONT_FAMILY: &str = "Consolas";
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub const DEFAULT_FONT_FAMILY: &str = "monospace";
 pub(crate) const DEFAULT_TERM: &str = "xterm-256color";
 pub(crate) const DEFAULT_COLORTERM: &str = "truecolor";
 pub(crate) const DEFAULT_TMUX_ENABLED: bool = false;

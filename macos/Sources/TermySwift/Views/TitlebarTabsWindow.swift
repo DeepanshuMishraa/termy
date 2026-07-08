@@ -30,11 +30,19 @@ final class TitlebarTabsWindow: NSWindow, NSToolbarDelegate {
     /// Left gutter reserved for the traffic-light buttons.
     private static let windowButtonsGutter: CGFloat = 70
 
+    /// Constraints pinning the native tab bar into the unified toolbar row.
+    private var tabBarLayoutConstraints: [NSLayoutConstraint] = []
+
+    /// KVO on the tab group — AppKit recreates the titlebar/tab strip on tab
+    /// changes without always calling our accessory hooks (Ghostty does the same).
+    private var tabGroupWindowsObservation: NSKeyValueObservation?
+    private var tabBarVisibleObservation: NSKeyValueObservation?
+
     /// The centered window-title label, shown only when there is no tab bar.
     private let titleField = TitlebarTitleField(labelWithString: "")
 
     /// Observes the native tab bar's frame so we can re-pin our constraints when
-    /// AppKit resizes it (appearance changes, tab open/close clear our layout).
+    /// AppKit resizes it (appearance changes, tab add/remove clear our layout).
     /// Only ever touched on the main thread; `nonisolated(unsafe)` lets `deinit`
     /// and the (main-queue) notification block reach it under Swift 6 isolation.
     private nonisolated(unsafe) var tabBarObserver: NSObjectProtocol? {
@@ -45,6 +53,8 @@ final class TitlebarTabsWindow: NSWindow, NSToolbarDelegate {
     }
 
     deinit {
+        tabGroupWindowsObservation?.invalidate()
+        tabBarVisibleObservation?.invalidate()
         if let tabBarObserver {
             NotificationCenter.default.removeObserver(tabBarObserver)
         }
@@ -58,12 +68,27 @@ final class TitlebarTabsWindow: NSWindow, NSToolbarDelegate {
             titleVisibility = titlebarTabs ? .hidden : .visible
             if titlebarTabs {
                 generateToolbar()
-                setupTabBar()
+                setupTabGroupObservation()
+                scheduleTabBarSetup()
             } else {
+                tabGroupWindowsObservation?.invalidate()
+                tabGroupWindowsObservation = nil
+                tabBarVisibleObservation?.invalidate()
+                tabBarVisibleObservation = nil
                 toolbar = nil
                 tabBarObserver = nil
+                NSLayoutConstraint.deactivate(tabBarLayoutConstraints)
+                tabBarLayoutConstraints = []
             }
         }
+    }
+
+    /// Re-pin the native tab bar after tab-group or focus changes. Safe to call
+    /// when `titlebarTabs` is already enabled (e.g. after selecting another tab).
+    func refreshTitlebarTabsLayout() {
+        guard titlebarTabs else { return }
+        setupTabGroupObservation()
+        scheduleTabBarSetup()
     }
 
     // Assigning `title` re-reveals the native title view on macOS 15+/26; re-hide
@@ -92,18 +117,17 @@ final class TitlebarTabsWindow: NSWindow, NSToolbarDelegate {
     override func becomeMain() {
         super.becomeMain()
         titleField.textColor = .labelColor
-        // AppKit only attaches the live NSTabBar to whichever window in the group
-        // is main, moving it on focus changes — so re-pin it every time we gain
-        // main. `setupTabBar` is idempotent.
-        if titlebarTabs {
-            // Defer a tick so the sync sees the post-transition tab-bar state
-            // (e.g. after closing the key tab, this window only learns it is now
-            // alone via becoming main — there is no accessory-removal callback).
-            DispatchQueue.main.async { [weak self] in
-                self?.syncTitleVisibility()
-            }
-            setupTabBar()
+        guard titlebarTabs else { return }
+        scheduleTabBarSetup()
+        DispatchQueue.main.async { [weak self] in
+            self?.syncTitleVisibility()
         }
+    }
+
+    override func becomeKey() {
+        super.becomeKey()
+        guard titlebarTabs else { return }
+        scheduleTabBarSetup()
     }
 
     /// True when the native tab bar is occupying the titlebar row. We gate the
@@ -124,6 +148,7 @@ final class TitlebarTabsWindow: NSWindow, NSToolbarDelegate {
     override func resignMain() {
         super.resignMain()
         titleField.textColor = .tertiaryLabelColor
+        tabBarObserver = nil
     }
 
     override func sendEvent(_ event: NSEvent) {
@@ -165,6 +190,7 @@ final class TitlebarTabsWindow: NSWindow, NSToolbarDelegate {
         // Must happen BEFORE super, or AppKit raises a layout assertion: a
         // `.right` accessory is laid out inside the toolbar row instead of as a
         // separate strip below it.
+        tabBarObserver = nil
         controller.layoutAttribute = .right
         controller.identifier = Self.tabBarIdentifier
         titleVisibility = .hidden
@@ -172,9 +198,26 @@ final class TitlebarTabsWindow: NSWindow, NSToolbarDelegate {
 
         // Wait a tick: doing this synchronously races AppKit's own accessory
         // layout and produces a truncated tab bar on restored windows.
-        DispatchQueue.main.async { [weak self] in
-            self?.setupTabBar()
+        scheduleTabBarSetup()
+    }
+
+    // AppKit sometimes re-attaches the tab bar through the insert API instead
+    // of `add` (e.g. when moving it back to a window that regained main),
+    // which would bypass the `.right` promotion above.
+    override func insertTitlebarAccessoryViewController(
+        _ controller: NSTitlebarAccessoryViewController,
+        at index: Int
+    ) {
+        guard titlebarTabs, isTabBar(controller) else {
+            super.insertTitlebarAccessoryViewController(controller, at: index)
+            return
         }
+        tabBarObserver = nil
+        controller.layoutAttribute = .right
+        controller.identifier = Self.tabBarIdentifier
+        titleVisibility = .hidden
+        super.insertTitlebarAccessoryViewController(controller, at: index)
+        scheduleTabBarSetup()
     }
 
     override func removeTitlebarAccessoryViewController(at index: Int) {
@@ -182,8 +225,8 @@ final class TitlebarTabsWindow: NSWindow, NSToolbarDelegate {
         super.removeTitlebarAccessoryViewController(at: index)
         if wasTabBar {
             tabBarObserver = nil
-            // Back to a single tab: show the centered title again. Defer a tick so
-            // `tabbedWindows` reflects the post-removal count, not the stale group.
+            NSLayoutConstraint.deactivate(tabBarLayoutConstraints)
+            tabBarLayoutConstraints = []
             DispatchQueue.main.async { [weak self] in
                 self?.syncTitleVisibility()
             }
@@ -192,45 +235,122 @@ final class TitlebarTabsWindow: NSWindow, NSToolbarDelegate {
 
     // MARK: Tab Bar Setup
 
+    /// Clear any stale observer and re-run `setupTabBar` after AppKit has had a
+    /// chance to move the live `NSTabBar` onto this window.
+    private func scheduleTabBarSetup() {
+        tabBarObserver = nil
+        tabBarSetupRetriesLeft = Self.maxTabBarSetupRetries
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.repromoteRevertedTabBarAccessories()
+            self.setupTabBar()
+        }
+    }
+
+    /// AppKit builds the `NSTabBar` for a newly-main window asynchronously and
+    /// with no callback we can hook: the accessory controller is already
+    /// installed, so neither the add/insert overrides nor the (not yet
+    /// registered) frame observer fire when the bar finally appears. Poll
+    /// briefly until it shows up; `setupTabBar` succeeding stops the retries.
+    private static let maxTabBarSetupRetries = 20
+    private var tabBarSetupRetriesLeft = 0
+
+    private func retryTabBarSetupIfPending() {
+        guard tabBarSetupRetriesLeft > 0 else { return }
+        tabBarSetupRetriesLeft -= 1
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+            self?.setupTabBar()
+        }
+    }
+
+    /// AppKit can silently revert the tab accessory to the `.bottom` strip when
+    /// focus moves between tabbed windows. `layoutAttribute` is only honored
+    /// when set *before* the accessory is installed, so mutating it in place
+    /// does nothing — the accessory must be removed and re-added, which routes
+    /// through our `addTitlebarAccessoryViewController` override (it sets
+    /// `.right` before calling super).
+    private func repromoteRevertedTabBarAccessories() {
+        guard titlebarTabs else { return }
+        while let index = titlebarAccessoryViewControllers.firstIndex(where: {
+            isTabBar($0) && $0.layoutAttribute != .right
+        }) {
+            let controller = titlebarAccessoryViewControllers[index]
+            removeTitlebarAccessoryViewController(at: index)
+            addTitlebarAccessoryViewController(controller)
+        }
+    }
+
+    private func hideAuxiliaryTitlebarChrome() {
+        guard let titlebarView else { return }
+        titlebarView.firstDescendant(withClassName: "NSTitlebarBackgroundView")?.isHidden = true
+        for separator in titlebarView.descendants(withClassName: "NSTitlebarSeparatorView") {
+            separator.isHidden = true
+        }
+        titlebarView.firstDescendant(withClassName: "NSToolbarClippedItemsIndicatorViewer")?.isHidden = true
+    }
+
+    /// Monitors tab-group changes. AppKit can recreate the titlebar strip when
+    /// tabs are added, removed, or reordered without calling our accessory hooks.
+    private func setupTabGroupObservation() {
+        tabGroupWindowsObservation?.invalidate()
+        tabGroupWindowsObservation = nil
+        tabBarVisibleObservation?.invalidate()
+        tabBarVisibleObservation = nil
+
+        guard titlebarTabs, let tabGroup else { return }
+
+        tabGroupWindowsObservation = tabGroup.observe(\.windows, options: [.new]) { [weak self] _, _ in
+            DispatchQueue.main.async {
+                self?.scheduleTabBarSetup()
+            }
+        }
+        tabBarVisibleObservation = tabGroup.observe(\.isTabBarVisible, options: [.new]) { [weak self] _, _ in
+            DispatchQueue.main.async {
+                self?.scheduleTabBarSetup()
+            }
+        }
+    }
+
     /// Pull the native `NSTabBar` up into the unified toolbar row. Idempotent: the
     /// `tabBarObserver` guard means repeated calls (from `becomeMain`, focus
     /// changes, the accessory hook) are cheap no-ops once wired up.
     func setupTabBar() {
         guard tabBarObserver == nil else { return }
+        titleVisibility = .hidden
+        hideAuxiliaryTitlebarChrome()
         guard let titlebarView,
               let tabBarView = self.tabBarView
         else {
-            // No tab bar present (single tab): show the centered title.
             syncTitleVisibility()
+            retryTabBarSetupIfPending()
             return
         }
 
-        // The clip view is the accessory's parent; its class name shifts across
-        // OS versions, so try both known names.
         guard let clipView = tabBarView.firstSuperview(withClassName: "NSTitlebarAccessoryClipView")
             ?? tabBarView.firstSuperview(withClassName: "NSTitlebarAccessoryContainerView")
         else {
+            retryTabBarSetupIfPending()
             return
         }
         guard let accessoryView = clipView.subviews.first,
-              let toolbarView = titlebarView.firstDescendant(withClassName: "NSToolbarView")
+              let toolbarView = titlebarView.firstDescendant(withClassName: "NSToolbarView"),
+              let newTabButton = titlebarView.firstDescendant(withClassName: "NSTabBarNewTabButton")
         else {
+            retryTabBarSetupIfPending()
             return
         }
+        tabBarSetupRetriesLeft = 0
 
-        // A tab bar exists: hide the centered title so it doesn't overlap (unless
-        // this is a lone window with a leftover empty bar).
         syncTitleVisibility()
 
         // Keep the tab bar from being vertically stretched: AppKit sizes the new
         // tab button square, so match the bar height to its width.
-        if let newTabButton = titlebarView.firstDescendant(withClassName: "NSTabBarNewTabButton") {
-            tabBarView.frame.size.height = newTabButton.frame.width
-        }
+        tabBarView.frame.size.height = newTabButton.frame.width
 
         clipView.translatesAutoresizingMaskIntoConstraints = false
         accessoryView.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
+        NSLayoutConstraint.deactivate(tabBarLayoutConstraints)
+        tabBarLayoutConstraints = [
             clipView.leftAnchor.constraint(equalTo: toolbarView.leftAnchor, constant: Self.windowButtonsGutter),
             clipView.rightAnchor.constraint(equalTo: toolbarView.rightAnchor),
             clipView.topAnchor.constraint(equalTo: toolbarView.topAnchor, constant: 2),
@@ -239,24 +359,24 @@ final class TitlebarTabsWindow: NSWindow, NSToolbarDelegate {
             accessoryView.rightAnchor.constraint(equalTo: clipView.rightAnchor),
             accessoryView.topAnchor.constraint(equalTo: clipView.topAnchor),
             accessoryView.heightAnchor.constraint(equalTo: clipView.heightAnchor),
-        ])
+        ]
+        NSLayoutConstraint.activate(tabBarLayoutConstraints)
         clipView.needsLayout = true
         accessoryView.needsLayout = true
+        titlebarView.layoutSubtreeIfNeeded()
 
-        // The tab bar can resize (appearance change, tab add/remove) and clear our
-        // constraints. Observe its frame, drop the observer, and re-run setup once
-        // it settles to avoid constraint conflicts.
         tabBarView.postsFrameChangedNotifications = true
         tabBarObserver = NotificationCenter.default.addObserver(
             forName: NSView.frameDidChangeNotification,
             object: tabBarView,
             queue: .main
         ) { [weak self] _ in
-            // `queue: .main` guarantees we're on the main thread here.
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.tabBarObserver = nil
-                self.setupTabBar()
+                DispatchQueue.main.async {
+                    self.setupTabBar()
+                }
             }
         }
     }
@@ -268,7 +388,6 @@ final class TitlebarTabsWindow: NSWindow, NSToolbarDelegate {
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        // Flexible spaces on both sides keep the title centered as it grows.
         [.flexibleSpace, .termyTitle, .flexibleSpace]
     }
 
@@ -284,10 +403,7 @@ final class TitlebarTabsWindow: NSWindow, NSToolbarDelegate {
         item.view = titleField
         item.visibilityPriority = .user
         item.isEnabled = false
-        // Avoids the glass capsule background NSToolbar draws around custom views.
         item.isBordered = false
-        // Size to the text and let the flexible spaces center it. Hugging low so
-        // the field can grow toward (but not past) the available width.
         titleField.translatesAutoresizingMaskIntoConstraints = false
         titleField.setContentHuggingPriority(.defaultLow, for: .horizontal)
         titleField.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
@@ -389,9 +505,6 @@ private extension NSToolbarItem.Identifier {
 // MARK: - Private AppKit view-hierarchy access
 
 private extension NSWindow {
-    /// The private `NSTitlebarView`, reached via KVC on the theme frame. Guarded
-    /// by `responds(to:)` so it returns nil instead of crashing if the selector
-    /// ever disappears.
     var titlebarView: NSView? {
         guard let themeFrame = contentView?.rootView,
               themeFrame.responds(to: Selector(("titlebarView")))
@@ -401,14 +514,12 @@ private extension NSWindow {
         return themeFrame.value(forKey: "titlebarView") as? NSView
     }
 
-    /// The private `NSTabBar` view, if the window currently hosts one.
     var tabBarView: NSView? {
         titlebarView?.firstDescendant(withClassName: "NSTabBar")
     }
 }
 
 private extension NSView {
-    /// The topmost ancestor (the `NSThemeFrame`).
     var rootView: NSView {
         var root = self
         while let superview = root.superview {
@@ -417,8 +528,6 @@ private extension NSView {
         return root
     }
 
-    /// True if `self` or any descendant is of the given AppKit view class.
-    /// Uses `NSObject.className`, the Objective-C runtime class name.
     func contains(className name: String) -> Bool {
         if className == name {
             return true
@@ -426,7 +535,6 @@ private extension NSView {
         return subviews.contains { $0.contains(className: name) }
     }
 
-    /// The nearest ancestor of the given AppKit view class.
     func firstSuperview(withClassName name: String) -> NSView? {
         guard let superview else { return nil }
         if superview.className == name {
@@ -435,7 +543,6 @@ private extension NSView {
         return superview.firstSuperview(withClassName: name)
     }
 
-    /// The first descendant (depth-first) of the given AppKit view class.
     func firstDescendant(withClassName name: String) -> NSView? {
         for subview in subviews {
             if subview.className == name {
@@ -446,5 +553,16 @@ private extension NSView {
             }
         }
         return nil
+    }
+
+    func descendants(withClassName name: String) -> [NSView] {
+        var matches: [NSView] = []
+        if className == name {
+            matches.append(self)
+        }
+        for subview in subviews {
+            matches.append(contentsOf: subview.descendants(withClassName: name))
+        }
+        return matches
     }
 }

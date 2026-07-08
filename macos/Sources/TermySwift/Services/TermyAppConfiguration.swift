@@ -42,7 +42,7 @@ struct TermyAppConfiguration {
     /// the resolved value differs from the shipped default). Used to keep the
     /// Settings UI on the native system font unless a UI font was chosen.
     /// Detected by default-value comparison because the FFI exposes no per-key
-    /// presence signal — an explicit `ui_font_family = JetBrains Mono` reads as
+    /// presence signal — an explicit `ui_font_family = Menlo` reads as
     /// not-set, which is acceptable (system font is the desired default there).
     var isUIFontExplicitlySet: Bool = false
     var configPath: String?
@@ -81,7 +81,7 @@ struct TermyAppConfiguration {
         safety: .default,
         tmux: .default,
         native: .default,
-        uiFontFamily: "JetBrains Mono",
+        uiFontFamily: "Menlo",
         configPath: nil,
         tasks: [],
         keybinds: []
