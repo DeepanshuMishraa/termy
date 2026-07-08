@@ -58,7 +58,7 @@ fn command_icon_path(id: termy_command_core::CommandId) -> &'static str {
         CheckForUpdates => "icons/command_palette/check-update.svg",
         Quit => "icons/command_palette/power.svg",
         ToggleCommandPalette => "icons/command_palette/command.svg",
-        Copy | Paste => "icons/command_palette/clipboard.svg",
+        Copy | Paste | SelectAll => "icons/command_palette/clipboard.svg",
         InstallCli => "icons/command_palette/cli.svg",
         ToggleTabBarVisibility | ToggleWorkspaceSidebar => "icons/command_palette/sidebar.svg",
         ToggleInspector => "icons/command_palette/info.svg",
@@ -1572,6 +1572,7 @@ impl TerminalView {
             | CommandAction::ToggleCommandPalette
             | CommandAction::Copy
             | CommandAction::Paste
+            | CommandAction::SelectAll
             | CommandAction::OpenSearch
             | CommandAction::CloseSearch
             | CommandAction::SearchNext

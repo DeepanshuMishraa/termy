@@ -210,6 +210,10 @@ pub fn default_keybinds_for_platform(platform: KeybindPlatform) -> Vec<DefaultKe
             trigger: "secondary-v",
             action: CommandId::Paste,
         });
+        bindings.push(DefaultKeybind {
+            trigger: "secondary-a",
+            action: CommandId::SelectAll,
+        });
     } else {
         bindings.push(DefaultKeybind {
             trigger: "ctrl-shift-c",
@@ -218,6 +222,10 @@ pub fn default_keybinds_for_platform(platform: KeybindPlatform) -> Vec<DefaultKe
         bindings.push(DefaultKeybind {
             trigger: "ctrl-shift-v",
             action: CommandId::Paste,
+        });
+        bindings.push(DefaultKeybind {
+            trigger: "ctrl-shift-a",
+            action: CommandId::SelectAll,
         });
     }
 

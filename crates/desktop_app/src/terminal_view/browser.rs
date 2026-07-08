@@ -13,6 +13,25 @@ use std::sync::OnceLock;
 use termy_command_core::{browser_tabs_supported, browser_tabs_unsupported_message};
 
 pub(super) const BROWSER_DEFAULT_URL: &str = "https://www.google.com/";
+
+/// Browser-style user agent so sites serve their modern UI instead of the
+/// unknown-engine fallback wry's bare default triggers. Each matches the
+/// platform's actual engine (WebKit on macOS/Linux, Chromium on Windows),
+/// so feature detection stays honest.
+#[cfg_attr(
+    not(any(target_os = "macos", target_os = "windows", target_os = "linux")),
+    allow(dead_code)
+)]
+const BROWSER_USER_AGENT: &str = if cfg!(target_os = "windows") {
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+     (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36 Edg/136.0.0.0"
+} else if cfg!(target_os = "linux") {
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15 \
+     (KHTML, like Gecko) Version/18.4 Safari/605.1.15"
+} else {
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 \
+     (KHTML, like Gecko) Version/18.4 Safari/605.1.15"
+};
 pub(super) const BROWSER_URL_BAR_HEIGHT: f32 = 34.0;
 
 /// State written by wry's navigation/title callbacks and read by the view on
@@ -21,6 +40,14 @@ pub(super) const BROWSER_URL_BAR_HEIGHT: f32 = 34.0;
 pub(super) struct BrowserShared {
     pub(super) url: Mutex<String>,
     pub(super) title: Mutex<String>,
+    /// Set by the page's mousedown IPC hook; drained on the next frame to end
+    /// any in-progress URL edit, since clicks inside the native webview never
+    /// reach gpui's mouse handlers.
+    pub(super) pointer_down: std::sync::atomic::AtomicBool,
+    /// URLs from `window.open`/`target="_blank"` requests, drained on the
+    /// next frame into new browser tabs (the native "new window" flow is
+    /// always denied in favor of Termy's own tabs).
+    pub(super) pending_new_tab_urls: Mutex<Vec<String>>,
 }
 
 pub(super) struct BrowserTabState {
@@ -33,6 +60,12 @@ pub(super) struct BrowserTabState {
     /// Last bounds handed to the webview (logical px, rounded).
     last_bounds: (i32, i32, i32, i32),
     visible: bool,
+    /// Whether gpui currently owns AppKit keyboard focus for this pane. The
+    /// webview steals first-responder status on any click into the page and
+    /// never gives it back on its own; this flag edge-triggers a
+    /// `focus_parent()` reclaim when the pane stops being the active,
+    /// unobstructed browser pane.
+    gpui_owns_keyboard: bool,
     webview_creation_error: Option<String>,
 }
 
@@ -43,12 +76,15 @@ impl BrowserTabState {
             shared: Arc::new(BrowserShared {
                 url: Mutex::new(url.to_string()),
                 title: Mutex::new(String::new()),
+                pointer_down: std::sync::atomic::AtomicBool::new(false),
+                pending_new_tab_urls: Mutex::new(Vec::new()),
             }),
             url_input: InlineInputState::new(String::new()),
             editing_url: false,
             applied_title: String::new(),
             last_bounds: (0, 0, 0, 0),
             visible: false,
+            gpui_owns_keyboard: true,
             webview_creation_error: None,
         }
     }
@@ -80,6 +116,10 @@ impl TerminalView {
     }
 
     pub(crate) fn add_browser_tab(&mut self, cx: &mut Context<Self>) {
+        self.add_browser_tab_with_url(BROWSER_DEFAULT_URL, cx);
+    }
+
+    pub(crate) fn add_browser_tab_with_url(&mut self, url: &str, cx: &mut Context<Self>) {
         if !self.browser_tabs_enabled {
             termy_toast::info("Enable Browser Tabs in Settings to use this command");
             self.notify_overlay(cx);
@@ -112,7 +152,7 @@ impl TerminalView {
                 0,
                 120,
                 40,
-                BROWSER_DEFAULT_URL,
+                url,
             )],
             active_pane_id: pane_id,
             pinned: false,
@@ -170,9 +210,13 @@ impl TerminalView {
         state.url_input.set_text(url);
         state.url_input.select_all();
         state.editing_url = true;
-        // The webview may hold first-responder status from a previous click
-        // into the page; reclaim gpui keyboard focus so typing lands in the
-        // address field instead of going nowhere.
+        // The webview steals first-responder status on any click into the
+        // page; hand it back to the gpui view at the AppKit level, otherwise
+        // typing keeps flowing into the webview instead of the address field.
+        if let Some(webview) = &state.webview {
+            webview.focus_parent();
+        }
+        state.gpui_owns_keyboard = true;
         self.focus_handle.focus(window, cx);
         self.reset_cursor_blink_phase();
         self.inline_input_selecting = false;
@@ -247,6 +291,26 @@ impl TerminalView {
         )
     }
 
+    /// Route a Copy/Paste action into the active browser pane's webview.
+    /// Returns false when the active pane is not a browser page (URL bar
+    /// editing is handled by the inline-input path before this).
+    pub(super) fn forward_edit_action_to_active_browser(
+        &self,
+        action: BrowserEditAction,
+    ) -> bool {
+        let Some(state) = self.active_browser_state() else {
+            return false;
+        };
+        if state.editing_url {
+            return false;
+        }
+        let Some(webview) = &state.webview else {
+            return false;
+        };
+        webview.send_edit_action(action);
+        true
+    }
+
     pub(super) fn browser_history_back(&mut self) {
         if let Some(state) = self.active_browser_state()
             && let Some(webview) = &state.webview
@@ -278,14 +342,20 @@ impl TerminalView {
         let Some(content_bounds) = self.terminal_content_bounds(window) else {
             return Vec::new();
         };
+        // Pane layout coordinates are local to the terminal surface; the
+        // webview is a native child of the window's content view, so shift
+        // back past the left workspace sidebar and the titlebar/tab strip.
+        let window_offset_x = self.workspace_sidebar_width();
+        let window_offset_y = self.terminal_content_top_inset();
         active_tab
             .panes
             .iter()
             .filter(|pane| pane.is_browser())
             .filter_map(|pane| {
                 let layout = self.terminal_pane_layout(active_tab, pane, content_bounds)?;
-                let host_x = layout.content_frame.origin_x;
-                let host_y = layout.content_frame.origin_y + BROWSER_URL_BAR_HEIGHT;
+                let host_x = window_offset_x + layout.content_frame.origin_x;
+                let host_y =
+                    window_offset_y + layout.content_frame.origin_y + BROWSER_URL_BAR_HEIGHT;
                 let host_width = layout.content_frame.width.max(0.0);
                 let host_height = (layout.content_frame.height - BROWSER_URL_BAR_HEIGHT).max(0.0);
                 (host_width >= 1.0 && host_height >= 1.0).then(|| BrowserPaneWebviewLayout {
@@ -340,12 +410,49 @@ impl TerminalView {
     /// render pass.
     pub(super) fn sync_browser_webviews(&mut self, window: &Window, cx: &mut Context<Self>) {
         pump_linux_gtk_events();
+        // A click into the page (reported via the webview's IPC hook) ends any
+        // in-progress URL edit, mirroring a click anywhere else in the window.
+        // Queued window.open/target=_blank URLs become new tabs, deferred so
+        // the tab list is not mutated mid-render.
+        let mut new_tab_urls = Vec::new();
+        for tab in &mut self.tabs {
+            for pane in &mut tab.panes {
+                let Some(state) = pane.browser_state_mut() else {
+                    continue;
+                };
+                if state
+                    .shared
+                    .pointer_down
+                    .swap(false, std::sync::atomic::Ordering::Relaxed)
+                    && state.editing_url
+                {
+                    state.editing_url = false;
+                    cx.notify();
+                }
+                if let Ok(mut pending) = state.shared.pending_new_tab_urls.lock()
+                    && !pending.is_empty()
+                {
+                    new_tab_urls.append(&mut *pending);
+                }
+            }
+        }
+        if !new_tab_urls.is_empty() {
+            let view = cx.entity();
+            cx.defer(move |cx| {
+                view.update(cx, |this, cx| {
+                    for url in new_tab_urls {
+                        this.add_browser_tab_with_url(&url, cx);
+                    }
+                });
+            });
+        }
         // Native views paint above all gpui content, so hide the webview
         // whenever a gpui overlay needs the area.
         let overlay_open = self.is_command_palette_open()
             || self.quit_prompt_in_flight
             || self.new_tab_menu_anchor.is_some();
         let active_tab = self.active_tab;
+        let active_pane_id = self.active_pane_id().map(str::to_string);
         let wakeup = self.event_wakeup_tx.clone();
         let browser_layouts = if overlay_open {
             Vec::new()
@@ -401,18 +508,41 @@ impl TerminalView {
                     }
                     state.visible = false;
                 }
+                // Reclaim AppKit keyboard focus the moment this pane stops
+                // being the active, unobstructed browser pane (tab switch,
+                // pane switch, overlay open, URL edit). A hidden or inactive
+                // webview otherwise keeps first-responder status and silently
+                // eats every keystroke meant for the terminal.
+                let webview_owns_keyboard = index == active_tab
+                    && !overlay_open
+                    && !state.editing_url
+                    && active_pane_id.as_deref() == Some(pane_id.as_str());
+                if webview_owns_keyboard {
+                    state.gpui_owns_keyboard = false;
+                } else if !state.gpui_owns_keyboard {
+                    if let Some(webview) = &state.webview {
+                        webview.focus_parent();
+                    }
+                    state.gpui_owns_keyboard = true;
+                }
             }
         }
         for entry in &mut self.workspaces {
             for tab in &mut entry.tabs {
                 for pane in &mut tab.panes {
-                    if let Some(state) = pane.browser_state_mut()
-                        && state.visible
-                    {
-                        if let Some(webview) = &state.webview {
-                            webview.set_visible(false);
+                    if let Some(state) = pane.browser_state_mut() {
+                        if state.visible {
+                            if let Some(webview) = &state.webview {
+                                webview.set_visible(false);
+                            }
+                            state.visible = false;
                         }
-                        state.visible = false;
+                        if !state.gpui_owns_keyboard {
+                            if let Some(webview) = &state.webview {
+                                webview.focus_parent();
+                            }
+                            state.gpui_owns_keyboard = true;
+                        }
                     }
                 }
             }
@@ -736,6 +866,14 @@ struct BrowserPaneWebviewLayout {
     bounds: (i32, i32, i32, i32),
 }
 
+/// Standard editing actions forwarded to the native webview.
+#[derive(Clone, Copy)]
+pub(super) enum BrowserEditAction {
+    Copy,
+    Paste,
+    SelectAll,
+}
+
 struct BrowserWebview {
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     inner: wry::WebView,
@@ -796,6 +934,162 @@ impl BrowserWebview {
             let _ = self.inner.reload();
         }
     }
+
+    /// Hand AppKit first-responder status back to the hosting gpui view. The
+    /// webview grabs it on any click into the page and never returns it.
+    fn focus_parent(&self) {
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        {
+            let _ = self.inner.focus_parent();
+        }
+    }
+
+    /// Send a standard Cocoa editing action to the webview. gpui's
+    /// `performKeyEquivalent:` override consumes cmd+C/V/A at the window
+    /// level (dispatching Termy's own actions) before AppKit would deliver
+    /// them to the webview, so the app's edit actions re-dispatch here when a
+    /// browser pane is active.
+    fn send_edit_action(&self, action: BrowserEditAction) {
+        #[cfg(target_os = "macos")]
+        {
+            use cocoa::base::nil;
+            use objc::{msg_send, sel, sel_impl};
+            use wry::WebViewExtMacOS as _;
+
+            let webview = self.inner.webview();
+            let target = std::ptr::from_ref(&*webview)
+                .cast::<objc::runtime::Object>()
+                .cast_mut();
+            unsafe {
+                match action {
+                    BrowserEditAction::Copy => {
+                        let _: () = msg_send![target, copy: nil];
+                    }
+                    BrowserEditAction::Paste => {
+                        let _: () = msg_send![target, paste: nil];
+                    }
+                    BrowserEditAction::SelectAll => {
+                        let _: () = msg_send![target, selectAll: nil];
+                    }
+                }
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = action;
+        }
+    }
+}
+
+/// macOS function keys (arrows, home, page up/down…) carry Apple's
+/// private-use codepoints (U+F700–U+F8FF) in the NSEvent. In wry's child
+/// webview those leak through as literal text insertions — pressing arrow
+/// down types U+F701 into focused fields. Cancel any insertion of those
+/// codepoints; keydown events still fire so page-level key handling (menu
+/// navigation, games) keeps working.
+const FUNCTION_KEY_INSERTION_FIX_SCRIPT: &str = "\
+(function () { \
+  'use strict'; \
+  var PUA = /[\\uF700-\\uF8FF]/; \
+  window.addEventListener('beforeinput', function (event) { \
+    if (event.data && PUA.test(event.data)) { event.preventDefault(); } \
+  }, true); \
+  window.addEventListener('keypress', function (event) { \
+    if (event.charCode >= 0xF700 && event.charCode <= 0xF8FF) { \
+      event.preventDefault(); \
+    } \
+  }, true); \
+})();";
+
+/// WKWebView disables WebAuthn (Apple gates it behind the restricted
+/// `com.apple.developer.web-browser.public-key-credential` entitlement), so
+/// passkey calls would fail cryptically or hang. Leaving the interfaces in
+/// place but answering "unavailable" makes sites report confusing states
+/// like GitHub's "partial passkey support" banner — so remove the WebAuthn
+/// surface entirely and Termy presents as a browser without passkey support;
+/// sites then hide their passkey UI and offer password/OAuth flows. Any
+/// call that still sneaks through gets a clean NotAllowedError, and
+/// user-initiated attempts surface a toast suggesting the system browser
+/// (conditional-mediation autofill probes stay silent to avoid spam).
+const WEBAUTHN_FALLBACK_SCRIPT: &str = "\
+(function () { \
+  'use strict'; \
+  function notify() { \
+    try { window.ipc.postMessage('webauthn-attempt'); } catch (e) {} \
+  } \
+  function rejection() { \
+    return Promise.reject(new DOMException( \
+      'Passkeys are not supported in this browser.', 'NotAllowedError')); \
+  } \
+  [ \
+    'PublicKeyCredential', \
+    'AuthenticatorResponse', \
+    'AuthenticatorAttestationResponse', \
+    'AuthenticatorAssertionResponse', \
+  ].forEach(function (name) { \
+    try { delete window[name]; } catch (e) {} \
+    if (window[name] !== undefined) { \
+      try { \
+        Object.defineProperty(window, name, { value: undefined }); \
+      } catch (e) {} \
+    } \
+  }); \
+  if (navigator.credentials) { \
+    var originalCreate = navigator.credentials.create ? \
+      navigator.credentials.create.bind(navigator.credentials) : null; \
+    var originalGet = navigator.credentials.get ? \
+      navigator.credentials.get.bind(navigator.credentials) : null; \
+    navigator.credentials.create = function (options) { \
+      if (options && options.publicKey) { notify(); return rejection(); } \
+      return originalCreate ? originalCreate(options) : rejection(); \
+    }; \
+    navigator.credentials.get = function (options) { \
+      if (options && options.publicKey) { \
+        if (!options.mediation || options.mediation !== 'conditional') { notify(); } \
+        return rejection(); \
+      } \
+      return originalGet ? originalGet(options) : rejection(); \
+    }; \
+  } \
+})();";
+
+/// What to do with a navigation or new-window request for a given URL.
+#[derive(Debug, PartialEq, Eq)]
+enum BrowserNavigationPolicy {
+    /// Web content the engine may load (also covers subframes, so `data:` and
+    /// `blob:` stay allowed).
+    Load,
+    /// Hand off to the OS (mail, phone). Never loaded in the webview.
+    OpenExternally,
+    /// Blocked: `file://` would let web content read local files, and
+    /// arbitrary app schemes would launch other apps without consent.
+    Deny,
+}
+
+fn browser_navigation_policy(url: &str) -> BrowserNavigationPolicy {
+    let scheme = url.split(':').next().unwrap_or_default();
+    if ["http", "https", "about", "blob", "data"]
+        .iter()
+        .any(|allowed| scheme.eq_ignore_ascii_case(allowed))
+    {
+        return BrowserNavigationPolicy::Load;
+    }
+    if ["mailto", "tel", "facetime", "sms"]
+        .iter()
+        .any(|external| scheme.eq_ignore_ascii_case(external))
+    {
+        return BrowserNavigationPolicy::OpenExternally;
+    }
+    BrowserNavigationPolicy::Deny
+}
+
+/// Only http(s)/about URLs belong in the address bar; `data:`/`blob:` URLs
+/// can be megabytes and usually come from subframes.
+fn browser_url_display_worthy(url: &str) -> bool {
+    let scheme = url.split(':').next().unwrap_or_default();
+    ["http", "https", "about"]
+        .iter()
+        .any(|allowed| scheme.eq_ignore_ascii_case(allowed))
 }
 
 fn create_browser_webview(
@@ -820,7 +1114,11 @@ fn create_browser_webview(
         let title_shared = shared.clone();
         let title_wakeup = wakeup.clone();
         let load_shared = shared.clone();
-        let load_wakeup = wakeup;
+        let load_wakeup = wakeup.clone();
+        let ipc_shared = shared.clone();
+        let ipc_wakeup = wakeup.clone();
+        let new_window_shared = shared.clone();
+        let new_window_wakeup = wakeup;
         // Only nudge a redraw when a value actually changed: pages can mutate the
         // URL (history API) and title on every keystroke, and an unconditional
         // wakeup per event triggers full re-render storms that starve the
@@ -839,29 +1137,120 @@ fn create_browser_webview(
             }
         }
 
-        let result = wry::WebViewBuilder::new()
+        let builder = wry::WebViewBuilder::new()
             .with_url(url)
             .with_visible(false)
             .with_bounds(wry::Rect {
                 position: wry::dpi::LogicalPosition::new(0, 0).into(),
                 size: wry::dpi::LogicalSize::new(0, 0).into(),
             })
-            .with_navigation_handler(move |url| {
-                store_if_changed(&nav_shared.url, url, &nav_wakeup);
-                true
+            // Without a Safari-style user agent (wry's default has no
+            // Version/Safari tokens) sites like Google serve their legacy
+            // fallback UI for unrecognized engines.
+            .with_user_agent(BROWSER_USER_AGENT)
+            // Match browser defaults: swipe to go back/forward, no autoplay
+            // without a user gesture, devtools via right-click → Inspect,
+            // clicks land even when the window is inactive.
+            .with_back_forward_navigation_gestures(true)
+            .with_autoplay(false)
+            .with_devtools(true)
+            .with_accept_first_mouse(true)
+            .with_clipboard(true)
+            .with_hotkeys_zoom(true)
+            .with_navigation_handler(move |url| match browser_navigation_policy(&url) {
+                BrowserNavigationPolicy::Load => {
+                    if browser_url_display_worthy(&url) {
+                        store_if_changed(&nav_shared.url, url, &nav_wakeup);
+                    }
+                    true
+                }
+                BrowserNavigationPolicy::OpenExternally => {
+                    let _ = webbrowser::open(&url);
+                    false
+                }
+                BrowserNavigationPolicy::Deny => false,
+            })
+            .with_new_window_req_handler(move |url, _features| {
+                // Never let the engine spawn its own native window; route the
+                // request into a Termy browser tab on the next frame instead.
+                match browser_navigation_policy(&url) {
+                    BrowserNavigationPolicy::Load => {
+                        if let Ok(mut pending) = new_window_shared.pending_new_tab_urls.lock() {
+                            pending.push(url);
+                        }
+                        let _ = new_window_wakeup.try_send(());
+                    }
+                    BrowserNavigationPolicy::OpenExternally => {
+                        let _ = webbrowser::open(&url);
+                    }
+                    BrowserNavigationPolicy::Deny => {}
+                }
+                wry::NewWindowResponse::Deny
             })
             .with_document_title_changed_handler(move |title| {
                 store_if_changed(&title_shared.title, title, &title_wakeup);
             })
             .with_on_page_load_handler(move |_event, url| {
-                store_if_changed(&load_shared.url, url, &load_wakeup);
+                if browser_url_display_worthy(&url) {
+                    store_if_changed(&load_shared.url, url, &load_wakeup);
+                }
             })
-            .build_as_child(window);
+            // Clicks inside the native webview never reach gpui's mouse
+            // handlers; report them so the view can drop an in-progress URL
+            // edit (and its focus ring) on the next frame.
+            .with_initialization_script(
+                "window.addEventListener('mousedown', function () { \
+                     window.ipc.postMessage('pointer-down'); \
+                 }, true);",
+            )
+            .with_initialization_script(WEBAUTHN_FALLBACK_SCRIPT)
+            .with_initialization_script(FUNCTION_KEY_INSERTION_FIX_SCRIPT)
+            .with_ipc_handler(move |request| match request.body().as_str() {
+                "pointer-down" => {
+                    ipc_shared
+                        .pointer_down
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                    let _ = ipc_wakeup.try_send(());
+                }
+                "webauthn-attempt" => {
+                    termy_toast::info(
+                        "Passkeys aren't supported in Termy's browser yet — \
+                         use \u{201c}Open in Browser\u{201d} to sign in with one",
+                    );
+                    let _ = ipc_wakeup.try_send(());
+                }
+                _ => {}
+            });
+
+        // macOS persists cookies/localStorage in WKWebsiteDataStore's default
+        // store automatically. Windows (WebView2) and Linux (WebKitGTK) need
+        // an explicit profile directory shared by every browser tab, or each
+        // run starts from a blank session.
+        #[cfg(any(target_os = "windows", target_os = "linux"))]
+        let result = BROWSER_WEB_CONTEXT.with_borrow_mut(|slot| {
+            let context = slot.get_or_insert_with(|| {
+                wry::WebContext::new(
+                    dirs::data_local_dir().map(|dir| dir.join("termy").join("browser-profile")),
+                )
+            });
+            builder.with_web_context(context).build_as_child(window)
+        });
+        #[cfg(target_os = "macos")]
+        let result = builder.build_as_child(window);
+
         match result {
             Ok(webview) => Ok(BrowserWebview { inner: webview }),
             Err(error) => Err(error.to_string()),
         }
     }
+}
+
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+thread_local! {
+    /// Process-wide browser profile; webviews are main-thread only, so a
+    /// thread-local is effectively a singleton here.
+    static BROWSER_WEB_CONTEXT: std::cell::RefCell<Option<wry::WebContext>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(target_os = "linux")]
@@ -941,6 +1330,52 @@ mod tests {
             TerminalView::normalize_browser_url("localhost:3777"),
             "https://localhost:3777"
         );
+    }
+
+    #[test]
+    fn navigation_policy_allows_web_content() {
+        for url in [
+            "https://example.com/",
+            "http://localhost:3777/",
+            "about:blank",
+            "blob:https://example.com/uuid",
+            "data:text/plain;base64,aGk=",
+            "HTTPS://UPPER.example/",
+        ] {
+            assert_eq!(browser_navigation_policy(url), BrowserNavigationPolicy::Load);
+        }
+    }
+
+    #[test]
+    fn navigation_policy_hands_communication_schemes_to_the_os() {
+        for url in ["mailto:a@b.c", "tel:+4512345678", "facetime:a@b.c"] {
+            assert_eq!(
+                browser_navigation_policy(url),
+                BrowserNavigationPolicy::OpenExternally
+            );
+        }
+    }
+
+    #[test]
+    fn navigation_policy_blocks_local_and_unknown_schemes() {
+        for url in [
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "vscode://open",
+            "ssh://host",
+            "chrome://settings",
+            "",
+        ] {
+            assert_eq!(browser_navigation_policy(url), BrowserNavigationPolicy::Deny);
+        }
+    }
+
+    #[test]
+    fn address_bar_only_shows_http_like_urls() {
+        assert!(browser_url_display_worthy("https://example.com/"));
+        assert!(browser_url_display_worthy("about:blank"));
+        assert!(!browser_url_display_worthy("data:text/html,hi"));
+        assert!(!browser_url_display_worthy("blob:https://example.com/x"));
     }
 
     #[test]

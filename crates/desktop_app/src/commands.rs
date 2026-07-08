@@ -77,6 +77,7 @@ pub enum MenuActionRole {
     Normal,
     Copy,
     Paste,
+    SelectAll,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -275,6 +276,7 @@ macro_rules! define_commands {
                     MenuActionRole::Normal => None,
                     MenuActionRole::Copy => Some(OsAction::Copy),
                     MenuActionRole::Paste => Some(OsAction::Paste),
+                    MenuActionRole::SelectAll => Some(OsAction::SelectAll),
                 };
 
                 match self {
@@ -933,6 +935,18 @@ define_commands!(
             MenuActionRole::Paste
         ))
     ),
+    (
+        SelectAll,
+        TERMINAL_CONTEXT,
+        None,
+        Some(menu(
+            MenuRoot::Edit,
+            0,
+            "Select All",
+            MenuVisibility::Always,
+            MenuActionRole::SelectAll
+        ))
+    ),
     (CloseSearch, TERMINAL_CONTEXT, None, None),
     (
         SearchNext,
@@ -1346,12 +1360,15 @@ mod tests {
     }
 
     #[test]
-    fn only_copy_and_paste_use_os_edit_roles() {
+    fn only_edit_commands_use_os_edit_roles() {
         for root in CommandAction::menu_roots() {
             for entry in CommandAction::menu_entries_for_root(*root) {
                 match entry.role {
                     MenuActionRole::Copy => assert_eq!(entry.action, CommandAction::Copy),
                     MenuActionRole::Paste => assert_eq!(entry.action, CommandAction::Paste),
+                    MenuActionRole::SelectAll => {
+                        assert_eq!(entry.action, CommandAction::SelectAll);
+                    }
                     MenuActionRole::Normal => {}
                 }
             }

@@ -957,7 +957,7 @@ impl IntoElement for InlineInputElement {
                 let (cursor_bounds, cursor_offset_x) = line_metas
                     .get(cursor_row)
                     .map_or((all_bounds, px(0.0)), |(_, b, ox)| (*b, *ox));
-                let cursor_line = painted_lines.into_iter().nth(cursor_row).flatten();
+                let cursor_line = painted_lines.get(cursor_row).cloned().flatten();
 
                 view.update(cx, |this, _cx| {
                     if let Some(state) = this.active_inline_input_state_mut() {
@@ -966,11 +966,7 @@ impl IntoElement for InlineInputElement {
                             cursor_line,
                             cursor_offset_x,
                             line_metas,
-                            prepaint
-                                .line_bounds_vec
-                                .iter()
-                                .map(|_| None::<ShapedLine>)
-                                .collect(),
+                            painted_lines,
                         );
                     }
                 });
@@ -1174,6 +1170,14 @@ impl TerminalView {
             }
             None => {}
         }
+    }
+
+    pub(super) fn select_all_in_active_inline_input(&mut self, cx: &mut Context<Self>) -> bool {
+        if !self.has_active_inline_input() {
+            return false;
+        }
+        self.apply_inline_input_mutation(InlineInputState::select_all, cx);
+        true
     }
 
     pub(super) fn paste_clipboard_into_active_inline_input(

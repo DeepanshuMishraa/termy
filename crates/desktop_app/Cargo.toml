@@ -35,6 +35,9 @@ rfd = "0.15"
 # Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
+p256 = { workspace = true }
+rand_core = { workspace = true }
+sha2 = { workspace = true }
 bincode = "1.3"
 url = "2.5"
 

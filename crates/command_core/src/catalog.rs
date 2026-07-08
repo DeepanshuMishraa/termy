@@ -55,6 +55,7 @@ macro_rules! termy_command_catalog {
             (ToggleCommandPalette, "toggle_command_palette"),
             (Copy, "copy"),
             (Paste, "paste"),
+            (SelectAll, "select_all"),
             (CloseSearch, "close_search"),
             (SearchNext, "search_next"),
             (SearchPrevious, "search_previous"),

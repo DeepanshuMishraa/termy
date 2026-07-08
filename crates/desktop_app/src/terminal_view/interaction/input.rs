@@ -1,4 +1,5 @@
 use super::*;
+use crate::terminal_view::browser::BrowserEditAction;
 use std::env;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -592,6 +593,9 @@ impl TerminalView {
                 if self.copy_active_inline_input_selection(cx) {
                     return true;
                 }
+                if self.forward_edit_action_to_active_browser(BrowserEditAction::Copy) {
+                    return true;
+                }
                 if let Some(selected) = self.selected_text() {
                     cx.write_to_clipboard(ClipboardItem::new_string(selected));
                 } else {
@@ -601,6 +605,9 @@ impl TerminalView {
             }
             CommandAction::Paste => {
                 if self.paste_clipboard_into_active_inline_input(cx) {
+                    return true;
+                }
+                if self.forward_edit_action_to_active_browser(BrowserEditAction::Paste) {
                     return true;
                 }
                 if let Some(item) = cx.read_from_clipboard() {
@@ -621,6 +628,12 @@ impl TerminalView {
                     self.write_paste_fallback_input(cx);
                 }
                 true
+            }
+            CommandAction::SelectAll => {
+                if self.select_all_in_active_inline_input(cx) {
+                    return true;
+                }
+                self.forward_edit_action_to_active_browser(BrowserEditAction::SelectAll)
             }
             _ => false,
         }

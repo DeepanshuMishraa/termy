@@ -47,6 +47,7 @@ Termy keybindings use Ghostty-style trigger overrides via repeated `keybind` lin
 - `secondary-m` -> `minimize_window`
 - `secondary-c` -> `copy`
 - `secondary-v` -> `paste`
+- `secondary-a` -> `select_all`
 
 ### Windows Defaults
 
@@ -88,6 +89,7 @@ Termy keybindings use Ghostty-style trigger overrides via repeated `keybind` lin
 - `secondary-alt-i` -> `toggle_inspector`
 - `secondary-c` -> `copy`
 - `secondary-v` -> `paste`
+- `secondary-a` -> `select_all`
 
 ### Linux Defaults
 
@@ -129,6 +131,7 @@ Termy keybindings use Ghostty-style trigger overrides via repeated `keybind` lin
 - `secondary-alt-i` -> `toggle_inspector`
 - `ctrl-shift-c` -> `copy`
 - `ctrl-shift-v` -> `paste`
+- `ctrl-shift-a` -> `select_all`
 
 ### Other Platform Defaults
 
@@ -170,6 +173,7 @@ Termy keybindings use Ghostty-style trigger overrides via repeated `keybind` lin
 - `secondary-alt-i` -> `toggle_inspector`
 - `ctrl-shift-c` -> `copy`
 - `ctrl-shift-v` -> `paste`
+- `ctrl-shift-a` -> `select_all`
 
 `secondary` maps to `cmd` on macOS and `ctrl` on non-macOS platforms.
 
@@ -248,6 +252,7 @@ Related UI option:
 - `toggle_command_palette`
 - `copy`
 - `paste`
+- `select_all`
 - `close_search`
 - `search_next`
 - `search_previous`

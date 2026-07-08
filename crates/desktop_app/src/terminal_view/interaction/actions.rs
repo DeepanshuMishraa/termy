@@ -3,7 +3,10 @@ use termy_command_core::{CommandCapabilities, CommandUnavailableReason};
 
 impl TerminalView {
     fn shortcut_action_allowed_with_active_inline_input(action: CommandAction) -> bool {
-        matches!(action, CommandAction::Copy | CommandAction::Paste)
+        matches!(
+            action,
+            CommandAction::Copy | CommandAction::Paste | CommandAction::SelectAll
+        )
     }
 
     fn command_palette_mode_for_action(action: CommandAction) -> Option<CommandPaletteMode> {
@@ -219,7 +222,7 @@ impl TerminalView {
             CommandAction::MinimizeWindow => {
                 window.minimize_window();
             }
-            CommandAction::Copy | CommandAction::Paste => {
+            CommandAction::Copy | CommandAction::Paste | CommandAction::SelectAll => {
                 self.execute_input_command_action(action, cx);
             }
             CommandAction::ZoomIn | CommandAction::ZoomOut | CommandAction::ZoomReset => {
