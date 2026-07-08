@@ -207,6 +207,7 @@ jobs:
       - build-linux
     permissions:
       contents: write
+      actions: write
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
@@ -243,6 +244,19 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               release_id: context.payload.release.id,
-              prerelease: context.payload.release.prerelease,
-              make_latest: context.payload.release.prerelease ? "false" : "true"
+              prerelease: false,
+              make_latest: "true"
+            });
+
+      - name: Trigger AUR publish
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            const version = context.payload.release.tag_name.replace(/^v/, "");
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: "aur-publish.yml",
+              ref: "main",
+              inputs: { version }
             });
