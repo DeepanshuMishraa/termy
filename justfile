@@ -128,3 +128,17 @@ bump kind:
     perl -i -pe 's/^version = ".*"/version = "$ENV{NEW}"/ if !$done++' crates/desktop_app/Cargo.toml
     perl -i -pe 's/^version = ".*"/version = "$ENV{NEW}"/ if !$done++' crates/cli/Cargo.toml
     echo "Bumped $CURRENT -> $NEW"
+
+# Set exact version in desktop app + cli Cargo.toml (e.g. just set-version 0.2.12)
+set-version version:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    NEW="{{ version }}"
+    if ! [[ "$NEW" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      echo "usage: just set-version <major.minor.patch> (got: $NEW)"; exit 1
+    fi
+    CURRENT=$(grep -m1 '^version = ' crates/desktop_app/Cargo.toml | sed -E 's/version = "(.*)"/\1/')
+    export NEW
+    perl -i -pe 's/^version = ".*"/version = "$ENV{NEW}"/ if !$done++' crates/desktop_app/Cargo.toml
+    perl -i -pe 's/^version = ".*"/version = "$ENV{NEW}"/ if !$done++' crates/cli/Cargo.toml
+    echo "Set $CURRENT -> $NEW"
