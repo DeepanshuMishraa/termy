@@ -23,8 +23,11 @@ jobs:
             "https://github.com/lassejlv/termy/releases/download/v${v}/Termy-v${v}-linux-x86_64.tar.gz"
           curl -fsSL -o termy_icon.png \
             "https://raw.githubusercontent.com/lassejlv/termy/v${v}/assets/termy_icon.png"
+          curl -fsSL -o LICENSE \
+            "https://raw.githubusercontent.com/lassejlv/termy/v${v}/LICENSE"
           echo "tarball=$(b2sum termy.tar.gz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
           echo "desktop=$(b2sum scripts/aur/termy.desktop | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "license=$(b2sum LICENSE | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
           echo "icon=$(b2sum termy_icon.png | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
       - name: Render PKGBUILD
@@ -33,6 +36,7 @@ jobs:
           sed -e "s/@PKGVER@/${{ inputs.version }}/" \
               -e "s/@TARBALL_B2SUM@/${{ steps.sums.outputs.tarball }}/" \
               -e "s/@DESKTOP_B2SUM@/${{ steps.sums.outputs.desktop }}/" \
+              -e "s/@LICENSE_B2SUM@/${{ steps.sums.outputs.license }}/" \
               -e "s/@ICON_B2SUM@/${{ steps.sums.outputs.icon }}/" \
               scripts/aur/PKGBUILD.template > scripts/aur/PKGBUILD
           cat scripts/aur/PKGBUILD
