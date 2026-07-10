@@ -1,8 +1,12 @@
 # Termy
 
-Highly experimental not ready for daily use.
+Developer preview. The native host is feature-rich, but it is not yet the
+default production macOS build.
 
 Native macOS 14+ SwiftUI terminal host backed by the repo-local `libtermy`.
+
+See the [native production roadmap](road.md) for current blockers, exit gates,
+and release order.
 
 ## Run
 
@@ -44,7 +48,15 @@ Keyboard input is encoded through repo-local `termy_core`, including Kitty keybo
 ./scripts/check-release-readiness.sh
 ```
 
-`check-config-matrix.sh` runs Swift regression tests for shared config/schema parity. `stress-native.sh` runs persistence, selection, and render-clamping stress tests; pass `--launch` for a local app launch smoke. `check-release-readiness.sh` verifies native bundle metadata plus signing/notarization hooks, and accepts `--app PATH` to inspect a staged `.app`.
+`check-config-matrix.sh` runs Swift regression tests for shared config/schema parity. `stress-native.sh` runs persistence, selection, and render-clamping stress tests; pass `--launch` for a local app launch smoke. `check-release-readiness.sh` validates unsigned/ad-hoc release candidates with `--app PATH` or `--dmg PATH`, including metadata, resources, every Mach-O architecture/load path, read-only DMG contents, and a clean-state usable-window launch. Developer ID trust and notarization are intentionally separate final-release gates.
+
+To exercise “Install Command Line Tool…” without touching your real home or
+shell profile, stage the app and run the isolated smoke:
+
+```sh
+cargo macos build
+./macos/scripts/check-cli-install-smoke.sh --app macos/dist/Termy.app
+```
 
 For a staged app bundle, run a local startup/RSS/CPU gate with:
 
@@ -52,7 +64,7 @@ For a staged app bundle, run a local startup/RSS/CPU gate with:
 ./scripts/check-launch-gate.sh --app .build/dmg-arm64/Termy.app
 ```
 
-Native DMGs are built with `./scripts/build-dmg.sh`. Pass `--sign-identity` plus notary credentials to sign/notarize, or use `./scripts/build-dmg-signed.sh` when a missing signing identity should fail loudly.
+Native DMGs are built with `./scripts/build-dmg.sh`, include the target-specific `termy-cli`, and automatically pass the mounted unsigned-release gate before succeeding. Unsigned candidates receive ad-hoc signatures so their nested code and resources are internally valid. Pass `--sign-identity` plus notary credentials to produce the final trusted artifact, or use `./scripts/build-dmg-signed.sh` when a missing signing identity should fail loudly.
 
 Performance benchmark summaries from `cargo run -p xtask -- benchmark-compare` can be gated with:
 

@@ -5,7 +5,7 @@ use std::{
     process::{Command, Stdio},
 };
 
-const USAGE: &str = "usage: cargo macos <run|verify|debug|logs|telemetry>";
+const USAGE: &str = "usage: cargo macos <build|run|verify|debug|logs|telemetry>";
 const APP_NAME: &str = "Termy";
 const EXECUTABLE_NAME: &str = "Termy";
 const PRODUCT_NAME: &str = "TermySwift";
@@ -16,6 +16,7 @@ const LOGO_SOURCES: &[&str] = &["ToykoTermy", "termy_old_icon", "TermyIcon"];
 
 #[derive(Clone, Copy)]
 enum MacosCommand {
+    Build,
     Run,
     Verify,
     Debug,
@@ -26,6 +27,7 @@ enum MacosCommand {
 impl MacosCommand {
     fn parse(arg: Option<String>) -> Result<Self> {
         match arg.as_deref().unwrap_or("run") {
+            "build" => Ok(Self::Build),
             "run" => Ok(Self::Run),
             "verify" | "--verify" => Ok(Self::Verify),
             "debug" | "--debug" => Ok(Self::Debug),
@@ -46,6 +48,7 @@ struct MacosPaths {
     app_frameworks: PathBuf,
     app_resources: PathBuf,
     app_binary: PathBuf,
+    app_cli: PathBuf,
     info_plist: PathBuf,
     icon_source: PathBuf,
 }
@@ -61,6 +64,7 @@ impl MacosPaths {
         let app_frameworks = app_contents.join("Frameworks");
         let app_resources = app_contents.join("Resources");
         let app_binary = app_macos.join(EXECUTABLE_NAME);
+        let app_cli = app_macos.join("termy-cli");
         let info_plist = app_contents.join("Info.plist");
         let icon_source = root_dir.join("assets/ToykoTermy.png");
 
@@ -73,6 +77,7 @@ impl MacosPaths {
             app_frameworks,
             app_resources,
             app_binary,
+            app_cli,
             info_plist,
             icon_source,
         })
@@ -89,9 +94,10 @@ pub fn run(args: impl Iterator<Item = String>) -> Result<()> {
     }
 
     let paths = MacosPaths::new()?;
-    stage_app(&paths)?;
+    stage_app(&paths, !matches!(command, MacosCommand::Build))?;
 
     match command {
+        MacosCommand::Build => Ok(()),
         MacosCommand::Run => open_app(&paths),
         MacosCommand::Verify => verify_app(&paths),
         MacosCommand::Debug => run_status(Command::new("lldb").arg("--").arg(&paths.app_binary)),
@@ -128,8 +134,10 @@ fn require_macos() -> Result<()> {
     }
 }
 
-fn stage_app(paths: &MacosPaths) -> Result<()> {
-    kill_existing_app()?;
+fn stage_app(paths: &MacosPaths, stop_running_app: bool) -> Result<()> {
+    if stop_running_app {
+        kill_existing_app()?;
+    }
     build_ffi(paths)?;
     build_swift(paths)?;
 
@@ -159,6 +167,7 @@ fn stage_app(paths: &MacosPaths) -> Result<()> {
     build_icon(paths)?;
     copy_logo_assets(paths)?;
     write_info_plist(paths)?;
+    validate_bundle_manifest(paths)?;
     ad_hoc_sign(paths)?;
     Ok(())
 }
@@ -217,7 +226,9 @@ fn bundle_ffi_dylib(paths: &MacosPaths) -> Result<()> {
             .arg(&linked_path)
             .arg("@rpath/libtermy_ffi.dylib")
             .arg(&paths.app_binary),
-    )
+    )?;
+
+    remove_build_rpaths(&paths.app_binary)
 }
 
 fn bundle_cli(paths: &MacosPaths) -> Result<()> {
@@ -225,15 +236,14 @@ fn bundle_cli(paths: &MacosPaths) -> Result<()> {
     if !source.exists() {
         bail!("could not find built termy-cli under target/debug");
     }
-    let bundled = paths.app_macos.join("termy-cli");
-    fs::copy(&source, &bundled).with_context(|| {
+    fs::copy(&source, &paths.app_cli).with_context(|| {
         format!(
             "failed to copy {} to {}",
             source.display(),
-            bundled.display()
+            paths.app_cli.display()
         )
     })?;
-    make_executable(&bundled)
+    make_executable(&paths.app_cli)
 }
 
 fn ffi_dylib_path(paths: &MacosPaths) -> Result<PathBuf> {
@@ -276,9 +286,55 @@ fn linked_ffi_path(app_binary: &Path) -> Result<String> {
         })
 }
 
+fn remove_build_rpaths(app_binary: &Path) -> Result<()> {
+    let output = Command::new("otool")
+        .arg("-l")
+        .arg(app_binary)
+        .output()
+        .with_context(|| format!("failed to inspect rpaths in {}", app_binary.display()))?;
+    if !output.status.success() {
+        bail!(
+            "`otool -l {}` failed: {}",
+            app_binary.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+
+    let output = String::from_utf8(output.stdout).context("otool output was not utf-8")?;
+    let mut in_rpath = false;
+    for line in output.lines() {
+        let line = line.trim();
+        if line == "cmd LC_RPATH" {
+            in_rpath = true;
+            continue;
+        }
+        if !in_rpath || !line.starts_with("path ") {
+            continue;
+        }
+        in_rpath = false;
+        let Some(rpath) = line
+            .strip_prefix("path ")
+            .and_then(|value| value.split(" (offset ").next())
+        else {
+            continue;
+        };
+        if !rpath.contains("/target/") && !rpath.contains("/.build/") {
+            continue;
+        }
+        run_status_captured(
+            Command::new("install_name_tool")
+                .arg("-delete_rpath")
+                .arg(rpath)
+                .arg(app_binary),
+        )?;
+    }
+    Ok(())
+}
+
 fn ad_hoc_sign(paths: &MacosPaths) -> Result<()> {
     for path in [
         paths.app_frameworks.join("libtermy_ffi.dylib"),
+        paths.app_cli.clone(),
         paths.app_binary.clone(),
         paths.app_bundle.clone(),
     ] {
@@ -292,6 +348,16 @@ fn ad_hoc_sign(paths: &MacosPaths) -> Result<()> {
         )?;
     }
     Ok(())
+}
+
+fn validate_bundle_manifest(paths: &MacosPaths) -> Result<()> {
+    run_status(
+        Command::new(paths.macos_dir.join("scripts/check-bundle-manifest.sh"))
+            .arg("--app")
+            .arg(&paths.app_bundle)
+            .arg("--bundle-id")
+            .arg(BUNDLE_ID),
+    )
 }
 
 fn swift_build_binary(paths: &MacosPaths) -> Result<PathBuf> {

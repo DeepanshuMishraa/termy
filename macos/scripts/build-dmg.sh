@@ -176,6 +176,8 @@ if [[ -z "$VERSION" ]]; then
   VERSION="$(read_version_from_cargo_toml)"
   [[ -n "$VERSION" ]] || die "Could not read version from crates/desktop_app/Cargo.toml"
 fi
+VERSION="${VERSION#v}"
+[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "Version must be numeric semantic version (for example 0.2.14): $VERSION"
 
 if [[ -z "$ARCH" && -z "$TARGET" ]]; then
   ARCH="$(uname -m)"
@@ -252,6 +254,7 @@ APP_MACOS="$APP_CONTENTS/MacOS"
 APP_RESOURCES="$APP_CONTENTS/Resources"
 APP_FRAMEWORKS="$APP_CONTENTS/Frameworks"
 APP_BINARY="$APP_MACOS/$APP_NAME"
+CLI_BINARY="$APP_MACOS/termy-cli"
 INFO_PLIST="$APP_CONTENTS/Info.plist"
 RW_DMG="$DIST_DIR/${DMG_NAME}-rw.dmg"
 OUTPUT_DMG="$DIST_DIR/${DMG_NAME}.dmg"
@@ -263,6 +266,7 @@ require_cmd sips
 require_cmd iconutil
 require_cmd install_name_tool
 require_cmd otool
+require_cmd codesign
 
 if [[ "$SIGN" -eq 1 ]]; then
   require_cmd codesign
@@ -306,11 +310,21 @@ sign_app_bundle() {
   log "Signing app bundle with: $SIGN_IDENTITY"
   xattr -rc "$APP_BUNDLE"
   codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP_FRAMEWORKS/libtermy_ffi.dylib"
+  codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$CLI_BINARY"
   codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP_BINARY"
 
   local codesign_args=(--force --options runtime --timestamp --sign "$SIGN_IDENTITY")
   [[ -n "$ENTITLEMENTS" ]] && codesign_args+=(--entitlements "$ENTITLEMENTS")
   codesign "${codesign_args[@]}" "$APP_BUNDLE"
+  codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
+}
+
+ad_hoc_sign_app_bundle() {
+  log "Applying ad-hoc signatures for unsigned candidate"
+  codesign --force --sign - --timestamp=none "$APP_FRAMEWORKS/libtermy_ffi.dylib"
+  codesign --force --sign - --timestamp=none "$CLI_BINARY"
+  codesign --force --sign - --timestamp=none "$APP_BINARY"
+  codesign --force --sign - --timestamp=none "$APP_BUNDLE"
   codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
 }
 
@@ -350,11 +364,13 @@ notarize_if_requested() {
   spctl --assess --type open --context context:primary-signature --verbose "$OUTPUT_DMG"
 }
 
-log "Building libtermy FFI for $ARCH ($TARGET)"
-(cd "$REPO_ROOT" && cargo build --release --target "$TARGET" -p termy_ffi)
+log "Building libtermy FFI and CLI for $ARCH ($TARGET)"
+(cd "$REPO_ROOT" && cargo build --release --target "$TARGET" -p termy_ffi -p termy_cli)
 
 FFI_DYLIB="$TARGET_RELEASE_DIR/libtermy_ffi.dylib"
+BUILT_CLI="$TARGET_RELEASE_DIR/termy-cli"
 [[ -f "$FFI_DYLIB" ]] || die "Could not find built FFI library at $FFI_DYLIB"
+[[ -f "$BUILT_CLI" ]] || die "Could not find built CLI at $BUILT_CLI"
 
 log "Building native Swift app for $SWIFT_TRIPLE"
 (
@@ -381,12 +397,26 @@ rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_MACOS" "$APP_RESOURCES" "$APP_FRAMEWORKS" "$DIST_DIR"
 cp "$BUILD_BINARY" "$APP_BINARY"
 chmod +x "$APP_BINARY"
+cp "$BUILT_CLI" "$CLI_BINARY"
+chmod +x "$CLI_BINARY"
 cp "$FFI_DYLIB" "$APP_FRAMEWORKS/libtermy_ffi.dylib"
+chmod +x "$APP_FRAMEWORKS/libtermy_ffi.dylib"
 
 install_name_tool -id "@rpath/libtermy_ffi.dylib" "$APP_FRAMEWORKS/libtermy_ffi.dylib"
 LINKED_FFI_PATH="$(otool -L "$APP_BINARY" | awk '/libtermy_ffi\.dylib/ {print $1; exit}')"
 [[ -n "$LINKED_FFI_PATH" ]] || die "$APP_BINARY is not linked against libtermy_ffi.dylib"
 install_name_tool -change "$LINKED_FFI_PATH" "@rpath/libtermy_ffi.dylib" "$APP_BINARY"
+
+while IFS= read -r rpath; do
+  case "$rpath" in
+    */target/*|*/.build/*)
+      install_name_tool -delete_rpath "$rpath" "$APP_BINARY"
+      ;;
+  esac
+done < <(otool -l "$APP_BINARY" | awk '
+  $1 == "cmd" && $2 == "LC_RPATH" { in_rpath = 1; next }
+  in_rpath && $1 == "path" { print $2; in_rpath = 0 }
+')
 
 build_icon
 for logo in "${LOGO_SOURCES[@]}"; do
@@ -404,6 +434,8 @@ cat >"$INFO_PLIST" <<PLIST
   <string>$APP_NAME</string>
   <key>CFBundleIdentifier</key>
   <string>$BUNDLE_ID</string>
+  <key>CFBundleDisplayName</key>
+  <string>$APP_NAME</string>
   <key>CFBundleIconFile</key>
   <string>$ICON_NAME</string>
   <key>CFBundleName</key>
@@ -435,8 +467,15 @@ PLIST
 
 /usr/bin/plutil -lint "$INFO_PLIST" >/dev/null
 
+"$SCRIPT_DIR/check-bundle-manifest.sh" \
+  --app "$APP_BUNDLE" \
+  --arch "$ARCH" \
+  --bundle-id "$BUNDLE_ID"
+
 if [[ "$SIGN" -eq 1 ]]; then
   sign_app_bundle
+else
+  ad_hoc_sign_app_bundle
 fi
 
 log "Preparing DMG staging folder"
@@ -511,5 +550,10 @@ if [[ "$SIGN" -eq 1 ]]; then
   sign_dmg_if_requested
   notarize_if_requested
 fi
+
+"$SCRIPT_DIR/check-release-readiness.sh" \
+  --dmg "$OUTPUT_DMG" \
+  --arch "$ARCH" \
+  --version "$VERSION"
 
 echo "Done: $OUTPUT_DMG"

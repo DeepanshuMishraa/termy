@@ -1,9 +1,8 @@
 import Foundation
 
-/// Optional "launch inside tmux" integration. The embedded Rust core spawns a
-/// plain shell, so full tmux control-mode (as in the GPUI app) isn't available
-/// here; instead, when enabled, each terminal execs into its own tmux session,
-/// giving persistence, tmux splits, copy-mode, and the status line.
+/// Shell-backed tmux launch path used when the native control-mode workspace
+/// cannot start. Each terminal execs into its own tmux session, preserving
+/// persistence, tmux splits, copy-mode, and the status line as a fallback.
 enum TmuxIntegration {
     /// Common install locations, since a GUI app's PATH may not include Homebrew.
     private static let defaultCandidatePaths = [

@@ -9,6 +9,8 @@ struct TerminalWorkspaceView: View {
     @State private var appConfigurationError = TermyAppConfiguration.loadErrorMessage
     @State private var workspacePersistenceError: String?
     @State private var didRestoreWorkspace = false
+    @State private var didConfigurePerformancePanes = false
+    @State private var didScheduleBenchmarkExit = false
     @State private var persistenceSaveTask: Task<Void, Never>?
     private let workspacePersistence = TerminalWorkspacePersistence()
     private let shouldRestorePersistedWorkspace: Bool
@@ -27,6 +29,8 @@ struct TerminalWorkspaceView: View {
             .focusedValue(\.terminalCommands, commandSet)
             .onAppear {
                 TerminalCommandRouter.shared.activate(store)
+                configurePerformancePanesIfNeeded()
+                scheduleBenchmarkExitIfNeeded()
                 if tmuxControlModel == nil {
                     restoreWorkspaceIfNeeded()
                 } else {
@@ -53,6 +57,49 @@ struct TerminalWorkspaceView: View {
             .onReceive(configurationStore.$configuration) { _ in
                 NativeTabWindowManager.shared.applyNativeTabPlacementToVisibleWindows()
             }
+    }
+
+    private func configurePerformancePanesIfNeeded() {
+        guard !didConfigurePerformancePanes else {
+            return
+        }
+        didConfigurePerformancePanes = true
+        guard let rawCount = ProcessInfo.processInfo.environment["TERMY_PERFORMANCE_PANE_COUNT"],
+              let requestedCount = Int(rawCount),
+              requestedCount > 1
+        else {
+            return
+        }
+        Task { @MainActor in
+            for index in 1..<min(requestedCount, 8) {
+                store.splitFocused(index.isMultiple(of: 2) ? .vertical : .horizontal)
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+            if let readyPath = ProcessInfo.processInfo.environment["TERMY_PERFORMANCE_PANE_READY_FILE"] {
+                try? "\(store.paneCount)\n".write(
+                    toFile: readyPath,
+                    atomically: true,
+                    encoding: .utf8
+                )
+            }
+        }
+    }
+
+    private func scheduleBenchmarkExitIfNeeded() {
+        guard !didScheduleBenchmarkExit,
+              ProcessInfo.processInfo.environment["TERMY_BENCHMARK_EXIT_ON_COMPLETE"] == "1",
+              ProcessInfo.processInfo.environment["TERMY_BENCHMARK_COMMAND"] != nil,
+              let rawDuration = ProcessInfo.processInfo.environment["TERMY_BENCHMARK_DURATION_SECS"],
+              let duration = UInt64(rawDuration),
+              duration > 0
+        else {
+            return
+        }
+        didScheduleBenchmarkExit = true
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: duration * 1_000_000_000 + 750_000_000)
+            NSApp.terminate(nil)
+        }
     }
 
     private var terminalContent: some View {

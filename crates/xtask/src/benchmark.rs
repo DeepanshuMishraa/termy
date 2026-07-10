@@ -9,7 +9,7 @@ use std::{
     fs,
     io::{self, Write},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
     thread,
     time::{Duration, Instant},
 };
@@ -139,6 +139,10 @@ fn run_compare(mut args: impl Iterator<Item = String>) -> Result<()> {
     }
     fs::create_dir_all(&output_root)
         .with_context(|| format!("failed to create {}", output_root.display()))?;
+    // xctrace does not preserve the caller's working directory for launched
+    // applications. Keep every path forwarded through the environment
+    // absolute so app metrics and marker files cannot escape the report tree.
+    let output_root = canonicalize_root(output_root)?;
 
     let driver = BenchmarkDriverSpec::current()?;
     build_release_driver(&driver)?;
@@ -390,6 +394,7 @@ impl BenchmarkDriverSpec {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BenchmarkTargetKind {
     Termy,
+    Native,
     Ghostty,
 }
 
@@ -397,6 +402,7 @@ impl BenchmarkTargetKind {
     fn parse(value: &str) -> Result<Self> {
         match value {
             "termy" => Ok(Self::Termy),
+            "native" => Ok(Self::Native),
             "ghostty" => Ok(Self::Ghostty),
             other => bail!("unknown benchmark target kind `{other}`"),
         }
@@ -405,6 +411,7 @@ impl BenchmarkTargetKind {
     fn display_name(self) -> &'static str {
         match self {
             Self::Termy => "Termy",
+            Self::Native => "Termy Native",
             Self::Ghostty => "Ghostty",
         }
     }
@@ -427,6 +434,7 @@ impl BenchmarkTargetSpec {
         let kind = BenchmarkTargetKind::parse(kind)?;
         match kind {
             BenchmarkTargetKind::Termy => Self::from_termy_root(label, PathBuf::from(path)),
+            BenchmarkTargetKind::Native => Self::from_native_path(label, PathBuf::from(path)),
             BenchmarkTargetKind::Ghostty => Self::from_ghostty_path(label, PathBuf::from(path)),
         }
     }
@@ -448,6 +456,18 @@ impl BenchmarkTargetSpec {
         Ok(Self {
             label,
             kind: BenchmarkTargetKind::Ghostty,
+            source_path,
+            executable_path,
+            git_sha: None,
+        })
+    }
+
+    fn from_native_path(label: &'static str, path: PathBuf) -> Result<Self> {
+        let source_path = canonicalize_root(path)?;
+        let executable_path = resolve_native_executable(&source_path)?;
+        Ok(Self {
+            label,
+            kind: BenchmarkTargetKind::Native,
             source_path,
             executable_path,
             git_sha: None,
@@ -524,6 +544,26 @@ fn resolve_ghostty_executable(path: &Path) -> Result<PathBuf> {
         );
     }
     Ok(path.to_path_buf())
+}
+
+fn resolve_native_executable(path: &Path) -> Result<PathBuf> {
+    let executable = if path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("app"))
+    {
+        path.join("Contents/MacOS/Termy")
+    } else {
+        path.to_path_buf()
+    };
+
+    if !executable.is_file() {
+        bail!(
+            "native target must point to the Termy executable or .app bundle: {}",
+            executable.display()
+        );
+    }
+    Ok(executable)
 }
 
 fn ghostty_version(executable_path: &Path) -> Result<GhosttyVersion> {
@@ -603,6 +643,7 @@ fn prepare_target(build: &BenchmarkTargetSpec) -> Result<()> {
                 build.source_path.display()
             ),
         ),
+        BenchmarkTargetKind::Native => Ok(()),
         BenchmarkTargetKind::Ghostty => {
             let version = ghostty_version(&build.executable_path)?;
             if version < GhosttyVersion::MIN_SUPPORTED {
@@ -1013,11 +1054,12 @@ fn run_single_benchmark(
     let trace_path = energy_dir.join("activity-monitor.trace");
     let markers_path = driver_dir.join("markers.ndjson");
     let time_limit_secs = duration_secs.saturating_add(TRACE_PADDING_SECS);
-    let mut activity_command = match build.kind {
-        BenchmarkTargetKind::Termy => {
+    let _activity_pid = match build.kind {
+        BenchmarkTargetKind::Termy | BenchmarkTargetKind::Native => {
             let command = benchmark_driver_command(driver, scenario, duration_secs);
-            activity_monitor_termy_command(
+            run_attached_termy_trace(
                 build,
+                "Activity Monitor",
                 &trace_path,
                 &config_root,
                 &metrics_dir,
@@ -1026,28 +1068,32 @@ fn run_single_benchmark(
                 &command,
                 duration_secs,
                 time_limit_secs,
-            )
+                &raw_dir.join("activity-target.log"),
+            )?
         }
-        BenchmarkTargetKind::Ghostty => activity_monitor_ghostty_command(
-            build,
-            &trace_path,
-            &markers_path,
-            ghostty_launch
-                .as_ref()
-                .expect("ghostty launch artifacts must exist"),
-            time_limit_secs,
-        ),
+        BenchmarkTargetKind::Ghostty => {
+            let mut activity_command = activity_monitor_ghostty_command(
+                build,
+                &trace_path,
+                &markers_path,
+                ghostty_launch
+                    .as_ref()
+                    .expect("ghostty launch artifacts must exist"),
+                time_limit_secs,
+            );
+            run_xctrace_record_command(
+                &mut activity_command,
+                format!(
+                    "xctrace benchmark run for {} ({}) {}",
+                    build.label,
+                    build.display_name(),
+                    scenario.as_str()
+                ),
+                &trace_path,
+            )?;
+            0
+        }
     };
-    run_xctrace_record_command(
-        &mut activity_command,
-        format!(
-            "xctrace benchmark run for {} ({}) {}",
-            build.label,
-            build.display_name(),
-            scenario.as_str()
-        ),
-        &trace_path,
-    )?;
 
     let app_summary = if build.metrics_supported() {
         let summary_path = metrics_dir.join("summary.json");
@@ -1085,11 +1131,12 @@ fn run_single_benchmark(
 
     let animation_trace_path = animation_dir.join("animation-hitches.trace");
     let animation_metrics_dir = raw_dir.join("animation-app");
-    let mut animation_command = match build.kind {
-        BenchmarkTargetKind::Termy => {
+    let attached_animation_pid = match build.kind {
+        BenchmarkTargetKind::Termy | BenchmarkTargetKind::Native => {
             let command = benchmark_driver_command(driver, scenario, duration_secs);
-            animation_hitches_termy_command(
+            run_attached_termy_trace(
                 build,
+                "Animation Hitches",
                 &animation_trace_path,
                 &config_root,
                 &animation_metrics_dir,
@@ -1098,32 +1145,40 @@ fn run_single_benchmark(
                 &command,
                 duration_secs,
                 time_limit_secs,
-            )
+                &raw_dir.join("animation-target.log"),
+            )?
         }
-        BenchmarkTargetKind::Ghostty => animation_hitches_ghostty_command(
-            build,
-            &animation_trace_path,
-            &markers_path,
-            ghostty_launch
-                .as_ref()
-                .expect("ghostty launch artifacts must exist"),
-            time_limit_secs,
-        ),
+        BenchmarkTargetKind::Ghostty => {
+            let mut animation_command = animation_hitches_ghostty_command(
+                build,
+                &animation_trace_path,
+                &markers_path,
+                ghostty_launch
+                    .as_ref()
+                    .expect("ghostty launch artifacts must exist"),
+                time_limit_secs,
+            );
+            run_xctrace_record_command(
+                &mut animation_command,
+                format!(
+                    "xctrace Animation Hitches run for {} ({}) {}",
+                    build.label,
+                    build.display_name(),
+                    scenario.as_str()
+                ),
+                &animation_trace_path,
+            )?;
+            0
+        }
     };
-    run_xctrace_record_command(
-        &mut animation_command,
-        format!(
-            "xctrace Animation Hitches run for {} ({}) {}",
-            build.label,
-            build.display_name(),
-            scenario.as_str()
-        ),
-        &animation_trace_path,
-    )?;
 
     let animation_toc_path = animation_dir.join("toc.xml");
     export_xctrace_table(&animation_trace_path, None, &animation_toc_path)?;
-    let launched_pid = parse_trace_launched_process_pid(&animation_toc_path)?;
+    let launched_pid = if attached_animation_pid > 0 {
+        attached_animation_pid
+    } else {
+        parse_trace_launched_process_pid(&animation_toc_path)?
+    };
     let displayed_frames_path = animation_dir.join("displayed-surfaces-interval.xml");
     let hitches_path = animation_dir.join("hitches.xml");
     export_xctrace_table(
@@ -1214,8 +1269,9 @@ fn create_ghostty_launch_artifacts(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn activity_monitor_termy_command(
+fn run_attached_termy_trace(
     build: &BenchmarkTargetSpec,
+    template: &str,
     trace_path: &Path,
     config_root: &Path,
     metrics_dir: &Path,
@@ -1224,47 +1280,105 @@ fn activity_monitor_termy_command(
     benchmark_command: &str,
     duration_secs: u64,
     time_limit_secs: u64,
-) -> Command {
-    let mut command = Command::new("xctrace");
-    command
+    target_log_path: &Path,
+) -> Result<u32> {
+    let mut child = spawn_termy_benchmark_target(
+        build,
+        config_root,
+        metrics_dir,
+        markers_path,
+        scenario,
+        benchmark_command,
+        duration_secs,
+        target_log_path,
+    )?;
+    let pid = child.id();
+    thread::sleep(Duration::from_millis(250));
+    if let Some(status) = child
+        .try_wait()
+        .context("failed to poll benchmark target")?
+    {
+        bail!(
+            "{} ({}) exited with {status} before xctrace could attach; see {}",
+            build.label,
+            build.display_name(),
+            target_log_path.display()
+        );
+    }
+
+    let mut trace_command = Command::new("xctrace");
+    trace_command
         .arg("record")
         .arg("--template")
-        .arg("Activity Monitor")
+        .arg(template)
         .arg("--time-limit")
         .arg(format!("{time_limit_secs}s"))
         .arg("--output")
         .arg(trace_path)
-        .arg("--env")
-        .arg(format!("XDG_CONFIG_HOME={}", config_root.display()))
-        .arg("--env")
-        .arg(format!("TERMY_BENCHMARK_COMMAND={benchmark_command}"))
-        .arg("--env")
-        .arg(format!("TERMY_BENCHMARK_SCENARIO={}", scenario.as_str()))
-        .arg("--env")
-        .arg(format!(
-            "TERMY_BENCHMARK_METRICS_PATH={}",
-            metrics_dir.display()
-        ))
-        .arg("--env")
-        .arg(format!("TERMY_BENCHMARK_DURATION_SECS={duration_secs}"))
-        .arg("--env")
-        .arg(format!(
-            "{BENCHMARK_EVENTS_PATH_ENV}={}",
-            markers_path.display()
-        ))
-        .arg("--env")
-        .arg("TERMY_BENCHMARK_EXIT_ON_COMPLETE=1")
-        .arg("--env")
-        .arg(format!("TERMY_BENCHMARK_BUILD_LABEL={}", build.label))
-        .arg("--env")
-        .arg(format!(
-            "TERMY_BENCHMARK_GIT_SHA={}",
-            build.git_sha.as_deref().unwrap_or("unknown")
-        ))
-        .arg("--launch")
-        .arg("--")
-        .arg(&build.executable_path);
-    command
+        .arg("--attach")
+        .arg(pid.to_string());
+
+    let trace_result = run_xctrace_record_command(
+        &mut trace_command,
+        format!(
+            "xctrace {template} attach for {} ({}) {}",
+            build.label,
+            build.display_name(),
+            scenario.as_str()
+        ),
+        trace_path,
+    );
+    stop_benchmark_target(&mut child);
+    trace_result?;
+    Ok(pid)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_termy_benchmark_target(
+    build: &BenchmarkTargetSpec,
+    config_root: &Path,
+    metrics_dir: &Path,
+    markers_path: &Path,
+    scenario: Scenario,
+    benchmark_command: &str,
+    duration_secs: u64,
+    target_log_path: &Path,
+) -> Result<Child> {
+    let log = fs::File::create(target_log_path)
+        .with_context(|| format!("failed to create {}", target_log_path.display()))?;
+    let error_log = log
+        .try_clone()
+        .with_context(|| format!("failed to clone {}", target_log_path.display()))?;
+    Command::new(&build.executable_path)
+        .env("XDG_CONFIG_HOME", config_root)
+        .env("TERMY_BENCHMARK_COMMAND", benchmark_command)
+        .env("TERMY_BENCHMARK_SCENARIO", scenario.as_str())
+        .env("TERMY_BENCHMARK_METRICS_PATH", metrics_dir)
+        .env("TERMY_BENCHMARK_DURATION_SECS", duration_secs.to_string())
+        .env(BENCHMARK_EVENTS_PATH_ENV, markers_path)
+        .env("TERMY_BENCHMARK_EXIT_ON_COMPLETE", "1")
+        .env("TERMY_BENCHMARK_BUILD_LABEL", build.label)
+        .env(
+            "TERMY_BENCHMARK_GIT_SHA",
+            build.git_sha.as_deref().unwrap_or("unknown"),
+        )
+        .stdout(Stdio::from(log))
+        .stderr(Stdio::from(error_log))
+        .spawn()
+        .with_context(|| {
+            format!(
+                "failed to launch {} benchmark target at {}",
+                build.display_name(),
+                build.executable_path.display()
+            )
+        })
+}
+
+fn stop_benchmark_target(child: &mut Child) {
+    if child.try_wait().ok().flatten().is_none() {
+        let _ = child.kill();
+    }
+    let _ = child.wait();
 }
 
 fn activity_monitor_ghostty_command(
@@ -1293,60 +1407,6 @@ fn activity_monitor_ghostty_command(
         .arg(&build.executable_path)
         .arg("--config-default-files=false")
         .arg(format!("--config-file={}", launch.config_path.display()));
-    command
-}
-
-#[allow(clippy::too_many_arguments)]
-fn animation_hitches_termy_command(
-    build: &BenchmarkTargetSpec,
-    trace_path: &Path,
-    config_root: &Path,
-    metrics_dir: &Path,
-    markers_path: &Path,
-    scenario: Scenario,
-    benchmark_command: &str,
-    duration_secs: u64,
-    time_limit_secs: u64,
-) -> Command {
-    let mut command = Command::new("xctrace");
-    command
-        .arg("record")
-        .arg("--template")
-        .arg("Animation Hitches")
-        .arg("--time-limit")
-        .arg(format!("{time_limit_secs}s"))
-        .arg("--output")
-        .arg(trace_path)
-        .arg("--env")
-        .arg(format!("XDG_CONFIG_HOME={}", config_root.display()))
-        .arg("--env")
-        .arg(format!("TERMY_BENCHMARK_COMMAND={benchmark_command}"))
-        .arg("--env")
-        .arg(format!("TERMY_BENCHMARK_SCENARIO={}", scenario.as_str()))
-        .arg("--env")
-        .arg(format!(
-            "TERMY_BENCHMARK_METRICS_PATH={}",
-            metrics_dir.display()
-        ))
-        .arg("--env")
-        .arg(format!("TERMY_BENCHMARK_DURATION_SECS={duration_secs}"))
-        .arg("--env")
-        .arg(format!(
-            "{BENCHMARK_EVENTS_PATH_ENV}={}",
-            markers_path.display()
-        ))
-        .arg("--env")
-        .arg("TERMY_BENCHMARK_EXIT_ON_COMPLETE=1")
-        .arg("--env")
-        .arg(format!("TERMY_BENCHMARK_BUILD_LABEL={}", build.label))
-        .arg("--env")
-        .arg(format!(
-            "TERMY_BENCHMARK_GIT_SHA={}",
-            build.git_sha.as_deref().unwrap_or("unknown")
-        ))
-        .arg("--launch")
-        .arg("--")
-        .arg(&build.executable_path);
     command
 }
 
@@ -1400,23 +1460,40 @@ fn parse_activity_monitor_summary(live_path: &Path, ledger_path: &Path) -> Resul
     let ledger_xml = fs::read_to_string(ledger_path)
         .with_context(|| format!("failed to read {}", ledger_path.display()))?;
 
-    let live_row = parse_single_row_table(&live_xml)?;
+    let live_rows = parse_table_rows(&live_xml)?;
     let ledger_row = parse_single_row_table(&ledger_xml)?;
+
+    let mut weighted_cpu = 0.0f64;
+    let mut cpu_duration = 0u64;
+    let mut memory_bytes = None;
+    for row in &live_rows {
+        if let (Some(cpu), Some(duration)) = (
+            row.get("cpu-percent")
+                .and_then(|value| value.parse::<f64>().ok()),
+            row.get("duration")
+                .and_then(|value| value.parse::<u64>().ok()),
+        ) {
+            weighted_cpu += cpu * duration as f64;
+            cpu_duration = cpu_duration.saturating_add(duration);
+        }
+        if let Some(memory) = row
+            .get("memory-physical-footprint")
+            .and_then(|value| value.parse::<u64>().ok())
+        {
+            memory_bytes = Some(memory_bytes.map_or(memory, |current: u64| current.max(memory)));
+        }
+    }
 
     Ok(EnergySummary {
         trace_template: "Activity Monitor".to_string(),
         cpu_total_ns: ledger_row
             .get("cpu-total")
             .and_then(|value| value.parse::<u64>().ok()),
-        cpu_percent: live_row
-            .get("cpu-percent")
-            .and_then(|value| value.parse::<f32>().ok()),
+        cpu_percent: (cpu_duration > 0).then(|| (weighted_cpu / cpu_duration as f64) as f32),
         idle_wakeups: ledger_row
             .get("idle-wakeups")
             .and_then(|value| value.parse::<u64>().ok()),
-        memory_bytes: live_row
-            .get("memory-physical-footprint")
-            .and_then(|value| value.parse::<u64>().ok()),
+        memory_bytes,
         disk_bytes_read: ledger_row
             .get("disk-bytes-read")
             .and_then(|value| value.parse::<u64>().ok()),
@@ -1536,12 +1613,65 @@ fn parse_displayed_frame_starts(xml: &str, launched_pid: u32) -> Result<Vec<u64>
     let mut fallback_starts = std::collections::BTreeSet::<u64>::new();
     let mut rows_with_start = 0usize;
     let mut matched_rows = 0usize;
+    let references = doc
+        .descendants()
+        .filter_map(|candidate| {
+            candidate
+                .attribute("id")
+                .map(|id| (id.to_string(), candidate))
+        })
+        .collect::<std::collections::HashMap<_, _>>();
     for row in node.children().filter(|child| child.has_tag_name("row")) {
         let mut parsed_row = DisplayedFrameRow::default();
+        for cell in row.children().filter(Node::is_element) {
+            let resolved_cell = resolve_xctrace_reference(cell, &references);
+            let children = resolved_cell
+                .children()
+                .filter(Node::is_element)
+                .collect::<Vec<_>>();
+            for (index, child) in children.iter().enumerate() {
+                let resolved_child = resolve_xctrace_reference(*child, &references);
+                if !resolved_child.has_tag_name("process") {
+                    continue;
+                }
+                parsed_row.has_structured_process = true;
+                let process_pid = resolved_child
+                    .descendants()
+                    .find(|descendant| descendant.has_tag_name("pid"))
+                    .map(|node| resolve_xctrace_reference(node, &references))
+                    .and_then(|pid| node_value(pid))
+                    .and_then(|pid| pid.parse::<u32>().ok());
+                if process_pid != Some(launched_pid) {
+                    continue;
+                }
+                parsed_row.matches_pid = true;
+                let mut saw_frame_label = false;
+                for sibling in children.iter().skip(index + 1) {
+                    let resolved_sibling = resolve_xctrace_reference(*sibling, &references);
+                    if resolved_sibling.has_tag_name("process") {
+                        break;
+                    }
+                    if resolved_sibling.has_tag_name("narrative-text")
+                        && resolved_sibling
+                            .attribute("fmt")
+                            .is_some_and(|value| value.contains("Frame"))
+                    {
+                        saw_frame_label = true;
+                        continue;
+                    }
+                    if saw_frame_label && resolved_sibling.has_tag_name("uint64") {
+                        parsed_row.frame_number = node_value(resolved_sibling)
+                            .and_then(|value| value.parse::<u64>().ok());
+                        break;
+                    }
+                }
+            }
+        }
         for (mnemonic, cell) in mnemonics
             .iter()
             .zip(row.children().filter(Node::is_element))
         {
+            let cell = resolve_xctrace_reference(cell, &references);
             let cell_text = node_text_content(cell);
             if !cell_text.is_empty() {
                 parsed_row.text_cells.push(cell_text.clone());
@@ -1599,6 +1729,8 @@ struct DisplayedFrameRow {
     start_ns: Option<u64>,
     frame_number: Option<u64>,
     process_pid: Option<u32>,
+    matches_pid: bool,
+    has_structured_process: bool,
     text_cells: Vec<String>,
 }
 
@@ -1644,8 +1776,11 @@ fn parse_displayed_frame_pid(mnemonic: &str, cell: Node<'_, '_>, cell_text: &str
 }
 
 fn displayed_frame_row_matches_pid(row: &DisplayedFrameRow, launched_pid: u32) -> bool {
-    if let Some(pid) = row.process_pid {
-        return pid == launched_pid;
+    if row.matches_pid {
+        return true;
+    }
+    if row.has_structured_process {
+        return false;
     }
     if row
         .text_cells
@@ -1653,6 +1788,9 @@ fn displayed_frame_row_matches_pid(row: &DisplayedFrameRow, launched_pid: u32) -
         .any(|text| text_mentions_pid(text, launched_pid))
     {
         return true;
+    }
+    if let Some(pid) = row.process_pid {
+        return pid == launched_pid;
     }
     true
 }
@@ -1860,6 +1998,13 @@ fn summarize_echo_train_latency(
 }
 
 fn parse_single_row_table(xml: &str) -> Result<std::collections::HashMap<String, String>> {
+    parse_table_rows(xml)?
+        .into_iter()
+        .next()
+        .context("missing row node")
+}
+
+fn parse_table_rows(xml: &str) -> Result<Vec<std::collections::HashMap<String, String>>> {
     let doc = Document::parse(xml).context("failed to parse xctrace xml")?;
     let node = doc
         .descendants()
@@ -1874,24 +2019,38 @@ fn parse_single_row_table(xml: &str) -> Result<std::collections::HashMap<String,
         .filter(|child| child.has_tag_name("col"))
         .map(schema_mnemonic)
         .collect::<Result<Vec<_>>>()?;
-    let row = node
-        .children()
-        .find(|child| child.has_tag_name("row"))
-        .context("missing row node")?;
-
-    let mut values = std::collections::HashMap::new();
-    for (mnemonic, cell) in mnemonics
-        .into_iter()
-        .zip(row.children().filter(Node::is_element))
-    {
-        if cell.has_tag_name("sentinel") {
-            continue;
+    let references = doc
+        .descendants()
+        .filter_map(|candidate| {
+            candidate
+                .attribute("id")
+                .map(|id| (id.to_string(), candidate))
+        })
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut rows = Vec::new();
+    for row in node.children().filter(|child| child.has_tag_name("row")) {
+        let mut values = std::collections::HashMap::new();
+        for (mnemonic, cell) in mnemonics
+            .iter()
+            .zip(row.children().filter(Node::is_element))
+        {
+            let cell = cell
+                .attribute("ref")
+                .and_then(|reference| references.get(reference).copied())
+                .unwrap_or(cell);
+            if cell.has_tag_name("sentinel") {
+                continue;
+            }
+            if let Some(value) = node_value(cell) {
+                values.insert(mnemonic.clone(), value);
+            }
         }
-        if let Some(value) = node_value(cell) {
-            values.insert(mnemonic, value);
-        }
+        rows.push(values);
     }
-    Ok(values)
+    if rows.is_empty() {
+        bail!("missing row node");
+    }
+    Ok(rows)
 }
 
 fn schema_mnemonic(node: Node<'_, '_>) -> Result<String> {
@@ -1907,6 +2066,15 @@ fn node_value(node: Node<'_, '_>) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
+}
+
+fn resolve_xctrace_reference<'a, 'input>(
+    node: Node<'a, 'input>,
+    references: &std::collections::HashMap<String, Node<'a, 'input>>,
+) -> Node<'a, 'input> {
+    node.attribute("ref")
+        .and_then(|reference| references.get(reference).copied())
+        .unwrap_or(node)
 }
 
 fn shell_escape_path(path: &Path) -> String {
@@ -2780,7 +2948,7 @@ mod tests {
         BenchmarkDriverSpec, FrameCaptureStatus, FrameEvent, GhosttyVersion, MarkerEvent, Scenario,
         create_ghostty_launch_artifacts, parse_animation_summary, parse_displayed_frame_starts,
         parse_ghostty_version, parse_hitch_durations, parse_single_row_table, render_report,
-        summarize_echo_train_latency, summarize_idle_burst_latency,
+        resolve_native_executable, summarize_echo_train_latency, summarize_idle_burst_latency,
     };
     use std::{fs, path::PathBuf};
 
@@ -2809,6 +2977,17 @@ mod tests {
                 patch: 0,
             })
         );
+    }
+
+    #[test]
+    fn resolves_native_app_executable() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("Termy.app");
+        let executable = app.join("Contents/MacOS/Termy");
+        fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        fs::write(&executable, b"native").unwrap();
+
+        assert_eq!(resolve_native_executable(&app).unwrap(), executable);
     }
 
     #[test]
@@ -2870,6 +3049,46 @@ mod tests {
       <start>220</start>
       <process><pid>99</pid></process>
       <frame>9</frame>
+    </row>
+  </node>
+</trace-query-result>"#;
+
+        let frame_starts = parse_displayed_frame_starts(xml, 42).unwrap();
+        assert_eq!(frame_starts, vec![100, 160]);
+    }
+
+    #[test]
+    fn parse_displayed_frame_starts_resolves_xcode_reference_nodes() {
+        let xml = r#"<?xml version="1.0"?>
+<trace-query-result>
+  <node>
+    <schema name="displayed-surfaces-interval">
+      <col><mnemonic>start</mnemonic></col>
+      <col><mnemonic>event-label</mnemonic></col>
+    </schema>
+    <row>
+      <start-time id="1">100</start-time>
+      <narrative id="2">
+        <process id="3"><pid>42</pid></process>
+        <narrative-text id="4" fmt=":Frame ">:Frame </narrative-text>
+        <uint64 id="5">7</uint64>
+      </narrative>
+    </row>
+    <row>
+      <start-time id="6">160</start-time>
+      <narrative>
+        <process ref="3"/>
+        <narrative-text ref="4"/>
+        <uint64>8</uint64>
+      </narrative>
+    </row>
+    <row>
+      <start-time>220</start-time>
+      <narrative>
+        <process><pid>99</pid></process>
+        <narrative-text ref="4"/>
+        <uint64>9</uint64>
+      </narrative>
     </row>
   </node>
 </trace-query-result>"#;

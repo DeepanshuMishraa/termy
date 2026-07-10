@@ -77,10 +77,47 @@ pub fn install_cli(configured_shell: Option<&str>) -> Result<InstallCliResult, S
     }
 }
 
+/// Install an explicitly selected CLI binary into an isolated Unix home.
+///
+/// This is the same install path used by the in-app action, with the source and
+/// home made explicit so release smoke tests cannot touch the developer's real
+/// shell profile.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub fn install_cli_from_source_for_home(
+    cli_source: &Path,
+    home_dir: &Path,
+    configured_shell: Option<&str>,
+) -> Result<InstallCliResult, String> {
+    let install_path = install_cli_binary_from_source(cli_source, Some(home_dir))
+        .map_err(|error| format!("Failed to install CLI: {error}"))?;
+    let path_str = install_path.display().to_string();
+    let shell_setup =
+        configure_install_cli_shell_path_for_home(configured_shell, &install_path, home_dir)
+            .map_err(|error| {
+                format!("CLI installed to {path_str} but automated PATH setup failed: {error}")
+            })?;
+
+    Ok(InstallCliResult {
+        install_path,
+        shell_setup: Some(shell_setup),
+    })
+}
+
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn configure_install_cli_shell_path(
     configured_shell: Option<&str>,
     install_path: &Path,
+) -> Result<ShellSetup, String> {
+    let home_dir =
+        dirs::home_dir().ok_or_else(|| "Could not determine home directory".to_string())?;
+    configure_install_cli_shell_path_for_home(configured_shell, install_path, &home_dir)
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn configure_install_cli_shell_path_for_home(
+    configured_shell: Option<&str>,
+    install_path: &Path,
+    home_dir: &Path,
 ) -> Result<ShellSetup, String> {
     let install_dir = install_path.parent().ok_or_else(|| {
         format!(
@@ -90,7 +127,7 @@ fn configure_install_cli_shell_path(
     })?;
     let install_dir = install_dir.to_string_lossy().into_owned();
     let shell = install_cli_shell(configured_shell)?;
-    let profile_path = install_cli_profile_path(shell)?;
+    let profile_path = home_dir.join(install_cli_profile_relative_path(shell));
     let block = install_cli_profile_block(shell, &install_dir);
     let profile_updated = ensure_install_cli_profile_block(&profile_path, &block)?;
     let session_command = install_cli_session_command(shell, &install_dir);
@@ -158,12 +195,6 @@ fn parse_install_cli_shell(shell: &str) -> Option<InstallShell> {
         "fish" => Some(InstallShell::Fish),
         _ => None,
     }
-}
-
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-fn install_cli_profile_path(shell: InstallShell) -> Result<PathBuf, String> {
-    let home = dirs::home_dir().ok_or_else(|| "Could not determine home directory".to_string())?;
-    Ok(home.join(install_cli_profile_relative_path(shell)))
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -361,12 +392,23 @@ fn resolve_install_cli_target_for_windows(local_app_data: Option<&Path>) -> Opti
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn install_cli_binary() -> Result<PathBuf, String> {
+    let cli_source = find_cli_binary()?;
+    install_cli_binary_from_source(&cli_source, dirs::home_dir().as_deref())
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn install_cli_binary_from_source(
+    cli_source: &Path,
+    home_dir: Option<&Path>,
+) -> Result<PathBuf, String> {
     use std::os::unix::fs::symlink;
 
-    let cli_source = find_cli_binary()?;
-    let cli_source = absolute_install_cli_source_path(&cli_source)?;
+    let cli_source = absolute_install_cli_source_path(cli_source)?;
+    if !cli_source.is_file() {
+        return Err(format!("CLI binary not found: {}", cli_source.display()));
+    }
 
-    let (target, using_fallback) = resolve_install_cli_target_for_unix(dirs::home_dir().as_deref());
+    let (target, using_fallback) = resolve_install_cli_target_for_unix(home_dir);
 
     if let Some(parent) = target.parent()
         && !parent.exists()
@@ -645,6 +687,23 @@ mod tests {
         let (target, using_fallback) = resolve_install_cli_target_for_unix(None);
         assert_eq!(target, PathBuf::from("/usr/local/bin/termy"));
         assert!(using_fallback);
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn explicit_source_install_stays_inside_supplied_home() {
+        let temp = TempDir::new().unwrap();
+        let source = temp.path().join("bundle").join("termy-cli");
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::write(&source, b"cli").unwrap();
+        let home = temp.path().join("home");
+
+        let result = install_cli_from_source_for_home(&source, &home, Some("/bin/zsh"))
+            .expect("isolated install should succeed");
+
+        assert_eq!(result.install_path, home.join(".local/bin/termy"));
+        assert_eq!(std::fs::read_link(&result.install_path).unwrap(), source);
+        assert!(home.join(".zshrc").is_file());
     }
 
     #[cfg(target_os = "windows")]

@@ -6,6 +6,22 @@ private enum AppMetadata {
     static let bundleIdentifier = "com.lassevestergaard.termy"
 }
 
+private enum NativeBenchmarkLaunch {
+    static var task: TermyTaskConfiguration? {
+        guard let command = ProcessInfo.processInfo.environment["TERMY_BENCHMARK_COMMAND"],
+              !command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            return nil
+        }
+        return TermyTaskConfiguration(
+            name: "Native benchmark",
+            command: command,
+            layout: nil,
+            workingDirectory: nil
+        )
+    }
+}
+
 @MainActor
 enum TermyNativeAppActions {
     static func openConfigFileInEditor() -> Bool {
@@ -85,7 +101,7 @@ struct TermySwiftApp: App {
 
     var body: some Scene {
         WindowGroup(AppMetadata.displayName) {
-            TerminalWorkspaceView()
+            TerminalWorkspaceView(initialTask: NativeBenchmarkLaunch.task)
                 .termyUIFont()
                 .frame(minWidth: 760, minHeight: 480)
                 .background(WindowConfigurator())
@@ -431,6 +447,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             closePaneEventMonitor = LocalEventMonitor(monitor)
         }
         NSApp.activate(ignoringOtherApps: true)
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard !NSApp.windows.contains(where: { $0.isVisible && $0.canBecomeMain }) else {
+                return
+            }
+            NativeTabWindowManager.shared.openNativeTab(startupTask: NativeBenchmarkLaunch.task)
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -917,6 +940,7 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
         applyNativeTabPlacement(for: window)
         window.setContentSize(TermyConfigurationStore.shared.configuration.windowSize)
         window.center()
+        NativeLaunchProbe.recordWhenUsable(window)
         postTabsChanged()
     }
 

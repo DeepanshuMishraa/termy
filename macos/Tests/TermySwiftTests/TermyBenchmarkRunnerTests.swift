@@ -7,11 +7,22 @@ final class TermyBenchmarkRunnerTests: XCTestCase {
 
         XCTAssertGreaterThanOrEqual(result.metrics.frameUpdates, 1)
         XCTAssertGreaterThanOrEqual(result.metrics.fullFrameUpdates, 1, "the forced full update seeds the workload")
-        XCTAssertGreaterThanOrEqual(result.metrics.presentedFrames, 1)
+        XCTAssertGreaterThanOrEqual(result.metrics.presentedFrames, 40)
+        XCTAssertGreaterThanOrEqual(result.buildTimes.samples, 40)
 
         let json = result.metrics.encodedJSON
         XCTAssertTrue(json.contains("\"frameUpdates\":"))
         XCTAssertNotEqual(json, "{}")
+    }
+
+    func testEveryBenchmarkScenarioProducesRequestedSamples() throws {
+        let results = try TermyBenchmarkRunner.runAll(cols: 40, rows: 10, frames: 12)
+
+        XCTAssertEqual(results.count, NativeBenchmarkScenario.allCases.count)
+        for result in results {
+            XCTAssertGreaterThanOrEqual(result.metrics.presentedFrames, 12, result.scenario)
+            XCTAssertGreaterThanOrEqual(result.buildTimes.samples, 12, result.scenario)
+        }
     }
 
     func testPercentilesAreOrderedAndBounded() {

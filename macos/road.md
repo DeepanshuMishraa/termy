@@ -20,14 +20,11 @@ The native host is closer to production than the older roadmap suggests.
 - Native tmux control layout rendering and pane input are wired in the live
   SwiftUI workspace. The older roadmap still calling this GUI work unfinished is
   stale.
-- The current native CI workflow is green.
+- The pre-existing native CI workflow was green. The new arm64/x86_64 unsigned
+  release matrix is locally verified and awaits its first remote run.
 
 Known production blockers:
 
-- The native release DMG does not bundle `termy-cli`, although the app exposes
-  “Install Command Line Tool…”.
-- The bundle-readiness check validates structure but can pass an artifact that
-  is not suitable for external distribution.
 - The native render benchmark can pass with only a few presented frames and
   therefore does not yet prove sustained rendering performance.
 - The main release workflow still publishes the GPUI macOS app, not the native
@@ -68,47 +65,41 @@ The native app is production ready only when all of the following are true:
 
 ## Task summary
 
-| Task | Outcome | Estimated effort | Blocking |
+| Task | Outcome | Estimated effort | Status |
 | --- | --- | ---: | --- |
-| 1 | Make roadmap and production status truthful | 0.5–1 day | Yes |
-| 2 | Produce a complete, self-contained native app bundle | 1–2 days | Yes |
-| 3 | Turn bundle readiness into a real unsigned release gate | 1–2 days | Yes |
-| 4 | Make rendering and launch performance gates representative | 2–3 days | Yes |
-| 5 | Close terminal interaction and tmux correctness gaps | 2–4 days | Yes |
-| 6 | Complete accessibility, IME, lifecycle, and failure-path QA | 2–3 days | Yes |
-| 7 | Wire native artifacts into release CI without cutover | 1–2 days | Yes |
-| 8 | Run clean-environment beta and soak testing | 3–7 elapsed days | Yes |
-| 9 | Freeze and approve the unsigned production release candidate | 1 day | Yes |
-| 10 | Code-sign, notarize, validate, and publish | 1–2 days | Yes |
+| 1 | Make roadmap and production status truthful | 0.5–1 day | Done 2026-07-10 |
+| 2 | Produce a complete, self-contained native app bundle | 1–2 days | Done 2026-07-10 |
+| 3 | Turn bundle readiness into a real unsigned release gate | 1–2 days | Done 2026-07-10 |
+| 4 | Make rendering and launch performance gates representative | 2–3 days | Next |
+| 5 | Close terminal interaction and tmux correctness gaps | 2–4 days | Pending |
+| 6 | Complete accessibility, IME, lifecycle, and failure-path QA | 2–3 days | Pending |
+| 7 | Wire native artifacts into release CI without cutover | 1–2 days | Pending |
+| 8 | Run clean-environment beta and soak testing | 3–7 elapsed days | Pending |
+| 9 | Freeze and approve the unsigned production release candidate | 1 day | Pending |
+| 10 | Code-sign, notarize, validate, and publish | 1–2 days | Pending |
 
 The estimates assume one developer familiar with the repository. Beta soak time
 is elapsed time rather than full-time engineering effort.
 
-## Task 1 — Make the roadmap and status truthful
+## Task 1 — Make the roadmap and status truthful ✅
+
+Completed: 2026-07-10
 
 ### Objective
 
 Remove stale claims so the remaining work is driven by the live app rather than
 already-completed milestones.
 
-### Work
+### Completed work
 
-- Reconcile `macos/roadmap.md` and `macos/docs/remaining-roadmap-plan.md` with
-  the current implementation.
-- Mark tmux control-mode GUI layout, pane focus, keyboard input, mouse input,
-  search, split, and close wiring as implemented where the live source confirms
-  it.
-- Remove or rewrite the stale fallback-only comment in
+- Reconciled `macos/roadmap.md` and
+  `macos/docs/remaining-roadmap-plan.md` with the live implementation.
+- Confirmed and documented tmux control-mode GUI layout, pane focus, keyboard,
+  mouse, paste, search, split, and close wiring.
+- Rewrote the stale fallback-only comment in
   `Support/TmuxIntegration.swift`.
-- Replace the blanket “highly experimental” README status with an explicit
-  channel such as `developer preview`, `beta`, or `production candidate`.
-- Move optional polish into a non-blocking backlog:
-  - structured keybinding editor;
-  - command-palette breadth;
-  - theme-registry caching;
-  - richer updater UX;
-  - optional GPU renderer if measured performance requires it.
-- Keep this file as the release checklist and link it from `macos/README.md`.
+- Set the README channel to `developer preview` and linked this checklist.
+- Moved optional polish into a non-blocking backlog.
 
 ### Exit gate
 
@@ -116,34 +107,41 @@ already-completed milestones.
 - Every production blocker maps to a task in this file.
 - Optional polish is clearly separated from release-blocking work.
 
-## Task 2 — Produce a complete, self-contained native bundle
+## Non-blocking backlog
+
+- Structured keybinding editor.
+- Broader command-palette coverage.
+- Theme-registry caching and richer offline behavior.
+- Richer updater progress UX.
+- Optional GPU renderer, only if measured AppKit performance misses the release
+  budgets.
+
+## Task 2 — Produce a complete, self-contained native bundle ✅
+
+Completed: 2026-07-10
 
 ### Objective
 
 Make `Termy.app` work from a clean machine without repository-relative fallback
 paths or missing helper binaries.
 
-### Work
+### Completed work
 
-- Update `macos/scripts/build-dmg.sh` to build `termy_ffi`, `termy_cli`, and the
-  Swift release product for the selected target.
-- Copy the target-specific `termy-cli` into `Contents/MacOS/termy-cli` and make
-  it executable.
-- Keep the release bundle contract aligned with `cargo macos`, which already
-  bundles the CLI for developer builds.
-- Add one shared bundle-manifest check instead of letting the development and
-  release staging paths drift independently.
-- Verify that the app binary loads only the bundled
-  `@rpath/libtermy_ffi.dylib`, with no absolute `target/` or developer-machine
-  paths.
-- Verify that the app, FFI library, and CLI all match the requested architecture.
-- Test “Install Command Line Tool…” with an isolated temporary `HOME`, PATH, and
-  shell profile so the test never modifies the developer’s real environment.
-- Run the installed CLI from that isolated environment and verify at least:
-  - `termy-cli --version`;
-  - config inspection;
-  - opening the native app with a working-directory argument.
-- Add a regression test that fails if the release bundle omits the CLI.
+- `macos/scripts/build-dmg.sh` builds `termy_ffi`, `termy_cli`, and the Swift
+  release product for the selected target.
+- Release and `cargo macos build` staging both bundle an executable
+  `Contents/MacOS/termy-cli` and use the same bundle-manifest gate.
+- The manifest gate enforces executable presence, architecture parity, the FFI
+  install name, exact `@rpath/libtermy_ffi.dylib` linkage, and the absence of
+  build-directory rpaths.
+- `check-release-readiness.sh --app PATH` delegates to the shared manifest gate,
+  so omitting the release CLI is a hard failure.
+- `check-cli-install-smoke.sh --app PATH` exercises the real installer core with
+  an explicit bundled source and isolated home, PATH, and shell profile.
+- The installed CLI runs `--version`, inspects configuration, and opens the
+  native app with a working-directory argument before the smoke cleans it up.
+- The native CI workflow stages a self-contained app, validates its manifest,
+  and runs the isolated CLI smoke.
 
 ### Exit gate
 
@@ -157,40 +155,38 @@ For both arm64 and x86_64:
 - `otool -L` reports `@rpath/libtermy_ffi.dylib` and no build-directory path.
 - The isolated CLI-install smoke test passes.
 
-## Task 3 — Make unsigned release readiness a real gate
+Verified for arm64 and x86_64 release bundles and DMGs on 2026-07-10.
+
+## Task 3 — Make unsigned release readiness a real gate ✅
+
+Completed: 2026-07-10
 
 ### Objective
 
 Make the pre-distribution verifier prove bundle correctness instead of merely
 checking that a few files exist.
 
-### Work
+### Completed work
 
-- Split structural validation from final distribution trust validation. Tasks
-  1–9 operate on unsigned release candidates; Task 10 owns external trust.
-- Extend `macos/scripts/check-release-readiness.sh --app PATH` to verify:
-  - required bundle directories and files;
-  - executable modes;
-  - bundle identifier parity;
-  - semantic version and build version;
-  - minimum macOS version;
-  - URL-scheme registration;
-  - icon and selectable logo resources;
-  - the CLI helper;
-  - architecture parity across all Mach-O files;
-  - FFI install name and app rpath;
-  - absence of repository/build-machine paths;
-  - absence of placeholder bundle identifiers;
-  - DMG integrity and expected root contents.
-- Mount the generated DMG read-only in CI and validate the app copied from the
-  mounted image, not only the staging directory.
-- Launch the mounted release app and ensure the process reaches a usable window,
-  not merely a visible PID.
-- Add a temporary config/home directory so launch tests are deterministic and do
-  not consume developer state.
-- Ensure failures print the exact missing file, invalid field, architecture, or
-  linkage path.
-- Run this gate for both architectures on every packaging change.
+- Separated unsigned/ad-hoc candidate validation from Developer ID signing,
+  Gatekeeper, and notarization, which remain Task 10.
+- Extended `check-release-readiness.sh` to validate staged apps or DMGs,
+  including bundle directories, executable modes, identifier/version/minimum-OS
+  metadata, URL registration, icon/logo resources, CLI presence, every Mach-O
+  architecture, FFI linkage/install name, load-path hygiene, and placeholder
+  identifiers.
+- Added DMG checksum verification, controlled read-only mounting, exact root app
+  checks, and `/Applications` symlink validation.
+- Added `TERMY_LAUNCH_PROBE_FILE`: the app reports readiness only after AppKit
+  presents a visible window with non-empty content.
+- Added a clean HOME/XDG config launch gate that checks the probe instead of
+  accepting a PID alone.
+- Ad-hoc-sign unsigned candidates inside-out so post-link edits and staged
+  resources form a valid, launchable bundle without production credentials.
+- Added corruption regressions for missing CLI, wrong architecture, absolute
+  FFI linkage, missing logo, placeholder bundle ID, and malformed DMG contents.
+- Added arm64 and x86_64 unsigned release-gate CI jobs for every native packaging
+  change.
 
 ### Exit gate
 
@@ -199,6 +195,10 @@ checking that a few files exist.
 - A DMG containing the wrong app or missing `/Applications` link makes the gate
   fail.
 - Both architecture artifacts pass from a clean temporary home/config state.
+
+Verified for mounted arm64 and x86_64 DMGs on 2026-07-10. Both presented a
+usable 1280×820 native window from isolated state, and every deliberate
+corruption failed with the expected diagnostic.
 
 ## Task 4 — Make performance gates representative
 
@@ -284,7 +284,8 @@ usage rather than only model-level tests.
   - pane exit and session shutdown;
   - search and copy;
   - fallback behavior when tmux is absent or control mode fails.
-- Remove stale fallback-only tmux comments after the GUI test passes.
+- Keep the shell-backed fallback covered when tmux is absent or control mode
+  fails.
 
 ### Exit gate
 

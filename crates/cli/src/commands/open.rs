@@ -48,18 +48,21 @@ fn resolve_working_dir(path: &Path) -> Result<PathBuf, String> {
 }
 
 fn find_termy_app_binary() -> Result<PathBuf, String> {
-    let exe_path =
+    let reported_exe_path =
         std::env::current_exe().map_err(|error| format!("Failed to resolve CLI path: {error}"))?;
+    let exe_path = resolve_executable_path(reported_exe_path);
     let exe_dir = exe_path
         .parent()
         .ok_or_else(|| format!("CLI path {} has no parent directory", exe_path.display()))?;
 
-    let app_binary_name = format!("termy{}", std::env::consts::EXE_SUFFIX);
-    let sibling = exe_dir.join(&app_binary_name);
-    if is_executable_file(&sibling) && sibling != exe_path {
-        return Ok(sibling);
+    for sibling_name in sibling_app_binary_names() {
+        let sibling = exe_dir.join(sibling_name);
+        if is_executable_file(&sibling) && sibling != exe_path {
+            return Ok(sibling);
+        }
     }
 
+    let app_binary_name = format!("termy{}", std::env::consts::EXE_SUFFIX);
     for candidate in fallback_termy_app_binary_paths(&app_binary_name) {
         if is_executable_file(&candidate) && candidate != exe_path {
             return Ok(candidate);
@@ -67,6 +70,27 @@ fn find_termy_app_binary() -> Result<PathBuf, String> {
     }
 
     Err("Termy app binary not found. Build it with: cargo build -p termy".to_string())
+}
+
+fn resolve_executable_path(path: PathBuf) -> PathBuf {
+    path.canonicalize().unwrap_or(path)
+}
+
+fn sibling_app_binary_names() -> &'static [&'static str] {
+    #[cfg(target_os = "macos")]
+    {
+        &["Termy", "termy"]
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        &["termy.exe"]
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        &["termy"]
+    }
 }
 
 fn fallback_termy_app_binary_paths(app_binary_name: &str) -> [PathBuf; 2] {
@@ -82,7 +106,7 @@ fn is_executable_file(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_working_dir;
+    use super::{resolve_executable_path, resolve_working_dir, sibling_app_binary_names};
 
     #[test]
     fn open_resolves_existing_directory() {
@@ -98,5 +122,30 @@ mod tests {
         std::fs::write(&file, "content").expect("write file");
         let error = resolve_working_dir(&file).expect_err("file should be rejected");
         assert!(error.contains("is not a directory"));
+    }
+
+    #[test]
+    fn bundled_native_app_binary_is_a_sibling_candidate() {
+        #[cfg(target_os = "macos")]
+        assert_eq!(sibling_app_binary_names().first(), Some(&"Termy"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn installed_cli_symlink_resolves_back_to_bundle() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let bundled = temp.path().join("Termy.app/Contents/MacOS/termy-cli");
+        std::fs::create_dir_all(bundled.parent().unwrap()).unwrap();
+        std::fs::write(&bundled, b"cli").unwrap();
+        let installed = temp.path().join("home/.local/bin/termy");
+        std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
+        symlink(&bundled, &installed).unwrap();
+
+        assert_eq!(
+            resolve_executable_path(installed),
+            bundled.canonicalize().unwrap()
+        );
     }
 }
