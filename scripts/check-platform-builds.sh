@@ -36,12 +36,6 @@ require_rust_target() {
   rustup target list --installed | grep -qx "$target" || die "Rust target is not installed: $target"
 }
 
-check_linux_desktop_deps() {
-  require_cmd pkg-config
-  pkg-config --exists gtk+-3.0 || die "Missing gtk+-3.0 pkg-config metadata"
-  pkg-config --exists webkit2gtk-4.1 || die "Missing webkit2gtk-4.1 pkg-config metadata"
-}
-
 check_powershell_script() {
   require_cmd pwsh
   pwsh -NoProfile -Command '
@@ -55,7 +49,7 @@ check_powershell_script() {
   '
 }
 
-run_shared_browser_checks() {
+run_desktop_checks() {
   log "Checking desktop and CLI crates"
   cargo check -p termy -p termy_cli
 
@@ -69,16 +63,15 @@ run_shared_browser_checks() {
 run_native() {
   case "$(uname -s)" in
     Linux)
-      check_linux_desktop_deps
-      run_shared_browser_checks
+      run_desktop_checks
       log "Checking Linux packaging script syntax"
       bash -n scripts/build-linux.sh scripts/install-linux.sh
       ;;
     Darwin)
-      run_shared_browser_checks
+      run_desktop_checks
       ;;
     MINGW*|MSYS*|CYGWIN*|Windows_NT)
-      run_shared_browser_checks
+      run_desktop_checks
       log "Checking Windows setup script syntax"
       check_powershell_script
       ;;

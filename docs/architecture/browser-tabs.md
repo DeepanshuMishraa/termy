@@ -7,20 +7,12 @@ only for visible browser panes and is resized or hidden during render sync.
 ## Platform Support
 
 - macOS: Wry hosts a WebKit `NSView` child view.
-- Windows: Wry hosts a WebView2 child window. The Windows setup package checks
-  for the WebView2 Runtime and runs the Evergreen Bootstrapper when needed.
-- Linux: Wry hosts a WebKitGTK child window on X11. Wayland sessions are
-  blocked until Termy has a GTK container host for `build_gtk`; mixed
-  Wayland/XWayland sessions need `GDK_BACKEND=x11` before Termy advertises
-  embedded browser support. Linux package launchers set that automatically when
-  `DISPLAY` exists and `GDK_BACKEND` is unset.
+- Windows and Linux: browser tabs are disabled. The desktop app reports the
+  capability as unsupported, hides browser-tab commands, and does not compile
+  Wry into either target.
 
-Linux builds need WebKitGTK/GTK installed at runtime. The desktop app
-initializes GTK before creating the first Linux browser webview, verifies GTK is
-using an X11 backend, and pumps pending GTK events during browser webview sync.
-
-If native webview creation fails at runtime, the browser pane shows the error and
-offers two actions:
+On macOS, if native webview creation fails at runtime, the browser pane shows
+the error and offers two actions:
 
 - Open the current URL in the system browser.
 - Retry native webview creation.

@@ -11,6 +11,28 @@ check_forbidden_dep() {
   fi
 }
 
+check_forbidden_target_dep() {
+  local crate="$1"
+  local target="$2"
+  local forbidden_dep="$3"
+
+  if cargo tree -p "$crate" --target "$target" | rg -q "\b${forbidden_dep} v"; then
+    echo "Boundary check failed: ${crate} must not depend on ${forbidden_dep} for ${target}" >&2
+    exit 1
+  fi
+}
+
+check_required_target_dep() {
+  local crate="$1"
+  local target="$2"
+  local required_dep="$3"
+
+  if ! cargo tree -p "$crate" --target "$target" | rg -q "\b${required_dep} v"; then
+    echo "Boundary check failed: ${crate} must depend on ${required_dep} for ${target}" >&2
+    exit 1
+  fi
+}
+
 require_path() {
   local path="$1"
 
@@ -119,42 +141,36 @@ require_pattern './scripts/build-dmg\.sh' \
 require_pattern 'dist/Termy-\$\{\{ env.VERSION \}\}-macos-\$\{\{ matrix.arch \}\}\.dmg' \
   ".github/workflows/release.yml" \
   "release workflow must upload the documented macOS DMG path"
-require_pattern 'LinkId=2124703' \
+require_pattern 'Browser tabs are only available on macOS' \
+  "crates/command_core/src/browser_support.rs" \
+  "browser tab capability must remain macOS-only"
+require_pattern '^wry = "0\.53"$' \
+  "crates/desktop_app/Cargo.toml" \
+  "desktop app must keep its macOS Wry dependency"
+forbid_pattern 'cfg\(any\(target_os = "macos", target_os = "windows", target_os = "linux"\)\)' \
+  "crates/desktop_app/Cargo.toml" \
+  "desktop app must not compile Wry for Windows or Linux"
+forbid_pattern '^gtk = ' \
+  "crates/desktop_app/Cargo.toml" \
+  "desktop app must not carry the Linux GTK browser dependency"
+forbid_pattern 'WebView2|MicrosoftEdgeWebView2' \
   "scripts/build-setup.ps1" \
-  "Windows setup build must download the Microsoft WebView2 Evergreen Bootstrapper"
-require_pattern 'MicrosoftEdgeWebView2Setup\.exe' \
+  "Windows setup must not bootstrap a browser runtime"
+forbid_pattern 'WebView2|MicrosoftEdgeWebView2' \
   "scripts/installer/termy.iss" \
-  "Windows installer must package the WebView2 Evergreen Bootstrapper"
-require_pattern 'NeedsWebView2Runtime' \
-  "scripts/installer/termy.iss" \
-  "Windows installer must install WebView2 only when the runtime is missing"
-require_pattern 'WebView2 Evergreen' \
-  "docs/architecture/release-packaging.md" \
-  "release packaging docs must document the Windows WebView2 runtime contract"
-require_pattern 'GDK_BACKEND=x11' \
+  "Windows installer must not package a browser runtime"
+forbid_pattern 'webkit2gtk|GDK_BACKEND' \
   "scripts/build-linux.sh" \
-  "Linux package launchers must prefer the X11 GTK backend when available"
-require_pattern 'pkg-config --exists gtk\+-3\.0' \
-  "scripts/build-linux.sh" \
-  "Linux build script must preflight GTK development metadata"
-require_pattern 'pkg-config --exists webkit2gtk-4\.1' \
-  "scripts/build-linux.sh" \
-  "Linux build script must preflight WebKitGTK development metadata"
+  "Linux packages must not carry browser runtime requirements"
+forbid_pattern 'webkit2gtk|GDK_BACKEND' \
+  "scripts/install-linux.sh" \
+  "Linux installer must not carry browser runtime requirements"
 require_pattern 'pkg-config' \
   ".github/workflows/architecture-checks.yml" \
   "architecture checks must install pkg-config for Linux desktop builds"
-require_pattern 'libgtk-3-dev' \
-  ".github/workflows/architecture-checks.yml" \
-  "architecture checks must install GTK development headers for Linux desktop builds"
-require_pattern 'xvfb' \
-  ".github/workflows/architecture-checks.yml" \
-  "architecture checks must install Xvfb for Linux browser support probing"
 require_pattern 'pkg-config' \
   ".github/workflows/release.yml" \
   "release workflow must install pkg-config for Linux desktop builds"
-require_pattern 'libgtk-3-dev' \
-  ".github/workflows/release.yml" \
-  "release workflow must install GTK development headers for Linux desktop builds"
 require_pattern './scripts/check-platform-builds\.sh --native' \
   ".github/workflows/architecture-checks.yml" \
   "architecture checks must run the shared native platform verifier"
@@ -170,21 +186,12 @@ require_pattern 'TERMY_CHECK_XWIN_MSVC' \
 require_pattern 'cargo xwin check --cross-compiler clang' \
   "scripts/check-platform-builds.sh" \
   "platform verifier must use the working cargo-xwin clang backend for MSVC checks"
-require_pattern 'xvfb-run -a env GDK_BACKEND=x11 TERMY_EXPECT_BROWSER_TABS_SUPPORTED=1' \
-  ".github/workflows/architecture-checks.yml" \
-  "architecture checks must run the Linux verifier under an X11 browser-support probe"
-require_pattern 'linux_real_environment_reports_support_when_expected' \
-  "crates/command_core/src/browser_support.rs" \
-  "command core must include an opt-in real Linux browser support probe"
 require_pattern 'cp "\$BINARY_PATH" "\$STAGING_DIR/\$APP_NAME_LOWER/termy-bin"' \
   "scripts/build-linux.sh" \
   "Linux tarballs must ship the real GUI binary as termy-bin behind the launcher"
 require_pattern 'rm -f "\$INSTALL_DIR/termy" "\$INSTALL_DIR/termy-bin" "\$INSTALL_DIR/termy-cli"' \
   "scripts/build-linux.sh" \
   "Linux tarball installer must unlink existing install targets before writing replacements"
-require_pattern 'GDK_BACKEND=x11' \
-  "scripts/install-linux.sh" \
-  "Linux install helper must prefer the X11 GTK backend when available"
 require_pattern 'rm -f "\$INSTALL_DIR/termy" "\$INSTALL_DIR/termy-bin" "\$INSTALL_DIR/termy-cli"' \
   "scripts/install-linux.sh" \
   "Linux install helper must unlink existing install targets before writing replacements"
@@ -200,10 +207,9 @@ require_pattern 'grep -Eo.*\|\| true' \
 require_pattern 'grep -Ev.*x86_64.*aarch64' \
   "scripts/install-linux.sh" \
   "Linux install helper generic fallback must not install an asset for the wrong architecture"
-require_pattern 'packaged Linux launchers set' \
-  "docs/architecture/release-packaging.md" \
-  "release packaging docs must document the Linux browser launcher contract"
-
+check_required_target_dep "termy" "aarch64-apple-darwin" "wry"
+check_forbidden_target_dep "termy" "x86_64-pc-windows-msvc" "wry"
+check_forbidden_target_dep "termy" "x86_64-unknown-linux-gnu" "wry"
 check_forbidden_dep "termy_command_core" "gpui"
 check_forbidden_dep "termy_command_core" "termy_config_core"
 check_forbidden_dep "termy_config_core" "termy_themes"

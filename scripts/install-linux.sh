@@ -26,37 +26,6 @@ json_string_values() {
     | sed -n 's/.*"[[:space:]]*:[[:space:]]*"\([^"]*\)"$/\1/p'
 }
 
-print_browser_dependency_note() {
-  local has_webkitgtk="unknown"
-
-  if command -v pkg-config >/dev/null 2>&1; then
-    if pkg-config --exists webkit2gtk-4.1 gtk+-3.0 2>/dev/null; then
-      has_webkitgtk="yes"
-    else
-      has_webkitgtk="no"
-    fi
-  elif command -v ldconfig >/dev/null 2>&1; then
-    if ldconfig -p 2>/dev/null | grep -q 'libwebkit2gtk-4.1'; then
-      has_webkitgtk="yes"
-    else
-      has_webkitgtk="no"
-    fi
-  fi
-
-  if [[ "$has_webkitgtk" == "yes" ]]; then
-    return
-  fi
-
-  echo ""
-  echo "NOTE: Embedded browser tabs on Linux require an X11 GTK backend plus WebKitGTK/GTK."
-  echo "This installer creates a launcher that sets GDK_BACKEND=x11 when an X11 display is available."
-  echo "Install the package for your distro if browser tabs fail to open:"
-  echo ""
-  echo "  Debian/Ubuntu: sudo apt install libwebkit2gtk-4.1-0"
-  echo "  Fedora:        sudo dnf install webkit2gtk4.1"
-  echo "  Arch:          sudo pacman -S webkit2gtk-4.1"
-}
-
 detect_arch() {
   local arch
   arch="$(uname -m)"
@@ -159,16 +128,11 @@ cat > "$INSTALL_DIR/termy" <<'LAUNCHER'
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ -z "${GDK_BACKEND:-}" && -n "${DISPLAY:-}" ]]; then
-  export GDK_BACKEND=x11
-fi
-
 exec "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/termy-bin" "$@"
 LAUNCHER
 chmod +x "$INSTALL_DIR/termy" "$INSTALL_DIR/termy-bin" "$INSTALL_DIR/termy-cli"
 
 log "Termy $TAG installed successfully!"
-print_browser_dependency_note
 
 if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
   echo ""

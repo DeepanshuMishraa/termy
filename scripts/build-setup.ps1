@@ -9,8 +9,6 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
-$WebView2BootstrapperUrl = "https://go.microsoft.com/fwlink/p/?LinkId=2124703"
-
 function Get-CargoPackageVersion {
     param([string]$CargoTomlPath)
 
@@ -110,32 +108,12 @@ function Arch-FromTarget {
     throw "Cannot infer architecture from target '$TargetTriple'. Set -Arch explicitly."
 }
 
-function Ensure-WebView2Bootstrapper {
-    param([string]$DestinationPath)
-
-    $destinationDir = Split-Path -Parent $DestinationPath
-    if (-not (Test-Path $destinationDir)) {
-        New-Item -ItemType Directory -Path $destinationDir | Out-Null
-    }
-
-    if (Test-Path $DestinationPath) {
-        return
-    }
-
-    Write-Host "Downloading Microsoft Edge WebView2 Evergreen Bootstrapper..."
-    Invoke-WebRequest -Uri $WebView2BootstrapperUrl -OutFile $DestinationPath
-    if (-not (Test-Path $DestinationPath)) {
-        throw "WebView2 bootstrapper download did not create $DestinationPath"
-    }
-}
-
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $repoRoot
 
 $cargoToml = Join-Path $repoRoot "crates\desktop_app\Cargo.toml"
 $issPath = Join-Path $repoRoot "scripts\installer\termy.iss"
 $iconPath = Join-Path $repoRoot "assets\termy.ico"
-$webView2BootstrapperPath = Join-Path $repoRoot "target\windows-runtime\MicrosoftEdgeWebView2Setup.exe"
 
 if (-not (Test-Path $cargoToml)) {
     throw "Desktop app Cargo.toml not found at $cargoToml"
@@ -182,8 +160,6 @@ if (-not (Test-Path $exePath)) {
 if (-not (Test-Path $cliExePath)) {
     throw "Expected CLI binary not found at $cliExePath"
 }
-
-Ensure-WebView2Bootstrapper -DestinationPath $webView2BootstrapperPath
 
 $isccPath = Resolve-IsccPath
 Write-Host "Using ISCC at $isccPath"

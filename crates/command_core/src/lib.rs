@@ -4,10 +4,7 @@ mod catalog;
 mod keybind;
 
 pub use availability::{CommandAvailability, CommandCapabilities, CommandUnavailableReason};
-pub use browser_support::{
-    browser_tabs_supported, browser_tabs_supported_for_environment,
-    browser_tabs_unsupported_message, browser_tabs_unsupported_message_for_environment,
-};
+pub use browser_support::{browser_tabs_supported, browser_tabs_unsupported_message};
 pub use catalog::{CommandId, CommandSpec, command_specs};
 pub use keybind::{
     DefaultKeybind, KeybindDirective, KeybindLineRef, KeybindPlatform, KeybindWarning,

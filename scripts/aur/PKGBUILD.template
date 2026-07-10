@@ -6,7 +6,7 @@ pkgdesc="Minimal GPUI-powered terminal (pre-compiled binary)"
 arch=('x86_64')
 url="https://github.com/lassejlv/termy"
 license=('MIT')
-depends=('bash' 'glibc' 'gcc-libs' 'glib2' 'gtk3' 'webkit2gtk-4.1' 'libsoup3'
+depends=('bash' 'glibc' 'gcc-libs' 'glib2'
          'freetype2' 'fontconfig' 'libxcb' 'wayland' 'libxkbcommon'
          'libxkbcommon-x11' 'vulkan-icd-loader')
 provides=('termy')

@@ -277,7 +277,7 @@ Platform note: the Agent Sidebar/Workspace is currently unavailable on Windows b
 
 `browser_tabs_enabled`
 - Default: `false`
-- Enable embedded browser tabs (macOS, Windows, Linux with WebKitGTK on an X11 GTK backend)
+- Enable embedded browser tabs (macOS only)
 - Group: `BROWSER`
 
 `show_termy_in_titlebar`

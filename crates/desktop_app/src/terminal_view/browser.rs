@@ -1,37 +1,22 @@
-//! Embedded browser tabs. A browser tab hosts a native wry webview layered as
-//! a child view over the gpui window. gpui renders the chrome (URL bar,
-//! buttons); every frame the webview's bounds and visibility are synced to the
-//! tab content area, and hidden whenever its tab is not the visible one (or an
-//! overlay like the command palette is open, since native views always paint
-//! above gpui).
+//! Embedded browser tabs. On macOS, a browser tab hosts a native wry webview
+//! layered as a child view over the gpui window. gpui renders the chrome (URL
+//! bar, buttons); every frame the webview's bounds and visibility are synced to
+//! the tab content area, and hidden whenever its tab is not the visible one (or
+//! an overlay like the command palette is open, since native views always
+//! paint above gpui).
 
 use super::*;
 use gpui::prelude::FluentBuilder as _;
 use std::sync::Mutex;
-#[cfg(target_os = "linux")]
-use std::sync::OnceLock;
 use termy_command_core::{browser_tabs_supported, browser_tabs_unsupported_message};
 
 pub(super) const BROWSER_DEFAULT_URL: &str = "https://www.google.com/";
 
 /// Browser-style user agent so sites serve their modern UI instead of the
-/// unknown-engine fallback wry's bare default triggers. Each matches the
-/// platform's actual engine (WebKit on macOS/Linux, Chromium on Windows),
-/// so feature detection stays honest.
-#[cfg_attr(
-    not(any(target_os = "macos", target_os = "windows", target_os = "linux")),
-    allow(dead_code)
-)]
-const BROWSER_USER_AGENT: &str = if cfg!(target_os = "windows") {
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
-     (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36 Edg/136.0.0.0"
-} else if cfg!(target_os = "linux") {
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15 \
-     (KHTML, like Gecko) Version/18.4 Safari/605.1.15"
-} else {
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 \
-     (KHTML, like Gecko) Version/18.4 Safari/605.1.15"
-};
+/// unknown-engine fallback wry's bare default triggers.
+#[cfg(target_os = "macos")]
+const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 \
+     (KHTML, like Gecko) Version/18.4 Safari/605.1.15";
 pub(super) const BROWSER_URL_BAR_HEIGHT: f32 = 34.0;
 
 /// State written by wry's navigation/title callbacks and read by the view on
@@ -406,7 +391,6 @@ impl TerminalView {
     /// one (inactive tabs, stashed workspaces, overlay open). Called once per
     /// render pass.
     pub(super) fn sync_browser_webviews(&mut self, window: &Window, cx: &mut Context<Self>) {
-        pump_linux_gtk_events();
         // A click into the page (reported via the webview's IPC hook) ends any
         // in-progress URL edit, mirroring a click anywhere else in the window.
         // Queued window.open/target=_blank URLs become new tabs, deferred so
@@ -872,42 +856,42 @@ pub(super) enum BrowserEditAction {
 }
 
 struct BrowserWebview {
-    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     inner: wry::WebView,
 }
 
 impl BrowserWebview {
     fn set_bounds(&self, bounds: (i32, i32, i32, i32)) {
-        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        #[cfg(target_os = "macos")]
         {
             let _ = self.inner.set_bounds(wry::Rect {
                 position: wry::dpi::LogicalPosition::new(bounds.0, bounds.1).into(),
                 size: wry::dpi::LogicalSize::new(bounds.2, bounds.3).into(),
             });
         }
-        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+        #[cfg(not(target_os = "macos"))]
         {
             let _ = bounds;
         }
     }
 
     fn set_visible(&self, visible: bool) {
-        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        #[cfg(target_os = "macos")]
         {
             let _ = self.inner.set_visible(visible);
         }
-        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+        #[cfg(not(target_os = "macos"))]
         {
             let _ = visible;
         }
     }
 
     fn load_url(&self, url: &str) -> Result<(), String> {
-        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        #[cfg(target_os = "macos")]
         {
             self.inner.load_url(url).map_err(|error| error.to_string())
         }
-        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+        #[cfg(not(target_os = "macos"))]
         {
             let _ = url;
             Err("browser webview backend is unsupported".to_string())
@@ -915,18 +899,18 @@ impl BrowserWebview {
     }
 
     fn evaluate_script(&self, script: &str) {
-        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        #[cfg(target_os = "macos")]
         {
             let _ = self.inner.evaluate_script(script);
         }
-        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+        #[cfg(not(target_os = "macos"))]
         {
             let _ = script;
         }
     }
 
     fn reload(&self) {
-        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        #[cfg(target_os = "macos")]
         {
             let _ = self.inner.reload();
         }
@@ -935,7 +919,7 @@ impl BrowserWebview {
     /// Hand AppKit first-responder status back to the hosting gpui view. The
     /// webview grabs it on any click into the page and never returns it.
     fn focus_parent(&self) {
-        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        #[cfg(target_os = "macos")]
         {
             let _ = self.inner.focus_parent();
         }
@@ -984,6 +968,7 @@ impl BrowserWebview {
 /// down types U+F701 into focused fields. Cancel any insertion of those
 /// codepoints; keydown events still fire so page-level key handling (menu
 /// navigation, games) keeps working.
+#[cfg(target_os = "macos")]
 const FUNCTION_KEY_INSERTION_FIX_SCRIPT: &str = "\
 (function () { \
   'use strict'; \
@@ -1008,6 +993,7 @@ const FUNCTION_KEY_INSERTION_FIX_SCRIPT: &str = "\
 /// call that still sneaks through gets a clean NotAllowedError, and
 /// user-initiated attempts surface a toast suggesting the system browser
 /// (conditional-mediation autofill probes stay silent to avoid spam).
+#[cfg(target_os = "macos")]
 const WEBAUTHN_FALLBACK_SCRIPT: &str = "\
 (function () { \
   'use strict'; \
@@ -1051,6 +1037,7 @@ const WEBAUTHN_FALLBACK_SCRIPT: &str = "\
 })();";
 
 /// What to do with a navigation or new-window request for a given URL.
+#[cfg(any(test, target_os = "macos"))]
 #[derive(Debug, PartialEq, Eq)]
 enum BrowserNavigationPolicy {
     /// Web content the engine may load (also covers subframes, so `data:` and
@@ -1063,6 +1050,7 @@ enum BrowserNavigationPolicy {
     Deny,
 }
 
+#[cfg(any(test, target_os = "macos"))]
 fn browser_navigation_policy(url: &str) -> BrowserNavigationPolicy {
     let scheme = url.split(':').next().unwrap_or_default();
     if ["http", "https", "about", "blob", "data"]
@@ -1082,6 +1070,7 @@ fn browser_navigation_policy(url: &str) -> BrowserNavigationPolicy {
 
 /// Only http(s)/about URLs belong in the address bar; `data:`/`blob:` URLs
 /// can be megabytes and usually come from subframes.
+#[cfg(any(test, target_os = "macos"))]
 fn browser_url_display_worthy(url: &str) -> bool {
     let scheme = url.split(':').next().unwrap_or_default();
     ["http", "https", "about"]
@@ -1095,17 +1084,14 @@ fn create_browser_webview(
     url: &str,
     wakeup: Sender<()>,
 ) -> Result<BrowserWebview, String> {
-    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    #[cfg(not(target_os = "macos"))]
     {
         let _ = (window, shared, url, wakeup);
         return Err("browser webview backend is unsupported".to_string());
     }
 
-    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     {
-        #[cfg(target_os = "linux")]
-        ensure_linux_gtk_initialized()?;
-
         let nav_shared = shared.clone();
         let nav_wakeup = wakeup.clone();
         let title_shared = shared.clone();
@@ -1229,69 +1215,9 @@ fn create_browser_webview(
     }
 }
 
-#[cfg(any(target_os = "windows", target_os = "linux"))]
-thread_local! {
-    /// Process-wide browser profile; webviews are main-thread only, so a
-    /// thread-local is effectively a singleton here.
-    static BROWSER_WEB_CONTEXT: std::cell::RefCell<Option<wry::WebContext>> =
-        const { std::cell::RefCell::new(None) };
-}
-
-/// Hands `f` a platform-appropriate webview builder. macOS persists
-/// cookies/localStorage in WKWebsiteDataStore's default store automatically;
-/// Windows (WebView2) and Linux (WebKitGTK) need an explicit profile
-/// directory shared by every browser tab, or each run starts from a blank
-/// session — wry only accepts the context at construction time.
-#[cfg(any(target_os = "windows", target_os = "linux"))]
-fn with_browser_builder<R>(f: impl for<'a> FnOnce(wry::WebViewBuilder<'a>) -> R) -> R {
-    BROWSER_WEB_CONTEXT.with_borrow_mut(|slot| {
-        let context = slot.get_or_insert_with(|| {
-            wry::WebContext::new(
-                dirs::data_local_dir().map(|dir| dir.join("termy").join("browser-profile")),
-            )
-        });
-        f(wry::WebViewBuilder::new_with_web_context(context))
-    })
-}
-
 #[cfg(target_os = "macos")]
 fn with_browser_builder<R>(f: impl for<'a> FnOnce(wry::WebViewBuilder<'a>) -> R) -> R {
     f(wry::WebViewBuilder::new())
-}
-
-#[cfg(target_os = "linux")]
-fn ensure_linux_gtk_initialized() -> Result<(), String> {
-    static GTK_INIT: OnceLock<Result<(), String>> = OnceLock::new();
-    GTK_INIT
-        .get_or_init(|| {
-            use gtk::prelude::DisplayExtManual;
-
-            gtk::init()
-                .map_err(|error| format!("failed to initialize GTK for browser tabs: {error}"))?;
-            let Some(display) = gtk::gdk::Display::default() else {
-                return Err("failed to initialize GTK display for browser tabs".to_string());
-            };
-            if display.backend().is_wayland() {
-                return Err(
-                    "browser tabs need GTK to run on X11; Wayland embedding is not supported yet"
-                        .to_string(),
-                );
-            }
-            Ok(())
-        })
-        .clone()
-}
-
-fn pump_linux_gtk_events() {
-    #[cfg(target_os = "linux")]
-    {
-        if !gtk::is_initialized_main_thread() {
-            return;
-        }
-        while gtk::events_pending() {
-            gtk::main_iteration_do(false);
-        }
-    }
 }
 
 /// Minimal percent-encoding for search queries (we only need to make the
