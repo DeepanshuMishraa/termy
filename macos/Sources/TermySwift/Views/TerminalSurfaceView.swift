@@ -21,6 +21,10 @@ struct TerminalSurfaceView: View {
     let onFocusNextPane: () -> Void
     let onShowSearch: () -> Void
     let onDismissSearch: () -> Void
+    var sendBytesOverride: (([UInt8]) -> Void)?
+    var sendKeyOverride: ((TerminalKeyInput) -> Void)?
+    var sendMouseOverride: ((TerminalMouseInput) -> Bool)?
+    var pasteOverride: ((String) -> Void)?
 
     var body: some View {
         GeometryReader { proxy in
@@ -56,13 +60,13 @@ struct TerminalSurfaceView: View {
                     canCopy: terminal.canCopySelection,
                     onFocus: onFocus,
                     onBytes: { bytes in
-                        terminal.send(bytes: bytes)
+                        sendBytesOverride?(bytes) ?? terminal.send(bytes: bytes)
                     },
                     onKeyInput: { keyInput in
-                        terminal.sendKey(keyInput)
+                        sendKeyOverride?(keyInput) ?? terminal.sendKey(keyInput)
                     },
                     onMouseInput: { mouseInput in
-                        terminal.sendMouse(mouseInput)
+                        sendMouseOverride?(mouseInput) ?? terminal.sendMouse(mouseInput)
                     },
                     onScrollLines: { lines in
                         revealScrollBar()
@@ -108,7 +112,7 @@ struct TerminalSurfaceView: View {
                         terminal.copySelection()
                     },
                     onPaste: { text in
-                        terminal.paste(text)
+                        pasteOverride?(text) ?? terminal.paste(text)
                     },
                     onMarkedTextChanged: { terminal.setMarkedText($0) }
                 )

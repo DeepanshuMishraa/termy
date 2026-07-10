@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 struct TerminalWorkspaceView: View {
     @StateObject private var store: TerminalWorkspaceStore
     @ObservedObject private var configurationStore = TermyConfigurationStore.shared
+    @State private var tmuxControlModel: TmuxControlWorkspaceModel?
     @State private var appConfigurationError = TermyAppConfiguration.loadErrorMessage
     @State private var workspacePersistenceError: String?
     @State private var didRestoreWorkspace = false
@@ -14,6 +15,7 @@ struct TerminalWorkspaceView: View {
 
     init(initialTask: TermyTaskConfiguration? = nil) {
         _store = StateObject(wrappedValue: TerminalWorkspaceStore(initialTask: initialTask))
+        _tmuxControlModel = State(initialValue: Self.makeTmuxControlModel(initialTask: initialTask))
         shouldRestorePersistedWorkspace = initialTask == nil
     }
 
@@ -25,10 +27,16 @@ struct TerminalWorkspaceView: View {
             .focusedValue(\.terminalCommands, commandSet)
             .onAppear {
                 TerminalCommandRouter.shared.activate(store)
-                restoreWorkspaceIfNeeded()
+                if tmuxControlModel == nil {
+                    restoreWorkspaceIfNeeded()
+                } else {
+                    didRestoreWorkspace = true
+                }
             }
             .onDisappear {
-                persistWorkspace()
+                if tmuxControlModel == nil {
+                    persistWorkspace()
+                }
             }
             .onReceive(store.objectWillChange) { _ in
                 scheduleWorkspacePersistence()
@@ -49,7 +57,9 @@ struct TerminalWorkspaceView: View {
 
     private var terminalContent: some View {
         ZStack {
-            if let zoomedPane = store.zoomedPane {
+            if let tmuxControlModel {
+                TmuxControlWorkspaceView(model: tmuxControlModel)
+            } else if let zoomedPane = store.zoomedPane {
                 TerminalPaneLeafView(pane: zoomedPane, store: store)
             } else {
                 TerminalPaneNodeView(node: store.root, store: store)
@@ -286,8 +296,20 @@ struct TerminalWorkspaceView: View {
     }
 
     private var shouldPersistWorkspace: Bool {
+        guard tmuxControlModel == nil else {
+            return false
+        }
         let native = configurationStore.configuration.native
         return native.nativeTabPersistence || native.nativeLayoutAutosave
+    }
+
+    private static func makeTmuxControlModel(initialTask: TermyTaskConfiguration?) -> TmuxControlWorkspaceModel? {
+        guard initialTask == nil,
+              TermyConfigurationStore.shared.configuration.tmux.enabled
+        else {
+            return nil
+        }
+        return try? TmuxControlWorkspaceModel()
     }
 
 }
@@ -598,6 +620,210 @@ private final class RoutingRegistrationView: NSView {
         registeredWindow = window
         TerminalCommandRouter.shared.register(store, for: window)
         NativeTabWindowManager.shared.applyFocusedTerminalChrome(for: window)
+    }
+}
+
+private struct TmuxControlWorkspaceView: View {
+    @ObservedObject var model: TmuxControlWorkspaceModel
+    @ObservedObject private var configurationStore = TermyConfigurationStore.shared
+
+    var body: some View {
+        ZStack {
+            if let layout = model.layout {
+                TmuxControlLayoutView(node: layout, model: model)
+            } else {
+                Text("Starting tmux…")
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .padding(10)
+            }
+
+            if let errorMessage = model.errorMessage {
+                dismissibleBanner(errorMessage, color: .red) {
+                    model.clearError()
+                }
+            }
+
+            if model.isSearchVisible, model.isSearchInputFocused {
+                Color.clear
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        model.setSearchInputFocused(false)
+                    }
+                    .zIndex(9)
+            }
+
+            if model.isSearchVisible, let terminal = model.focusedTerminal {
+                TerminalSearchPanel(
+                    terminal: terminal,
+                    options: $model.searchOptions,
+                    focusRequest: model.searchFocusRequest,
+                    onFocusChanged: model.setSearchInputFocused,
+                    onClose: model.hideSearch
+                )
+                .padding(10)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+                .zIndex(10)
+            }
+
+            if configurationStore.configuration.native.showDebugOverlay,
+               model.focusedTerminal == nil {
+                Text("No tmux pane")
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .padding(8)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+            }
+        }
+        .onAppear {
+            model.start()
+        }
+        .onDisappear {
+            model.stop()
+        }
+    }
+
+    private func dismissibleBanner(
+        _ message: String,
+        color: Color,
+        onDismiss: @escaping () -> Void
+    ) -> some View {
+        HStack(spacing: 8) {
+            Text(message)
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(color)
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.borderless)
+        }
+        .padding(8)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .padding(10)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .zIndex(11)
+    }
+}
+
+private struct TmuxControlLayoutView: View {
+    let node: TmuxLayoutNode
+    @ObservedObject var model: TmuxControlWorkspaceModel
+
+    var body: some View {
+        switch node {
+        case let .pane(id, _, _, _, _):
+            TmuxControlPaneView(paneID: id, model: model)
+        case let .horizontal(children):
+            split(children: children, axis: .horizontal)
+        case let .vertical(children):
+            split(children: children, axis: .vertical)
+        }
+    }
+
+    @ViewBuilder
+    private func split(children: [TmuxLayoutNode], axis: TerminalSplitAxis) -> some View {
+        if children.isEmpty {
+            Color.clear
+        } else if children.count == 1, let only = children.first {
+            TmuxControlLayoutView(node: only, model: model)
+        } else if let first = children.first {
+            let rest = Array(children.dropFirst())
+            let restNode: TmuxLayoutNode = axis == .horizontal ? .horizontal(rest) : .vertical(rest)
+            StableSplitView(axis: axis, ratio: Self.ratio(first: first, rest: restNode, axis: axis)) {
+                TmuxControlLayoutView(node: first, model: model)
+            } second: {
+                TmuxControlLayoutView(node: restNode, model: model)
+            }
+        }
+    }
+
+    private static func ratio(first: TmuxLayoutNode, rest: TmuxLayoutNode, axis: TerminalSplitAxis) -> Double {
+        let firstSize = size(of: first)
+        let restSize = size(of: rest)
+        let firstLength = axis == .horizontal ? firstSize.width : firstSize.height
+        let restLength = axis == .horizontal ? restSize.width : restSize.height
+        let total = max(1, firstLength + restLength)
+        return min(0.9, max(0.1, Double(firstLength) / Double(total)))
+    }
+
+    private static func size(of node: TmuxLayoutNode) -> (width: Int, height: Int) {
+        switch node {
+        case let .pane(_, width, height, _, _):
+            return (max(1, width), max(1, height))
+        case let .horizontal(children):
+            let sizes = children.map(size)
+            return (
+                sizes.reduce(0) { $0 + $1.width },
+                sizes.map(\.height).max() ?? 1
+            )
+        case let .vertical(children):
+            let sizes = children.map(size)
+            return (
+                sizes.map(\.width).max() ?? 1,
+                sizes.reduce(0) { $0 + $1.height }
+            )
+        }
+    }
+}
+
+private struct TmuxControlPaneView: View {
+    let paneID: Int
+    @ObservedObject var model: TmuxControlWorkspaceModel
+
+    var body: some View {
+        if let terminal = model.terminal(forPane: paneID) {
+            TerminalSurfaceView(
+                terminal: terminal,
+                isFocused: model.focusedPaneID == paneID,
+                showsFocusBorder: model.paneCount > 1,
+                isInputEnabled: !model.isSearchInputFocused,
+                isSearchVisible: model.isSearchVisible,
+                windowTitle: model.tabDisplayTitle,
+                onFocus: {
+                    model.focusPane(paneID)
+                },
+                onSplitRight: {
+                    model.focusPane(paneID)
+                    model.splitFocused(.horizontal)
+                },
+                onSplitDown: {
+                    model.focusPane(paneID)
+                    model.splitFocused(.vertical)
+                },
+                onClosePane: {
+                    model.focusPane(paneID)
+                    model.closeFocusedPane()
+                },
+                onClosePaneIfSplit: {
+                    model.focusPane(paneID)
+                    return model.closeFocusedPaneIfSplit()
+                },
+                onFocusNextPane: model.focusNextPane,
+                onShowSearch: model.showSearch,
+                onDismissSearch: {
+                    model.setSearchInputFocused(false)
+                },
+                sendBytesOverride: { bytes in
+                    model.send(bytes: bytes, toPane: paneID)
+                },
+                sendKeyOverride: { keyInput in
+                    model.send(keyInput: keyInput, toPane: paneID)
+                },
+                sendMouseOverride: { mouseInput in
+                    model.send(mouseInput: mouseInput, toPane: paneID)
+                },
+                pasteOverride: { text in
+                    model.paste(text, toPane: paneID)
+                }
+            )
+            .id(paneID)
+            .frame(minWidth: 240, minHeight: 120)
+        } else {
+            Color.clear
+                .frame(minWidth: 240, minHeight: 120)
+        }
     }
 }
 

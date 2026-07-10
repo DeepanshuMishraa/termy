@@ -17,6 +17,20 @@ final class DisplayTerminalTests: XCTestCase {
         XCTAssertNoThrow(try terminal.write(Array("ignored".utf8)))
     }
 
+    @MainActor
+    func testDisplayTerminalViewModelPresentsFedOutput() throws {
+        let terminal = try LibTermyTerminal(displayCols: 20, rows: 4, loadUserConfig: false)
+        let viewModel = TerminalViewModel(displayTerminal: terminal)
+        viewModel.start()
+
+        try terminal.feedOutput(Array("tmux pane".utf8))
+        viewModel.refreshExternalOutput()
+
+        XCTAssertTrue(viewModel.hasVisibleContent)
+        XCTAssertTrue(viewModel.visibleTextSnapshot().contains("tmux pane"))
+        viewModel.stop()
+    }
+
     /// FFI cells carry no position; the binding derives it from row-major
     /// order (full frames) or dirty-span order (partial updates). Pin exact
     /// coordinates through the real library for both paths.

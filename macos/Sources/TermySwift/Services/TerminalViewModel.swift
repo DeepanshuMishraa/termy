@@ -115,6 +115,8 @@ final class TerminalViewModel: ObservableObject {
     private var lastDebugSample = ProcessUsageSample.capture()
     private var cachedLinkRowsRevision: Int?
     private var cachedLinkRows: [Int: [TerminalFrameLink]] = [:]
+    private var didStart = false
+    private let usesWakeupMonitor: Bool
 
     init(
         workingDirectory: String? = nil,
@@ -122,6 +124,7 @@ final class TerminalViewModel: ObservableObject {
         tmuxSessionHint: String = UUID().uuidString,
         restoredBufferText: String? = nil
     ) {
+        usesWakeupMonitor = true
         initialWorkingDirectory = TerminalViewModel.normalizedWorkingDirectory(workingDirectory)
         self.startupCommand = TerminalViewModel.normalizedStartupCommand(startupCommand)
         self.tmuxSessionHint = tmuxSessionHint
@@ -140,8 +143,26 @@ final class TerminalViewModel: ObservableObject {
         }
     }
 
+    /// Wraps an existing display terminal, used by tmux control mode panes. The
+    /// display terminal has no PTY wake channel; its owner calls
+    /// `refreshExternalOutput()` after feeding bytes from tmux.
+    init(displayTerminal: LibTermyTerminal, title: String = "tmux") {
+        usesWakeupMonitor = false
+        initialWorkingDirectory = nil
+        startupCommand = nil
+        tmuxSessionHint = ""
+        terminal = displayTerminal
+        self.title = title
+        applyBaseRenderConfig(displayTerminal.renderConfig)
+    }
+
     func start() {
-        guard terminal == nil else {
+        guard !didStart else {
+            return
+        }
+
+        if let terminal {
+            startExistingTerminal(terminal)
             return
         }
 
@@ -155,42 +176,53 @@ final class TerminalViewModel: ObservableObject {
                 startupCommand: effectiveStartupCommand
             )
             self.terminal = terminal
-            terminal.startWakeupMonitor { [weak self] in
-                self?.handleTerminalWakeup()
-            }
-            applyBaseRenderConfig(terminal.renderConfig)
-            currentWorkingDirectory = initialWorkingDirectory
-            isExited = false
-            startupRefreshUntil = Date().addingTimeInterval(2)
-            pollAndPresent(force: true)
-            startRefreshDriver(.active)
-            observers.add(
-                NotificationCenter.default.addObserver(
-                    forName: .termySettingsChanged,
-                    object: nil,
-                    queue: .main
-                ) { [weak self] _ in
-                    Task { @MainActor in
-                        self?.reloadConfiguration()
-                    }
-                },
-                center: .default
-            )
-            observers.add(
-                DistributedNotificationCenter.default().addObserver(
-                    forName: Notification.Name("AppleInterfaceThemeChangedNotification"),
-                    object: nil,
-                    queue: .main
-                ) { [weak self] _ in
-                    Task { @MainActor in
-                        self?.reloadAppearance()
-                    }
-                },
-                center: DistributedNotificationCenter.default()
-            )
+            startExistingTerminal(terminal)
         } catch {
             report(error)
         }
+    }
+
+    private func startExistingTerminal(_ terminal: LibTermyTerminal) {
+        didStart = true
+        if usesWakeupMonitor {
+            terminal.startWakeupMonitor { [weak self] in
+                self?.handleTerminalWakeup()
+            }
+        }
+        applyBaseRenderConfig(terminal.renderConfig)
+        currentWorkingDirectory = initialWorkingDirectory
+        isExited = false
+        startupRefreshUntil = Date().addingTimeInterval(2)
+        pollAndPresent(force: true)
+        startRefreshDriver(.active)
+        installConfigurationObservers()
+    }
+
+    private func installConfigurationObservers() {
+        observers.add(
+            NotificationCenter.default.addObserver(
+                forName: .termySettingsChanged,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in
+                    self?.reloadConfiguration()
+                }
+            },
+            center: .default
+        )
+        observers.add(
+            DistributedNotificationCenter.default().addObserver(
+                forName: Notification.Name("AppleInterfaceThemeChangedNotification"),
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in
+                    self?.reloadAppearance()
+                }
+            },
+            center: DistributedNotificationCenter.default()
+        )
     }
 
     /// Drives presentation from display refresh boundaries while active, then
@@ -329,11 +361,27 @@ final class TerminalViewModel: ObservableObject {
         }
         isSuspended = false
         applyConfiguredScrollbackLimit()
-        terminal?.startWakeupMonitor { [weak self] in
-            self?.handleTerminalWakeup()
+        if usesWakeupMonitor {
+            terminal?.startWakeupMonitor { [weak self] in
+                self?.handleTerminalWakeup()
+            }
         }
         startRefreshDriver(.active)
         pollAndPresent(force: true)
+    }
+
+    /// Presents bytes fed externally into a display terminal, such as a tmux
+    /// control-mode pane. PTY terminals normally use the wake channel instead.
+    func refreshExternalOutput() {
+        guard terminal != nil else {
+            return
+        }
+        if isSuspended {
+            drainEventsWhileSuspended()
+            return
+        }
+        noteActivity()
+        pollAndPresent()
     }
 
     func stop() {
@@ -346,6 +394,7 @@ final class TerminalViewModel: ObservableObject {
         isSuspended = false
         observers.removeAll()
         terminal = nil
+        didStart = false
         isExited = true
         progress = .clear
         startupRefreshUntil = nil
@@ -392,26 +441,41 @@ final class TerminalViewModel: ObservableObject {
     }
 
     func sendKey(_ keyInput: TerminalKeyInput) {
-        do {
-            guard let bytes = try terminal?.encodeKey(keyInput), !bytes.isEmpty else {
-                return
-            }
-            send(bytes: bytes)
-        } catch {
-            report(error)
+        guard let bytes = encodedKeyBytes(keyInput) else {
+            return
         }
+        send(bytes: bytes)
     }
 
     func sendMouse(_ mouseInput: TerminalMouseInput) -> Bool {
+        guard let bytes = encodedMouseBytes(mouseInput) else {
+            return false
+        }
+        send(bytes: bytes)
+        return true
+    }
+
+    func encodedKeyBytes(_ keyInput: TerminalKeyInput) -> [UInt8]? {
         do {
-            guard let bytes = try terminal?.encodeMouse(mouseInput), !bytes.isEmpty else {
-                return false
+            guard let bytes = try terminal?.encodeKey(keyInput), !bytes.isEmpty else {
+                return nil
             }
-            send(bytes: bytes)
-            return true
+            return bytes
         } catch {
             report(error)
-            return false
+            return nil
+        }
+    }
+
+    func encodedMouseBytes(_ mouseInput: TerminalMouseInput) -> [UInt8]? {
+        do {
+            guard let bytes = try terminal?.encodeMouse(mouseInput), !bytes.isEmpty else {
+                return nil
+            }
+            return bytes
+        } catch {
+            report(error)
+            return nil
         }
     }
 
@@ -423,14 +487,17 @@ final class TerminalViewModel: ObservableObject {
     /// clipboard-injection (e.g. a copied blob ending in `; rm -rf …\n`): without
     /// it, embedded newlines execute line-by-line on paste.
     func paste(_ text: String) {
+        send(bytes: pasteBytes(for: text))
+    }
+
+    func pasteBytes(for text: String) -> [UInt8] {
         guard !text.isEmpty else {
-            return
+            return []
         }
 
         let bracketed = (try? terminal?.bracketedPasteMode()) ?? false
         guard bracketed else {
-            send(bytes: Array(text.utf8))
-            return
+            return Array(text.utf8)
         }
 
         // Strip embedded bracketed-paste markers so the payload can't close
@@ -441,7 +508,7 @@ final class TerminalViewModel: ObservableObject {
         var bytes = Array("\u{1b}[200~".utf8)
         bytes.append(contentsOf: sanitized.utf8)
         bytes.append(contentsOf: Array("\u{1b}[201~".utf8))
-        send(bytes: bytes)
+        return bytes
     }
 
     func send(bytes: [UInt8]) {
