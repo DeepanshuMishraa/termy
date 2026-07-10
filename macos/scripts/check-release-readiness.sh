@@ -49,14 +49,14 @@ require_cmd awk
 
 echo "==> Checking native bundle identifiers"
 if grep -R -n -E 'com\.example|PRODUCT_BUNDLE_IDENTIFIER *= *com\.example' \
-  "$MACOS_DIR/Sources" "$MACOS_DIR/script" "$MACOS_DIR/scripts" "$REPO_ROOT/crates/xtask/src" >/dev/null; then
+  "$MACOS_DIR/Sources" "$MACOS_DIR/scripts" "$REPO_ROOT/crates/xtask/src" >/dev/null; then
   grep -R -n -E 'com\.example|PRODUCT_BUNDLE_IDENTIFIER *= *com\.example' \
-    "$MACOS_DIR/Sources" "$MACOS_DIR/script" "$MACOS_DIR/scripts" "$REPO_ROOT/crates/xtask/src" >&2
+    "$MACOS_DIR/Sources" "$MACOS_DIR/scripts" "$REPO_ROOT/crates/xtask/src" >&2
   fail "placeholder bundle identifier found in native macOS sources or scripts"
 fi
 
 source_bundle_id="$(awk -F'"' '/static let bundleIdentifier/ { print $2; exit }' "$MACOS_DIR/Sources/TermySwift/App/TermySwiftApp.swift")"
-run_bundle_id="$(awk -F'"' '/^BUNDLE_ID=/ { print $2; exit }' "$MACOS_DIR/script/build_and_run.sh")"
+run_bundle_id="$(awk -F'"' '/^BUNDLE_ID=/ { print $2; exit }' "$MACOS_DIR/scripts/build_and_run.sh")"
 xtask_bundle_id="$(awk -F'"' '/const BUNDLE_ID: &str =/ { print $2; exit }' "$REPO_ROOT/crates/xtask/src/macos.rs")"
 dmg_bundle_id="$(awk -F'"' '/^BUNDLE_ID=/ { print $2; exit }' "$MACOS_DIR/scripts/build-dmg.sh")"
 

@@ -12,10 +12,10 @@ cargo macos run
 
 This builds `crates/ffi` from the repository root first, then builds and launches the SwiftPM app as `macos/dist/Termy.app`.
 
-The old script remains as a compatibility shim:
+The shell compatibility entrypoint is:
 
 ```sh
-./script/build_and_run.sh
+./scripts/build_and_run.sh
 ```
 
 At startup the app reads Termy's local config, including `working_dir`, `window_width`, and `window_height`.

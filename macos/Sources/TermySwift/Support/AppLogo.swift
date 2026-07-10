@@ -2,7 +2,7 @@ import AppKit
 import Combine
 
 /// A selectable Dock / Cmd-Tab app icon. The `resourceName` is the PNG basename
-/// bundled into the app's `Contents/Resources` by `script/build_and_run.sh`.
+/// bundled into the app's `Contents/Resources` by `scripts/build_and_run.sh`.
 struct AppLogo: Identifiable, Hashable {
     let id: String
     let label: String
