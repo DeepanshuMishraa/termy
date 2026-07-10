@@ -89,6 +89,18 @@ build-setup *args:
       exit 127; \
     fi
 
+# Render the local AUR PKGBUILD. Optional version defaults to crates/desktop_app/Cargo.toml.
+aur-pkgbuild version="":
+    ./scripts/aur/build-local.sh render "{{ version }}"
+
+# Build the local AUR package under target/aur. Optional version defaults to crates/desktop_app/Cargo.toml.
+aur-build version="":
+    ./scripts/aur/build-local.sh build "{{ version }}"
+
+# Build and install the local AUR package. Optional version defaults to crates/desktop_app/Cargo.toml.
+aur-install version="":
+    ./scripts/aur/build-local.sh install "{{ version }}"
+
 generate-keybindings-doc:
     cargo run -p xtask -- generate-keybindings-doc
 
