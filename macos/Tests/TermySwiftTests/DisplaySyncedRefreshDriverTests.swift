@@ -10,7 +10,7 @@ final class DisplaySyncedRefreshDriverTests: XCTestCase {
     }
 
     func testThermalFloorNeverFasterThanActiveCadence() {
-        // A serious/critical floor must not be quicker than the 60 Hz active tick.
+        // A serious/critical floor must be slower than the full-speed active tick.
         XCTAssertGreaterThan(DisplaySyncedRefreshDriver.thermalFloor(.serious), RefreshCadence.active.interval)
         XCTAssertGreaterThan(DisplaySyncedRefreshDriver.thermalFloor(.critical), RefreshCadence.active.interval)
     }

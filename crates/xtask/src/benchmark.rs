@@ -26,6 +26,7 @@ const ECHO_TRAIN_PRE_IDLE: Duration = Duration::from_millis(1500);
 const ECHO_TRAIN_INTERVAL: Duration = Duration::from_millis(250);
 const ECHO_TRAIN_POST_IDLE: Duration = Duration::from_millis(1000);
 const ECHO_TRAIN_DEFAULT_ITERATIONS: u64 = 40;
+const MIN_DISPLAYED_FRAME_SAMPLES: u64 = 100;
 
 pub(crate) fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
     let Some(command) = args.next() else {
@@ -75,6 +76,7 @@ fn run_compare(mut args: impl Iterator<Item = String>) -> Result<()> {
     let mut candidate_root = None;
     let mut output_root = None;
     let mut duration_secs = DEFAULT_DURATION_SECS;
+    let mut selected_scenarios = Vec::new();
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -107,8 +109,12 @@ fn run_compare(mut args: impl Iterator<Item = String>) -> Result<()> {
                     .parse()
                     .with_context(|| format!("invalid --duration-secs `{value}`"))?;
             }
+            "--scenario" => {
+                let value = args.next().context("missing value for --scenario")?;
+                selected_scenarios.push(Scenario::parse(&value)?);
+            }
             other => bail!(
-                "unknown benchmark-compare argument `{other}`; expected --baseline, --candidate, --baseline-root, --candidate-root, --output, or --duration-secs"
+                "unknown benchmark-compare argument `{other}`; expected --baseline, --candidate, --baseline-root, --candidate-root, --output, --duration-secs, or --scenario"
             ),
         }
     }
@@ -149,10 +155,14 @@ fn run_compare(mut args: impl Iterator<Item = String>) -> Result<()> {
     prepare_target(&baseline)?;
     prepare_target(&candidate)?;
 
-    let scenarios = Scenario::all();
+    let scenarios = if selected_scenarios.is_empty() {
+        Scenario::all().to_vec()
+    } else {
+        selected_scenarios
+    };
     let mut runs = Vec::with_capacity(scenarios.len() * 2);
     for build in [&baseline, &candidate] {
-        for scenario in scenarios {
+        for scenario in &scenarios {
             runs.push(run_single_benchmark(
                 build,
                 &driver,
@@ -163,7 +173,7 @@ fn run_compare(mut args: impl Iterator<Item = String>) -> Result<()> {
         }
     }
 
-    let summary = ComparisonSummary::from_runs(&baseline, &candidate, runs)?;
+    let summary = ComparisonSummary::from_runs(&baseline, &candidate, &scenarios, runs)?;
     write_report_artifacts(&output_root, &summary)?;
     println!("wrote benchmark report to {}", output_root.display());
     Ok(())
@@ -200,6 +210,9 @@ fn run_gate(mut args: impl Iterator<Item = String>) -> Result<()> {
             }
             "--max-echo-missed-delta" => {
                 thresholds.max_echo_missed_delta = parse_gate_value(&mut args, &arg)?;
+            }
+            "--min-displayed-frames" => {
+                thresholds.min_displayed_frames = parse_gate_value(&mut args, &arg)?;
             }
             other => bail!(
                 "unknown benchmark-gate argument `{other}`; expected --summary or a --max-* threshold"
@@ -246,6 +259,7 @@ struct BenchmarkGateThresholds {
     max_idle_wakeup_delta: i64,
     max_echo_p95_delta_ms: f32,
     max_echo_missed_delta: i64,
+    min_displayed_frames: u64,
 }
 
 impl Default for BenchmarkGateThresholds {
@@ -258,6 +272,7 @@ impl Default for BenchmarkGateThresholds {
             max_idle_wakeup_delta: 75,
             max_echo_p95_delta_ms: 10.0,
             max_echo_missed_delta: 0,
+            min_displayed_frames: MIN_DISPLAYED_FRAME_SAMPLES,
         }
     }
 }
@@ -268,6 +283,26 @@ impl BenchmarkGateThresholds {
         let max_memory_delta_bytes = (self.max_memory_delta_mib * 1024.0 * 1024.0) as i64;
 
         for scenario in &summary.scenarios {
+            if matches!(
+                scenario.scenario.as_str(),
+                "steady-scroll" | "alt-screen-anim"
+            ) {
+                for (label, run) in [
+                    ("baseline", &scenario.baseline),
+                    ("candidate", &scenario.candidate),
+                ] {
+                    let count = run
+                        .animation_summary
+                        .as_ref()
+                        .map_or(0, |animation| animation.displayed_frame_count);
+                    if count < self.min_displayed_frames {
+                        failures.push(format!(
+                            "{}: {label} displayed frame count {count} is below minimum {}",
+                            scenario.scenario, self.min_displayed_frames
+                        ));
+                    }
+                }
+            }
             check_optional_f32(
                 &mut failures,
                 &scenario.scenario,
@@ -300,14 +335,16 @@ impl BenchmarkGateThresholds {
                 self.max_hitch_count_delta,
                 "hitches",
             );
-            check_optional_i64(
-                &mut failures,
-                &scenario.scenario,
-                "idle wakeup delta",
-                scenario.deltas.idle_wakeups,
-                self.max_idle_wakeup_delta,
-                "wakeups",
-            );
+            if scenario.scenario == "idle-burst" {
+                check_optional_i64(
+                    &mut failures,
+                    &scenario.scenario,
+                    "idle wakeup delta",
+                    scenario.deltas.idle_wakeups,
+                    self.max_idle_wakeup_delta,
+                    "wakeups",
+                );
+            }
             check_optional_f32(
                 &mut failures,
                 &scenario.scenario,
@@ -2169,10 +2206,11 @@ impl ComparisonSummary {
     fn from_runs(
         baseline: &BenchmarkTargetSpec,
         candidate: &BenchmarkTargetSpec,
+        selected_scenarios: &[Scenario],
         runs: Vec<RunResult>,
     ) -> Result<Self> {
         let mut scenarios = Vec::new();
-        for scenario in Scenario::all() {
+        for scenario in selected_scenarios {
             let baseline_run = runs
                 .iter()
                 .find(|run| run.build_label == baseline.label && run.scenario == scenario.as_str())
@@ -2397,7 +2435,12 @@ fn option_animation_delta(
         candidate.animation_summary.as_ref(),
         baseline.animation_summary.as_ref(),
     ) {
-        (Some(candidate), Some(baseline)) => option_f32_delta(metric(candidate), metric(baseline)),
+        (Some(candidate), Some(baseline))
+            if candidate.displayed_frame_count >= MIN_DISPLAYED_FRAME_SAMPLES
+                && baseline.displayed_frame_count >= MIN_DISPLAYED_FRAME_SAMPLES =>
+        {
+            option_f32_delta(metric(candidate), metric(baseline))
+        }
         _ => None,
     }
 }

@@ -26,7 +26,7 @@ paths, tracked by Task 5 in the active roadmap.
 
 ## Native performance comparison
 
-The headless native benchmark and CPU render-plan percentile gate are
-implemented. Sustained scenario coverage, statistically meaningful sample
-counts, resource budgets, and the windowed GPUI comparison are tracked together
-by Task 4 in the active roadmap.
+The deterministic scenario suite, meaningful-sample gates, launch/resource
+budgets, deliberate regression fixtures, and windowed GPUI comparison are
+implemented and locally green. Task 4 in the active roadmap remains open only
+for the committed candidate's green, non-cancelled GitHub workflow evidence.

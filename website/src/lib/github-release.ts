@@ -11,9 +11,11 @@ export interface GitHubReleaseAsset {
 }
 
 export interface GitHubRelease {
+  id: number;
   name: string;
   tagName: string;
   publishedAt: string;
+  prerelease: boolean;
   htmlUrl: string;
   body: string | null;
   tarballUrl: string;
@@ -22,9 +24,11 @@ export interface GitHubRelease {
 }
 
 interface GitHubReleaseResponse {
+  id: number;
   name: string | null;
   tag_name: string;
   published_at: string;
+  prerelease: boolean;
   html_url: string;
   body: string | null;
   tarball_url: string;
@@ -36,6 +40,38 @@ interface GitHubReleaseResponse {
     browser_download_url: string;
     content_type: string;
   }>;
+}
+
+function githubHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {
+    Accept: 'application/vnd.github+json',
+    'User-Agent': `${gitConfig.repo}-website`,
+  };
+  if (process.env.GITHUB_TOKEN) {
+    headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
+  }
+  return headers;
+}
+
+function mapGitHubRelease(data: GitHubReleaseResponse): GitHubRelease {
+  return {
+    id: data.id,
+    name: data.name || data.tag_name,
+    tagName: data.tag_name,
+    publishedAt: data.published_at,
+    prerelease: data.prerelease,
+    htmlUrl: data.html_url,
+    body: data.body,
+    tarballUrl: data.tarball_url,
+    zipballUrl: data.zipball_url,
+    assets: data.assets.map((asset) => ({
+      id: asset.id,
+      name: asset.name,
+      size: asset.size,
+      downloadUrl: asset.browser_download_url,
+      contentType: asset.content_type,
+    })),
+  };
 }
 
 export interface PlatformAssetGroup {
@@ -116,14 +152,80 @@ export function formatReleaseDate(iso: string): string {
   });
 }
 
+export function formatReleaseDay(iso: string): string {
+  return new Date(iso).toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+  });
+}
+
+export interface GitHubReleaseYearGroup {
+  year: string;
+  releases: GitHubRelease[];
+}
+
+let releasesRequest: Promise<GitHubRelease[]> | undefined;
+
+export function groupGitHubReleasesByYear(
+  releases: GitHubRelease[],
+): GitHubReleaseYearGroup[] {
+  const groups: GitHubReleaseYearGroup[] = [];
+  for (const release of releases) {
+    const year = String(new Date(release.publishedAt).getFullYear());
+    const last = groups[groups.length - 1];
+    if (last?.year === year) last.releases.push(release);
+    else groups.push({ year, releases: [release] });
+  }
+  return groups;
+}
+
+export async function fetchGitHubReleases(): Promise<GitHubRelease[]> {
+  releasesRequest ??= (async () => {
+    const res = await fetch(
+      `${GITHUB_API}/repos/${gitConfig.user}/${gitConfig.repo}/releases?per_page=100`,
+      { headers: githubHeaders() },
+    );
+    if (!res.ok) {
+      throw new Error(`GitHub API ${res.status}: ${await res.text()}`);
+    }
+    const data = (await res.json()) as GitHubReleaseResponse[];
+    return data.map(mapGitHubRelease);
+  })().catch((error) => {
+    releasesRequest = undefined;
+    throw error;
+  });
+  return releasesRequest;
+}
+
+export async function fetchGitHubReleaseByTag(
+  tag: string,
+): Promise<GitHubRelease | null> {
+  // TanStack's prerenderer crawls the entire release archive concurrently. Reuse
+  // the list response (which already contains complete bodies and assets) so a
+  // production build consumes one GitHub request instead of one per release.
+  if (process.env.TSS_PRERENDERING === 'true') {
+    return (
+      (await fetchGitHubReleases()).find((release) => release.tagName === tag) ??
+      null
+    );
+  }
+
+  const res = await fetch(
+    `${GITHUB_API}/repos/${gitConfig.user}/${gitConfig.repo}/releases/tags/${encodeURIComponent(tag)}`,
+    { headers: githubHeaders() },
+  );
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    throw new Error(`GitHub API ${res.status}: ${await res.text()}`);
+  }
+  return mapGitHubRelease((await res.json()) as GitHubReleaseResponse);
+}
+
 export async function fetchLatestGitHubRelease(): Promise<GitHubRelease> {
   const res = await fetch(
     `${GITHUB_API}/repos/${gitConfig.user}/${gitConfig.repo}/releases/latest`,
     {
-      headers: {
-        Accept: 'application/vnd.github+json',
-        'User-Agent': `${gitConfig.repo}-website`,
-      },
+      headers: githubHeaders(),
     },
   );
 
@@ -133,20 +235,5 @@ export async function fetchLatestGitHubRelease(): Promise<GitHubRelease> {
 
   const data = (await res.json()) as GitHubReleaseResponse;
 
-  return {
-    name: data.name || data.tag_name,
-    tagName: data.tag_name,
-    publishedAt: data.published_at,
-    htmlUrl: data.html_url,
-    body: data.body,
-    tarballUrl: data.tarball_url,
-    zipballUrl: data.zipball_url,
-    assets: data.assets.map((asset) => ({
-      id: asset.id,
-      name: asset.name,
-      size: asset.size,
-      downloadUrl: asset.browser_download_url,
-      contentType: asset.content_type,
-    })),
-  };
+  return mapGitHubRelease(data);
 }

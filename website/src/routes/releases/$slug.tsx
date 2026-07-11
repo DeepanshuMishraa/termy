@@ -1,20 +1,28 @@
 import { createFileRoute, Link, notFound } from '@tanstack/react-router';
 import { createServerFn } from '@tanstack/react-start';
-import { HomeLayout } from 'fumadocs-ui/layouts/home';
-import { baseOptions } from '@/lib/layout.shared';
-import { fetchReleaseBySlug, formatReleaseDate } from '@/lib/notra';
+import {
+  MarketingPageShell,
+  marketingFontLinks,
+  marketingMono,
+  marketingPanelClass,
+  marketingSerif,
+} from '@/components/marketing-page-shell';
+import {
+  fetchGitHubReleaseByTag,
+  formatReleaseDate,
+} from '@/lib/github-release';
 import { Markdown } from '@/components/markdown';
-import { PoweredByNotra } from '@/components/powered-by-notra';
 
 const loadRelease = createServerFn({ method: 'GET' })
   .inputValidator((slug: string) => slug)
   .handler(async ({ data: slug }) => {
-    const post = await fetchReleaseBySlug(slug);
-    if (!post) return { post: null, notFound: true as const };
-    return { post, notFound: false as const };
+    const release = await fetchGitHubReleaseByTag(slug);
+    if (!release) return { release: null, notFound: true as const };
+    return { release, notFound: false as const };
   });
 
 export const Route = createFileRoute('/releases/$slug')({
+  head: () => ({ links: marketingFontLinks }),
   component: ReleaseDetail,
   loader: async ({ params }) => {
     const result = await loadRelease({ data: params.slug });
@@ -24,36 +32,45 @@ export const Route = createFileRoute('/releases/$slug')({
 });
 
 function ReleaseDetail() {
-  const { post } = Route.useLoaderData();
-  if (!post) return null;
+  const { release } = Route.useLoaderData();
+  if (!release) return null;
 
   return (
-    <HomeLayout {...baseOptions()}>
-      <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col px-6 pb-16 pt-20">
+    <MarketingPageShell>
+      <main className="mx-auto flex w-full max-w-4xl flex-col px-6 pt-16 pb-20 md:pt-20">
         <Link
           to="/releases"
-          className="font-mono text-xs text-fd-muted-foreground hover:text-fd-foreground"
+          className="text-xs text-[#787c99] hover:text-white"
+          style={{ fontFamily: marketingMono }}
         >
           ← all releases
         </Link>
 
         <article className="mt-10">
           <time
-            dateTime={post.createdAt}
-            className="font-mono text-xs text-fd-muted-foreground"
+            dateTime={release.publishedAt}
+            className="text-xs text-[#7aa2f7]"
+            style={{ fontFamily: marketingMono }}
           >
-            {formatReleaseDate(post.createdAt)}
+            {formatReleaseDate(release.publishedAt)}
           </time>
-          <h1 className="mt-3 text-balance font-medium text-4xl tracking-tight md:text-5xl">
-            {post.title}
+          <h1 className="mt-3 text-balance text-5xl leading-tight tracking-tight text-[#e8eeff] md:text-6xl" style={{ fontFamily: marketingSerif }}>
+            {release.name}
           </h1>
-          <div className="prose prose-sm mt-10 max-w-none border-t border-fd-border pt-10 text-fd-foreground">
-            <Markdown text={post.markdown || post.content} />
+          <div className={`${marketingPanelClass} prose prose-invert prose-sm mt-10 max-w-none px-6 py-8 text-[#c0caf5] sm:px-9 sm:py-10`}>
+            <Markdown text={release.body || '_No release notes were provided._'} />
           </div>
         </article>
 
-        <PoweredByNotra />
+        <div className="mt-8 flex flex-wrap gap-6 text-xs text-[#787c99]" style={{ fontFamily: marketingMono }}>
+          <a href={release.htmlUrl} target="_blank" rel="noreferrer" className="hover:text-white">
+            View on GitHub ↗
+          </a>
+          <a href={release.tarballUrl} className="hover:text-white">
+            Source tarball ↓
+          </a>
+        </div>
       </main>
-    </HomeLayout>
+    </MarketingPageShell>
   );
 }

@@ -84,3 +84,100 @@ html > body[data-scroll-locked] {
   margin-right: 0px !important;
   --removed-body-scroll-bar-size: 0px !important;
 }
+
+/* The public Termy pages use a deliberately dark product palette by default.
+   These semantic light overrides keep that identity without simply inverting it. */
+.marketing-theme {
+  transition:
+    background 360ms cubic-bezier(0.23, 1, 0.32, 1),
+    color 240ms ease-out;
+}
+
+html:not(.dark) .marketing-theme {
+  background:
+    radial-gradient(1000px 520px at 68% 4%, rgba(122, 162, 247, 0.2), transparent 64%),
+    radial-gradient(760px 500px at 10% 52%, rgba(176, 194, 230, 0.2), transparent 66%),
+    #f5f7fc !important;
+  color: #34405c;
+}
+
+html:not(.dark) .marketing-theme .text-\[\#e8eeff\] {
+  color: #18233d;
+}
+
+html:not(.dark) .marketing-theme .text-\[\#c0caf5\] {
+  color: #34405c;
+}
+
+html:not(.dark) .marketing-theme .text-\[\#787c99\] {
+  color: #66718d;
+}
+
+html:not(.dark) .marketing-theme .text-\[\#565f89\] {
+  color: #7b86a1;
+}
+
+html:not(.dark) .marketing-theme .text-\[\#7aa2f7\] {
+  color: #416fc7;
+}
+
+html:not(.dark) .marketing-theme .bg-clip-text.text-transparent {
+  background-image: linear-gradient(100deg, #526fae 10%, #416fc7 55%, #274f9a 95%) !important;
+}
+
+html:not(.dark) .marketing-theme [class*='bg-[#0d0f17]'],
+html:not(.dark) .marketing-theme [class*='bg-[#14141c]'],
+html:not(.dark) .marketing-theme [class*='bg-[#16161e]'],
+html:not(.dark) .marketing-theme [class*='bg-[#191b28]'],
+html:not(.dark) .marketing-theme [class*='bg-[#1a1b26]'],
+html:not(.dark) .marketing-theme [class*='bg-[#1c1f30]'] {
+  background-color: rgba(255, 255, 255, 0.78);
+}
+
+html:not(.dark) .marketing-theme [class*='bg-[#24283b]'] {
+  background-color: #dfe7f7;
+}
+
+html:not(.dark) .marketing-theme [class*='bg-[#283457]'] {
+  background-color: #dce7fb;
+}
+
+html:not(.dark) .marketing-theme [class*='border-white/'],
+html:not(.dark) .marketing-theme [class*='divide-white/'] {
+  border-color: rgba(48, 68, 108, 0.13);
+}
+
+html:not(.dark) .marketing-theme [class*='hover:bg-white/']:hover {
+  background-color: rgba(65, 111, 199, 0.07);
+}
+
+html:not(.dark) .marketing-theme [class*='hover:text-white']:hover,
+html:not(.dark) .marketing-theme [class*='group-hover:text-white'] {
+  color: #18233d;
+}
+
+html:not(.dark) .marketing-theme [class*='decoration-white/'] {
+  text-decoration-color: rgba(48, 68, 108, 0.24);
+}
+
+html:not(.dark) .marketing-theme [class*='shadow-[0_24px_80px'],
+html:not(.dark) .marketing-theme [class*='shadow-[0_30px_90px'] {
+  box-shadow: 0 24px 70px rgba(42, 58, 91, 0.14);
+}
+
+html:not(.dark) .marketing-theme .prose {
+  --color-fd-foreground: #34405c;
+  --color-fd-muted-foreground: #66718d;
+  --color-fd-border: rgba(48, 68, 108, 0.14);
+  color: #34405c;
+}
+
+html:not(.dark) .marketing-theme .prose :where(h1, h2, h3, h4, strong, code) {
+  color: #18233d;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .marketing-theme {
+    transition: none;
+  }
+}

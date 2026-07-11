@@ -29,8 +29,8 @@ use commands::{OpenConfig, OpenSettings};
 use deeplink::{DeepLinkArgument, DeepLinkRoute};
 use flume::Receiver;
 use gpui::{
-    App, Application, AsyncApp, Bounds, Pixels, WindowBounds, WindowHandle, WindowOptions,
-    prelude::*, px, size,
+    App, Application, AsyncApp, Bounds, Pixels, WindowBounds, WindowHandle, WindowKind,
+    WindowOptions, prelude::*, px, size,
 };
 use startup::StartupBlocker;
 use terminal_view::{TerminalView, initial_window_background_appearance};
@@ -154,6 +154,7 @@ fn open_main_window(
     let window_background = initial_window_background_appearance(&startup_config);
     let startup_window_size = normalized_startup_window_size(&startup_config);
     let bounds = Bounds::centered(None, startup_window_size, cx);
+    let benchmark_mode = std::env::var_os("TERMY_BENCHMARK_COMMAND").is_some();
 
     #[cfg(target_os = "macos")]
     let titlebar = Some(gpui::TitlebarOptions {
@@ -179,6 +180,14 @@ fn open_main_window(
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             titlebar,
             window_background,
+            // Keep both sides of the xctrace comparison visible even when the
+            // benchmark is launched from an IDE or another frontmost app.
+            // Normal product windows retain the standard level.
+            kind: if benchmark_mode {
+                WindowKind::Floating
+            } else {
+                WindowKind::Normal
+            },
             // The tab strip lives in the titlebar region. A movable NSWindow
             // lets AppKit auto-drag the window from that whole region, stealing
             // tab-reorder drags. We drive window moves manually instead (see
@@ -189,6 +198,10 @@ fn open_main_window(
             ..Default::default()
         },
         move |window, cx| {
+            if benchmark_mode {
+                cx.activate(true);
+                window.activate_window();
+            }
             #[cfg(target_os = "windows")]
             {
                 let startup_window_size = startup_window_size;

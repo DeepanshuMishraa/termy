@@ -70,7 +70,7 @@ The native app is production ready only when all of the following are true:
 | 1 | Make roadmap and production status truthful | 0.5–1 day | Done 2026-07-10 |
 | 2 | Produce a complete, self-contained native app bundle | 1–2 days | Done 2026-07-10 |
 | 3 | Turn bundle readiness into a real unsigned release gate | 1–2 days | Done 2026-07-10 |
-| 4 | Make rendering and launch performance gates representative | 2–3 days | Next |
+| 4 | Make rendering and launch performance gates representative | 2–3 days | Implementation complete; CI run pending |
 | 5 | Close terminal interaction and tmux correctness gaps | 2–4 days | Pending |
 | 6 | Complete accessibility, IME, lifecycle, and failure-path QA | 2–3 days | Pending |
 | 7 | Wire native artifacts into release CI without cutover | 1–2 days | Pending |
@@ -202,6 +202,10 @@ corruption failed with the expected diagnostic.
 
 ## Task 4 — Make performance gates representative
 
+Implementation completed locally: 2026-07-10. Final completion still requires
+a green, non-cancelled `macOS Performance Gates` run from the committed
+candidate.
+
 ### Objective
 
 Prove sustained terminal performance rather than allowing a short benchmark to
@@ -246,6 +250,27 @@ pass on a handful of frames.
 - The native app meets the agreed GPUI comparison thresholds on a real windowed
   run.
 - A deliberate full-redraw or artificial delay regression makes CI fail.
+
+### Local evidence
+
+- All 10 deterministic native scenarios emitted at least 100 presented frames
+  and render-plan samples. Their p95 render-plan build times remained below the
+  2 ms ceiling.
+- Forced-full-redraw and injected-5-ms-delay fixtures both failed the gate.
+- Settled launch sampling measured a 313 ms usable one-tab window, 0.01% mean /
+  0.10% p95 idle CPU, and 150.91 MiB max RSS. The verified eight-pane run
+  reached a usable window in 800 ms, used 1.74% mean / 4.30% p95 CPU, and
+  141.81 MiB max RSS.
+- Attached, foreground window traces produced 571 GPUI versus 373 native
+  steady-scroll frames at 16.67/16.67 ms p95, and 262 GPUI versus 247 native
+  full-screen-TUI frames at 25.00/33.33 ms p95. All four traces reported zero
+  hitches and passed the calibrated comparison gate.
+- The performance workflow now builds the native candidate, runs deterministic
+  and deliberate-regression gates, samples launch/resources, runs the windowed
+  GPUI comparison, and retains JSON/Markdown reports for 30 days.
+
+The remaining unchecked exit evidence is the workflow result itself; local
+tests cannot establish a GitHub run as green and non-cancelled.
 
 ## Task 5 — Close interaction and tmux correctness gaps
 

@@ -248,10 +248,10 @@ final class TerminalViewModel: ObservableObject {
 
     private func handleTerminalWakeup() {
         // The wake channel only needs to rouse an *idle* terminal: while active,
-        // the display link is already polling at 60 Hz, so a per-PTY-chunk
+        // the display link is already polling at display cadence (up to 120 Hz), so a per-PTY-chunk
         // wakeup poll is redundant. Without this guard, streaming output (`yes`,
         // `cat bigfile`) schedules an extra full poll per chunk on top of the
-        // 60 Hz link — `pendingWakeupPoll` only coalesces within a single
+        // active link — `pendingWakeupPoll` only coalesces within a single
         // runloop turn, so the effective poll rate is otherwise unbounded.
         guard terminal != nil, cadence != .active, !pendingWakeupPoll else {
             return
@@ -1332,7 +1332,7 @@ enum RefreshCadence {
     var interval: TimeInterval {
         switch self {
         case .active:
-            return 1.0 / 60.0
+            return 1.0 / 120.0
         case .idle:
             return TerminalCursorBlinkPhase.interval
         case .idleInert:

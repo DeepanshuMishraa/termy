@@ -940,6 +940,10 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
         applyNativeTabPlacement(for: window)
         window.setContentSize(TermyConfigurationStore.shared.configuration.windowSize)
         window.center()
+        if NativeBenchmarkLaunch.task != nil {
+            window.level = .floating
+            window.orderFrontRegardless()
+        }
         NativeLaunchProbe.recordWhenUsable(window)
         postTabsChanged()
     }
@@ -1214,7 +1218,7 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
     }
 
     private func handleWindowDidChangeOcclusionState(_ window: NSWindow, store: TerminalWorkspaceStore) {
-        if window.occlusionState.contains(.visible) {
+        if window.occlusionState.contains(.visible) || NativeBenchmarkLaunch.task != nil {
             store.resumeRefresh()
             applyFocusedTerminalChrome(for: window)
             applyFocusedTerminalChromeSoon(for: window)

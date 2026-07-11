@@ -43,10 +43,12 @@ real-GUI interaction coverage and failure-path testing, tracked by Task 5 in
 
 ## Performance status
 
-The native benchmark and CPU render-plan percentile gate exist. The production
-performance work still needs representative sustained scenarios, minimum sample
-counts, settled launch/resource sampling, and a windowed comparison against the
-GPUI build. Those requirements are tracked by Task 4 in [`road.md`](road.md).
+The native benchmark now covers 10 deterministic scenarios with enforced
+minimum sample counts, render-plan percentile budgets, launch/idle/resource
+sampling, deliberate regression fixtures, and attached windowed xctrace
+comparisons against the GPUI build. The implementation and local gates are
+complete; Task 4 in [`road.md`](road.md) remains open only until the committed
+candidate records a green, non-cancelled performance workflow run.
 
 ## Non-blocking backlog
 

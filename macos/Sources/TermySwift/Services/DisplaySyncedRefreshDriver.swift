@@ -38,7 +38,7 @@ final class DisplaySyncedRefreshDriver: @unchecked Sendable {
         // `CVDisplayLinkStop`, which fences against an in-flight callback on the
         // CoreVideo thread, so the unretained `self` pointer handed to the
         // callback can never be dereferenced after deallocation. Without this a
-        // window closing while the link runs leaves a live 60 Hz callback (and a
+        // window closing while the link runs leaves a live display-link callback (and a
         // running fallback Timer) pointing at freed memory.
         stop()
         if let thermalObserver {
@@ -47,7 +47,7 @@ final class DisplaySyncedRefreshDriver: @unchecked Sendable {
     }
 
     /// The minimum gap between ticks, raised under thermal pressure so a hot
-    /// machine throttles the 60 Hz active cadence rather than fighting the fans.
+    /// machine throttles the active cadence rather than fighting the fans.
     private var effectiveInterval: TimeInterval {
         max(cadence.interval, Self.thermalFloor(thermalState))
     }
@@ -67,8 +67,7 @@ final class DisplaySyncedRefreshDriver: @unchecked Sendable {
 
     /// The CoreVideo-thread pre-filter threshold: half the delivery interval, so
     /// link-fire jitter can never starve `deliverTickIfDue`, while ticks that
-    /// would certainly be dropped (a ProMotion link fires at 120 Hz against a
-    /// 60 Hz cadence) are discarded before the main-queue hop.
+    /// would certainly be dropped are discarded before the main-queue hop.
     static func dispatchGap(deliveryInterval: TimeInterval) -> TimeInterval {
         deliveryInterval * 0.5
     }

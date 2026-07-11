@@ -37,7 +37,8 @@ RESULTS="$(printf '%s\n' "$OUTPUT" | sed -n 's/^native-benchmark-result //p')"
     exit 1
 }
 
-P95_CEILING="$P95_CEILING_MICROS" MIN_SAMPLES="$MIN_SAMPLES" RESULTS="$RESULTS" python3 - <<'PY'
+P95_CEILING="$P95_CEILING_MICROS" MIN_SAMPLES="$MIN_SAMPLES" RESULTS="$RESULTS" \
+REPORT_PATH="${TERMY_RENDER_REPORT_PATH:-}" python3 - <<'PY'
 import json, os, sys
 
 ceiling = float(os.environ["P95_CEILING"])
@@ -57,6 +58,20 @@ expected = {
 }
 
 by_name = {result["scenario"]: result for result in results}
+report_path = os.environ.get("REPORT_PATH")
+if report_path:
+    os.makedirs(os.path.dirname(os.path.abspath(report_path)), exist_ok=True)
+    with open(report_path, "w") as report_file:
+        json.dump(
+            {
+                "budgets": {"minimumSamples": minimum, "p95CeilingMicros": ceiling},
+                "scenarios": results,
+            },
+            report_file,
+            indent=2,
+            sort_keys=True,
+        )
+        report_file.write("\n")
 errors = []
 missing = sorted(expected - by_name.keys())
 unexpected = sorted(by_name.keys() - expected)
