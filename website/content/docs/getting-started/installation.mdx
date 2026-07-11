@@ -3,21 +3,41 @@ title: Install
 description: Download Termy for macOS, Linux, or Windows.
 ---
 
-Get binaries from [/download](/download) or [GitHub Releases](https://github.com/lassejlv/termy/releases).
+The fastest path is the [Termy download page](/download). It detects your platform and links to the current GitHub release.
+
+<Cards>
+  <Card title="macOS" description="Install the DMG on Apple silicon or Intel." href="#macos" />
+  <Card title="Linux" description="Run the AppImage or unpack the archive." href="#linux" />
+  <Card title="Windows" description="Install Termy with the MSI package." href="#windows" />
+  <Card title="Build from source" description="Compile the Rust workspace locally." href="#from-source" />
+</Cards>
 
 ## macOS
 
-Open the `.dmg` and drag Termy to `/Applications`.
+1. On the [download page](/download), choose **Apple silicon** for M-series Macs or **Intel** for older Macs.
+2. Open the `.dmg` and drag Termy to `/Applications`.
+3. Try to open Termy once.
 
-If macOS blocks launch, see [Troubleshooting](/docs/getting-started/troubleshooting).
+<Callout type="warn" title="Termy is not signed yet">
+  If macOS blocks the first launch, remove its quarantine attribute:
+
+  ```bash
+  sudo xattr -d com.apple.quarantine /Applications/Termy.app
+  ```
+
+  Then open Termy again. [See the full troubleshooting guide](/docs/getting-started/troubleshooting) if it still does not launch.
+</Callout>
 
 ## Linux
 
-Use the AppImage or `.tar.gz` from Releases.
+Download the AppImage or `.tar.gz` from [GitHub Releases](https://github.com/lassejlv/termy/releases).
+
+- **AppImage:** mark it executable, then run it.
+- **Archive:** unpack it and run the included Termy binary.
 
 ## Windows
 
-Run the `.msi` installer from Releases.
+Download and run the `.msi` installer from [GitHub Releases](https://github.com/lassejlv/termy/releases).
 
 ## From source
 
@@ -26,6 +46,8 @@ git clone https://github.com/lassejlv/termy
 cd termy
 cargo run --release -p termy
 ```
+
+This route requires Rust and the platform dependencies used by the desktop app. Prefer a release binary unless you are developing Termy itself.
 
 ## First launch
 
