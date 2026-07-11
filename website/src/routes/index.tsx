@@ -12,6 +12,7 @@ import {
   Terminal,
 } from 'lucide-react';
 import { ThemeToggle } from '@/components/marketing-page-shell';
+import { sponsors } from '@/lib/sponsors';
 
 export const Route = createFileRoute('/')({
   head: () => ({
@@ -671,9 +672,9 @@ function SelectControl({ value }: { value: string }) {
 }
 
 const FEATURES: Array<[string, string, string]> = [
-  ['01', 'Native', '#7aa2f7'],
-  ['02', 'Fast', '#7aa2f7'],
-  ['03', 'Configurable', '#9ece6a'],
+  ['platform', 'Native', '#7aa2f7'],
+  ['render', 'Fast', '#7aa2f7'],
+  ['config', 'Configurable', '#9ece6a'],
 ];
 
 function FeatureStrip() {
@@ -683,15 +684,77 @@ function FeatureStrip() {
       style={{ fontFamily: MONO }}
     >
       <div className="mx-auto grid max-w-6xl grid-cols-1 divide-y divide-white/[0.08] sm:grid-cols-3 sm:divide-x sm:divide-y-0">
-        {FEATURES.map(([index, label, color]) => (
+        {FEATURES.map(([property, label, color]) => (
           <div
             key={label}
-            className="flex items-center gap-6 px-8 py-7 text-[15px] sm:justify-center lg:gap-10"
+            className="flex items-baseline gap-5 px-8 py-7 sm:justify-center lg:gap-8"
           >
-            <span style={{ color }}>{index}</span>
-            <span className="tracking-wide text-[#c0caf5]">{label}</span>
+            <span className="text-[10px] text-[#565f89]">{property}</span>
+            <span className="text-[15px] tracking-wide" style={{ color }}>
+              {label}
+            </span>
           </div>
         ))}
+      </div>
+      <div className="border-t border-white/[0.08]">
+        <div className="mx-auto grid max-w-6xl md:grid-cols-[12rem_1fr]">
+          <div className="flex items-baseline justify-between gap-4 px-8 py-6 md:block md:border-r md:border-white/[0.08]">
+            <p className="text-xs text-[#c0caf5]">Supported by</p>
+            <p className="mt-1 text-[10px] text-[#565f89]">
+              {sponsors.length} {sponsors.length === 1 ? 'supporter' : 'supporters'}
+            </p>
+          </div>
+          <div className="grid border-t border-white/[0.08] sm:grid-cols-2 sm:divide-x sm:divide-white/[0.08] md:border-t-0">
+            {sponsors.map((sponsor) => (
+              <a
+                key={sponsor.name}
+                href={sponsor.url}
+                target="_blank"
+                rel="noreferrer"
+                className="group flex min-w-0 items-center gap-4 border-t border-white/[0.08] px-8 py-5 transition-colors first:border-t-0 hover:bg-white/[0.04] sm:border-t-0"
+              >
+                <span
+                  className={`flex shrink-0 items-center ${
+                    sponsor.avatar ? 'size-9 justify-center' : 'h-9 w-20'
+                  }`}
+                >
+                  <img
+                    src={sponsor.logo.light}
+                    alt={`${sponsor.name} logo`}
+                    loading="lazy"
+                    className={`max-h-8 max-w-full object-contain dark:hidden ${
+                      sponsor.avatar ? 'rounded-full' : ''
+                    }`}
+                  />
+                  <img
+                    src={sponsor.logo.dark}
+                    alt={`${sponsor.name} logo`}
+                    loading="lazy"
+                    className={`hidden max-h-8 max-w-full object-contain dark:block ${
+                      sponsor.avatar ? 'rounded-full' : ''
+                    }`}
+                  />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-xs text-[#c0caf5] transition-colors group-hover:text-white">
+                    {sponsor.name}
+                  </span>
+                  {sponsor.description && (
+                    <span className="mt-1 block truncate text-[10px] text-[#565f89]">
+                      {sponsor.description}
+                    </span>
+                  )}
+                </span>
+                <span
+                  aria-hidden
+                  className="ml-auto shrink-0 text-[#565f89] transition-[transform,color] group-hover:translate-x-0.5 group-hover:text-[#7aa2f7]"
+                >
+                  ↗
+                </span>
+              </a>
+            ))}
+          </div>
+        </div>
       </div>
     </section>
   );
