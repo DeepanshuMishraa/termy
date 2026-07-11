@@ -1,156 +1,265 @@
 ---
 title: libtermy
-description: Embeddable Termy terminal engine with Rust and C ABI surfaces.
+description: Embed Termy's beta terminal engine in Rust, C, Swift, and other native hosts.
 ---
 
-<Callout type="warn">
-  libtermy is very experimental. It is not as performant as the native Termy
-  app, can have bugs, and is subject to breaking changes between releases. Do
-  not rely on it for production workloads yet.
+<Callout type="info">
+  libtermy is in beta and ready for experiments, prototypes, and real host
+  integrations. The Rust and C APIs are usable today, but they can still change
+  between Termy releases. Pin a commit or release and test upgrades before
+  shipping them.
 </Callout>
 
-`libtermy` is the embeddable Termy terminal engine. The first cut is split
-into:
+`libtermy` is Termy's reusable terminal engine. It provides the PTY, VT parser,
+scrollback, input protocols, shell integration, search, links, configuration,
+events, and damage-scoped frames while leaving the actual UI and GPU renderer to
+your application.
 
-- `termy_core` — Rust API for a single headless terminal surface.
-- `termy_ffi` — C ABI wrapper over `termy_core`.
+The same engine powers Termy's desktop surfaces, and the native macOS Swift app
+uses the C ABI as its terminal backend. You can build another terminal app,
+embed a terminal inside a native tool, render terminal output in a custom UI, or
+feed output into a display-only terminal without creating a child process.
 
-The core API owns PTY startup, terminal parsing, input writes, resize, event
-draining, damage snapshots, and renderer-neutral frame snapshots. It does not
-depend on GPUI and does not expose Termy's app chrome, tabs, panes, or tmux
-session model as part of the public v1 surface.
+## Choose an API
 
-`termy_core` can also load Termy's normal config format through the existing
-headless `termy_config_core` parser. Config loading returns the full parsed
-`AppConfig`, parse diagnostics, and a `TerminalRuntimeConfig` ready to pass
-into terminal creation. Missing default config files fall back to defaults
-without creating files; explicit missing paths are reported as load errors.
+| Host | Use | What you get |
+| --- | --- | --- |
+| Rust | `termy_core` | Native Rust types and the smallest integration layer |
+| C, C++, Swift, Objective-C | `termy_ffi` | Opaque handles and a C-compatible ABI |
+| External output or tmux panes | Display terminal | Parser, grid, damage, and frames without a PTY |
 
-## Rust Embedding
+Both APIs are renderer-neutral. libtermy produces cells, cursor state, damage,
+events, and render configuration; your host decides how those values become
+pixels and application chrome.
 
-Use `termy_core::Terminal` directly:
+## What is available in beta
 
-```rust
-let loaded_config = termy_core::load_config_from_default_path()?;
-let cell_metrics = termy_core::measure_cell_from_config(&loaded_config.app_config);
-let terminal = termy_core::Terminal::new(
-    termy_core::TerminalSize {
-        cols: 80,
-        rows: 24,
-        cell_width: cell_metrics.cell_width,
-        cell_height: cell_metrics.cell_height,
-    },
-    None,
-    None,
-    None,
-    Some(&loaded_config.runtime_config),
-    None,
-)?;
-terminal.write(b"echo hello\r");
-let frame = terminal.snapshot();
+- PTY and shell startup on macOS, Linux, and Windows
+- Full frames and dirty-span incremental frame updates
+- Config loading with diagnostics and resolved render settings
+- Keyboard and mouse encoding for negotiated terminal modes
+- Scrollback, full-buffer search, and OSC 8 hyperlink lookup
+- Title, bell, exit, clipboard, working-directory, progress, and shell events
+- Wakeup notifications for event-driven render scheduling
+- Display-only terminals driven by arbitrary output bytes
+- Runtime cell measurement, theme colors, and cursor configuration
+
+App chrome—windows, tabs, pane layout, settings UI, and rendering—is intentionally
+owned by the embedder.
+
+## Rust quick start
+
+Add `termy_core` from the Termy repository. During beta, pinning a known commit
+or release is recommended:
+
+```toml title="Cargo.toml"
+[dependencies]
+anyhow = "1"
+flume = "0.11"
+termy_core = { git = "https://github.com/lassejlv/termy", package = "termy_core" }
 ```
 
-`TermyFrame` contains a flat row-major `Vec<TermyCell>`, cursor state, scroll
-state, and cell colors as simple RGBA bytes.
+Create a terminal, send input, and consume a renderer-neutral update:
 
-Use `termy_core::measure_cell(font_family, font_size, line_height)` or
-`termy_core::measure_cell_from_config(&app_config)` to derive the
-`TerminalSize` cell width and height from Termy's font metrics instead of
-guessing a monospace ratio in the host app.
+```rust
+use termy_core::{
+    Terminal,
+    TerminalSize,
+    load_config_from_default_path,
+    measure_cell_from_config,
+};
+use std::time::Duration;
 
-## C ABI
+fn main() -> anyhow::Result<()> {
+    let loaded = load_config_from_default_path()?;
+    let metrics = measure_cell_from_config(&loaded.app_config);
+    let (wakeup_tx, wakeup_rx) = flume::bounded(1);
 
-Use `termy_ffi` as an opaque-handle API:
+    let terminal = Terminal::new(
+        TerminalSize {
+            cols: 100,
+            rows: 30,
+            cell_width: metrics.cell_width,
+            cell_height: metrics.cell_height,
+        },
+        None,                         // working directory
+        Some(wakeup_tx),              // output-ready notifications
+        None,                         // shell-integration title policy
+        Some(&loaded.runtime_config),
+        None,                         // startup command
+    )?;
 
-- `crates/ffi/include/termy.h`
-- `termy_config_load_default`
-- `termy_config_load_path`
-- `termy_config_from_contents`
-- `termy_config_free`
-- `termy_terminal_new_with_config`
-- `termy_terminal_new`
-- `termy_terminal_free`
-- `termy_terminal_write`
-- `termy_terminal_resize`
-- `termy_terminal_snapshot`
-- `termy_frame_free`
-- `termy_terminal_take_damage`
-- `termy_damage_free`
-- `termy_terminal_drain_events`
-- `termy_event_batch_free`
-- `termy_terminal_search`
-- `termy_search_batch_free`
+    terminal.write(b"printf 'hello from libtermy\\r\\n'\r");
+    let _ = wakeup_rx.recv_timeout(Duration::from_secs(1));
 
-Any returned frame, damage, event batch, search batch, or standalone byte
-payload must be released by the matching `termy_*_free` function. Event
-payloads owned by an event batch are freed by `termy_event_batch_free`; do
-not free them separately. Search match line payloads owned by a search batch
-are freed by `termy_search_batch_free`.
+    // Force the first update to contain a complete row-major frame.
+    let update = terminal.frame_update(true);
+    println!("{}x{} cells", update.cols, update.rows);
 
-Embedders should synchronize access to a terminal handle if they call into it
-from multiple threads.
+    Ok(())
+}
+```
 
-## Config Diagnostics
+Use `Terminal::frame_update(false)` after the first frame. Partial updates carry
+cells in dirty-span order, allowing a retained renderer to patch only the rows
+and rectangles that changed. `Terminal::snapshot()` remains useful for one-off
+captures and simple prototypes.
 
-Config diagnostics are available through `termy_config_diagnostics` and must
-be released with `termy_config_diagnostics_free`.
+### Display-only terminals
 
-| Kind | Meaning |
-| ---- | ------- |
-| `1` | unknown section |
-| `2` | unknown root key |
-| `3` | unknown color key |
-| `4` | invalid syntax |
-| `5` | invalid value |
-| `6` | duplicate root key |
+When another process owns the session—such as a tmux control-mode client—create
+a grid without a PTY:
 
-## Render Config
+```rust
+let terminal = termy_core::Terminal::new_display(size, Some(&runtime_config));
+terminal.feed_output(b"\x1b[32moutput from another process\x1b[0m\r\n");
+let update = terminal.frame_update(true);
+```
 
-Renderer-facing config values are available through
-`termy_config_render_config` and must be released with
-`termy_render_config_free`. This returns the parsed font family, font size,
-line height, padding, background opacity, cursor blink, cursor style, and
-measured cell width/height so non-Rust embedders can render the terminal with
-the same user config that was passed into `termy_terminal_new_with_config`.
+`write` is intentionally a no-op for display terminals. Route input to the
+external session owner and feed its resulting output back into libtermy.
 
-## Event Kinds
+## C ABI quick start
 
-| Kind | Meaning |
-| ---- | ------- |
-| `1` | wakeup |
-| `2` | title |
-| `3` | reset title |
-| `4` | bell |
-| `5` | exit |
-| `6` | clipboard store |
-| `7` | shell prompt start |
-| `8` | shell command start |
-| `9` | shell command executing |
-| `10` | shell command finished |
-| `11` | progress |
-| `12` | working directory |
+Build the shared library from the repository:
 
-## Progress States
+```bash
+git clone https://github.com/lassejlv/termy
+cd termy
+cargo build --release -p termy_ffi
+```
 
-| Value | Meaning |
-| ----- | ------- |
-| `0` | clear |
-| `1` | in progress |
-| `2` | error |
-| `3` | indeterminate |
-| `4` | warning |
+The build produces `libtermy_ffi.dylib` on macOS,
+`libtermy_ffi.so` on Linux, or `termy_ffi.dll` on Windows under
+`target/release`. The public header is
+[`crates/ffi/include/termy.h`](https://github.com/lassejlv/termy/blob/main/crates/ffi/include/termy.h).
 
-## Cursor Styles
+```c
+#include "termy.h"
+#include <string.h>
 
-| Value | Meaning |
-| ----- | ------- |
-| `1` | line |
-| `2` | block |
+int main(void) {
+  TermyFfiTerminal *terminal = NULL;
+  TermyFfiSize size = termy_size_default();
+  size.cols = 100;
+  size.rows = 30;
 
-## Search
+  if (termy_terminal_new(size, NULL, 0, &terminal) != TERMY_FFI_OK) {
+    return 1;
+  }
 
-Search returns visible-frame matches only. Each `TermyFfiSearchMatch` reports
-the row, inclusive start and end columns, and the visible line text that
-matched.
+  const char *input = "printf 'hello from libtermy\\r\\n'\r";
+  termy_terminal_write(
+      terminal,
+      (const uint8_t *)input,
+      strlen(input));
 
-The C ABI header is at `crates/ffi/include/termy.h`.
+  TermyFfiFrameUpdate update = {0};
+  if (termy_terminal_take_frame_update(terminal, true, &update) == TERMY_FFI_OK) {
+    /* Render update.cells_ptr, then release the returned allocation. */
+    termy_frame_update_free(&update);
+  }
+
+  termy_terminal_free(terminal);
+  return 0;
+}
+```
+
+For production-style hosts, prefer `termy_terminal_new_with_options`. It accepts
+a loaded config, working directory, startup command, and environment overrides.
+Use `termy_config_render_config_for_appearance` to obtain theme colors, font
+settings, padding, cursor behavior, and measured cell dimensions.
+
+## Drive the render loop
+
+A responsive host normally follows this sequence:
+
+1. Create the terminal and request one forced full frame.
+2. Wait for output using `termy_terminal_wait_for_wakeup`, or schedule work from
+   the Rust wakeup sender.
+3. Drain terminal events.
+4. Call `frame_update(false)` or `termy_terminal_take_frame_update(..., false, ...)`.
+5. Patch dirty spans into the retained frame and redraw affected rows or rects.
+6. Return to the idle wait instead of polling continuously.
+
+Full updates are row-major: `index = row * cols + col`. Partial-update cells are
+ordered by dirty span, left to right. A partial cell does not carry its own row
+or column; derive the position from its span.
+
+## Input, search, and links
+
+Use libtermy's protocol helpers instead of rebuilding terminal negotiation in
+the host:
+
+- `keystroke_to_input` / `termy_terminal_encode_key`
+- `encode_mouse_report` / `termy_terminal_encode_mouse`
+- `bracketed_paste_mode` / `termy_terminal_bracketed_paste_mode`
+- `search_with_options` / `termy_terminal_search_with_options`
+- `hyperlink_at` / `termy_terminal_hyperlink_at`
+
+Search covers the full terminal buffer, including scrollback. Hyperlink lookup
+returns OSC 8 links. Treat terminal-provided URLs as untrusted input and validate
+schemes before asking the operating system to open them.
+
+## Ownership and threading
+
+<Callout type="warn">
+  A `TermyFfiTerminal` handle is not internally synchronized. Serialize every
+  call for a handle except the documented wake-channel functions. Never free a
+  handle while another thread is inside an FFI call.
+</Callout>
+
+Every returned allocation has one matching free function:
+
+| Returned value | Release with |
+| --- | --- |
+| `TermyFfiTerminal *` | `termy_terminal_free` |
+| `TermyFfiConfig *` | `termy_config_free` |
+| `TermyFfiFrame` | `termy_frame_free` |
+| `TermyFfiFrameUpdate` | `termy_frame_update_free` |
+| `TermyFfiDamage` | `termy_damage_free` |
+| `TermyFfiEventBatch` | `termy_event_batch_free` |
+| `TermyFfiSearchBatch` | `termy_search_batch_free` |
+| `TermyFfiHyperlink` | `termy_hyperlink_free` |
+| Standalone `TermyFfiBytes` | `termy_buffer_free` |
+
+Batch-owned event payloads, search lines, and config diagnostics are released by
+their batch free function. Do not release those nested values individually.
+
+The wake channel is the only concurrency exception. One thread may block in
+`termy_terminal_wait_for_wakeup` while another serially drives the terminal. To
+tear down safely:
+
+1. Stop issuing new terminal calls.
+2. Call `termy_terminal_notify_wakeup`.
+3. Join the waiting thread.
+4. Call `termy_terminal_free`.
+
+## Beta expectations
+
+libtermy is usable, but it has not reached a stable 1.0 contract yet:
+
+- Rust types and C ABI functions may change between releases.
+- Prebuilt standalone SDK packages are not published yet; build from the Termy
+  repository and vendor the matching header and shared library.
+- The host must provide rendering, focus, clipboard policy, accessibility, and
+  platform integration.
+- Validate performance with incremental frame updates; a full snapshot every
+  display tick leaves much of libtermy's performance work unused.
+
+Pin the Termy revision in your dependency or build system, keep the header and
+library from the same revision, and review release notes before updating.
+
+## Validate an integration
+
+When working from a Termy checkout, the focused checks are:
+
+```bash
+cargo test -p termy_core
+cargo test -p termy_ffi
+cargo build --release -p termy_ffi
+```
+
+The native macOS implementation in
+[`macos/Sources/TermySwift/Services/LibTermyTerminal.swift`](https://github.com/lassejlv/termy/blob/main/macos/Sources/TermySwift/Services/LibTermyTerminal.swift)
+is the most complete Swift integration reference.
