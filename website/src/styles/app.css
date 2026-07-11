@@ -327,3 +327,31 @@ html:not(.dark) .marketing-theme .prose :where(h1, h2, h3, h4, strong, code) {
     transition: none;
   }
 }
+
+.download-warning[open] {
+  animation: download-warning-in 240ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.download-warning[open]::backdrop {
+  animation: download-warning-backdrop-in 180ms ease-out;
+}
+
+@keyframes download-warning-in {
+  from {
+    transform: translateY(8px) scale(0.98);
+    opacity: 0;
+  }
+}
+
+@keyframes download-warning-backdrop-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .download-warning[open],
+  .download-warning[open]::backdrop {
+    animation: none;
+  }
+}
