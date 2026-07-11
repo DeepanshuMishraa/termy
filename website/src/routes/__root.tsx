@@ -17,7 +17,12 @@ export const Route = createRootRoute({
         title: 'Termy — A fast, native terminal',
       },
     ],
-    links: [{ rel: 'stylesheet', href: appCss }],
+    links: [
+      { rel: 'stylesheet', href: appCss },
+      { rel: 'icon', type: 'image/svg+xml', href: '/termy-icon.svg' },
+      { rel: 'icon', type: 'image/png', sizes: '512x512', href: '/termy-icon.png' },
+      { rel: 'apple-touch-icon', href: '/apple-touch-icon.png' },
+    ],
   }),
   component: RootComponent,
 });
