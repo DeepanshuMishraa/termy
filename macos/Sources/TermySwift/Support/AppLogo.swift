@@ -13,7 +13,7 @@ struct AppLogo: Identifiable, Hashable {
         AppLogo(id: "classic", label: "Classic", resourceName: "termy_old_icon"),
     ]
 
-    static let `default` = all[1]
+    static let `default` = all[0]
 }
 
 /// Owns the currently selected app logo from shared config and pushes it to the

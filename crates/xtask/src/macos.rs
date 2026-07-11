@@ -66,7 +66,7 @@ impl MacosPaths {
         let app_binary = app_macos.join(EXECUTABLE_NAME);
         let app_cli = app_macos.join("termy-cli");
         let info_plist = app_contents.join("Info.plist");
-        let icon_source = root_dir.join("assets/ToykoTermy.png");
+        let icon_source = root_dir.join("assets/TermyIcon.png");
 
         Ok(Self {
             root_dir,

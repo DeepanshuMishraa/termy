@@ -115,7 +115,7 @@ final class TermyConfigurationParityTests: XCTestCase {
                     XCTAssertEqual(configuration.native.tabWidthMode, .uniform)
                     XCTAssertEqual(configuration.native.tabBarPosition, .top)
                     XCTAssertEqual(configuration.native.nativeTabPlacement, .nativeTabbar)
-                    XCTAssertEqual(configuration.native.appIcon, .old)
+                    XCTAssertEqual(configuration.native.appIcon, .default)
                 }
             ),
             (

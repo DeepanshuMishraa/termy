@@ -368,7 +368,7 @@ struct TermyNativeConfiguration {
         tabSwitchModifierHints: true,
         chromeContrast: false,
         commandPaletteShowKeybinds: true,
-        appIcon: .old,
+        appIcon: .default,
         shellIntegrationEnabled: true,
         progressIndicatorEnabled: true,
         autoHideTabbar: true,
@@ -432,7 +432,7 @@ struct TermyNativeConfiguration {
         tabSwitchModifierHints = ffiConfig.tab_switch_modifier_hints
         chromeContrast = ffiConfig.chrome_contrast
         commandPaletteShowKeybinds = ffiConfig.command_palette_show_keybinds
-        appIcon = TermyAppIcon(rawValue: ffiConfig.app_icon) ?? .old
+        appIcon = TermyAppIcon(rawValue: ffiConfig.app_icon) ?? .default
         shellIntegrationEnabled = ffiConfig.shell_integration_enabled
         progressIndicatorEnabled = ffiConfig.progress_indicator_enabled
         autoHideTabbar = ffiConfig.auto_hide_tabbar

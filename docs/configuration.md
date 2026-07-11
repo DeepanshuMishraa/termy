@@ -31,7 +31,7 @@ Platform note: the Agent Sidebar/Workspace is currently unavailable on Windows b
 - Group: `THEME`
 
 `app_icon`
-- Default: `old`
+- Default: `default`
 - macOS app icon shown in the Dock and app switcher
 - Group: `APP`
 

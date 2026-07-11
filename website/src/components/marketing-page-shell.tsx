@@ -105,12 +105,7 @@ function MarketingNav() {
         to="/"
         className="flex items-center gap-2.5 rounded-full border border-[#7aa2f7]/40 bg-[#16161e]/80 py-2.5 pr-5 pl-4 shadow-[inset_0_0_18px_rgba(122,162,247,0.18),0_0_24px_rgba(122,162,247,0.12)] backdrop-blur-md"
       >
-        <span
-          className="text-sm font-bold text-[#7aa2f7]"
-          style={{ fontFamily: marketingMono }}
-        >
-          ❯_
-        </span>
+        <img src="/termy-icon.svg" alt="" className="h-5 w-5" />
         <span className="text-[15px] font-medium tracking-tight">termy</span>
       </Link>
 
