@@ -181,3 +181,149 @@ html:not(.dark) .marketing-theme .prose :where(h1, h2, h3, h4, strong, code) {
     transition: none;
   }
 }
+
+/* Documentation shell — same Termy atmosphere, with denser reading surfaces. */
+.docs-theme {
+  --color-fd-background: #f5f7fc;
+  --color-fd-foreground: #18233d;
+  --color-fd-muted: #e8edf7;
+  --color-fd-muted-foreground: #66718d;
+  --color-fd-popover: #ffffff;
+  --color-fd-popover-foreground: #18233d;
+  --color-fd-card: rgba(255, 255, 255, 0.78);
+  --color-fd-card-foreground: #18233d;
+  --color-fd-border: rgba(48, 68, 108, 0.14);
+  --color-fd-primary: #416fc7;
+  --color-fd-primary-foreground: #ffffff;
+  --color-fd-secondary: #e6ecf8;
+  --color-fd-secondary-foreground: #34405c;
+  --color-fd-accent: rgba(65, 111, 199, 0.1);
+  --color-fd-accent-foreground: #274f9a;
+  --color-fd-ring: #7aa2f7;
+  background:
+    radial-gradient(900px 460px at 68% 0%, rgba(122, 162, 247, 0.18), transparent 65%),
+    radial-gradient(700px 520px at 8% 58%, rgba(176, 194, 230, 0.16), transparent 68%),
+    #f5f7fc;
+  color: var(--color-fd-foreground);
+  transition:
+    background 360ms cubic-bezier(0.23, 1, 0.32, 1),
+    color 240ms ease-out;
+}
+
+.dark .docs-theme {
+  --color-fd-background: #0d0f17;
+  --color-fd-foreground: #c0caf5;
+  --color-fd-muted: #1c1f30;
+  --color-fd-muted-foreground: #787c99;
+  --color-fd-popover: #16161e;
+  --color-fd-popover-foreground: #e8eeff;
+  --color-fd-card: rgba(22, 22, 30, 0.84);
+  --color-fd-card-foreground: #c0caf5;
+  --color-fd-border: rgba(255, 255, 255, 0.08);
+  --color-fd-primary: #7aa2f7;
+  --color-fd-primary-foreground: #10192e;
+  --color-fd-secondary: #1c1f30;
+  --color-fd-secondary-foreground: #c0caf5;
+  --color-fd-accent: rgba(122, 162, 247, 0.12);
+  --color-fd-accent-foreground: #e8eeff;
+  --color-fd-ring: #7aa2f7;
+  background:
+    radial-gradient(1000px 500px at 68% 0%, rgba(56, 79, 148, 0.26), transparent 64%),
+    radial-gradient(760px 520px at 8% 58%, rgba(40, 56, 110, 0.16), transparent 68%),
+    #0d0f17;
+}
+
+.docs-theme #nd-sidebar {
+  background: color-mix(in srgb, var(--color-fd-card) 92%, transparent);
+  border-color: var(--color-fd-border);
+  box-shadow: 18px 0 60px rgba(24, 36, 64, 0.06);
+  backdrop-filter: blur(18px) saturate(130%);
+}
+
+.dark .docs-theme #nd-sidebar {
+  box-shadow: 18px 0 70px rgba(0, 0, 0, 0.2);
+}
+
+.docs-theme #nd-subnav,
+.docs-theme [data-toc-popover] > header {
+  border-color: var(--color-fd-border);
+  background: color-mix(in srgb, var(--color-fd-background) 82%, transparent);
+  backdrop-filter: blur(18px) saturate(130%);
+}
+
+.docs-theme #nd-toc {
+  color: var(--color-fd-muted-foreground);
+}
+
+.docs-theme #nd-page {
+  margin-block: 2rem 4rem;
+  border: 1px solid var(--color-fd-border);
+  border-radius: 1rem;
+  background: color-mix(in srgb, var(--color-fd-card) 88%, transparent);
+  box-shadow: 0 24px 80px rgba(42, 58, 91, 0.1);
+  backdrop-filter: blur(12px);
+}
+
+.dark .docs-theme #nd-page {
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.3);
+}
+
+.docs-theme-page > h1,
+.docs-theme-body :is(h1, h2, h3, h4) {
+  font-family: 'Instrument Serif', Georgia, 'Times New Roman', serif;
+  font-weight: 400;
+  color: var(--color-fd-foreground);
+}
+
+.docs-theme-body :is(code, pre, kbd),
+.docs-theme-actions,
+.docs-theme #nd-sidebar button,
+.docs-theme #nd-toc {
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.docs-theme-body a {
+  text-decoration-color: color-mix(in srgb, var(--color-fd-primary) 45%, transparent);
+  text-underline-offset: 4px;
+}
+
+.docs-theme-body :not(pre) > code {
+  border: 1px solid var(--color-fd-border);
+  border-radius: 0.4rem;
+  background: var(--color-fd-muted);
+  padding: 0.12em 0.35em;
+}
+
+.docs-theme-body blockquote {
+  border-color: var(--color-fd-primary);
+  background: color-mix(in srgb, var(--color-fd-primary) 6%, transparent);
+  border-radius: 0 0.75rem 0.75rem 0;
+  padding-block: 0.75rem;
+}
+
+@media (max-width: 767px) {
+  .docs-theme #nd-page {
+    margin-block: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    backdrop-filter: none;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .docs-theme #nd-sidebar,
+  .docs-theme #nd-page,
+  .docs-theme #nd-subnav,
+  .docs-theme [data-toc-popover] > header {
+    background: var(--color-fd-background);
+    backdrop-filter: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .docs-theme {
+    transition: none;
+  }
+}
