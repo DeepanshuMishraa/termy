@@ -93,6 +93,25 @@ ensure_termy_url_scheme() {
   /usr/bin/plutil -lint "$plist_path" >/dev/null
 }
 
+ensure_app_icon() {
+  local app_path="$1"
+  local plist_path="$app_path/Contents/Info.plist"
+  local resources_dir="$app_path/Contents/Resources"
+  local plist_buddy="/usr/libexec/PlistBuddy"
+  local icns_source="$REPO_ROOT/assets/termy.icns"
+
+  [[ -f "$icns_source" ]] || die "App icon not found at $icns_source"
+  [[ -f "$plist_path" ]] || die "App bundle Info.plist not found at $plist_path"
+  [[ -x "$plist_buddy" ]] || die "PlistBuddy is required to patch $plist_path"
+
+  mkdir -p "$resources_dir"
+  cp "$icns_source" "$resources_dir/termy.icns"
+
+  "$plist_buddy" -c "Delete :CFBundleIconFile" "$plist_path" >/dev/null 2>&1 || true
+  "$plist_buddy" -c "Add :CFBundleIconFile string termy" "$plist_path"
+  /usr/bin/plutil -lint "$plist_path" >/dev/null
+}
+
 VERSION=""
 ARCH=""
 TARGET=""
@@ -235,6 +254,9 @@ chmod +x "$APP_PATH/Contents/MacOS/termy-cli"
 
 log "Registering termy:// URL scheme in app bundle"
 ensure_termy_url_scheme "$APP_PATH"
+
+log "Embedding app icon in bundle"
+ensure_app_icon "$APP_PATH"
 
 if [[ "$SIGN" -eq 1 ]]; then
   log "Signing app bundle with: $SIGN_IDENTITY"
