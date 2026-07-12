@@ -399,13 +399,13 @@ struct BackgroundSpan {
 ///
 /// Rebuilt when the row is in the dirty set; otherwise reused across frames.
 /// `shaped_lines` is parallel to `draw_ops` — each `TextDrawOp::Batch` has a
-/// corresponding `Some(ShapedLine)` (populated on first paint or reused from a
-/// previous frame), while non-text entries have `None`.
+/// corresponding `Some(Rc<ShapedLine>)` (populated on first paint or reused from
+/// a previous frame), while non-text entries have a pointer-sized `None`.
 #[derive(Clone, Default)]
 struct CachedRowPaintOps {
     background_spans: Vec<BackgroundSpan>,
     draw_ops: Vec<TextDrawOp>,
-    shaped_lines: Vec<Option<ShapedLine>>,
+    shaped_lines: Vec<Option<Rc<ShapedLine>>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2075,12 +2075,13 @@ impl TerminalGrid {
                             strikethrough: None,
                         };
                         let t_shape = terminal_ui_render_metrics_enabled().then(Instant::now);
-                        row_ops.shaped_lines[index] = Some(window.text_system().shape_line(
-                            batch.text.clone(),
-                            self.font_size,
-                            &[run],
-                            Some(self.cell_size.width),
-                        ));
+                        row_ops.shaped_lines[index] =
+                            Some(Rc::new(window.text_system().shape_line(
+                                batch.text.clone(),
+                                self.font_size,
+                                &[run],
+                                Some(self.cell_size.width),
+                            )));
                         if let Some(t_shape) = t_shape {
                             add_span_text_shaping_us(t_shape.elapsed().as_micros() as u64);
                         }
@@ -3593,7 +3594,7 @@ mod tests {
     }
 
     #[test]
-    fn rebuild_cached_row_ops_initializes_shaped_line_slots_per_draw_op() {
+    fn rebuild_cached_row_ops_initializes_pointer_sized_shaped_line_slots_per_draw_op() {
         let grid = test_grid(
             vec![
                 test_cell(0, 0, 'a'),
@@ -3622,6 +3623,11 @@ mod tests {
         assert_eq!(row_ops.draw_ops.len(), 3);
         assert_eq!(row_ops.shaped_lines.len(), 3);
         assert!(row_ops.shaped_lines.iter().all(Option::is_none));
+        assert_eq!(
+            std::mem::size_of::<Option<Rc<ShapedLine>>>(),
+            std::mem::size_of::<usize>(),
+            "empty shaped-line cache slots must remain pointer-sized"
+        );
     }
 
     #[test]

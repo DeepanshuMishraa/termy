@@ -832,6 +832,7 @@ pub struct JsonEventListener {
     wake_tx: Option<Sender<()>>,
     replay_suppressed: Arc<AtomicBool>,
     wakeup_queued: Arc<AtomicBool>,
+    wakeup_signal_pending: Arc<AtomicBool>,
     wakeup_enabled: Arc<AtomicBool>,
 }
 
@@ -842,6 +843,7 @@ impl JsonEventListener {
             wake_tx,
             replay_suppressed: Arc::new(AtomicBool::new(false)),
             wakeup_queued: Arc::new(AtomicBool::new(false)),
+            wakeup_signal_pending: Arc::new(AtomicBool::new(false)),
             wakeup_enabled: Arc::new(AtomicBool::new(true)),
         }
     }
@@ -851,11 +853,33 @@ impl JsonEventListener {
     }
 
     fn set_wakeup_enabled(&self, enabled: bool) {
-        self.wakeup_enabled.store(enabled, Ordering::Release);
+        let was_enabled = self.wakeup_enabled.swap(enabled, Ordering::AcqRel);
+        if !enabled && was_enabled {
+            // A wake signal issued just before this terminal became hidden may
+            // be consumed without its queued event being drained. Remember that
+            // edge so reactivation nudges the host once more.
+            if self.wakeup_queued.load(Ordering::Acquire) {
+                self.wakeup_signal_pending.store(true, Ordering::Release);
+            }
+        } else if enabled && !was_enabled {
+            self.signal_pending_wakeup_if_enabled();
+        }
     }
 
     fn reset_wakeup_queued(&self) {
+        // Clear pending-signal state first. Any producer that observes the
+        // subsequent queued=false transition will publish fresh pending state,
+        // so this ordering cannot erase a newly queued wakeup.
+        self.wakeup_signal_pending.store(false, Ordering::Release);
         self.wakeup_queued.store(false, Ordering::Release);
+    }
+
+    fn signal_pending_wakeup_if_enabled(&self) {
+        if self.wakeup_enabled.load(Ordering::Acquire)
+            && self.wakeup_signal_pending.swap(false, Ordering::AcqRel)
+        {
+            self.send_wake_signal();
+        }
     }
 
     fn send_wake_signal(&self) {
@@ -941,17 +965,14 @@ impl EventListener for JsonEventListener {
         }
         if matches!(event, AlacEvent::Wakeup) {
             increment_runtime_wakeup_count();
-            let wakeup_enabled = self.wakeup_enabled.load(Ordering::Acquire);
             if self.wakeup_queued.swap(true, Ordering::AcqRel) {
-                if wakeup_enabled {
-                    self.send_wake_signal();
-                }
                 return;
             }
             let _ = self.events_tx.send(RuntimeEvent::Alacritty(event));
-            if wakeup_enabled {
-                self.send_wake_signal();
-            }
+            // Publish pending state after queueing, then let either this producer
+            // or a concurrent hidden-to-visible transition claim the one signal.
+            self.wakeup_signal_pending.store(true, Ordering::Release);
+            self.signal_pending_wakeup_if_enabled();
             return;
         }
         self.send_runtime_event(RuntimeEvent::Alacritty(event));
@@ -2380,7 +2401,7 @@ mod tests {
             events[0],
             RuntimeEvent::Alacritty(alacritty_terminal::event::Event::Wakeup)
         ));
-        assert_eq!(wake_rx.try_iter().count(), 3);
+        assert_eq!(wake_rx.try_iter().count(), 1);
 
         listener.reset_wakeup_queued();
         listener.send_event(alacritty_terminal::event::Event::Wakeup);
@@ -2391,6 +2412,7 @@ mod tests {
             events[0],
             RuntimeEvent::Alacritty(alacritty_terminal::event::Event::Wakeup)
         ));
+        assert_eq!(wake_rx.try_iter().count(), 1);
     }
 
     #[test]
@@ -2441,6 +2463,59 @@ mod tests {
             RuntimeEvent::Alacritty(alacritty_terminal::event::Event::Wakeup)
         ));
         assert_eq!(wake_rx.try_iter().count(), 0);
+    }
+
+    #[test]
+    fn json_event_listener_resignals_pending_wakeup_when_reenabled() {
+        let (events_tx, events_rx) = unbounded();
+        let (wake_tx, wake_rx) = unbounded();
+        let listener = JsonEventListener::new(events_tx, Some(wake_tx));
+        listener.set_wakeup_enabled(false);
+
+        listener.send_event(alacritty_terminal::event::Event::Wakeup);
+        listener.send_event(alacritty_terminal::event::Event::Wakeup);
+
+        assert_eq!(events_rx.len(), 1);
+        assert_eq!(wake_rx.try_iter().count(), 0);
+
+        listener.set_wakeup_enabled(true);
+        listener.set_wakeup_enabled(true);
+
+        assert_eq!(wake_rx.try_iter().count(), 1);
+    }
+
+    #[test]
+    fn json_event_listener_resignals_undrained_wakeup_after_visibility_cycle() {
+        let (events_tx, events_rx) = unbounded();
+        let (wake_tx, wake_rx) = unbounded();
+        let listener = JsonEventListener::new(events_tx, Some(wake_tx));
+
+        listener.send_event(alacritty_terminal::event::Event::Wakeup);
+        assert_eq!(events_rx.len(), 1);
+        assert_eq!(wake_rx.try_iter().count(), 1);
+
+        listener.set_wakeup_enabled(false);
+        listener.set_wakeup_enabled(true);
+        listener.set_wakeup_enabled(true);
+
+        assert_eq!(events_rx.len(), 1);
+        assert_eq!(wake_rx.try_iter().count(), 1);
+    }
+
+    #[test]
+    fn json_event_listener_wakes_when_output_arrives_after_reenable() {
+        let (events_tx, events_rx) = unbounded();
+        let (wake_tx, wake_rx) = unbounded();
+        let listener = JsonEventListener::new(events_tx, Some(wake_tx));
+        listener.set_wakeup_enabled(false);
+        listener.set_wakeup_enabled(true);
+
+        assert_eq!(wake_rx.try_iter().count(), 0);
+
+        listener.send_event(alacritty_terminal::event::Event::Wakeup);
+
+        assert_eq!(events_rx.len(), 1);
+        assert_eq!(wake_rx.try_iter().count(), 1);
     }
 
     #[test]
