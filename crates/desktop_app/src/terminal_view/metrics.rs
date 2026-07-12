@@ -1,9 +1,9 @@
 use super::constants::DEBUG_OVERLAY_SAMPLE_INTERVAL;
 #[cfg(debug_assertions)]
 use super::constants::RENDER_METRICS_LOG_INTERVAL;
-use std::time::Instant;
 #[cfg(debug_assertions)]
-use std::{env, time::Duration};
+use std::env;
+use std::time::{Duration, Instant};
 use sysinfo::{ProcessesToUpdate, System, get_current_pid};
 #[cfg(debug_assertions)]
 use termy_terminal_ui::terminal_ui_render_metrics_reset;
@@ -88,16 +88,20 @@ impl TerminalRenderMetricsState {
 
 #[derive(Debug)]
 pub(super) struct DebugOverlayStats {
-    system: System,
+    system: Option<System>,
     pid: Option<sysinfo::Pid>,
     sample_started_at: Instant,
-    last_frame_at: Option<Instant>,
-    frames_in_sample: u32,
-    frame_interval_samples_micros: Vec<u32>,
-    pub(super) fps: f32,
-    pub(super) frame_p50_ms: f32,
-    pub(super) frame_p95_ms: f32,
-    pub(super) frame_p99_ms: f32,
+    last_render_callback_at: Option<Instant>,
+    render_callbacks_in_sample: u32,
+    render_callback_interval_samples_micros: Vec<u32>,
+    view_build_samples_micros: Vec<u32>,
+    pub(super) render_callbacks_per_second: f32,
+    pub(super) render_callback_interval_p50_ms: f32,
+    pub(super) render_callback_interval_p95_ms: f32,
+    pub(super) render_callback_interval_p99_ms: f32,
+    pub(super) view_build_p50_ms: f32,
+    pub(super) view_build_p95_ms: f32,
+    pub(super) view_build_p99_ms: f32,
     pub(super) cpu_percent: f32,
     pub(super) memory_bytes: u64,
     pub(super) view_wake_signals: u64,
@@ -119,17 +123,23 @@ impl DebugOverlayStats {
     pub(super) fn new() -> Self {
         #[cfg(debug_assertions)]
         let runtime_wakeup_base = terminal_ui_render_metrics_snapshot().runtime_wakeup_count;
-        let mut stats = Self {
-            system: System::new(),
+        Self {
+            // `System` initializes lazily on the first visible metrics sample.
+            // Hidden overlays should not pay for process instrumentation.
+            system: None,
             pid: get_current_pid().ok(),
             sample_started_at: Instant::now(),
-            last_frame_at: None,
-            frames_in_sample: 0,
-            frame_interval_samples_micros: Vec::with_capacity(128),
-            fps: 0.0,
-            frame_p50_ms: 0.0,
-            frame_p95_ms: 0.0,
-            frame_p99_ms: 0.0,
+            last_render_callback_at: None,
+            render_callbacks_in_sample: 0,
+            render_callback_interval_samples_micros: Vec::new(),
+            view_build_samples_micros: Vec::new(),
+            render_callbacks_per_second: 0.0,
+            render_callback_interval_p50_ms: 0.0,
+            render_callback_interval_p95_ms: 0.0,
+            render_callback_interval_p99_ms: 0.0,
+            view_build_p50_ms: 0.0,
+            view_build_p95_ms: 0.0,
+            view_build_p99_ms: 0.0,
             cpu_percent: 0.0,
             memory_bytes: 0,
             view_wake_signals: 0,
@@ -145,21 +155,22 @@ impl DebugOverlayStats {
             runtime_wakeup_base,
             #[cfg(debug_assertions)]
             runtime_wakeups: 0,
-        };
-        stats.refresh_process_metrics();
-        stats.refresh_runtime_wakeups();
-        stats
+        }
     }
 
     pub(super) fn reset(&mut self) {
         self.sample_started_at = Instant::now();
-        self.last_frame_at = None;
-        self.frames_in_sample = 0;
-        self.frame_interval_samples_micros.clear();
-        self.fps = 0.0;
-        self.frame_p50_ms = 0.0;
-        self.frame_p95_ms = 0.0;
-        self.frame_p99_ms = 0.0;
+        self.last_render_callback_at = None;
+        self.render_callbacks_in_sample = 0;
+        self.render_callback_interval_samples_micros.clear();
+        self.view_build_samples_micros.clear();
+        self.render_callbacks_per_second = 0.0;
+        self.render_callback_interval_p50_ms = 0.0;
+        self.render_callback_interval_p95_ms = 0.0;
+        self.render_callback_interval_p99_ms = 0.0;
+        self.view_build_p50_ms = 0.0;
+        self.view_build_p95_ms = 0.0;
+        self.view_build_p99_ms = 0.0;
         self.view_wake_signals = 0;
         self.terminal_event_drain_passes = 0;
         self.terminal_redraws = 0;
@@ -174,16 +185,20 @@ impl DebugOverlayStats {
             self.runtime_wakeup_base = terminal_ui_render_metrics_snapshot().runtime_wakeup_count;
             self.runtime_wakeups = 0;
         }
-        self.refresh_process_metrics();
     }
 
+    /// Record one call into `TerminalView::render`.
+    ///
+    /// These samples describe callback cadence, not render latency or
+    /// presented frames. An idle terminal can intentionally have a long
+    /// callback interval.
     pub(super) fn record_frame(&mut self, now: Instant) {
-        if let Some(previous_frame_at) = self.last_frame_at.replace(now) {
-            let frame_interval = now.saturating_duration_since(previous_frame_at);
-            let micros = frame_interval.as_micros().min(u128::from(u32::MAX)) as u32;
-            self.frame_interval_samples_micros.push(micros);
+        if let Some(previous_callback_at) = self.last_render_callback_at.replace(now) {
+            let callback_interval = now.saturating_duration_since(previous_callback_at);
+            self.render_callback_interval_samples_micros
+                .push(duration_micros_saturating(callback_interval));
         }
-        self.frames_in_sample = self.frames_in_sample.saturating_add(1);
+        self.render_callbacks_in_sample = self.render_callbacks_in_sample.saturating_add(1);
         let elapsed = now.saturating_duration_since(self.sample_started_at);
         if elapsed < DEBUG_OVERLAY_SAMPLE_INTERVAL {
             return;
@@ -191,15 +206,26 @@ impl DebugOverlayStats {
 
         let elapsed_secs = elapsed.as_secs_f32();
         if elapsed_secs > f32::EPSILON {
-            self.fps = self.frames_in_sample as f32 / elapsed_secs;
+            self.render_callbacks_per_second =
+                self.render_callbacks_in_sample as f32 / elapsed_secs;
         }
-        self.refresh_frame_percentiles();
+        self.refresh_render_callback_interval_percentiles();
+        self.refresh_view_build_percentiles();
         self.refresh_span_timings();
         self.refresh_runtime_wakeups();
         self.sample_started_at = now;
-        self.frames_in_sample = 0;
-        self.frame_interval_samples_micros.clear();
+        self.render_callbacks_in_sample = 0;
+        self.render_callback_interval_samples_micros.clear();
+        self.view_build_samples_micros.clear();
         self.refresh_process_metrics();
+    }
+
+    /// Record synchronous CPU-side construction of the GPUI element tree.
+    /// This intentionally excludes later GPUI layout/paint, GPU execution,
+    /// compositor work, and presentation.
+    pub(super) fn record_view_build_duration(&mut self, duration: Duration) {
+        self.view_build_samples_micros
+            .push(duration_micros_saturating(duration));
     }
 
     pub(super) fn record_view_wake_signal(&mut self) {
@@ -221,39 +247,53 @@ impl DebugOverlayStats {
             return;
         };
 
-        let _ = self
-            .system
-            .refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
-        if let Some(process) = self.system.process(pid) {
+        let system = self.system.get_or_insert_with(System::new);
+        let _ = system.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
+        if let Some(process) = system.process(pid) {
             self.cpu_percent = process.cpu_usage();
             self.memory_bytes = process.memory();
         }
     }
 
-    fn refresh_frame_percentiles(&mut self) {
-        if self.frame_interval_samples_micros.is_empty() {
-            self.frame_p50_ms = 0.0;
-            self.frame_p95_ms = 0.0;
-            self.frame_p99_ms = 0.0;
+    fn refresh_render_callback_interval_percentiles(&mut self) {
+        if self.render_callback_interval_samples_micros.is_empty() {
+            self.render_callback_interval_p50_ms = 0.0;
+            self.render_callback_interval_p95_ms = 0.0;
+            self.render_callback_interval_p99_ms = 0.0;
             return;
         }
 
-        let mut sorted_samples = self.frame_interval_samples_micros.clone();
+        let mut sorted_samples = self.render_callback_interval_samples_micros.clone();
         sorted_samples.sort_unstable();
-        self.frame_p50_ms = percentile_millis(&sorted_samples, 50, 100);
-        self.frame_p95_ms = percentile_millis(&sorted_samples, 95, 100);
-        self.frame_p99_ms = percentile_millis(&sorted_samples, 99, 100);
+        self.render_callback_interval_p50_ms = percentile_millis(&sorted_samples, 50, 100);
+        self.render_callback_interval_p95_ms = percentile_millis(&sorted_samples, 95, 100);
+        self.render_callback_interval_p99_ms = percentile_millis(&sorted_samples, 99, 100);
+    }
+
+    fn refresh_view_build_percentiles(&mut self) {
+        if self.view_build_samples_micros.is_empty() {
+            self.view_build_p50_ms = 0.0;
+            self.view_build_p95_ms = 0.0;
+            self.view_build_p99_ms = 0.0;
+            return;
+        }
+
+        let mut sorted_samples = self.view_build_samples_micros.clone();
+        sorted_samples.sort_unstable();
+        self.view_build_p50_ms = percentile_millis(&sorted_samples, 50, 100);
+        self.view_build_p95_ms = percentile_millis(&sorted_samples, 95, 100);
+        self.view_build_p99_ms = percentile_millis(&sorted_samples, 99, 100);
     }
 
     fn refresh_span_timings(&mut self) {
         let current = terminal_ui_render_metrics_snapshot();
         let delta = current.saturating_sub(self.span_snapshot_base);
         self.span_snapshot_base = current;
-        let frames = self.frames_in_sample.max(1) as f32;
-        self.span_damage_ms = delta.span_damage_compute_us as f32 / 1000.0 / frames;
-        self.span_rebuild_ms = delta.span_row_ops_rebuild_us as f32 / 1000.0 / frames;
-        self.span_shaping_ms = delta.span_text_shaping_us as f32 / 1000.0 / frames;
-        self.span_paint_ms = delta.span_grid_paint_us as f32 / 1000.0 / frames;
+        let callbacks = self.render_callbacks_in_sample.max(1) as f32;
+        self.span_damage_ms = delta.span_damage_compute_us as f32 / 1000.0 / callbacks;
+        self.span_rebuild_ms = delta.span_row_ops_rebuild_us as f32 / 1000.0 / callbacks;
+        self.span_shaping_ms = delta.span_text_shaping_us as f32 / 1000.0 / callbacks;
+        self.span_paint_ms = delta.span_grid_paint_us as f32 / 1000.0 / callbacks;
     }
 
     #[cfg(debug_assertions)]
@@ -266,6 +306,10 @@ impl DebugOverlayStats {
 
     #[cfg(not(debug_assertions))]
     fn refresh_runtime_wakeups(&mut self) {}
+}
+
+fn duration_micros_saturating(duration: Duration) -> u32 {
+    duration.as_micros().min(u128::from(u32::MAX)) as u32
 }
 
 fn percentile_millis(samples_micros: &[u32], numerator: usize, denominator: usize) -> f32 {
@@ -299,6 +343,23 @@ mod tests {
         assert_eq!(percentile_millis(&samples, 50, 100), 0.050);
         assert_eq!(percentile_millis(&samples, 95, 100), 0.095);
         assert_eq!(percentile_millis(&samples, 99, 100), 0.099);
+    }
+
+    #[test]
+    fn view_build_percentiles_are_independent_from_callback_cadence() {
+        let mut stats = DebugOverlayStats::new();
+        stats.render_callback_interval_samples_micros = vec![533_000, 533_000, 533_000];
+        stats.record_view_build_duration(Duration::from_micros(500));
+        stats.record_view_build_duration(Duration::from_micros(1_000));
+        stats.record_view_build_duration(Duration::from_micros(2_000));
+
+        stats.refresh_render_callback_interval_percentiles();
+        stats.refresh_view_build_percentiles();
+
+        assert_eq!(stats.render_callback_interval_p50_ms, 533.0);
+        assert_eq!(stats.view_build_p50_ms, 1.0);
+        assert_eq!(stats.view_build_p95_ms, 2.0);
+        assert_eq!(stats.view_build_p99_ms, 2.0);
     }
 
     #[cfg(debug_assertions)]

@@ -1,7 +1,7 @@
 use crate::render_metrics::{
     add_span_grid_paint_us, add_span_row_ops_rebuild_us, add_span_text_shaping_us,
     increment_grid_paint_count, increment_shape_line_calls, increment_shaped_line_cache_hit,
-    increment_shaped_line_cache_miss,
+    increment_shaped_line_cache_miss, terminal_ui_render_metrics_enabled,
 };
 use gpui::{
     App, Bounds, Element, Font, FontFeatures, FontWeight, Hsla, IntoElement, PathBuilder, Pixels,
@@ -450,16 +450,10 @@ struct TerminalGridPaintCache {
 
 impl TerminalGridPaintCache {
     fn clear(&mut self) {
-        self.row_ops.clear();
-        self.style_key = None;
-        self.last_cursor_cell = None;
-        self.last_cursor_visible = false;
-        self.last_hovered_link_range = None;
-        self.dirty_rows.clear();
-        self.dirty_col_ranges.clear();
-        self.color_cache.clear();
-        self.cached_font_normal = None;
-        self.cached_font_bold = None;
+        // This is an eviction path, not a per-frame reset. Drop the backing
+        // allocations as well as their contents so hidden tabs release shaped
+        // lines, draw ops, and color-cache capacity immediately.
+        *self = Self::default();
     }
 
     fn ensure_row_capacity(&mut self, row_count: usize) {
@@ -1756,9 +1750,11 @@ impl Element for TerminalGrid {
         cx: &mut App,
     ) {
         increment_grid_paint_count();
-        let t_paint = Instant::now();
+        let t_paint = terminal_ui_render_metrics_enabled().then(Instant::now);
         self.paint_with_row_cache(bounds, window, cx);
-        add_span_grid_paint_us(t_paint.elapsed().as_micros() as u64);
+        if let Some(t_paint) = t_paint {
+            add_span_grid_paint_us(t_paint.elapsed().as_micros() as u64);
+        }
     }
 }
 
@@ -2078,14 +2074,16 @@ impl TerminalGrid {
                             underline: batch.underline,
                             strikethrough: None,
                         };
-                        let t_shape = Instant::now();
+                        let t_shape = terminal_ui_render_metrics_enabled().then(Instant::now);
                         row_ops.shaped_lines[index] = Some(window.text_system().shape_line(
                             batch.text.clone(),
                             self.font_size,
                             &[run],
                             Some(self.cell_size.width),
                         ));
-                        add_span_text_shaping_us(t_shape.elapsed().as_micros() as u64);
+                        if let Some(t_shape) = t_shape {
+                            add_span_text_shaping_us(t_shape.elapsed().as_micros() as u64);
+                        }
                         row_ops.shaped_lines[index]
                             .as_ref()
                             .expect("cached shaped line must be created")
@@ -2366,7 +2364,7 @@ impl TerminalGrid {
             }
         };
 
-        let t0 = Instant::now();
+        let t0 = terminal_ui_render_metrics_enabled().then(Instant::now);
         if full_repaint {
             for row in 0..self.rows {
                 rebuild_row(row);
@@ -2376,7 +2374,9 @@ impl TerminalGrid {
                 rebuild_row(row);
             }
         }
-        add_span_row_ops_rebuild_us(t0.elapsed().as_micros() as u64);
+        if let Some(t0) = t0 {
+            add_span_row_ops_rebuild_us(t0.elapsed().as_micros() as u64);
+        }
     }
 
     fn paint_with_row_cache(&self, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App) {

@@ -1537,8 +1537,17 @@ impl Terminal {
 
     /// Write bytes to the PTY (user input). No-op for display-only terminals.
     pub fn write(&self, input: &[u8]) {
+        if self.pty_tx.is_some() {
+            self.write_owned(input.to_vec());
+        }
+    }
+
+    /// Write owned bytes to the PTY without copying them into the event-loop
+    /// channel. Prefer this when an encoder already produced a `Vec<u8>`.
+    /// No-op for display-only terminals.
+    pub fn write_owned(&self, input: Vec<u8>) {
         if let Some(pty_tx) = &self.pty_tx {
-            let _ = pty_tx.send(EventLoopMsg::Input(input.to_vec().into()));
+            let _ = pty_tx.send(EventLoopMsg::Input(input.into()));
         }
     }
 

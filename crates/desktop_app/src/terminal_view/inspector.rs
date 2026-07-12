@@ -1051,16 +1051,31 @@ impl TerminalView {
         let stats = &self.debug_overlay_stats;
         let terminal_ui = terminal_ui_render_metrics_snapshot();
         let base_rows: Vec<(&'static str, String)> = vec![
-            ("FPS", format!("{:.1}", stats.fps)),
             (
-                "Frame p50 / p95 / p99",
+                "Render callbacks / sec",
+                format!("{:.1}", stats.render_callbacks_per_second),
+            ),
+            (
+                "Callback interval p50 / p95 / p99",
                 format!(
                     "{:.2} ms / {:.2} ms / {:.2} ms",
-                    stats.frame_p50_ms, stats.frame_p95_ms, stats.frame_p99_ms
+                    stats.render_callback_interval_p50_ms,
+                    stats.render_callback_interval_p95_ms,
+                    stats.render_callback_interval_p99_ms
+                ),
+            ),
+            (
+                "CPU view build p50 / p95 / p99",
+                format!(
+                    "{:.2} ms / {:.2} ms / {:.2} ms",
+                    stats.view_build_p50_ms, stats.view_build_p95_ms, stats.view_build_p99_ms
                 ),
             ),
             ("CPU", format!("{:.1}%", stats.cpu_percent)),
-            ("Memory", self.debug_overlay_memory_label()),
+            (
+                "Process RSS (not total GPU memory)",
+                self.debug_overlay_memory_label(),
+            ),
             ("View Wake Signals", stats.view_wake_signals.to_string()),
             (
                 "Event Drain Passes",
@@ -1177,7 +1192,9 @@ impl TerminalView {
                 .flex_none()
                 .mt(px(8.0))
                 .text_color(text_muted)
-                .child("Sampled while this tab is visible; trends update on new frames."),
+                .child(
+                    "Callback interval is idle/activity cadence, not latency; ~500 ms can be healthy while idle. CPU view build excludes GPUI layout/paint, GPU work, and presentation.",
+                ),
         );
         content.into_any_element()
     }

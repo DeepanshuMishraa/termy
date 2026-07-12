@@ -359,23 +359,45 @@ enum Terminal {
     Native(Mutex<NativeTerminal>),
 }
 
-struct GpuiClipboardReplyHost {
-    clipboard_text: Option<String>,
+#[derive(Default)]
+struct ClipboardTextCache {
+    // Outer `Option` records whether GPUI has been queried; the inner value is
+    // the clipboard result, which can legitimately be empty.
+    value: Option<Option<String>>,
 }
 
-impl GpuiClipboardReplyHost {
-    fn from_cx(cx: &mut Context<TerminalView>) -> Self {
-        Self {
-            clipboard_text: cx.read_from_clipboard().and_then(|item| item.text()),
+impl ClipboardTextCache {
+    fn get_or_read(&mut self, read: impl FnOnce() -> Option<String>) -> Option<String> {
+        if let Some(value) = &self.value {
+            return value.clone();
         }
+
+        let value = read();
+        self.value = Some(value.clone());
+        value
     }
 }
 
-impl TerminalReplyHost for GpuiClipboardReplyHost {
+struct GpuiClipboardReplyHost<'host, 'cx> {
+    cx: &'host mut Context<'cx, TerminalView>,
+    clipboard_text: &'host mut ClipboardTextCache,
+}
+
+impl<'host, 'cx> GpuiClipboardReplyHost<'host, 'cx> {
+    fn new(
+        cx: &'host mut Context<'cx, TerminalView>,
+        clipboard_text: &'host mut ClipboardTextCache,
+    ) -> Self {
+        Self { cx, clipboard_text }
+    }
+}
+
+impl TerminalReplyHost for GpuiClipboardReplyHost<'_, '_> {
     fn load_clipboard(&mut self, _target: TerminalClipboardTarget) -> Option<String> {
         // GPUI exposes a single host clipboard source here, so both OSC 52
         // targets resolve through the same adapter.
-        self.clipboard_text.clone()
+        self.clipboard_text
+            .get_or_read(|| self.cx.read_from_clipboard().and_then(|item| item.text()))
     }
 }
 
@@ -424,6 +446,14 @@ impl Terminal {
             && let Ok(terminal) = terminal.lock()
         {
             terminal.write(input);
+        }
+    }
+
+    fn write_input_owned(&self, input: Vec<u8>) {
+        if let Self::Native(terminal) = self
+            && let Ok(terminal) = terminal.lock()
+        {
+            terminal.write_owned(input);
         }
     }
 
@@ -830,6 +860,12 @@ struct NativePaneZoomSnapshot {
     layout_tree: Option<NativePaneLayoutTree>,
 }
 impl TerminalTab {
+    fn clear_render_caches(&self) {
+        for pane in &self.panes {
+            pane.render_cache.borrow_mut().clear();
+        }
+    }
+
     /// Tab-level progress summary across panes, by severity: any error wins,
     /// then warnings, then determinate progress (averaged across reporting
     /// panes), then indeterminate.
@@ -4117,7 +4153,7 @@ impl TerminalView {
         let mut should_quit = false;
         let mut terminal_events_remain = false;
         let active_tab = self.active_tab;
-        let mut reply_host = GpuiClipboardReplyHost::from_cx(cx);
+        let mut clipboard_text = ClipboardTextCache::default();
         self.record_benchmark_terminal_event_drain_pass();
 
         let mut pending_tab_closures: HashSet<TabId> = HashSet::new();
@@ -4139,7 +4175,10 @@ impl TerminalView {
                 let Some(terminal) = self.tabs[tab_index].panes[pane_index].maybe_terminal() else {
                     continue;
                 };
-                let (events, has_more) = terminal.drain_events(&mut reply_host);
+                let (events, has_more) = {
+                    let mut reply_host = GpuiClipboardReplyHost::new(cx, &mut clipboard_text);
+                    terminal.drain_events(&mut reply_host)
+                };
                 if events.is_empty() && !has_more {
                     continue;
                 }
@@ -4250,7 +4289,7 @@ impl TerminalView {
             }
         }
 
-        if self.drain_stashed_workspace_terminal_events(&mut reply_host) {
+        if self.drain_stashed_workspace_terminal_events(cx, &mut clipboard_text) {
             terminal_events_remain = true;
         }
 
@@ -4361,6 +4400,26 @@ impl TerminalView {
 mod tests {
     use super::*;
     use std::collections::{HashMap, HashSet};
+
+    #[test]
+    fn clipboard_text_cache_reads_the_host_lazily_once() {
+        let reads = Cell::new(0);
+        let mut cache = ClipboardTextCache::default();
+        assert_eq!(reads.get(), 0);
+
+        let first = cache.get_or_read(|| {
+            reads.set(reads.get() + 1);
+            Some("clipboard".to_string())
+        });
+        let second = cache.get_or_read(|| {
+            reads.set(reads.get() + 1);
+            Some("changed".to_string())
+        });
+
+        assert_eq!(first.as_deref(), Some("clipboard"));
+        assert_eq!(second.as_deref(), Some("clipboard"));
+        assert_eq!(reads.get(), 1);
+    }
 
     #[test]
     fn terminal_overlay_geometry_defaults_to_square_edges() {
@@ -5068,6 +5127,49 @@ mod tests {
         assert_eq!(pane.top, 0);
         assert_eq!(pane.width, 120);
         assert_eq!(pane.height, 42);
+    }
+
+    #[test]
+    fn inactive_tab_render_cache_eviction_preserves_the_active_tab() {
+        let make_tab = |tab_id| {
+            TerminalView::create_native_tab(
+                tab_id,
+                Terminal::new_tmux(TerminalSize::default(), TerminalOptions::default()),
+                80,
+                24,
+                None,
+            )
+        };
+        let tabs = vec![make_tab(1), make_tab(2)];
+        tabs[0].panes[0]
+            .render_cache
+            .borrow()
+            .paint_cache
+            .debug_seed_rows_for_tests(3);
+        tabs[1].panes[0]
+            .render_cache
+            .borrow()
+            .paint_cache
+            .debug_seed_rows_for_tests(4);
+
+        TerminalView::evict_inactive_tab_render_caches(&tabs, 0);
+
+        assert_eq!(
+            tabs[0].panes[0]
+                .render_cache
+                .borrow()
+                .paint_cache
+                .debug_row_cache_len_for_tests(),
+            3
+        );
+        assert_eq!(
+            tabs[1].panes[0]
+                .render_cache
+                .borrow()
+                .paint_cache
+                .debug_row_cache_len_for_tests(),
+            0
+        );
     }
 
     #[test]

@@ -26,7 +26,8 @@ alacritty_terminal = "0.26"
 anyhow = "1.0"
 dirs = "6.0"
 flume = "0.11"
-gpui = { git = "https://github.com/zed-industries/zed", rev = "83de8a25e0ef71a8d762a148459bc863adaeb7e3", package = "gpui" }
+gpui = { git = "https://github.com/zed-industries/zed", rev = "c8656ac96d2344fc288b551943cc12fcb6ef56ad", package = "gpui" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "c8656ac96d2344fc288b551943cc12fcb6ef56ad", package = "gpui_platform", features = ["font-kit", "wayland", "x11"] }
 log = "0.4"
 p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
 polling = "3.11"

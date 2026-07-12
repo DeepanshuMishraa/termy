@@ -97,6 +97,7 @@ empty because no in-app diagnostics are available.
 
 Current scenarios:
 
+- `idle-blink`
 - `idle-burst`
 - `echo-train`
 - `steady-scroll`

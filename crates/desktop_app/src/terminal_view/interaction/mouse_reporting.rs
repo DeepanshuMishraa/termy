@@ -182,6 +182,23 @@ impl TerminalView {
         }
     }
 
+    fn send_owned_mouse_packet_to_pane(&self, pane_id: &str, packet: Vec<u8>) -> bool {
+        if packet.is_empty() {
+            return false;
+        }
+
+        match self.runtime_kind() {
+            RuntimeKind::Tmux => self.tmux_send_input_to_pane(pane_id, &packet),
+            RuntimeKind::Native => {
+                let Some(terminal) = self.pane_terminal_by_id(pane_id) else {
+                    return false;
+                };
+                terminal.write_input_owned(packet);
+                true
+            }
+        }
+    }
+
     fn encode_mouse_packet(
         mode: TerminalMouseMode,
         event_kind: TerminalMouseEventKind,
@@ -211,7 +228,7 @@ impl TerminalView {
         };
 
         let send_result = Self::encode_mouse_packet(mode, event_kind, cell, modifiers)
-            .map(|packet| self.send_mouse_packet_to_pane(pane_id, packet.as_slice()));
+            .map(|packet| self.send_owned_mouse_packet_to_pane(pane_id, packet));
         mouse_forward_outcome(mode, send_result)
     }
 

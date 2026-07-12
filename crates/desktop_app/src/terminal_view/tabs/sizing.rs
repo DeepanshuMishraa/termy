@@ -2,6 +2,37 @@ use super::*;
 use crate::terminal_view::tab_strip::state::TabStripOrientation;
 
 impl TerminalView {
+    pub(in crate::terminal_view) fn evict_inactive_tab_render_caches(
+        tabs: &[TerminalTab],
+        active_tab: usize,
+    ) {
+        for (tab_index, tab) in tabs.iter().enumerate() {
+            if tab_index != active_tab {
+                tab.clear_render_caches();
+            }
+        }
+    }
+
+    pub(in crate::terminal_view) fn evict_inactive_terminal_render_caches(&self) {
+        Self::evict_inactive_tab_render_caches(&self.tabs, self.active_tab);
+
+        // The active workspace keeps its tabs in `self.tabs`; every tab stored
+        // on a workspace entry is hidden and can rebuild lazily when restored.
+        for workspace in &self.workspaces {
+            for tab in &workspace.tabs {
+                tab.clear_render_caches();
+            }
+        }
+
+        // Native zoom temporarily stashes the other panes outside the active
+        // tab. They are hidden for the lifetime of the snapshot as well.
+        for snapshot in self.native_pane_zoom_snapshots.values() {
+            for pane in &snapshot.other_panes {
+                pane.render_cache.borrow_mut().clear();
+            }
+        }
+    }
+
     pub(in crate::terminal_view) fn sync_native_terminal_wakeup_interest(&self) {
         if self.runtime_kind() != RuntimeKind::Native {
             return;
@@ -46,6 +77,7 @@ impl TerminalView {
             );
         }
         self.scroll_active_tab_into_view(self.tab_strip_orientation());
+        self.evict_inactive_terminal_render_caches();
         self.sync_native_terminal_wakeup_interest();
     }
 

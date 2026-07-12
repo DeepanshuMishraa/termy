@@ -48,21 +48,21 @@ const REVIEWED_LICENSE_EXCEPTIONS: &[LicenseException] = &[
         name: "zlog",
         version: "0.1.0",
         license: "GPL-3.0-or-later",
-        source_contains: "github.com/zed-industries/zed?rev=83de8a25",
+        source_contains: "github.com/zed-industries/zed?rev=c8656ac9",
         reason: "pinned GPUI transitive crate; review on GPUI revision updates",
     },
     LicenseException {
         name: "ztracing",
         version: "0.1.0",
         license: "GPL-3.0-or-later",
-        source_contains: "github.com/zed-industries/zed?rev=83de8a25",
+        source_contains: "github.com/zed-industries/zed?rev=c8656ac9",
         reason: "pinned GPUI transitive crate; review on GPUI revision updates",
     },
     LicenseException {
         name: "ztracing_macro",
         version: "0.1.0",
         license: "GPL-3.0-or-later",
-        source_contains: "github.com/zed-industries/zed?rev=83de8a25",
+        source_contains: "github.com/zed-industries/zed?rev=c8656ac9",
         reason: "pinned GPUI transitive crate; review on GPUI revision updates",
     },
 ];
@@ -259,7 +259,7 @@ mod tests {
             "ztracing",
             "0.1.0",
             Some("GPL-3.0-or-later"),
-            "git+https://github.com/zed-industries/zed?rev=83de8a25#83de8a25",
+            "git+https://github.com/zed-industries/zed?rev=c8656ac9#c8656ac9",
         );
 
         assert!(matches!(

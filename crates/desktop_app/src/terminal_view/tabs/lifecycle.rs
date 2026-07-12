@@ -959,6 +959,8 @@ impl TerminalView {
 
             self.clear_selection();
             self.clear_hovered_link();
+            self.evict_inactive_terminal_render_caches();
+            self.sync_native_terminal_wakeup_interest();
             self.schedule_persist_native_workspace();
             cx.notify();
             return true;
@@ -1020,6 +1022,8 @@ impl TerminalView {
 
         self.clear_selection();
         self.clear_hovered_link();
+        self.evict_inactive_terminal_render_caches();
+        self.sync_native_terminal_wakeup_interest();
         self.schedule_persist_native_workspace();
         cx.notify();
         true

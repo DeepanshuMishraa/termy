@@ -319,14 +319,16 @@ impl BenchmarkGateThresholds {
                 max_memory_delta_bytes,
                 "bytes",
             );
-            check_optional_f32(
-                &mut failures,
-                &scenario.scenario,
-                "frame p95 delta",
-                scenario.deltas.frame_p95_ms,
-                self.max_frame_p95_delta_ms,
-                "ms",
-            );
+            if scenario.scenario != "idle-blink" {
+                check_optional_f32(
+                    &mut failures,
+                    &scenario.scenario,
+                    "frame p95 delta",
+                    scenario.deltas.frame_p95_ms,
+                    self.max_frame_p95_delta_ms,
+                    "ms",
+                );
+            }
             check_optional_i64(
                 &mut failures,
                 &scenario.scenario,
@@ -335,7 +337,7 @@ impl BenchmarkGateThresholds {
                 self.max_hitch_count_delta,
                 "hitches",
             );
-            if scenario.scenario == "idle-burst" {
+            if matches!(scenario.scenario.as_str(), "idle-blink" | "idle-burst") {
                 check_optional_i64(
                     &mut failures,
                     &scenario.scenario,
@@ -701,6 +703,7 @@ fn prepare_target(build: &BenchmarkTargetSpec) -> Result<()> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Scenario {
+    IdleBlink,
     IdleBurst,
     EchoTrain,
     SteadyScroll,
@@ -710,6 +713,7 @@ enum Scenario {
 impl Scenario {
     fn all() -> &'static [Scenario] {
         &[
+            Scenario::IdleBlink,
             Scenario::IdleBurst,
             Scenario::EchoTrain,
             Scenario::SteadyScroll,
@@ -719,6 +723,7 @@ impl Scenario {
 
     fn parse(value: &str) -> Result<Self> {
         match value {
+            "idle-blink" => Ok(Self::IdleBlink),
             "idle-burst" => Ok(Self::IdleBurst),
             "echo-train" => Ok(Self::EchoTrain),
             "steady-scroll" => Ok(Self::SteadyScroll),
@@ -729,6 +734,7 @@ impl Scenario {
 
     fn as_str(self) -> &'static str {
         match self {
+            Self::IdleBlink => "idle-blink",
             Self::IdleBurst => "idle-burst",
             Self::EchoTrain => "echo-train",
             Self::SteadyScroll => "steady-scroll",
@@ -738,6 +744,10 @@ impl Scenario {
 
     fn run(self, duration: Duration) -> Result<()> {
         match self {
+            Self::IdleBlink => {
+                thread::sleep(duration);
+                Ok(())
+            }
             Self::IdleBurst => run_idle_burst(duration),
             Self::EchoTrain => run_echo_train(duration),
             Self::SteadyScroll => run_steady_scroll(duration),
@@ -1075,7 +1085,7 @@ fn run_single_benchmark(
         .with_context(|| format!("failed to create {}", animation_dir.display()))?;
 
     let config_path = config_root.join("termy/config.txt");
-    fs::write(&config_path, benchmark_config_contents())
+    fs::write(&config_path, benchmark_config_contents(scenario))
         .with_context(|| format!("failed to write {}", config_path.display()))?;
     let ghostty_launch = if matches!(build.kind, BenchmarkTargetKind::Ghostty) {
         Some(create_ghostty_launch_artifacts(
@@ -1247,8 +1257,11 @@ fn run_single_benchmark(
     })
 }
 
-fn benchmark_config_contents() -> &'static str {
-    "tmux_enabled = false\nbackground_blur = false\nbackground_opacity = 1.0\ncursor_blink = false\nwindow_width = 1280\nwindow_height = 820\nshow_debug_overlay = false\n"
+fn benchmark_config_contents(scenario: Scenario) -> String {
+    let cursor_blink = matches!(scenario, Scenario::IdleBlink);
+    format!(
+        "tmux_enabled = false\nbackground_blur = false\nbackground_opacity = 1.0\ncursor_blink = {cursor_blink}\nwindow_width = 1280\nwindow_height = 820\nshow_debug_overlay = false\n"
+    )
 }
 
 fn benchmark_driver_command(
@@ -1953,7 +1966,9 @@ fn summarize_micro_latency(
                 echo_train: Some(summarize_echo_train_latency(&markers, &frames)?),
             })
         }
-        Scenario::SteadyScroll | Scenario::AltScreenAnim => Ok(MicroLatencySummary::default()),
+        Scenario::IdleBlink | Scenario::SteadyScroll | Scenario::AltScreenAnim => {
+            Ok(MicroLatencySummary::default())
+        }
     }
 }
 
@@ -2503,6 +2518,7 @@ fn render_report(summary: &ComparisonSummary) -> String {
     ));
 
     for scenario in &summary.scenarios {
+        let idle_blink = scenario.scenario == "idle-blink";
         report.push_str(&format!("## {}\n\n", scenario.scenario));
         report.push_str("### Shared external metrics\n\n");
         report.push_str("| Metric | Baseline | Candidate | Delta |\n");
@@ -2652,31 +2668,34 @@ fn render_report(summary: &ComparisonSummary) -> String {
         ) {
             (Some(baseline), Some(candidate)) => {
                 report.push_str("### App diagnostics\n\n");
+                report.push_str(
+                    "These values describe `TerminalView::render` callback cadence, not presented-frame latency.\n\n",
+                );
                 report.push_str("| Metric | Baseline | Candidate | Delta |\n");
                 report.push_str("| --- | ---: | ---: | ---: |\n");
                 report.push_str(&format!(
-                    "| Frame p50 ms | {:.2} | {:.2} | {:.2} |\n",
+                    "| Render callback interval p50 ms | {:.2} | {:.2} | {:.2} |\n",
                     baseline.frame_p50_ms,
                     candidate.frame_p50_ms,
                     candidate.frame_p50_ms - baseline.frame_p50_ms
                 ));
                 report.push_str(&format!(
-                    "| Frame p95 ms | {:.2} | {:.2} | {} |\n",
+                    "| Render callback interval p95 ms | {:.2} | {:.2} | {:.2} |\n",
                     baseline.frame_p95_ms,
                     candidate.frame_p95_ms,
-                    format_option_f32(scenario.deltas.frame_p95_ms),
+                    candidate.frame_p95_ms - baseline.frame_p95_ms,
                 ));
                 report.push_str(&format!(
-                    "| Frame p99 ms | {:.2} | {:.2} | {} |\n",
+                    "| Render callback interval p99 ms | {:.2} | {:.2} | {:.2} |\n",
                     baseline.frame_p99_ms,
                     candidate.frame_p99_ms,
-                    format_option_f32(scenario.deltas.frame_p99_ms),
+                    candidate.frame_p99_ms - baseline.frame_p99_ms,
                 ));
                 report.push_str(&format!(
-                    "| FPS avg | {:.2} | {:.2} | {} |\n",
+                    "| Render callbacks / sec | {:.2} | {:.2} | {:.2} |\n",
                     baseline.fps_avg,
                     candidate.fps_avg,
-                    format_option_f32(scenario.deltas.fps_avg),
+                    candidate.fps_avg - baseline.fps_avg,
                 ));
                 report.push_str(&format!(
                     "| Runtime wakeups | {} | {} | {} |\n",
@@ -2836,19 +2855,24 @@ fn render_report(summary: &ComparisonSummary) -> String {
                 delta.abs()
             ));
         }
-        if let Some(delta) = scenario.deltas.fps_avg {
+        if !idle_blink && let Some(delta) = scenario.deltas.fps_avg {
             report.push_str(&format!(
                 "- Candidate {} displayed FPS by {:.2}.\n",
                 if delta > 0.0 { "improves" } else { "regresses" },
                 delta.abs()
             ));
         }
-        if let Some(delta) = scenario.deltas.frame_p95_ms {
+        if !idle_blink && let Some(delta) = scenario.deltas.frame_p95_ms {
             report.push_str(&format!(
                 "- Candidate {} displayed frame p95 by {:.2} ms.\n",
                 if delta < 0.0 { "improves" } else { "regresses" },
                 delta.abs()
             ));
+        }
+        if idle_blink {
+            report.push_str(
+                "- Idle-blink presentation cadence is diagnostic only; fewer displayed frames or longer intervals can reflect less idle work.\n",
+            );
         }
         if let Some(delta) = scenario.deltas.idle_burst_first_frame_ms {
             report.push_str(&format!(
@@ -2915,12 +2939,27 @@ fn render_single_app_diagnostics(report: &mut String, label: &str, summary: &App
     report.push_str(&format!(
         "Only `{label}` exposed in-app diagnostics for this scenario.\n\n"
     ));
+    report.push_str(
+        "These values describe `TerminalView::render` callback cadence, not presented-frame latency.\n\n",
+    );
     report.push_str(&format!("| Metric | {label} |\n"));
     report.push_str("| --- | ---: |\n");
-    report.push_str(&format!("| Frame p50 ms | {:.2} |\n", summary.frame_p50_ms));
-    report.push_str(&format!("| Frame p95 ms | {:.2} |\n", summary.frame_p95_ms));
-    report.push_str(&format!("| Frame p99 ms | {:.2} |\n", summary.frame_p99_ms));
-    report.push_str(&format!("| FPS avg | {:.2} |\n", summary.fps_avg));
+    report.push_str(&format!(
+        "| Render callback interval p50 ms | {:.2} |\n",
+        summary.frame_p50_ms
+    ));
+    report.push_str(&format!(
+        "| Render callback interval p95 ms | {:.2} |\n",
+        summary.frame_p95_ms
+    ));
+    report.push_str(&format!(
+        "| Render callback interval p99 ms | {:.2} |\n",
+        summary.frame_p99_ms
+    ));
+    report.push_str(&format!(
+        "| Render callbacks / sec | {:.2} |\n",
+        summary.fps_avg
+    ));
     report.push_str(&format!(
         "| Runtime wakeups | {} |\n",
         summary.runtime_wakeups
@@ -2989,17 +3028,25 @@ fn format_option_f32(value: Option<f32>) -> String {
 mod tests {
     use super::{
         BenchmarkDriverSpec, FrameCaptureStatus, FrameEvent, GhosttyVersion, MarkerEvent, Scenario,
-        create_ghostty_launch_artifacts, parse_animation_summary, parse_displayed_frame_starts,
-        parse_ghostty_version, parse_hitch_durations, parse_single_row_table, render_report,
-        resolve_native_executable, summarize_echo_train_latency, summarize_idle_burst_latency,
+        benchmark_config_contents, create_ghostty_launch_artifacts, parse_animation_summary,
+        parse_displayed_frame_starts, parse_ghostty_version, parse_hitch_durations,
+        parse_single_row_table, render_report, resolve_native_executable,
+        summarize_echo_train_latency, summarize_idle_burst_latency,
     };
     use std::{fs, path::PathBuf};
 
     #[test]
     fn parses_scenario_names() {
+        assert_eq!(Scenario::parse("idle-blink").unwrap(), Scenario::IdleBlink);
         assert_eq!(Scenario::parse("idle-burst").unwrap(), Scenario::IdleBurst);
         assert_eq!(Scenario::parse("echo-train").unwrap(), Scenario::EchoTrain);
         assert!(Scenario::parse("nope").is_err());
+    }
+
+    #[test]
+    fn idle_blink_is_the_only_scenario_that_enables_cursor_blink() {
+        assert!(benchmark_config_contents(Scenario::IdleBlink).contains("cursor_blink = true"));
+        assert!(benchmark_config_contents(Scenario::IdleBurst).contains("cursor_blink = false"));
     }
 
     #[test]
@@ -3420,6 +3467,8 @@ mod tests {
         });
         assert!(report.contains("Shared external metrics"));
         assert!(report.contains("Displayed frame p95 ms"));
+        assert!(report.contains("Render callback interval p95 ms"));
+        assert!(report.contains("callback cadence, not presented-frame latency"));
         assert!(report.contains("Only `Baseline` exposed in-app diagnostics"));
         assert!(report.contains("Shaped-line cache hits"));
     }
@@ -3445,6 +3494,30 @@ mod tests {
                 .iter()
                 .any(|failure| failure.contains("idle wakeup"))
         );
+    }
+
+    #[test]
+    fn idle_blink_gates_wakeups_but_not_presentation_interval() {
+        let mut scenario = super::ScenarioComparison::new(
+            "idle-blink".to_string(),
+            run_result("baseline", 3.0, 10, 10 * 1024 * 1024),
+            run_result("candidate", 3.0, 200, 10 * 1024 * 1024),
+        );
+        scenario.deltas.frame_p95_ms = Some(500.0);
+        let summary = super::ComparisonSummary {
+            baseline: compared_target("baseline"),
+            candidate: compared_target("candidate"),
+            scenarios: vec![scenario],
+        };
+
+        let failures = super::BenchmarkGateThresholds::default().failures(&summary);
+
+        assert!(
+            failures
+                .iter()
+                .any(|failure| failure.contains("idle wakeup"))
+        );
+        assert!(!failures.iter().any(|failure| failure.contains("frame p95")));
     }
 
     fn compared_target(label: &str) -> super::ComparedTargetSummary {

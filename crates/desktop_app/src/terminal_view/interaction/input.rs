@@ -249,12 +249,33 @@ impl TerminalView {
         }
     }
 
+    fn send_owned_input_to_pane(&self, pane_id: &str, input: Vec<u8>) -> bool {
+        match self.runtime_kind() {
+            RuntimeKind::Tmux => self.tmux_send_input_to_pane(pane_id, &input),
+            RuntimeKind::Native => {
+                let Some(terminal) = self.pane_terminal_by_id(pane_id) else {
+                    return false;
+                };
+                terminal.write_input_owned(input);
+                true
+            }
+        }
+    }
+
     fn send_input_to_active_pane(&self, input: &[u8]) -> bool {
         let Some(pane_id) = self.active_pane_id() else {
             return false;
         };
 
         self.send_input_to_pane(pane_id, input)
+    }
+
+    fn send_owned_input_to_active_pane(&self, input: Vec<u8>) -> bool {
+        let Some(pane_id) = self.active_pane_id() else {
+            return false;
+        };
+
+        self.send_owned_input_to_pane(pane_id, input)
     }
 
     fn write_terminal_keystroke_to_pane(
@@ -273,7 +294,7 @@ impl TerminalView {
             return false;
         };
 
-        self.write_terminal_input_to_pane(pane_id, &input, cx);
+        self.write_terminal_owned_input_to_pane(pane_id, input, cx);
         true
     }
 
@@ -475,6 +496,25 @@ impl TerminalView {
         }
     }
 
+    fn write_terminal_owned_input_to_pane(
+        &mut self,
+        pane_id: &str,
+        input: Vec<u8>,
+        cx: &mut Context<Self>,
+    ) {
+        if input.is_empty() {
+            return;
+        }
+
+        if should_prepare_terminal_input_write(self.active_pane_id(), pane_id) {
+            self.prepare_terminal_input_write(cx);
+        }
+        if self.send_owned_input_to_pane(pane_id, input) && self.runtime_kind() == RuntimeKind::Tmux
+        {
+            self.schedule_tmux_title_refresh();
+        }
+    }
+
     pub(in super::super) fn write_terminal_input(&mut self, input: &[u8], cx: &mut Context<Self>) {
         if input.is_empty() {
             return;
@@ -555,7 +595,7 @@ impl TerminalView {
             .is_some_and(|terminal| terminal.bracketed_paste_mode());
         let wrote_input = if bracketed_paste {
             let framed = Self::framed_bracketed_paste_input(input);
-            self.send_input_to_active_pane(&framed)
+            self.send_owned_input_to_active_pane(framed)
         } else {
             self.send_input_to_active_pane(input)
         };

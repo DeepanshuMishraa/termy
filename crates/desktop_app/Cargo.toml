@@ -15,6 +15,7 @@ workspace = true
 
 [dependencies]
 gpui = { workspace = true }
+gpui_platform = { workspace = true }
 
 # Terminal emulation
 alacritty_terminal = { workspace = true }

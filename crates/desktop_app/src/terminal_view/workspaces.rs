@@ -574,9 +574,10 @@ impl TerminalView {
     /// subset is applied (progress, cwd, exit); titles refresh on the next
     /// prompt after the workspace is reactivated. Returns whether more
     /// events remain queued.
-    pub(crate) fn drain_stashed_workspace_terminal_events(
+    pub(super) fn drain_stashed_workspace_terminal_events(
         &mut self,
-        reply_host: &mut impl TerminalReplyHost,
+        cx: &mut Context<Self>,
+        clipboard_text: &mut ClipboardTextCache,
     ) -> bool {
         let mut events_remain = false;
         let mut exited_panes: Vec<(u64, TabId, String)> = Vec::new();
@@ -587,7 +588,10 @@ impl TerminalView {
                     let Some(terminal) = pane.maybe_terminal() else {
                         continue;
                     };
-                    let (events, has_more) = terminal.drain_events(reply_host);
+                    let (events, has_more) = {
+                        let mut reply_host = GpuiClipboardReplyHost::new(cx, clipboard_text);
+                        terminal.drain_events(&mut reply_host)
+                    };
                     if has_more {
                         events_remain = true;
                     }

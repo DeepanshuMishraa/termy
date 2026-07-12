@@ -2398,11 +2398,21 @@ impl TerminalView {
         let debug_overlay = self.show_debug_overlay.then(|| {
             let overlay_style = self.overlay_style();
             let cpu_percent = self.debug_overlay_stats.cpu_percent;
-            let render_fps = self.debug_overlay_stats.fps;
+            let render_callbacks_per_second =
+                self.debug_overlay_stats.render_callbacks_per_second;
             let memory = self.debug_overlay_memory_label();
-            let frame_p50_ms = self.debug_overlay_stats.frame_p50_ms;
-            let frame_p95_ms = self.debug_overlay_stats.frame_p95_ms;
-            let frame_p99_ms = self.debug_overlay_stats.frame_p99_ms;
+            let callback_interval_p50_ms = self
+                .debug_overlay_stats
+                .render_callback_interval_p50_ms;
+            let callback_interval_p95_ms = self
+                .debug_overlay_stats
+                .render_callback_interval_p95_ms;
+            let callback_interval_p99_ms = self
+                .debug_overlay_stats
+                .render_callback_interval_p99_ms;
+            let view_build_p50_ms = self.debug_overlay_stats.view_build_p50_ms;
+            let view_build_p95_ms = self.debug_overlay_stats.view_build_p95_ms;
+            let view_build_p99_ms = self.debug_overlay_stats.view_build_p99_ms;
             let terminal_event_drain_passes = self.debug_overlay_stats.terminal_event_drain_passes;
             let terminal_redraws = self.debug_overlay_stats.terminal_redraws;
             let alt_screen_fallback_redraws = self.debug_overlay_stats.alt_screen_fallback_redraws;
@@ -2437,12 +2447,17 @@ impl TerminalView {
                 .flex_col()
                 .gap(px(2.0))
                 .child(format!("Display: {display_hint}"))
-                .child(format!("Render FPS: {render_fps:.1}"))
                 .child(format!(
-                    "Frame ms p50/p95/p99: {frame_p50_ms:.2}/{frame_p95_ms:.2}/{frame_p99_ms:.2}"
+                    "Render callbacks: {render_callbacks_per_second:.1}/s"
+                ))
+                .child(format!(
+                    "Callback interval ms p50/p95/p99: {callback_interval_p50_ms:.2}/{callback_interval_p95_ms:.2}/{callback_interval_p99_ms:.2}"
+                ))
+                .child(format!(
+                    "CPU view build ms p50/p95/p99: {view_build_p50_ms:.2}/{view_build_p95_ms:.2}/{view_build_p99_ms:.2}"
                 ))
                 .child(format!("CPU: {cpu_percent:.1}%"))
-                .child(format!("MEM: {memory}"))
+                .child(format!("Process RSS: {memory}"))
                 .child(format!("Drain passes: {terminal_event_drain_passes}"))
                 .child(format!("Redraws: {terminal_redraws}"))
                 .child(format!(
@@ -2508,6 +2523,8 @@ impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let frame_now = Instant::now();
         self.record_debug_overlay_frame();
+        let view_build_started_at =
+            (self.show_debug_overlay || self.inspector_collects_render_stats()).then(Instant::now);
         self.record_benchmark_frame(frame_now);
 
         // Process pending OSC 52 clipboard writes
@@ -3482,6 +3499,11 @@ impl Render for TerminalView {
 
         #[cfg(debug_assertions)]
         self.maybe_emit_render_metrics_log(Instant::now());
+
+        if let Some(started_at) = view_build_started_at {
+            self.debug_overlay_stats
+                .record_view_build_duration(started_at.elapsed());
+        }
 
         root
     }

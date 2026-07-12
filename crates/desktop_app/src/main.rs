@@ -12,8 +12,6 @@ mod crash_log;
 mod deeplink;
 mod keybindings;
 #[cfg(target_os = "macos")]
-mod macos_thermal_observer;
-#[cfg(target_os = "macos")]
 mod macos_titlebar_drag;
 mod menus;
 mod settings_view;
@@ -29,8 +27,8 @@ use commands::{OpenConfig, OpenSettings};
 use deeplink::{DeepLinkArgument, DeepLinkRoute};
 use flume::Receiver;
 use gpui::{
-    App, Application, AsyncApp, Bounds, Pixels, WindowBounds, WindowHandle, WindowKind,
-    WindowOptions, prelude::*, px, size,
+    App, AsyncApp, Bounds, Pixels, WindowBounds, WindowHandle, WindowKind, WindowOptions,
+    prelude::*, px, size,
 };
 use startup::StartupBlocker;
 use terminal_view::{TerminalView, initial_window_background_appearance};
@@ -469,7 +467,7 @@ fn main() {
 
     let startup_arguments = parse_startup_arguments(cli_args);
     let (deeplink_tx, deeplink_rx) = flume::unbounded::<Vec<String>>();
-    let application = Application::new().with_assets(crate::asset_source::EmbeddedAssets);
+    let application = gpui_platform::application().with_assets(crate::asset_source::EmbeddedAssets);
 
     if !startup_arguments.deeplinks.is_empty()
         && let Err(error) = deeplink_tx.send(startup_arguments.deeplinks.clone())
@@ -487,9 +485,6 @@ fn main() {
     });
 
     application.run(move |cx: &mut App| {
-        #[cfg(target_os = "macos")]
-        macos_thermal_observer::neutralize_gpui_thermal_state_observer();
-
         spawn_deeplink_listener(cx, deeplink_rx);
 
         cx.on_action(|_: &OpenConfig, _cx| {
