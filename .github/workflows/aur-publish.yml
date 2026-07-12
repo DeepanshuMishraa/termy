@@ -53,3 +53,8 @@ jobs:
           ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
           commit_message: "Update to v${{ inputs.version }}"
           test: true
+          # The test build leaves makepkg outputs (downloaded sources, built
+          # *.pkg.tar.zst) in the repo clone; with `assets` set the action runs
+          # `git add --all`, and AUR rejects blobs over 488KiB. Drop everything
+          # that is not part of the AUR package before the commit step.
+          post_process: rm -f ./*.pkg.tar.zst ./*.tar.gz ./LICENSE ./termy_icon.png
