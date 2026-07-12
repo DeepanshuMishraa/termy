@@ -84,12 +84,13 @@ fn line_text(frame: &TermyFrame, row: usize, cols: usize) -> String {
         return String::new();
     }
 
-    frame.cells[start..end]
+    let mut text = frame.cells[start..end]
         .iter()
         .map(|cell| if cell.render_text { cell.char } else { ' ' })
-        .collect::<String>()
-        .trim_end()
-        .to_string()
+        .collect::<String>();
+    let trimmed_len = text.trim_end().len();
+    text.truncate(trimmed_len);
+    text
 }
 
 #[cfg(test)]

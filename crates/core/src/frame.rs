@@ -12,10 +12,7 @@ use alacritty_terminal::{
 
 use crate::{
     protocol::TerminalQueryColors,
-    runtime::{
-        TerminalCursorState, TerminalDamageSnapshot, TerminalDirtySpan, TerminalSize,
-        cursor_state_from_term,
-    },
+    runtime::{TerminalCursorState, TerminalDamageSnapshot, TerminalSize, cursor_state_from_term},
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -100,25 +97,6 @@ fn bold_foreground_color(color: AnsiColor) -> AnsiColor {
     }
 }
 
-fn default_cell(live_colors: &Colors, query_colors: TerminalQueryColors) -> TermyCell {
-    TermyCell {
-        char: ' ',
-        fg: color_to_rgba(
-            AnsiColor::Named(NamedColor::Foreground),
-            live_colors,
-            query_colors,
-        ),
-        bg: color_to_rgba(
-            AnsiColor::Named(NamedColor::Background),
-            live_colors,
-            query_colors,
-        ),
-        uses_terminal_default_bg: true,
-        bold: false,
-        render_text: false,
-    }
-}
-
 fn cell_from_renderable_cell(
     cell: &Cell,
     live_colors: &Colors,
@@ -166,29 +144,19 @@ pub(crate) fn snapshot_from_term<T: EventListener>(
     let cols = usize::from(size.cols);
     let rows = usize::from(size.rows);
     let live_colors = term.colors();
-    // Resolving the default fg/bg colors costs several palette lookups per
-    // call; resolve one template instead of resolving per cell.
-    let template = default_cell(live_colors, query_colors);
-    let mut cells = vec![template; cols.saturating_mul(rows)];
-
     let content = term.renderable_content();
+    // Alacritty's display iterator is exact-size and row-major over the
+    // visible viewport. Build the final cell buffer in one pass instead of
+    // template-filling the entire grid and overwriting every entry.
+    let mut cells = Vec::with_capacity(cols.saturating_mul(rows));
     for indexed_cell in content.display_iter {
-        let row = indexed_cell.point.line.0 + content.display_offset as i32;
-        if row < 0 {
-            continue;
-        }
-        let row = row as usize;
-        let col = indexed_cell.point.column.0;
-        if row >= rows || col >= cols {
-            continue;
-        }
-
-        let idx = row
-            .checked_mul(cols)
-            .and_then(|base| base.checked_add(col))
-            .expect("frame cell index must fit usize");
-        cells[idx] = cell_from_renderable_cell(indexed_cell.cell, live_colors, query_colors);
+        cells.push(cell_from_renderable_cell(
+            indexed_cell.cell,
+            live_colors,
+            query_colors,
+        ));
     }
+    debug_assert_eq!(cells.len(), cols.saturating_mul(rows));
 
     let grid = term.grid();
     TermyFrame {
@@ -199,14 +167,6 @@ pub(crate) fn snapshot_from_term<T: EventListener>(
         display_offset: grid.display_offset(),
         history_size: grid.history_size(),
     }
-}
-
-#[derive(Clone, Copy, Debug)]
-struct UpdateSpan {
-    row: usize,
-    left_col: usize,
-    right_col: usize,
-    base_index: usize,
 }
 
 pub(crate) fn snapshot_update_from_term<T: EventListener>(
@@ -225,48 +185,38 @@ pub(crate) fn snapshot_update_from_term<T: EventListener>(
             snapshot_from_term(term, size, query_colors).cells,
             TerminalDamageSnapshot::Full,
         ),
-        TerminalDamageSnapshot::Partial(spans) => {
-            let mut update_spans = Vec::new();
-            let mut cells = Vec::new();
-            let template = default_cell(live_colors, query_colors);
-
-            for span in spans {
+        TerminalDamageSnapshot::Partial(mut spans) => {
+            spans.retain_mut(|span| {
                 if span.row >= rows || cols == 0 {
-                    continue;
+                    return false;
                 }
                 let left_col = span.left_col.min(cols.saturating_sub(1));
                 let right_col = span.right_col.min(cols.saturating_sub(1));
                 if left_col > right_col {
-                    continue;
+                    return false;
                 }
-                let base_index = cells.len();
-                update_spans.push(UpdateSpan {
-                    row: span.row,
-                    left_col,
-                    right_col,
-                    base_index,
-                });
-                cells.resize(cells.len() + (right_col - left_col + 1), template);
-            }
+                span.left_col = left_col;
+                span.right_col = right_col;
+                true
+            });
 
+            let cell_count = spans.iter().fold(0usize, |count, span| {
+                count.saturating_add(span.right_col - span.left_col + 1)
+            });
+
+            // Every normalized span maps to a valid grid slice. Push the final
+            // cells directly instead of template-filling the output and then
+            // overwriting every entry in a second pass.
+            let mut cells = Vec::with_capacity(cell_count);
             let display_offset = grid.display_offset() as i32;
-            for span in &update_spans {
+            for span in &spans {
                 let line = Line(span.row as i32 - display_offset);
                 for col in span.left_col..=span.right_col {
-                    let index = span.base_index + (col - span.left_col);
                     let cell = &grid[line][Column(col)];
-                    cells[index] = cell_from_renderable_cell(cell, live_colors, query_colors);
+                    cells.push(cell_from_renderable_cell(cell, live_colors, query_colors));
                 }
             }
 
-            let spans = update_spans
-                .iter()
-                .map(|span| TerminalDirtySpan {
-                    row: span.row,
-                    left_col: span.left_col,
-                    right_col: span.right_col,
-                })
-                .collect::<Vec<_>>();
             (cells, TerminalDamageSnapshot::Partial(spans))
         }
     };
@@ -285,6 +235,7 @@ pub(crate) fn snapshot_update_from_term<T: EventListener>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::TerminalDirtySpan;
     use alacritty_terminal::{event::VoidListener, term::Config as TermConfig, vte::ansi};
 
     #[test]

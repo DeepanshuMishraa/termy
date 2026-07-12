@@ -29,7 +29,8 @@ pub use osc_intercept::{OscEvent, OscInterceptor};
 pub use pane_terminal::PaneTerminal;
 pub use protocol::{TerminalClipboardTarget, TerminalQueryColors, TerminalReplyHost};
 pub use render_metrics::{
-    TerminalUiRenderMetricsSnapshot, add_span_damage_compute_us, terminal_ui_render_metrics_reset,
+    TerminalUiRenderMetricsSnapshot, add_span_damage_compute_us,
+    terminal_ui_render_metrics_enabled, terminal_ui_render_metrics_reset,
     terminal_ui_render_metrics_snapshot,
 };
 pub use runtime::{

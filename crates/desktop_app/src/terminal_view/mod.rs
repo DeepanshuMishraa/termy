@@ -117,6 +117,20 @@ struct CellPos {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TerminalResizeSignature {
+    viewport_width_bits: u32,
+    viewport_height_bits: u32,
+    cell_width_bits: u32,
+    cell_height_bits: u32,
+    sidebar_width_bits: u32,
+    content_top_inset_bits: u32,
+    padding_x_bits: u32,
+    padding_y_bits: u32,
+    runtime_kind: RuntimeKind,
+    pane_layout_fingerprint: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct SelectionPos {
     col: usize,
     line: i32,
@@ -1031,6 +1045,7 @@ pub struct TerminalView {
     resize_indicator_animation_scheduled: bool,
     resize_throttle_task: Option<gpui::Task<()>>,
     last_resize_applied_at: Option<Instant>,
+    last_terminal_resize_signature: Option<TerminalResizeSignature>,
     benchmark_session: Option<BenchmarkSession>,
     benchmark_exit_scheduled: bool,
     show_debug_overlay: bool,
@@ -3521,6 +3536,7 @@ impl TerminalView {
             resize_indicator_animation_scheduled: false,
             resize_throttle_task: None,
             last_resize_applied_at: None,
+            last_terminal_resize_signature: None,
             benchmark_session: benchmark_config.map(BenchmarkSession::new),
             benchmark_exit_scheduled: false,
             show_debug_overlay: config.show_debug_overlay,
@@ -4114,15 +4130,24 @@ impl TerminalView {
 
         for tab_index in 0..self.tabs.len() {
             let tab_id = self.tabs[tab_index].id;
-            let active_pane_id = self.tabs[tab_index].active_pane_id.clone();
+            // Most shared wakeups belong to one pane. Defer string clones until
+            // this tab actually yields work so inactive tabs stay allocation-
+            // free on the common drain path.
+            let mut active_pane_id = None;
 
             for pane_index in 0..self.tabs[tab_index].panes.len() {
-                let pane_id = self.tabs[tab_index].panes[pane_index].id.clone();
-                let pane_is_active = pane_id.as_str() == active_pane_id.as_str();
                 let Some(terminal) = self.tabs[tab_index].panes[pane_index].maybe_terminal() else {
                     continue;
                 };
                 let (events, has_more) = terminal.drain_events(&mut reply_host);
+                if events.is_empty() && !has_more {
+                    continue;
+                }
+
+                let active_pane_id = active_pane_id
+                    .get_or_insert_with(|| self.tabs[tab_index].active_pane_id.clone());
+                let pane_id = self.tabs[tab_index].panes[pane_index].id.clone();
+                let pane_is_active = pane_id.as_str() == active_pane_id.as_str();
                 if has_more {
                     terminal_events_remain = true;
                     if tab_index == active_tab {

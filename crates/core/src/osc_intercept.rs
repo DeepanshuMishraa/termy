@@ -8,6 +8,7 @@
 //! - OSC 133: Shell integration (prompt/command lifecycle)
 
 use crate::shell_integration::ProgressState;
+use std::borrow::Cow;
 
 /// Events extracted from custom OSC sequences
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,7 +75,16 @@ impl OscInterceptor {
     /// Returns a tuple of:
     /// - Filtered bytes (with extracted OSC sequences removed)
     /// - Vector of extracted OSC events
-    pub fn process(&mut self, input: &[u8]) -> (Vec<u8>, Vec<OscEvent>) {
+    pub fn process<'a>(&mut self, input: &'a [u8]) -> (Cow<'a, [u8]>, Vec<OscEvent>) {
+        // PTY output is overwhelmingly ordinary text and CSI control traffic.
+        // Avoid copying and walking those chunks byte-by-byte when there cannot
+        // be an OSC sequence for this interceptor to handle. A trailing ESC
+        // must stay on the state-machine path because the following `]` can
+        // arrive in the next read.
+        if self.state == ParseState::Ground && !input_requires_interception(input) {
+            return (Cow::Borrowed(input), Vec::new());
+        }
+
         let mut output = Vec::with_capacity(input.len());
         let mut events = Vec::new();
 
@@ -162,7 +172,7 @@ impl OscInterceptor {
             }
         }
 
-        (output, events)
+        (Cow::Owned(output), events)
     }
 
     /// Emit the current OSC buffer as passthrough to output
@@ -218,6 +228,16 @@ impl OscInterceptor {
     }
 }
 
+fn input_requires_interception(input: &[u8]) -> bool {
+    if input.last() == Some(&0x1B) {
+        return true;
+    }
+
+    input
+        .windows(2)
+        .any(|pair| pair[0] == 0x1B && pair[1] == b']')
+}
+
 /// Parse OSC 7 file:// URL to extract path
 fn parse_file_url(url: &str) -> Option<String> {
     // Format: file://hostname/path or file:///path
@@ -264,6 +284,60 @@ mod tests {
     fn process_str(interceptor: &mut OscInterceptor, s: &str) -> (String, Vec<OscEvent>) {
         let (bytes, events) = interceptor.process(s.as_bytes());
         (String::from_utf8_lossy(&bytes).into_owned(), events)
+    }
+
+    #[test]
+    fn borrows_plain_and_csi_only_input() {
+        let mut interceptor = OscInterceptor::new();
+
+        let (plain, plain_events) = interceptor.process(b"hello world");
+        assert!(matches!(plain, Cow::Borrowed(_)));
+        assert!(plain_events.is_empty());
+
+        let (csi, csi_events) = interceptor.process(b"\x1b[Hhello\x1b[2J");
+        assert!(matches!(csi, Cow::Borrowed(_)));
+        assert!(csi_events.is_empty());
+    }
+
+    #[test]
+    fn keeps_trailing_escape_on_state_machine_path() {
+        let mut interceptor = OscInterceptor::new();
+
+        let (prefix, prefix_events) = interceptor.process(b"hello\x1b");
+        assert!(matches!(prefix, Cow::Owned(_)));
+        assert_eq!(prefix.as_ref(), b"hello");
+        assert!(prefix_events.is_empty());
+
+        let (suffix, suffix_events) = interceptor.process(b"]133;A\x07world");
+        assert_eq!(suffix.as_ref(), b"world");
+        assert_eq!(suffix_events, vec![OscEvent::ShellPromptStart]);
+    }
+
+    #[test]
+    fn every_chunk_split_matches_one_shot_processing() {
+        let inputs: &[&[u8]] = &[
+            b"plain text\x1b[H with csi\x1b[2J",
+            b"before\x1b]133;A\x07after",
+            b"before\x1b]0;window title\x1b\\after",
+            b"\x1b]8;;https://example.com\x1b\\link\x1b]8;;\x1b\\",
+        ];
+
+        for input in inputs {
+            let mut one_shot = OscInterceptor::new();
+            let (expected_output, expected_events) = one_shot.process(input);
+
+            for split in 0..=input.len() {
+                let mut chunked = OscInterceptor::new();
+                let (first_output, mut events) = chunked.process(&input[..split]);
+                let mut output = first_output.into_owned();
+                let (second_output, second_events) = chunked.process(&input[split..]);
+                output.extend_from_slice(&second_output);
+                events.extend(second_events);
+
+                assert_eq!(output, expected_output.as_ref(), "split at {split}");
+                assert_eq!(events, expected_events, "split at {split}");
+            }
+        }
     }
 
     #[test]

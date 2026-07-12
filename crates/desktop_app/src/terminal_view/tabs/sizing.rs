@@ -16,6 +16,20 @@ impl TerminalView {
             }
         }
 
+        // Workspace switching moves the old strip into `WorkspaceEntry::tabs`.
+        // Those panes must stop driving render wakeups just like ordinary
+        // inactive tabs; their event queues are still drained by the shared
+        // workspace drain pass, and damage is retained until reactivation.
+        for workspace in &self.workspaces {
+            for tab in &workspace.tabs {
+                for pane in &tab.panes {
+                    if let Some(terminal) = pane.maybe_terminal() {
+                        terminal.set_wakeup_enabled(false);
+                    }
+                }
+            }
+        }
+
         for snapshot in self.native_pane_zoom_snapshots.values() {
             for pane in &snapshot.other_panes {
                 if let Some(terminal) = pane.maybe_terminal() {

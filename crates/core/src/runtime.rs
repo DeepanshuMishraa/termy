@@ -790,7 +790,9 @@ fn searchable_grid_line<T: EventListener>(term: &Term<T>, line: Line, cols: usiz
             && !cell.c.is_control();
         text.push(if render_text { cell.c } else { ' ' });
     }
-    text.trim_end().to_string()
+    let trimmed_len = text.trim_end().len();
+    text.truncate(trimmed_len);
+    text
 }
 
 pub fn take_term_damage_snapshot<T: EventListener>(term: &mut Term<T>) -> TerminalDamageSnapshot {
@@ -807,7 +809,10 @@ pub fn take_term_damage_snapshot<T: EventListener>(term: &mut Term<T>) -> Termin
             // even while scrolled into history — collapsing them to a full
             // rebuild would force a whole-grid repaint for every cursor or
             // cell update during scrollback viewing.
-            let mut spans = Vec::with_capacity(rows.min(64));
+            // No-damage partial snapshots are common during UI-only redraws.
+            // Start empty so they remain allocation-free; damaged rows grow
+            // this vector only when there is actual cell work to describe.
+            let mut spans = Vec::new();
             for damage in damage_iter {
                 if let Some(span) = normalized_dirty_span(damage, rows, cols) {
                     spans.push(span);
@@ -962,6 +967,7 @@ impl EventListener for JsonEventListener {
 /// stack for the lifetime of the session.
 const NATIVE_EVENT_LOOP_READ_BUFFER_SIZE: usize = 0x1_0000;
 const NATIVE_EVENT_LOOP_MAX_LOCKED_READ: usize = u16::MAX as usize;
+const NATIVE_EVENT_LOOP_POLL_EVENT_CAPACITY: usize = 8;
 #[cfg(not(target_os = "windows"))]
 const NATIVE_EVENT_LOOP_READ_WRITE_TOKEN: usize = 0;
 #[cfg(not(target_os = "windows"))]
@@ -1243,7 +1249,12 @@ impl NativeEventLoop {
                 return;
             }
 
-            let mut events = Events::with_capacity(NonZeroUsize::new(1024).expect("non-zero"));
+            // Only the PTY read/write source and child-exit source are
+            // registered. Reserving 1024 event slots dirtied tens of KiB per
+            // pane for a poll result that normally contains one or two items.
+            let mut events = Events::with_capacity(
+                NonZeroUsize::new(NATIVE_EVENT_LOOP_POLL_EVENT_CAPACITY).expect("non-zero"),
+            );
 
             'event_loop: loop {
                 let timeout = self
@@ -1583,8 +1594,21 @@ impl Terminal {
     /// Drain pending Alacritty events, writing reply bytes back to the PTY when required.
     /// Returns the collected events and whether more events remain (batch limit hit).
     pub fn drain_events(&self, host: &mut impl TerminalReplyHost) -> (Vec<TerminalEvent>, bool) {
+        // Reset before probing the queue. A previous consumer can leave the
+        // coalescing flag set after taking the last queued wakeup; returning on
+        // an empty queue without this reset would suppress every later Wakeup
+        // event even though wake-channel nudges continue.
         self.listener.reset_wakeup_queued();
+
+        // The desktop host checks every pane whenever the shared wake channel
+        // fires. Consume the first item before allocating drain state so empty
+        // panes stay allocation-free without an `is_empty`/`try_recv` race.
+        let Ok(first_event) = self.events_rx.try_recv() else {
+            return (Vec::new(), false);
+        };
+
         drain_runtime_events(
+            first_event,
             &self.events_rx,
             self.size,
             &self.term,
@@ -1770,6 +1794,7 @@ const EVENT_DRAIN_BATCH_LIMIT: usize = 2048;
 /// Drain pending events, returning the collected terminal events and whether
 /// the batch limit was hit (indicating more events remain).
 fn drain_runtime_events<T: EventListener>(
+    first_event: RuntimeEvent,
     events_rx: &Receiver<RuntimeEvent>,
     size: TerminalSize,
     term: &FairMutex<Term<T>>,
@@ -1782,7 +1807,8 @@ fn drain_runtime_events<T: EventListener>(
     let mut drained = 0usize;
     let mut wakeup_pending = false;
 
-    while let Ok(runtime_event) = events_rx.try_recv() {
+    let mut next_event = Some(first_event);
+    while let Some(runtime_event) = next_event.take().or_else(|| events_rx.try_recv().ok()) {
         match runtime_event {
             RuntimeEvent::Alacritty(event) => {
                 let response = match &event {
@@ -1883,7 +1909,7 @@ mod tests {
     use super::{
         DEFAULT_TERM, EVENT_QUEUE_HARD_CAP, EVENT_QUEUE_SOFT_CAP, GHOSTTY_COMPAT_TERM_PROGRAM,
         GHOSTTY_COMPAT_TERM_PROGRAM_VERSION, JsonEventListener, MAX_SCROLLBACK_HISTORY,
-        MAX_TERMINAL_COLS, MAX_TERMINAL_ROWS, RuntimeEvent, TERMY_TERM_PROGRAM,
+        MAX_TERMINAL_COLS, MAX_TERMINAL_ROWS, RuntimeEvent, TERMY_TERM_PROGRAM, Terminal,
         TerminalCursorState, TerminalCursorStyle, TerminalDamageSnapshot, TerminalEvent,
         TerminalOptions, TerminalRuntimeConfig, TerminalSize, WindowsShell, WorkingDirFallback,
         apply_term_config, cursor_position_from_term, cursor_state_from_term, default_shell_launch,
@@ -2222,7 +2248,9 @@ mod tests {
         };
         let mut replies = Vec::new();
 
+        let first_event = events_rx.try_recv().expect("queued runtime event");
         let (events, _has_more) = drain_runtime_events(
+            first_event,
             &events_rx,
             test_terminal_size(),
             &term,
@@ -2270,7 +2298,9 @@ mod tests {
         let term = FairMutex::new(term_after_bytes(b""));
         let mut reply_host = RecordingReplyHost::default();
 
+        let first_event = events_rx.try_recv().expect("queued runtime event");
         let (events, has_more) = drain_runtime_events(
+            first_event,
             &events_rx,
             test_terminal_size(),
             &term,
@@ -2307,7 +2337,9 @@ mod tests {
         let term = FairMutex::new(term_after_bytes(b""));
         let mut reply_host = RecordingReplyHost::default();
 
+        let first_event = events_rx.try_recv().expect("queued runtime event");
         let (events, has_more) = drain_runtime_events(
+            first_event,
             &events_rx,
             test_terminal_size(),
             &term,
@@ -2349,6 +2381,37 @@ mod tests {
         assert!(matches!(
             events[0],
             RuntimeEvent::Alacritty(alacritty_terminal::event::Event::Wakeup)
+        ));
+    }
+
+    #[test]
+    fn empty_terminal_drain_rearms_wakeup_event_coalescing() {
+        let terminal = Terminal::new_display(test_terminal_size(), None);
+        terminal
+            .listener
+            .send_event(alacritty_terminal::event::Event::Wakeup);
+        assert!(matches!(
+            terminal.events_rx.try_recv(),
+            Ok(RuntimeEvent::Alacritty(
+                alacritty_terminal::event::Event::Wakeup
+            ))
+        ));
+
+        // The queue is empty but the listener's coalescing flag is still set.
+        // An empty drain must reset it so the next wakeup is queued normally.
+        let mut reply_host = RecordingReplyHost::default();
+        let (events, has_more) = terminal.drain_events(&mut reply_host);
+        assert!(events.is_empty());
+        assert!(!has_more);
+
+        terminal
+            .listener
+            .send_event(alacritty_terminal::event::Event::Wakeup);
+        assert!(matches!(
+            terminal.events_rx.try_recv(),
+            Ok(RuntimeEvent::Alacritty(
+                alacritty_terminal::event::Event::Wakeup
+            ))
         ));
     }
 

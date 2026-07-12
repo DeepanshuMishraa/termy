@@ -8,9 +8,9 @@ use gpui::prelude::FluentBuilder;
 use gpui::{ElementInputHandler, canvas};
 use std::sync::Arc;
 use std::time::Instant;
-use termy_terminal_ui::add_span_damage_compute_us;
 #[cfg(debug_assertions)]
 use termy_terminal_ui::terminal_ui_render_metrics_snapshot;
+use termy_terminal_ui::{add_span_damage_compute_us, terminal_ui_render_metrics_enabled};
 
 fn blend_rgb_only(base: gpui::Rgba, target: gpui::Rgba, factor: f32) -> gpui::Rgba {
     let factor = factor.clamp(0.0, 1.0);
@@ -227,7 +227,7 @@ fn paint_damage_from_dirty_spans(
     spans: &[TerminalDirtySpan],
     row_count: usize,
 ) -> TerminalGridPaintDamage {
-    let t0 = Instant::now();
+    let metrics_started_at = terminal_ui_render_metrics_enabled().then(Instant::now);
     let result = if spans.is_empty() {
         TerminalGridPaintDamage::None
     } else if let [span] = spans {
@@ -267,7 +267,9 @@ fn paint_damage_from_dirty_spans(
             TerminalGridPaintDamage::RowRanges(Arc::from(ranges.as_slice()))
         })
     };
-    add_span_damage_compute_us(t0.elapsed().as_micros() as u64);
+    if let Some(started_at) = metrics_started_at {
+        add_span_damage_compute_us(started_at.elapsed().as_micros() as u64);
+    }
     result
 }
 
@@ -2669,7 +2671,10 @@ impl Render for TerminalView {
                     self.tmux_show_active_pane_border,
                 );
                 let pane_focus_target_bg = colors.background;
-                let alternate_screen_mode = terminal.alternate_screen_mode();
+                // `sync_terminal_size` refreshes this once for active panes at
+                // the start of the render pass, avoiding another nested pair
+                // of terminal locks here.
+                let alternate_screen_mode = pane.last_alternate_screen.get();
                 let pane_cache_key = self.pane_render_cache_key(
                     is_active_pane,
                     alternate_screen_mode,

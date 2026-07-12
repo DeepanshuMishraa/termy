@@ -1,6 +1,82 @@
 use super::*;
 
 impl TerminalView {
+    const TERMINAL_RESIZE_FINGERPRINT_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const TERMINAL_RESIZE_FINGERPRINT_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+    fn mix_terminal_resize_fingerprint(fingerprint: &mut u64, value: u64) {
+        *fingerprint ^= value;
+        *fingerprint = fingerprint.wrapping_mul(Self::TERMINAL_RESIZE_FINGERPRINT_PRIME);
+    }
+
+    fn pane_layout_fingerprint(&self) -> u64 {
+        let mut fingerprint = Self::TERMINAL_RESIZE_FINGERPRINT_OFFSET;
+        Self::mix_terminal_resize_fingerprint(&mut fingerprint, self.tabs.len() as u64);
+        for tab in &self.tabs {
+            Self::mix_terminal_resize_fingerprint(&mut fingerprint, tab.id);
+            Self::mix_terminal_resize_fingerprint(&mut fingerprint, tab.panes.len() as u64);
+            for pane in &tab.panes {
+                for byte in pane.id.bytes() {
+                    Self::mix_terminal_resize_fingerprint(&mut fingerprint, u64::from(byte));
+                }
+                Self::mix_terminal_resize_fingerprint(&mut fingerprint, u64::from(pane.left));
+                Self::mix_terminal_resize_fingerprint(&mut fingerprint, u64::from(pane.top));
+                Self::mix_terminal_resize_fingerprint(&mut fingerprint, u64::from(pane.width));
+                Self::mix_terminal_resize_fingerprint(&mut fingerprint, u64::from(pane.height));
+                Self::mix_terminal_resize_fingerprint(
+                    &mut fingerprint,
+                    pane.pane_zoom_steps as u16 as u64,
+                );
+                Self::mix_terminal_resize_fingerprint(
+                    &mut fingerprint,
+                    u64::from(pane.is_browser()),
+                );
+            }
+        }
+        fingerprint
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn terminal_resize_signature(
+        &self,
+        viewport_width: f32,
+        viewport_height: f32,
+        cell_width: f32,
+        cell_height: f32,
+        sidebar_width: f32,
+        content_top_inset: f32,
+        runtime_kind: RuntimeKind,
+    ) -> TerminalResizeSignature {
+        TerminalResizeSignature {
+            viewport_width_bits: viewport_width.to_bits(),
+            viewport_height_bits: viewport_height.to_bits(),
+            cell_width_bits: cell_width.to_bits(),
+            cell_height_bits: cell_height.to_bits(),
+            sidebar_width_bits: sidebar_width.to_bits(),
+            content_top_inset_bits: content_top_inset.to_bits(),
+            padding_x_bits: self.padding_x.to_bits(),
+            padding_y_bits: self.padding_y.to_bits(),
+            runtime_kind,
+            pane_layout_fingerprint: self.pane_layout_fingerprint(),
+        }
+    }
+
+    fn sync_active_alternate_screen_state(&self) {
+        let Some(tab) = self.tabs.get(self.active_tab) else {
+            return;
+        };
+        for pane in &tab.panes {
+            let Some(terminal) = pane.maybe_terminal() else {
+                continue;
+            };
+            let alternate_screen = terminal.alternate_screen_mode();
+            let previous = pane.last_alternate_screen.replace(alternate_screen);
+            if alternate_screen && !previous {
+                terminal.nudge_resize();
+            }
+        }
+    }
+
     fn font_size_cache_key(font_size: Pixels) -> u32 {
         let font_size_px: f32 = font_size.into();
         font_size_px.to_bits()
@@ -290,6 +366,20 @@ impl TerminalView {
             .get(self.active_tab)
             .map_or(0, |tab| tab.panes.len());
         let total_sidebar_width = sidebar_width + self.workspace_sidebar_width();
+        let resize_signature = self.terminal_resize_signature(
+            viewport_width,
+            viewport_height,
+            cell_width,
+            cell_height,
+            total_sidebar_width,
+            content_top_inset,
+            backend_mode,
+        );
+        if self.last_terminal_resize_signature == Some(resize_signature) {
+            self.sync_active_alternate_screen_state();
+            return;
+        }
+
         let (cols, rows) = Self::terminal_grid_size_for_pane_count(
             active_pane_count,
             viewport_width,
@@ -316,20 +406,18 @@ impl TerminalView {
                 }
             }
             RuntimeKind::Native => {
-                let native_tabs = self
-                    .tabs
-                    .iter()
-                    .filter_map(|tab| {
-                        let pane_count = tab.panes.len();
-                        let tab_id = tab.id;
-                        (pane_count > 0).then_some((tab_id, pane_count))
-                    })
-                    .collect::<Vec<_>>();
-                for (tab_id, pane_count) in native_tabs {
-                    if let Some(tab_index) = self.tab_index_by_id(tab_id)
-                        && let Some(tab) = self.tabs.get_mut(tab_index)
-                        && !Self::repair_native_tab_active_pane_for_resize(tab)
-                    {
+                let mut tab_index = 0usize;
+                while tab_index < self.tabs.len() {
+                    let (tab_id, pane_count, should_sync) = {
+                        let tab = &mut self.tabs[tab_index];
+                        (
+                            tab.id,
+                            tab.panes.len(),
+                            Self::repair_native_tab_active_pane_for_resize(tab),
+                        )
+                    };
+                    tab_index += 1;
+                    if !should_sync {
                         continue;
                     }
                     let (cols, rows) = Self::terminal_grid_size_for_pane_count(
@@ -414,21 +502,24 @@ impl TerminalView {
                         needs_throttle_follow_up = true;
                     }
                 }
-
-                let alt_screen = terminal.alternate_screen_mode();
-                let prev_alt_screen = pane.last_alternate_screen.get();
-                if alt_screen != prev_alt_screen {
-                    pane.last_alternate_screen.set(alt_screen);
-                    if alt_screen {
-                        terminal.nudge_resize();
-                    }
-                }
             }
         }
 
         if needs_throttle_follow_up {
+            self.last_terminal_resize_signature = None;
             self.schedule_resize_throttle_follow_up(throttle_follow_up_delay, cx);
+        } else {
+            self.last_terminal_resize_signature = Some(self.terminal_resize_signature(
+                viewport_width,
+                viewport_height,
+                cell_width,
+                cell_height,
+                total_sidebar_width,
+                content_top_inset,
+                backend_mode,
+            ));
         }
+        self.sync_active_alternate_screen_state();
     }
 }
 

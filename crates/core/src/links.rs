@@ -7,7 +7,9 @@ use std::sync::{Mutex, OnceLock};
 
 use alacritty_terminal::{
     event::EventListener,
-    term::{Term, cell::Hyperlink},
+    grid::Dimensions,
+    index::{Column, Line},
+    term::Term,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,32 +95,30 @@ pub fn hyperlink_at_viewport_cell<T: EventListener>(
     row: usize,
     col: usize,
 ) -> Option<DetectedLink> {
-    let content = term.renderable_content();
-    let display_offset = content.display_offset;
-
-    let mut row_links: Vec<Option<Hyperlink>> = Vec::new();
-    for indexed_cell in content.display_iter {
-        let cell_row = indexed_cell.point.line.0 + display_offset as i32;
-        if cell_row < 0 || cell_row as usize != row {
-            continue;
-        }
-        let cell_col = indexed_cell.point.column.0;
-        if row_links.len() <= cell_col {
-            row_links.resize(cell_col + 1, None);
-        }
-        row_links[cell_col] = indexed_cell.cell.hyperlink();
+    let grid = term.grid();
+    let columns = grid.columns();
+    if row >= grid.screen_lines() || col >= columns {
+        return None;
     }
 
-    let target = row_links.get(col).cloned().flatten()?;
-    let matches_target =
-        |link: &Option<Hyperlink>| link.as_ref().is_some_and(|other| *other == target);
+    // Viewport rows map directly into the live/history grid after subtracting
+    // display_offset. Index that one row instead of materializing hyperlink
+    // metadata for every visible cell on every mouse-hover lookup.
+    let line = Line(row as i32 - grid.display_offset() as i32);
+    let row_cells = &grid[line];
+    let target = row_cells[Column(col)].hyperlink()?;
+    let matches_target = |candidate_col: usize| {
+        row_cells[Column(candidate_col)]
+            .hyperlink()
+            .is_some_and(|other| other == target)
+    };
 
     let mut start_col = col;
-    while start_col > 0 && row_links.get(start_col - 1).is_some_and(matches_target) {
+    while start_col > 0 && matches_target(start_col - 1) {
         start_col -= 1;
     }
     let mut end_col = col;
-    while row_links.get(end_col + 1).is_some_and(matches_target) {
+    while end_col + 1 < columns && matches_target(end_col + 1) {
         end_col += 1;
     }
 

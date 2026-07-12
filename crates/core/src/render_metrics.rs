@@ -63,8 +63,16 @@ static SPAN_ROW_OPS_REBUILD_US: AtomicU64 = AtomicU64::new(0);
 static SPAN_TEXT_SHAPING_US: AtomicU64 = AtomicU64::new(0);
 static SPAN_GRID_PAINT_US: AtomicU64 = AtomicU64::new(0);
 
+/// Whether render instrumentation is active for this process.
+///
+/// Hot paths use this to skip timestamp collection entirely during normal
+/// sessions instead of measuring work that the disabled counters will drop.
+pub fn terminal_ui_render_metrics_enabled() -> bool {
+    METRICS_ENABLED.load(Ordering::Relaxed)
+}
+
 fn increment_counter(counter: &AtomicU64) {
-    if !METRICS_ENABLED.load(Ordering::Relaxed) {
+    if !terminal_ui_render_metrics_enabled() {
         return;
     }
     counter.fetch_add(1, Ordering::Relaxed);
@@ -91,7 +99,7 @@ pub(crate) fn increment_runtime_wakeup_count() {
 }
 
 fn add_to_counter(counter: &AtomicU64, micros: u64) {
-    if !METRICS_ENABLED.load(Ordering::Relaxed) {
+    if !terminal_ui_render_metrics_enabled() {
         return;
     }
     counter.fetch_add(micros, Ordering::Relaxed);
