@@ -374,12 +374,14 @@ Supported fields:
 - `task.<name>.command` (required): shell command to run in a new tab
 - `task.<name>.layout` (optional): only show the task when that saved layout is active
 - `task.<name>.working_dir` (optional): working directory for the launched tab
+- `task.<name>.keybind` (optional): custom trigger that runs this task directly
 
 Example:
 
 ```txt
 task.build.command = cargo build
 task.build.working_dir = crates/cli
+task.build.keybind = secondary-shift-b
 task.dev_server.layout = dashboard
 task.dev_server.command = cargo run
 ```

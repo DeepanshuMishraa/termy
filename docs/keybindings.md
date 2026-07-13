@@ -294,3 +294,12 @@ keybind = cmd-v=paste
 keybind = secondary-p=toggle_command_palette
 keybind = secondary-t=new_tab
 ```
+
+### 5) Run a named task directly
+
+```txt
+task.build.command = cargo build
+task.build.keybind = secondary-shift-b
+```
+
+Task keybinds use the same trigger syntax as regular keybinds. Later task entries win when task triggers conflict, and a task trigger overrides a regular command binding using the same trigger.

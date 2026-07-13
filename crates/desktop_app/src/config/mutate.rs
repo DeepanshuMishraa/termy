@@ -293,6 +293,14 @@ fn upsert_task_lines(contents: &str, task: &TaskConfig) -> String {
     {
         insertion.push(format!("task.{task_name}.working_dir = {working_dir}"));
     }
+    if let Some(keybind) = task
+        .keybind
+        .as_ref()
+        .map(|keybind| keybind.value.trim())
+        .filter(|value| !value.is_empty())
+    {
+        insertion.push(format!("task.{task_name}.keybind = {keybind}"));
+    }
     out.splice(insert_index..insert_index, insertion);
 
     if out.is_empty() {
@@ -419,11 +427,16 @@ mod tests {
                 command: "cargo build".to_string(),
                 layout: Some("dashboard".to_string()),
                 working_dir: None,
+                keybind: Some(termy_config_core::KeybindConfigLine {
+                    line_number: 99,
+                    value: "secondary-shift-b".to_string(),
+                }),
             },
         );
 
         assert!(output.contains("task.build.command = cargo build\n"));
         assert!(output.contains("task.build.layout = dashboard\n"));
+        assert!(output.contains("task.build.keybind = secondary-shift-b\n"));
         assert!(!output.contains("cargo test"));
         assert!(output.contains("[colors]\nforeground = #fff\n"));
     }

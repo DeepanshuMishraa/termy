@@ -211,6 +211,8 @@ mod tests {
                     uses_terminal_default_bg: true,
                     bold: false,
                     render_text: char != ' ',
+                    wide_character_spacer: false,
+                    line_wrapped: false,
                 });
             }
         }

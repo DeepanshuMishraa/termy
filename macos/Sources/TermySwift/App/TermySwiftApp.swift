@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-private enum AppMetadata {
+enum AppMetadata {
     static let displayName = "Termy"
     static let bundleIdentifier = "com.lassevestergaard.termy"
 }
@@ -117,6 +117,9 @@ struct TermySwiftApp: App {
                 }
                 Button("Install Command Line Tool…") {
                     TermyNativeAppActions.installCLI()
+                }
+                Button("Export Diagnostics…") {
+                    TermyDiagnosticsExporter.shared.export()
                 }
             }
 
@@ -407,6 +410,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var settingsObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        TermyNativeLog.lifecycle.notice("Application finished launching")
         NSApp.setActivationPolicy(.regular)
         NSWindow.allowsAutomaticWindowTabbing = true
         AppLogoManager.shared.applyToDock()
@@ -454,9 +458,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             NativeTabWindowManager.shared.openNativeTab(startupTask: NativeBenchmarkLaunch.task)
         }
+        NativeSoakRunner.shared.startIfRequested()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        TermyNativeLog.lifecycle.notice("Application will terminate")
         closePaneEventMonitor?.invalidate()
         if let settingsObserver {
             NotificationCenter.default.removeObserver(settingsObserver)
@@ -465,6 +471,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if NativeSoakRunner.isRequested {
+            return .terminateNow
+        }
         let safety = TermySafetyConfiguration.loadCurrent()
         let hasRunningProcess = TerminalCommandRouter.shared.hasRunningTerminalProcess()
         guard safety.warnOnQuit || (safety.warnOnQuitWithRunningProcess && hasRunningProcess) else {
@@ -1140,13 +1149,11 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
     /// Moves a specific tab to `targetIndex`, used by drag-to-reorder in the
     /// custom tab chrome.
     func moveNativeTab(_ descriptor: NativeTabDescriptor, toIndex targetIndex: Int) {
-        guard let movingWindow = descriptor.window,
-              let sourceWindow = nativeTabSourceWindow()
-        else {
+        guard let movingWindow = descriptor.window else {
             return
         }
 
-        let tabbedWindows = nativeTabWindows(for: sourceWindow)
+        let tabbedWindows = nativeTabWindows(for: movingWindow)
         guard let currentIndex = tabbedWindows.firstIndex(where: { $0 === movingWindow }) else {
             return
         }

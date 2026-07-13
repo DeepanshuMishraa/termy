@@ -671,6 +671,7 @@ fn task_entries_parse_into_named_tasks() {
     let config = parse(
         "task.build.command = cargo build\n\
          task.build.working_dir = crates/cli\n\
+         task.build.keybind = secondary-shift-b\n\
          task.dev_server.layout = dashboard\n\
          task.dev_server.command = cargo run\n",
     );
@@ -680,10 +681,18 @@ fn task_entries_parse_into_named_tasks() {
     assert_eq!(config.tasks[0].command, "cargo build");
     assert_eq!(config.tasks[0].working_dir.as_deref(), Some("crates/cli"));
     assert_eq!(config.tasks[0].layout, None);
+    assert_eq!(
+        config.tasks[0]
+            .keybind
+            .as_ref()
+            .map(|keybind| (keybind.line_number, keybind.value.as_str())),
+        Some((3, "secondary-shift-b"))
+    );
 
     assert_eq!(config.tasks[1].name, "dev_server");
     assert_eq!(config.tasks[1].layout.as_deref(), Some("dashboard"));
     assert_eq!(config.tasks[1].command, "cargo run");
+    assert_eq!(config.tasks[1].keybind, None);
 }
 
 #[test]

@@ -692,7 +692,9 @@ final class LibTermyTerminal {
             background: TerminalRGBA(ffiCell.bg),
             usesTerminalDefaultBackground: ffiCell.uses_terminal_default_bg,
             renderText: ffiCell.render_text,
-            bold: ffiCell.bold
+            bold: ffiCell.bold,
+            wideCharacterSpacer: ffiCell.wide_character_spacer,
+            lineWrapped: ffiCell.line_wrapped
         )
     }
 

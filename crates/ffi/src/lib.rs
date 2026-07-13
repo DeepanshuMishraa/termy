@@ -71,6 +71,8 @@ pub struct TermyFfiCell {
     pub uses_terminal_default_bg: bool,
     pub bold: bool,
     pub render_text: bool,
+    pub wide_character_spacer: bool,
+    pub line_wrapped: bool,
 }
 
 #[repr(C)]
@@ -390,6 +392,8 @@ impl From<TermyCell> for TermyFfiCell {
             uses_terminal_default_bg: cell.uses_terminal_default_bg,
             bold: cell.bold,
             render_text: cell.render_text,
+            wide_character_spacer: cell.wide_character_spacer,
+            line_wrapped: cell.line_wrapped,
         }
     }
 }
@@ -1435,10 +1439,17 @@ fn settings_read_contents() -> String {
 
 fn settings_write_contents(contents: &str) -> Result<(), TermyFfiStatus> {
     let path = cfg::config_path().ok_or(TermyFfiStatus::WriteFailed)?;
+    settings_write_contents_to(&path, contents)
+}
+
+fn settings_write_contents_to(
+    path: &std::path::Path,
+    contents: &str,
+) -> Result<(), TermyFfiStatus> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|_| TermyFfiStatus::WriteFailed)?;
     }
-    std::fs::write(&path, contents).map_err(|_| TermyFfiStatus::WriteFailed)
+    std::fs::write(path, contents).map_err(|_| TermyFfiStatus::WriteFailed)
 }
 
 fn settings_color_hex(app: &cfg::AppConfig, id: cfg::ColorSettingId) -> Option<String> {
@@ -3263,6 +3274,24 @@ mod tests {
         assert!(size.rows > 0);
         assert!(size.cell_width > 0.0);
         assert!(size.cell_height > 0.0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn settings_write_reports_read_only_config_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().expect("temporary settings root");
+        let config_dir = root.path().join("termy");
+        std::fs::create_dir(&config_dir).expect("create config directory");
+        std::fs::set_permissions(&config_dir, std::fs::Permissions::from_mode(0o500))
+            .expect("make config directory read-only");
+
+        let result = settings_write_contents_to(&config_dir.join("config.txt"), "font_size = 14\n");
+
+        std::fs::set_permissions(&config_dir, std::fs::Permissions::from_mode(0o700))
+            .expect("restore config directory permissions");
+        assert_eq!(result, Err(TermyFfiStatus::WriteFailed));
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use cocoa::base::{BOOL, NO, id, nil};
+use cocoa::base::{BOOL, NO, YES, id, nil};
 use gpui::Window;
 use objc::{
     declare::ClassDecl,
@@ -16,6 +16,11 @@ unsafe extern "C" {
     fn object_setClass(obj: *mut Object, cls: *const Class) -> *const Class;
 }
 
+#[link(name = "AppKit", kind = "framework")]
+unsafe extern "C" {
+    static NSAccessibilityTextAreaRole: id;
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum NativeTitlebarDragError {
     WindowHandle,
@@ -24,6 +29,7 @@ pub(crate) enum NativeTitlebarDragError {
     MissingWindow,
     MissingViewClass,
     ClassRegistration,
+    FirstResponder,
 }
 
 impl fmt::Display for NativeTitlebarDragError {
@@ -45,6 +51,10 @@ impl fmt::Display for NativeTitlebarDragError {
             Self::ClassRegistration => write!(
                 f,
                 "macOS titlebar drag bridge failed to register its NSView subclass.",
+            ),
+            Self::FirstResponder => write!(
+                f,
+                "macOS terminal content view could not become the first responder.",
             ),
         }
     }
@@ -91,6 +101,11 @@ unsafe fn disable_automatic_content_view_window_drag_for_view(
         }
     }
 
+    let became_first_responder: BOOL = unsafe { msg_send![ns_window, makeFirstResponder: ns_view] };
+    if became_first_responder != YES {
+        return Err(NativeTitlebarDragError::FirstResponder);
+    }
+
     Ok(())
 }
 
@@ -107,6 +122,26 @@ fn non_draggable_content_view_class(
             sel!(mouseDownCanMoveWindow),
             mouse_down_can_move_window as extern "C" fn(&Object, Sel) -> BOOL,
         );
+        decl.add_method(
+            sel!(acceptsFirstResponder),
+            accepts_first_responder as extern "C" fn(&Object, Sel) -> BOOL,
+        );
+        // The pinned GPUI revision predates its AccessKit integration, so its
+        // custom NSTextInputClient view is otherwise invisible to macOS
+        // accessibility clients. Voice input apps then see the window itself
+        // as focused and refuse to insert the transcript.
+        decl.add_method(
+            sel!(isAccessibilityElement),
+            is_accessibility_element as extern "C" fn(&Object, Sel) -> BOOL,
+        );
+        decl.add_method(
+            sel!(accessibilityRole),
+            accessibility_role as extern "C" fn(&Object, Sel) -> id,
+        );
+        decl.add_method(
+            sel!(isAccessibilityFocused),
+            is_accessibility_focused as extern "C" fn(&Object, Sel) -> BOOL,
+        );
         std::ptr::from_ref::<Class>(decl.register()) as usize
     });
 
@@ -119,4 +154,32 @@ fn non_draggable_content_view_class(
 
 extern "C" fn mouse_down_can_move_window(_this: &Object, _sel: Sel) -> BOOL {
     NO
+}
+
+extern "C" fn accepts_first_responder(_this: &Object, _sel: Sel) -> BOOL {
+    YES
+}
+
+extern "C" fn is_accessibility_element(_this: &Object, _sel: Sel) -> BOOL {
+    YES
+}
+
+extern "C" fn accessibility_role(_this: &Object, _sel: Sel) -> id {
+    unsafe { NSAccessibilityTextAreaRole }
+}
+
+extern "C" fn is_accessibility_focused(this: &Object, _sel: Sel) -> BOOL {
+    unsafe {
+        let window: id = msg_send![this, window];
+        if window == nil {
+            return NO;
+        }
+
+        let first_responder: id = msg_send![window, firstResponder];
+        if std::ptr::eq(first_responder.cast_const(), std::ptr::from_ref(this)) {
+            YES
+        } else {
+            NO
+        }
+    }
 }

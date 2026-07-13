@@ -1,4 +1,5 @@
 use super::super::*;
+use super::plugins::PluginInputSession;
 use super::state_layouts::SavedLayoutIntent;
 use super::state_tmux::{TmuxSessionIntent, TmuxSessionRow, TmuxSessionStatusHint};
 use crate::config::SHELL_DECIDE_THEME_ID;
@@ -7,6 +8,7 @@ use std::collections::HashMap;
 #[cfg(unix)]
 #[cfg(test)]
 use std::os::unix::fs::PermissionsExt;
+use termy_plugin_runtime::PluginIcon;
 use termy_terminal_ui::TmuxSocketTarget;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -16,6 +18,7 @@ pub(in super::super) enum CommandPaletteMode {
     TmuxSessions,
     Layouts,
     Tasks,
+    PluginInputs,
     AppInfo,
 }
 
@@ -34,6 +37,18 @@ pub(in super::super) enum CommandPaletteCommandIntent {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum CommandPaletteItemKind {
     Command(CommandAction),
+    PluginCommand {
+        plugin_id: String,
+        command_id: String,
+        icon: PluginIcon,
+    },
+    PluginInputSubmit {
+        icon: PluginIcon,
+    },
+    PluginInputOption {
+        value: serde_json::Value,
+        icon: PluginIcon,
+    },
     Theme(String),
     TmuxSessionAttachOrSwitch {
         session_name: String,
@@ -114,7 +129,7 @@ pub(super) struct CommandPaletteItem {
     pub(super) title: String,
     pub(super) keywords: String,
     pub(super) enabled: bool,
-    pub(super) status_hint: Option<&'static str>,
+    pub(super) status_hint: Option<String>,
     pub(super) tmux_status_hint: Option<TmuxSessionStatusHint>,
     pub(super) kind: CommandPaletteItemKind,
 }
@@ -131,7 +146,7 @@ impl CommandPaletteItem {
             title: title.to_string(),
             keywords: keywords.to_string(),
             enabled,
-            status_hint,
+            status_hint: status_hint.map(str::to_string),
             tmux_status_hint: None,
             kind: CommandPaletteItemKind::Command(action),
         }
@@ -148,7 +163,7 @@ impl CommandPaletteItem {
             title: format!("{label}: {truncated}"),
             keywords,
             enabled: true,
-            status_hint: Some("Copy"),
+            status_hint: Some("Copy".to_string()),
             tmux_status_hint: None,
             kind: CommandPaletteItemKind::AppInfoEntry { label, value },
         }
@@ -159,7 +174,7 @@ impl CommandPaletteItem {
             title: "Copy all to clipboard".to_string(),
             keywords: "copy all info clipboard".to_string(),
             enabled: true,
-            status_hint: Some("Copy"),
+            status_hint: Some("Copy".to_string()),
             tmux_status_hint: None,
             kind: CommandPaletteItemKind::AppInfoCopyAll { payload },
         }
@@ -251,6 +266,7 @@ pub(in super::super) struct CommandPaletteState {
     pub(super) saved_layout_names: Vec<String>,
     pub(super) saved_layout_live_name: Option<String>,
     pub(super) saved_layout_autosave_enabled: bool,
+    pub(super) plugin_input_session: Option<PluginInputSession>,
 }
 
 impl CommandPaletteState {
@@ -281,6 +297,7 @@ impl CommandPaletteState {
             saved_layout_names: Vec::new(),
             saved_layout_live_name: None,
             saved_layout_autosave_enabled: false,
+            plugin_input_session: None,
         }
     }
 
@@ -327,6 +344,25 @@ impl CommandPaletteState {
     pub(super) fn set_items(&mut self, items: Vec<CommandPaletteItem>) {
         self.items = items;
         self.refilter_current_query();
+    }
+
+    pub(super) fn set_items_unfiltered(&mut self, items: Vec<CommandPaletteItem>) {
+        self.filtered_indices = (0..items.len()).collect();
+        self.items = items;
+        self.clamp_selection();
+    }
+
+    pub(super) fn reset_for_next_plugin_input(&mut self) {
+        self.selected_filtered_index = 0;
+        self.scroll_handle = UniformListScrollHandle::new();
+        self.reset_scroll_animation_state();
+    }
+
+    pub(super) fn begin_plugin_inputs(&mut self, session: PluginInputSession) {
+        self.plugin_input_session = None;
+        self.mode = CommandPaletteMode::PluginInputs;
+        self.reset_for_mode();
+        self.plugin_input_session = Some(session);
     }
 
     pub(super) fn command_intent(&self) -> CommandPaletteCommandIntent {
@@ -499,6 +535,9 @@ impl CommandPaletteState {
         }
         if self.mode != CommandPaletteMode::Tasks {
             self.task_intent = TaskIntent::Browse;
+        }
+        if self.mode != CommandPaletteMode::PluginInputs {
+            self.plugin_input_session = None;
         }
     }
 }

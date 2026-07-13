@@ -119,7 +119,12 @@ struct TerminalWorkspaceView: View {
             }
 
             if let workspacePersistenceError {
-                dismissibleBanner(workspacePersistenceError, color: .orange) {
+                dismissibleBanner(
+                    workspacePersistenceError,
+                    color: .orange,
+                    actionTitle: "Reset Workspace",
+                    onAction: resetWorkspacePersistence
+                ) {
                     self.workspacePersistenceError = nil
                 }
             }
@@ -161,12 +166,19 @@ struct TerminalWorkspaceView: View {
     private func dismissibleBanner(
         _ message: String,
         color: Color,
+        actionTitle: String? = nil,
+        onAction: (() -> Void)? = nil,
         onDismiss: @escaping () -> Void
     ) -> some View {
         HStack(spacing: 8) {
             Text(message)
                 .font(.system(size: 12, design: .monospaced))
                 .foregroundStyle(color)
+            if let actionTitle, let onAction {
+                Button(actionTitle, action: onAction)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+            }
             Button(action: onDismiss) {
                 Image(systemName: "xmark")
             }
@@ -299,6 +311,9 @@ struct TerminalWorkspaceView: View {
         } catch TerminalWorkspacePersistenceError.missingLastSession {
             workspacePersistenceError = nil
         } catch {
+            TermyNativeLog.lifecycle.error(
+                "Workspace restore failed: \(String(reflecting: type(of: error)), privacy: .public)"
+            )
             workspacePersistenceError = "Could not restore workspace: \(error)"
         }
     }
@@ -338,7 +353,23 @@ struct TerminalWorkspaceView: View {
             }
             workspacePersistenceError = nil
         } catch {
+            TermyNativeLog.lifecycle.error(
+                "Workspace save failed: \(String(reflecting: type(of: error)), privacy: .public)"
+            )
             workspacePersistenceError = "Could not save workspace: \(error)"
+        }
+    }
+
+    private func resetWorkspacePersistence() {
+        do {
+            try workspacePersistence.reset()
+            TermyNativeLog.lifecycle.notice("Workspace persistence reset")
+            workspacePersistenceError = nil
+        } catch {
+            TermyNativeLog.lifecycle.error(
+                "Workspace reset failed: \(String(reflecting: type(of: error)), privacy: .public)"
+            )
+            workspacePersistenceError = "Could not reset workspace: \(error)"
         }
     }
 

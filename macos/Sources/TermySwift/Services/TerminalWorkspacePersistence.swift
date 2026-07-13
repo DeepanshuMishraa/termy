@@ -1,12 +1,15 @@
 import Foundation
 
-enum TerminalWorkspacePersistenceError: Error, CustomStringConvertible {
+enum TerminalWorkspacePersistenceError: Error, CustomStringConvertible, Equatable {
     case missingLastSession
+    case unsupportedVersion(Int)
 
     var description: String {
         switch self {
         case .missingLastSession:
             return "No persisted terminal workspace session exists"
+        case .unsupportedVersion(let version):
+            return "Unsupported terminal workspace version \(version)"
         }
     }
 }
@@ -170,7 +173,11 @@ struct TerminalWorkspacePersistence {
     func loadState() throws -> TerminalWorkspacePersistenceState {
         do {
             let data = try Data(contentsOf: fileURL)
-            return try JSONDecoder().decode(TerminalWorkspacePersistenceState.self, from: data)
+            let state = try JSONDecoder().decode(TerminalWorkspacePersistenceState.self, from: data)
+            guard state.version == TerminalWorkspacePersistenceState.currentVersion else {
+                throw TerminalWorkspacePersistenceError.unsupportedVersion(state.version)
+            }
+            return state
         } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
             return TerminalWorkspacePersistenceState()
         } catch let error as DecodingError {
@@ -208,6 +215,21 @@ struct TerminalWorkspacePersistence {
         try saveLastSession(nil)
     }
 
+    func reset() throws {
+        do {
+            try FileManager.default.removeItem(at: fileURL)
+        } catch let error as CocoaError where error.code == .fileNoSuchFile {
+            return
+        } catch {
+            let nsError = error as NSError
+            guard nsError.domain == NSCocoaErrorDomain,
+                  nsError.code == NSFileNoSuchFileError || nsError.code == NSFileReadNoSuchFileError
+            else {
+                throw error
+            }
+        }
+    }
+
     func saveAutosavedLayout(_ snapshot: TerminalWorkspaceSnapshot?) throws {
         var state = try loadState()
         state.layouts.removeAll { $0.name == Self.autosavedLayoutName }
@@ -222,7 +244,7 @@ struct TerminalWorkspacePersistence {
 
     func saveState(_ state: TerminalWorkspacePersistenceState) throws {
         if state.lastSession == nil && state.layouts.isEmpty {
-            try? FileManager.default.removeItem(at: fileURL)
+            try reset()
             return
         }
 

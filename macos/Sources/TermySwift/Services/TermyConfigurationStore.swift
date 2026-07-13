@@ -30,8 +30,14 @@ final class TermyConfigurationStore: ObservableObject {
             let configuration = try TermyAppConfiguration.loadFresh()
             self.configuration = configuration
             loadErrorMessage = configuration.configIssueMessage
+            TermyNativeLog.lifecycle.info(
+                "Configuration reloaded with \(configuration.diagnostics.count, privacy: .public) diagnostics"
+            )
             return configuration
         } catch {
+            TermyNativeLog.lifecycle.error(
+                "Configuration reload failed: \(String(reflecting: type(of: error)), privacy: .public)"
+            )
             loadErrorMessage = String(describing: error)
             return configuration
         }

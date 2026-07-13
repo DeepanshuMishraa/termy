@@ -98,6 +98,8 @@ typedef struct {
   bool uses_terminal_default_bg;
   bool bold;
   bool render_text;
+  bool wide_character_spacer;
+  bool line_wrapped;
 } TermyFfiCell;
 
 typedef struct {

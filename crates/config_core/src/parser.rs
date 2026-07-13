@@ -20,6 +20,7 @@ struct PendingTaskConfig {
     command: Option<String>,
     layout: Option<String>,
     working_dir: Option<String>,
+    keybind: Option<KeybindConfigLine>,
 }
 
 enum TaskKeyParseError {
@@ -141,12 +142,31 @@ impl AppConfig {
                                 ..PendingTaskConfig::default()
                             });
                         task.working_dir = parse_optional_string_value(value);
+                    } else if task_field.eq_ignore_ascii_case("keybind") {
+                        let task = task_entries
+                            .entry(task_name.to_string())
+                            .or_insert_with(|| PendingTaskConfig {
+                                first_line: line_number,
+                                ..PendingTaskConfig::default()
+                            });
+                        if let Some(parsed) = parse_string_field(
+                            &mut diagnostics,
+                            line_number,
+                            key,
+                            value,
+                            "a non-empty keybind trigger",
+                        ) {
+                            task.keybind = Some(KeybindConfigLine {
+                                line_number,
+                                value: parsed,
+                            });
+                        }
                     } else {
                         diagnostics.push(ConfigDiagnostic {
                             line_number,
                             kind: ConfigDiagnosticKind::InvalidValue,
                             message: format!(
-                                "Invalid task field '{task_field}' for '{key}': expected command, layout, or working_dir"
+                                "Invalid task field '{task_field}' for '{key}': expected command, layout, working_dir, or keybind"
                             ),
                         });
                     }
@@ -891,6 +911,7 @@ impl AppConfig {
                 command,
                 layout: task.layout,
                 working_dir: task.working_dir,
+                keybind: task.keybind,
             });
         }
 

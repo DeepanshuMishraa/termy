@@ -6,6 +6,7 @@ members = [
   "crates/cli_install_core",
   "crates/command_core",
   "crates/config_core",
+  "crates/plugin_runtime",
   "crates/release_core",
   "crates/native_sdk",
   "crates/auto_update",
@@ -39,6 +40,7 @@ sha2 = "0.10"
 tempfile = "3"
 unicode-width = "0.2"
 ureq = { version = "2", features = ["json"] }
+url = "2.5"
 
 [workspace.lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [

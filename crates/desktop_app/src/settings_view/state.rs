@@ -327,9 +327,9 @@ impl SettingsWindow {
             SettingsSection::Appearance => "Appearance",
             SettingsSection::Terminal => "Terminal",
             SettingsSection::Tabs => "Tabs",
-            SettingsSection::Advanced => "Advanced",
+            SettingsSection::Advanced => "General",
             SettingsSection::Colors => "Colors",
-            SettingsSection::Keybindings => "Keybindings",
+            SettingsSection::Keybindings => "Keyboard shortcuts",
             SettingsSection::ThemeStore => return,
         };
         let title = "Reset Section";

@@ -7,6 +7,7 @@ use state::{
 };
 use termy_command_core::{CommandAvailability, CommandCapabilities, CommandUnavailableReason};
 
+mod plugins;
 mod render;
 mod state;
 mod state_layouts;
@@ -68,6 +69,11 @@ fn command_icon_path(id: termy_command_core::CommandId) -> &'static str {
 fn palette_item_icon_path(item: &CommandPaletteItem) -> &'static str {
     match &item.kind {
         CommandPaletteItemKind::Command(action) => command_icon_path(action.to_command_id()),
+        CommandPaletteItemKind::PluginCommand { icon, .. }
+        | CommandPaletteItemKind::PluginInputSubmit { icon }
+        | CommandPaletteItemKind::PluginInputOption { icon, .. } => {
+            plugins::plugin_icon_path(*icon)
+        }
         CommandPaletteItemKind::Theme(_) => "icons/settings/themes.svg",
         CommandPaletteItemKind::TmuxSessionAttachOrSwitch { .. }
         | CommandPaletteItemKind::TmuxSessionCreateAndAttach { .. }
@@ -104,6 +110,7 @@ enum CommandPaletteEscapeAction {
     BackToTmuxRenameSelect,
     BackToSavedLayoutRenameSelect,
     BackToTaskBrowse,
+    BackFromPluginInput,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -270,7 +277,10 @@ impl TerminalView {
         let _ = cx;
         match mode {
             CommandPaletteMode::Commands => {
-                Self::command_palette_command_items_for_state(self.command_capabilities())
+                let mut items =
+                    Self::command_palette_command_items_for_state(self.command_capabilities());
+                items.extend(self.command_palette_plugin_items());
+                items
             }
             CommandPaletteMode::Themes => self.command_palette_theme_items(),
             CommandPaletteMode::TmuxSessions => self.command_palette.tmux_session_items_for_query(
@@ -286,6 +296,7 @@ impl TerminalView {
                 items
             }
             CommandPaletteMode::Tasks => self.command_palette_task_items(),
+            CommandPaletteMode::PluginInputs => self.command_palette_plugin_input_items(),
             CommandPaletteMode::AppInfo => self.command_palette_app_info_items(),
         }
     }
@@ -476,7 +487,9 @@ impl TerminalView {
                             title: "Save Current Command as Task…".to_string(),
                             keywords: "task save current command active".to_string(),
                             enabled: active_command.is_some(),
-                            status_hint: active_command.is_none().then_some("no active command"),
+                            status_hint: active_command
+                                .is_none()
+                                .then(|| "no active command".to_string()),
                             tmux_status_hint: None,
                             kind: CommandPaletteItemKind::TaskOpenSaveCurrentCommandGlobalMode,
                         },
@@ -510,7 +523,7 @@ impl TerminalView {
                                 enabled: active_command.is_some(),
                                 status_hint: active_command
                                     .is_none()
-                                    .then_some("no active command"),
+                                    .then(|| "no active command".to_string()),
                                 tmux_status_hint: None,
                                 kind:
                                     CommandPaletteItemKind::TaskOpenSaveCurrentCommandLayoutMode {
@@ -544,7 +557,7 @@ impl TerminalView {
                 title: "Create Task".to_string(),
                 keywords: "task new create add".to_string(),
                 enabled: false,
-                status_hint: Some("use name: command"),
+                status_hint: Some("use name: command".to_string()),
                 tmux_status_hint: None,
                 kind: CommandPaletteItemKind::TaskCreate {
                     task_name: String::new(),
@@ -570,7 +583,7 @@ impl TerminalView {
                 command
             ),
             enabled: !already_exists,
-            status_hint: already_exists.then_some("task exists"),
+            status_hint: already_exists.then(|| "task exists".to_string()),
             tmux_status_hint: None,
             kind: CommandPaletteItemKind::TaskCreate {
                 task_name: task_name.to_string(),
@@ -627,7 +640,11 @@ impl TerminalView {
             termy_toast::error(format!("Failed to load saved layouts: {error}"));
         }
         let items = self.command_palette_items_for_mode(mode, cx);
-        self.command_palette.set_items(items);
+        if mode == CommandPaletteMode::PluginInputs && self.plugin_input_uses_free_text() {
+            self.command_palette.set_items_unfiltered(items);
+        } else {
+            self.command_palette.set_items(items);
+        }
         self.inline_input_selecting = false;
 
         let item_count = self.command_palette.filtered_len();
@@ -677,6 +694,9 @@ impl TerminalView {
             CommandPaletteNotifyEvent::OpenCloseTransition
         };
         self.apply_command_palette_mode_setup(mode, false, notify_event, cx);
+        if mode == CommandPaletteMode::Commands {
+            self.schedule_plugin_refresh(cx);
+        }
     }
 
     pub(super) fn open_command_palette(&mut self, cx: &mut Context<Self>) {
@@ -728,6 +748,13 @@ impl TerminalView {
         } else if self.command_palette.mode() == CommandPaletteMode::Tasks {
             let items = self.command_palette_task_items();
             self.command_palette.set_items(items);
+        } else if self.command_palette.mode() == CommandPaletteMode::PluginInputs {
+            let items = self.command_palette_plugin_input_items();
+            if self.plugin_input_uses_free_text() {
+                self.command_palette.set_items_unfiltered(items);
+            } else {
+                self.command_palette.set_items(items);
+            }
         } else {
             self.command_palette.refilter_current_query();
         }
@@ -909,6 +936,11 @@ impl TerminalView {
                             cx,
                         );
                     }
+                    CommandPaletteEscapeAction::BackFromPluginInput => {
+                        if !self.back_from_plugin_input(cx) {
+                            self.set_command_palette_mode(CommandPaletteMode::Commands, false, cx);
+                        }
+                    }
                 }
             }
             CommandPaletteNavKey::Enter => {
@@ -970,6 +1002,7 @@ impl TerminalView {
                 CommandPaletteEscapeAction::BackToTaskBrowse
             }
             CommandPaletteMode::Tasks => CommandPaletteEscapeAction::BackToCommands,
+            CommandPaletteMode::PluginInputs => CommandPaletteEscapeAction::BackFromPluginInput,
             CommandPaletteMode::AppInfo => CommandPaletteEscapeAction::BackToCommands,
         }
     }
@@ -1014,6 +1047,35 @@ impl TerminalView {
                     return;
                 }
                 self.execute_command_palette_action(action, window, cx);
+            }
+            CommandPaletteItemKind::PluginCommand {
+                plugin_id,
+                command_id,
+                ..
+            } => {
+                if !item.enabled {
+                    termy_toast::info(
+                        item.status_hint
+                            .unwrap_or_else(|| "Plugin command is unavailable".to_string()),
+                    );
+                    self.notify_overlay(cx);
+                    return;
+                }
+                self.start_plugin_command(&plugin_id, &command_id, window, cx);
+            }
+            CommandPaletteItemKind::PluginInputSubmit { .. } => {
+                if !item.enabled {
+                    termy_toast::info(
+                        item.status_hint
+                            .unwrap_or_else(|| "Plugin input is invalid".to_string()),
+                    );
+                    self.notify_overlay(cx);
+                    return;
+                }
+                self.submit_plugin_text_input(window, cx);
+            }
+            CommandPaletteItemKind::PluginInputOption { value, .. } => {
+                self.submit_plugin_input_value(value, window, cx);
             }
             CommandPaletteItemKind::Theme(theme_id) => {
                 self.select_theme_from_palette(theme_id.as_str(), cx);
@@ -1133,7 +1195,7 @@ impl TerminalView {
                 command,
                 working_dir,
                 layout_name,
-            } => self.run_task_from_palette(
+            } => self.run_task(
                 task_name.as_str(),
                 command.as_str(),
                 working_dir.as_deref(),
@@ -1154,7 +1216,7 @@ impl TerminalView {
         }
     }
 
-    fn run_task_from_palette(
+    pub(super) fn run_task(
         &mut self,
         task_name: &str,
         command: &str,
@@ -1176,13 +1238,23 @@ impl TerminalView {
             command_input.push('\n');
         }
 
-        self.add_tab_with_working_dir(working_dir, cx);
-        if let Some(tab) = self.tabs.get(self.active_tab)
-            && let Some(terminal) = tab.active_terminal()
-        {
-            terminal.write_input(command_input.as_bytes());
-            cx.notify();
+        if !self.add_tab_with_working_dir(working_dir, cx) {
+            self.notify_overlay(cx);
+            return;
         }
+        let Some(terminal) = self
+            .tabs
+            .get(self.active_tab)
+            .and_then(TerminalTab::active_terminal)
+        else {
+            termy_toast::error(format!(
+                "Failed to start task \"{task_name}\": new terminal is unavailable"
+            ));
+            self.notify_overlay(cx);
+            return;
+        };
+        terminal.write_input(command_input.as_bytes());
+        cx.notify();
         match layout_name {
             Some(layout_name) => termy_toast::success(format!(
                 "Started task \"{task_name}\" for layout \"{layout_name}\""
@@ -1259,6 +1331,7 @@ impl TerminalView {
             command: command.to_string(),
             layout: layout_name.map(|value| value.trim().to_string()),
             working_dir: None,
+            keybind: None,
         };
 
         match config::upsert_task(task.clone()) {
@@ -1751,7 +1824,10 @@ mod tests {
             })
             .expect("missing Install CLI in unavailable command palette state");
         assert!(!unavailable_install_cli.enabled);
-        assert_eq!(unavailable_install_cli.status_hint, Some("Installed"));
+        assert_eq!(
+            unavailable_install_cli.status_hint.as_deref(),
+            Some("Installed")
+        );
     }
 
     #[test]

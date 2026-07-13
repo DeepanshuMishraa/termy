@@ -120,10 +120,11 @@ impl SettingsWindow {
                 cx,
             ));
         }
-        let theme_group = self.render_settings_group("THEME", theme_rows);
+        let theme_group = self.render_settings_group("Theme", theme_rows);
 
+        let mut window_rows = Vec::new();
         #[cfg(target_os = "macos")]
-        let app_rows = vec![
+        window_rows.push(
             self.render_editable_row(
                 "app_icon",
                 EditableField::AppIcon,
@@ -136,21 +137,16 @@ impl SettingsWindow {
                 .to_string(),
                 cx,
             ),
-        ];
-        #[cfg(target_os = "macos")]
-        let app_group = self.render_settings_group("APP", app_rows);
-
-        let chrome_rows = vec![self.render_root_bool_setting_row(
-            "chrome_contrast",
-            "chrome-contrast-toggle",
-            RootSettingId::ChromeContrast,
-            chrome_contrast,
-            "Saved",
-            cx,
-        )];
-        let chrome_group = self.render_settings_group("CHROME", chrome_rows);
-
-        let window_rows = vec![
+        );
+        window_rows.extend([
+            self.render_root_bool_setting_row(
+                "chrome_contrast",
+                "chrome-contrast-toggle",
+                RootSettingId::ChromeContrast,
+                chrome_contrast,
+                "Saved",
+                cx,
+            ),
             self.render_root_bool_setting_row(
                 "background_blur",
                 "blur-toggle",
@@ -173,8 +169,8 @@ impl SettingsWindow {
                 "Saved",
                 cx,
             ),
-        ];
-        let window_group = self.render_settings_group("WINDOW", window_rows);
+        ]);
+        let window_group = self.render_settings_group("Window", window_rows);
 
         let font_rows = vec![
             self.render_editable_row(
@@ -209,10 +205,6 @@ impl SettingsWindow {
                 format!("{line_height:.2}"),
                 cx,
             ),
-        ];
-        let font_group = self.render_settings_group("FONT", font_rows);
-
-        let padding_rows = vec![
             self.render_editable_row(
                 "padding_x",
                 EditableField::PaddingX,
@@ -230,9 +222,9 @@ impl SettingsWindow {
                 cx,
             ),
         ];
-        let padding_group = self.render_settings_group("PADDING", padding_rows);
+        let typography_group = self.render_settings_group("Typography & spacing", font_rows);
 
-        let content = div()
+        div()
             .flex()
             .flex_col()
             .gap(px(CARD_GAP))
@@ -242,15 +234,9 @@ impl SettingsWindow {
                 SettingsSection::Appearance,
                 cx,
             ))
-            .child(theme_group);
-        #[cfg(target_os = "macos")]
-        let content = content.child(app_group);
-
-        content
-            .child(chrome_group)
+            .child(theme_group)
             .child(window_group)
-            .child(font_group)
-            .child(padding_group)
+            .child(typography_group)
     }
 
     pub(super) fn render_settings_group(
@@ -340,7 +326,7 @@ impl SettingsWindow {
                 cx,
             ),
         ];
-        self.render_settings_group("CURSOR", rows)
+        self.render_settings_group("Cursor", rows)
     }
 
     pub(super) fn render_terminal_shell_group(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -405,7 +391,7 @@ impl SettingsWindow {
                 cx,
             ),
         ]);
-        self.render_settings_group("SHELL", rows)
+        self.render_settings_group("Shell environment", rows)
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -452,7 +438,7 @@ impl SettingsWindow {
             ));
         }
 
-        self.render_settings_group("TMUX", rows)
+        self.render_settings_group("tmux", rows)
     }
 
     pub(super) fn render_terminal_scrolling_group(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -508,7 +494,7 @@ impl SettingsWindow {
                 cx,
             ),
         ];
-        self.render_settings_group("SCROLLING", rows)
+        self.render_settings_group("Scrolling", rows)
     }
 
     pub(super) fn render_terminal_clipboard_group(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -533,7 +519,7 @@ impl SettingsWindow {
                 cx,
             ),
         ];
-        self.render_settings_group("CLIPBOARD", rows)
+        self.render_settings_group("Clipboard", rows)
     }
 
     pub(super) fn render_terminal_ui_group(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -568,7 +554,7 @@ impl SettingsWindow {
                 cx,
             ),
         ];
-        self.render_settings_group("UI", rows)
+        self.render_settings_group("Terminal interface", rows)
     }
 
     pub(super) fn render_tabs_section(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -687,7 +673,7 @@ impl SettingsWindow {
             ),
         ];
 
-        self.render_settings_group("TAB TITLES", rows)
+        self.render_settings_group("Tab titles", rows)
     }
 
     pub(super) fn render_tabs_strip_group(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -743,7 +729,7 @@ impl SettingsWindow {
             cx,
         ));
 
-        self.render_settings_group("TAB STRIP", rows)
+        self.render_settings_group("Tab strip", rows)
     }
 
     pub(super) fn render_tabs_sidebar_group(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -769,7 +755,7 @@ impl SettingsWindow {
             ),
         ];
 
-        self.render_settings_group("SIDEBAR", rows)
+        self.render_settings_group("Workspace sidebar", rows)
     }
 
     pub(super) fn render_tabs_browser_group(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -802,7 +788,7 @@ impl SettingsWindow {
             },
         ];
 
-        self.render_settings_group("BROWSER", rows)
+        self.render_settings_group("Browser tabs", rows)
     }
 
     pub(super) fn render_tabs_titlebar_group(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -816,7 +802,7 @@ impl SettingsWindow {
             cx,
         )];
 
-        self.render_settings_group("TITLE BAR", rows)
+        self.render_settings_group("Title bar", rows)
     }
 
     pub(super) fn render_theme_store_toolbar(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -1543,7 +1529,7 @@ impl SettingsWindow {
                 cx,
             ),
         ];
-        let startup_group = self.render_settings_group("STARTUP", startup_rows);
+        let startup_group = self.render_settings_group("Startup", startup_rows);
 
         let safety_rows = vec![
             self.render_root_bool_setting_row(
@@ -1563,7 +1549,7 @@ impl SettingsWindow {
                 cx,
             ),
         ];
-        let safety_group = self.render_settings_group("SAFETY", safety_rows);
+        let safety_group = self.render_settings_group("Safety", safety_rows);
 
         let window_rows = vec![
             self.render_editable_row(
@@ -1583,14 +1569,15 @@ impl SettingsWindow {
                 cx,
             ),
         ];
-        let window_group = self.render_settings_group("WINDOW", window_rows);
+        let window_group = self.render_settings_group("Window defaults", window_rows);
 
-        let ui_rows = vec![
+        let auto_update = self.config.auto_update;
+        let behavior_rows = vec![
             self.render_root_bool_setting_row(
-                "show_debug_overlay",
-                "show_debug_overlay-toggle",
-                RootSettingId::ShowDebugOverlay,
-                show_debug_overlay,
+                "auto_update",
+                "auto_update-toggle",
+                RootSettingId::AutoUpdate,
+                auto_update,
                 "Saved",
                 cx,
             ),
@@ -1602,19 +1589,16 @@ impl SettingsWindow {
                 "Saved",
                 cx,
             ),
+            self.render_root_bool_setting_row(
+                "show_debug_overlay",
+                "show_debug_overlay-toggle",
+                RootSettingId::ShowDebugOverlay,
+                show_debug_overlay,
+                "Saved",
+                cx,
+            ),
         ];
-        let ui_group = self.render_settings_group("UI", ui_rows);
-
-        let auto_update = self.config.auto_update;
-        let updates_rows = vec![self.render_root_bool_setting_row(
-            "auto_update",
-            "auto_update-toggle",
-            RootSettingId::AutoUpdate,
-            auto_update,
-            "Saved",
-            cx,
-        )];
-        let updates_group = self.render_settings_group("UPDATES", updates_rows);
+        let behavior_group = self.render_settings_group("App behavior", behavior_rows);
 
         let config_file_card = div()
             .py_4()
@@ -1630,7 +1614,7 @@ impl SettingsWindow {
                 div()
                     .text_sm()
                     .text_color(text_muted)
-                    .child("To change these settings, edit the config file:"),
+                    .child("Edit the config file directly for settings not shown here:"),
             )
             .child(
                 div()
@@ -1651,7 +1635,7 @@ impl SettingsWindow {
                     .text_color(button_text)
                     .cursor_pointer()
                     .hover(move |s| s.bg(accent_hover).text_color(button_hover_text))
-                    .child("Open Config File")
+                    .child("Open config file")
                     .on_click(cx.listener(|_view, _, _, cx| {
                         if let Err(error) = crate::config::open_config_file() {
                             log::error!("Failed to open config file from settings: {error}");
@@ -1662,23 +1646,22 @@ impl SettingsWindow {
             )
             .into_any_element();
 
-        let config_group = self.render_settings_group("CONFIG FILE", vec![config_file_card]);
+        let config_group = self.render_settings_group("Config file", vec![config_file_card]);
 
         div()
             .flex()
             .flex_col()
             .gap(px(CARD_GAP))
             .child(self.render_section_header(
-                "Advanced",
-                "Advanced configuration options",
+                "General",
+                "Startup, windows, updates, and app behavior",
                 SettingsSection::Advanced,
                 cx,
             ))
             .child(startup_group)
             .child(safety_group)
             .child(window_group)
-            .child(ui_group)
-            .child(updates_group)
+            .child(behavior_group)
             .child(config_group)
     }
 }

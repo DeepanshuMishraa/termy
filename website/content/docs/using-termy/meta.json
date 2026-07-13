@@ -6,6 +6,7 @@
     "splits-panes",
     "search",
     "command-palette",
+    "plugins",
     "tmux-sessions",
     "tasks-layouts"
   ],

@@ -53,6 +53,9 @@ struct TerminalSurfaceView: View {
                 TerminalKeyboardInputView(
                     cols: terminal.frameMetadata.cols,
                     rows: terminal.frameMetadata.rows,
+                    cursorPosition: terminal.frameMetadata.cursor.map {
+                        TerminalGridPosition(col: $0.col, row: $0.row)
+                    },
                     renderConfig: terminal.renderConfig,
                     isFocused: isFocused,
                     isInputEnabled: isInputEnabled,

@@ -295,7 +295,7 @@ impl TerminalView {
     }
 
     pub(crate) fn add_tab(&mut self, cx: &mut Context<Self>) {
-        self.add_tab_with_working_dir(None, cx);
+        let _ = self.add_tab_with_working_dir(None, cx);
     }
 
     /// "+" button entry point: with browser tabs enabled it opens a dropdown
@@ -330,7 +330,7 @@ impl TerminalView {
         &mut self,
         working_dir: Option<&str>,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         match self.runtime_kind() {
             RuntimeKind::Tmux => self.tmux_add_tab(working_dir, cx),
             RuntimeKind::Native => {
@@ -352,7 +352,7 @@ impl TerminalView {
                     Ok(terminal) => terminal,
                     Err(error) => {
                         termy_toast::error(format!("Failed to create tab: {error}"));
-                        return;
+                        return false;
                     }
                 };
 
@@ -405,6 +405,7 @@ impl TerminalView {
                 self.schedule_persist_native_workspace();
                 self.start_new_tab_animation(tab_id, cx);
                 cx.notify();
+                true
             }
         }
     }

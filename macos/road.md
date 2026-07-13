@@ -1,6 +1,6 @@
 # Native macOS production roadmap
 
-Status date: 2026-07-10
+Status date: 2026-07-13
 
 This roadmap takes the SwiftUI/AppKit host in `macos/` from a strong experimental
 implementation to the default production macOS build of Termy. It is ordered:
@@ -12,7 +12,8 @@ intentionally the final task.
 The native host is closer to production than the older roadmap suggests.
 
 - Swift 6 warnings-as-errors builds successfully.
-- 188 Swift tests pass; one AppKit tab-bar test skips outside a full GUI session.
+- 224 Swift tests pass; one native tab-bar test skips when AppKit does not expose
+  the private tab-bar views in the test session.
 - The Rust FFI test suite passes, including header/export contract tests.
 - Native arm64 and x86_64 release DMGs build and their disk-image checksums verify.
 - The arm64 release app passes the current launch gate: fast process startup,
@@ -20,13 +21,15 @@ The native host is closer to production than the older roadmap suggests.
 - Native tmux control layout rendering and pane input are wired in the live
   SwiftUI workspace. The older roadmap still calling this GUI work unfinished is
   stale.
-- The pre-existing native CI workflow was green. The new arm64/x86_64 unsigned
-  release matrix is locally verified and awaits its first remote run.
+- The native Swift workflow is green at the current `main` head, including the
+  unsigned arm64/x86_64 release matrix.
 
 Known production blockers:
 
-- The native render benchmark can pass with only a few presented frames and
-  therefore does not yet prove sustained rendering performance.
+- The representative performance workflow has not completed successfully on a
+  committed candidate. Its latest run exposed a short-lived latency-scenario
+  process that can exit before `xctrace` attaches on a cold hosted runner; the
+  lifecycle fix is locally verified and still needs a green remote run.
 - The main release workflow still publishes the GPUI macOS app, not the native
   app.
 - Interaction-heavy behavior still needs clean-machine and real-user testing:
@@ -70,10 +73,10 @@ The native app is production ready only when all of the following are true:
 | 1 | Make roadmap and production status truthful | 0.5–1 day | Done 2026-07-10 |
 | 2 | Produce a complete, self-contained native app bundle | 1–2 days | Done 2026-07-10 |
 | 3 | Turn bundle readiness into a real unsigned release gate | 1–2 days | Done 2026-07-10 |
-| 4 | Make rendering and launch performance gates representative | 2–3 days | Implementation complete; CI run pending |
-| 5 | Close terminal interaction and tmux correctness gaps | 2–4 days | Pending |
-| 6 | Complete accessibility, IME, lifecycle, and failure-path QA | 2–3 days | Pending |
-| 7 | Wire native artifacts into release CI without cutover | 1–2 days | Pending |
+| 4 | Make rendering and launch performance gates representative | 2–3 days | CI lifecycle fix locally verified; green run pending |
+| 5 | Close terminal interaction and tmux correctness gaps | 2–4 days | In progress; real AppKit/tmux/tab lifecycle smokes green locally |
+| 6 | Complete accessibility, IME, lifecycle, and failure-path QA | 2–3 days | In progress; cursor-cell IME anchoring green locally |
+| 7 | Wire native artifacts into release CI without cutover | 1–2 days | Candidate workflow implemented locally; dispatch evidence pending |
 | 8 | Run clean-environment beta and soak testing | 3–7 elapsed days | Pending |
 | 9 | Freeze and approve the unsigned production release candidate | 1 day | Pending |
 | 10 | Code-sign, notarize, validate, and publish | 1–2 days | Pending |
@@ -206,6 +209,8 @@ Implementation completed locally: 2026-07-10. Final completion still requires
 a green, non-cancelled `macOS Performance Gates` run from the committed
 candidate.
 
+CI lifecycle remediation implemented locally: 2026-07-12.
+
 ### Objective
 
 Prove sustained terminal performance rather than allowing a short benchmark to
@@ -268,47 +273,84 @@ pass on a handful of frames.
 - The performance workflow now builds the native candidate, runs deterministic
   and deliberate-regression gates, samples launch/resources, runs the windowed
   GPUI comparison, and retains JSON/Markdown reports for 30 days.
+- Remote run
+  [`29171354926`](https://github.com/lassejlv/termy/actions/runs/29171354926)
+  proved that `idle-burst` could finish before cold hosted runners attached
+  `xctrace`, failing both jobs with `Cannot find process for provided pid`.
+- The latency drivers now remain alive for the complete requested duration.
+  Three-second direct probes measured 3.27 seconds for `idle-burst` and 3.00
+  seconds for `echo-train`; a local end-to-end `idle-burst` comparison completed
+  all four Activity Monitor and Animation Hitches attach/export passes.
 
-The remaining unchecked exit evidence is the workflow result itself; local
-tests cannot establish a GitHub run as green and non-cancelled.
+The remaining unchecked exit evidence is a green, non-cancelled workflow run
+from a committed candidate containing the lifecycle fix; local tests cannot
+establish that GitHub result.
 
 ## Task 5 — Close interaction and tmux correctness gaps
+
+Started: 2026-07-12.
 
 ### Objective
 
 Make the terminal reliable under real keyboard, mouse, selection, tab, and tmux
 usage rather than only model-level tests.
 
-### Work
+### Progress
 
-- Add an AppKit event harness for live `NSEvent` paths.
-- Cover keyboard behavior for:
-  - plain text and composed text;
-  - control, option/meta, command, and shift combinations;
-  - Kitty keyboard protocol modes;
-  - dead keys and alternate keyboard layouts;
-  - function, navigation, keypad, and media-adjacent keys;
-  - shortcut precedence versus terminal input.
-- Cover mouse behavior for:
-  - press, release, move, drag, wheel, and high-resolution trackpad scroll;
-  - terminal mouse modes and modifier encoding;
-  - selection versus application mouse reporting;
+- Added a reusable `AppKitEventHarness` that mounts the real
+  `KeyboardCaptureView` in an `NSWindow` and dispatches events through
+  `NSWindow.sendEvent` and the AppKit first-responder path.
+- Covered plain, control, command, option, shift, function, navigation, keypad,
+  and repeated input plus full AppKit-event-to-libtermy legacy and Kitty
+  key-encoding paths.
+- Covered mouse press, drag, and release routing with modifiers; SGR mouse
+  encoding through libtermy; and selection fallback when terminal mouse
+  reporting is disabled.
+- Covered line-wheel and precise trackpad-scroll accumulation plus search
+  shortcut and Escape-dismiss precedence through AppKit events.
+- Added real libtermy-backed search interaction tests for case sensitivity,
+  regex, next/previous wrapping, scrollback matches, and output arriving while
+  search remains open, plus resize while preserving the active match.
+- Added AppKit-to-view-model selection tests for wide glyphs and changing
+  output. They exposed and fixed phantom spaces when copying wide characters by
+  carrying an explicit wide-character-spacer bit through core, the C ABI, and
+  Swift instead of treating every non-rendered cell as a blank.
+- Carried Alacritty's soft-wrap marker through the same core/C ABI/Swift path so
+  copied wrapped commands no longer gain invented newlines. AppKit selection now
+  covers soft wraps, a real scrollback viewport, and drag clamping at a pane
+  boundary.
+- Added an AppKit native-tab lifecycle test for ordering, rename, pin, reorder,
+  selection, close, and title synchronization. Full-suite execution exposed and
+  fixed reorder routing that incorrectly used the process key window instead of
+  the dragged descriptor's own tab group. Pinned/manual titles already
+  round-trip through workspace snapshot restore tests.
+- Added a real tmux 3.7b workspace smoke with a private socket and deterministic
+  cleanup. It drives the AppKit input view through nested horizontal/vertical
+  layouts, focused-pane input, SGR mouse reporting, split/close, and search, and
+  covers live resize propagation, sustained output into scrollback, copy,
+  pane-process exit, control-session shutdown, and disabled/missing-binary
+  decline paths.
+- The focused AppKit event suite and the complete 212-test Swift suite are green
+  locally. Wrapped/scrollback/pane-boundary selection and the deeper interaction
+  scenarios below remain open.
+
+### Remaining work
+
+- Extend keyboard behavior coverage for:
+  - live dead-key and alternate-layout sessions through the macOS input context;
+  - Kitty keyboard protocol mode transitions beyond the covered report-all
+    repeat path;
+  - media-adjacent keys;
+  - broader shortcut precedence versus terminal input.
+- Extend mouse behavior coverage for:
+  - move events;
+  - terminal mouse modes beyond the covered SGR path;
   - split-divider dragging and scrollbar dragging.
-- Add interaction tests for selection across wrapped lines, wide glyphs,
-  scrollback boundaries, pane boundaries, and changing output.
-- Add search tests for regex, case sensitivity, next/previous wrapping,
-  scrollback matches, resize, and output arriving while search is open.
-- Add multi-window/native-tab tests for create, reorder, rename, pin, close,
-  restore, focus, title synchronization, and first/last-tab transitions.
+- Extend native-tab coverage to the production create path and first/last-tab
+  transitions; reorder, rename, pin, close, focus, title synchronization, and
+  pinned/manual-title snapshot restore are covered.
 - Exercise tmux control mode through the real GUI with:
-  - nested horizontal/vertical layouts;
-  - focus and input routing;
-  - mouse reporting;
-  - split/close/resize;
-  - high output volume;
-  - pane exit and session shutdown;
-  - search and copy;
-  - fallback behavior when tmux is absent or control mode fails.
+  - a live control-mode startup failure followed by shell fallback.
 - Keep the shell-backed fallback covered when tmux is absent or control mode
   fails.
 
@@ -323,10 +365,34 @@ usage rather than only model-level tests.
 
 ## Task 6 — Complete accessibility, IME, lifecycle, and failure-path QA
 
+Started: 2026-07-13.
+
 ### Objective
 
 Make the app safe for daily use across accessibility needs, international input,
 process lifecycle changes, and damaged local state.
+
+### Progress
+
+- Routed the live terminal cursor position into `KeyboardCaptureView` and made
+  `firstRect(forCharacterRange:)` return the cursor cell in screen coordinates
+  instead of the entire terminal surface. The AppKit harness verifies the
+  geometry remains correct after resize.
+- Fixed a one-event IME commit path that cleared marked state before deciding
+  whether to emit the committed text.
+- Added UTF-8 commit coverage for representative Japanese, Simplified Chinese,
+  Korean, and composed Latin text. These deterministic tests do not replace the
+  live input-source and candidate-window matrix below.
+- Added explicit updater response and semantic-version validation. Non-2xx
+  GitHub responses, malformed versions, prerelease ordering, and non-GitHub
+  manual-download URLs are covered.
+- Added workspace persistence failure tests for missing, truncated/corrupt, and
+  incompatible-version state plus failed writes. Restore/save failures already
+  surface in the terminal UI; the banner now offers a scoped `Reset Workspace`
+  action that deletes only the native workspace snapshot.
+- Added real PTY lifecycle stress for normal and signal-terminated shell exits,
+  plus 40 alternating split/create-close cycles that assert every removed pane
+  releases its terminal view model.
 
 ### Work
 
@@ -344,8 +410,7 @@ process lifecycle changes, and damaged local state.
   - settings and command palette.
 - Verify keyboard-only operation for every core command.
 - Stress lifecycle paths:
-  - shell exits normally and abnormally;
-  - rapid tab/pane create-close loops;
+  - rapid native-tab create-close loops;
   - app quit with active terminals;
   - window close while output is arriving;
   - sleep/wake and display changes;
@@ -378,10 +443,25 @@ process lifecycle changes, and damaged local state.
 
 ## Task 7 — Add native artifacts to release CI without cutting over
 
+Started: 2026-07-13. Workflow implementation is local; a clean hosted dispatch
+is still required for exit evidence.
+
 ### Objective
 
 Make CI produce and validate native release candidates while the GPUI app remains
 the public fallback.
+
+### Progress
+
+- Added a separate `macOS Native Candidates` workflow triggered by manual
+  dispatch or a published release. It is independent of the public `Release`
+  workflow, so native failures cannot block or replace the GPUI artifacts.
+- The arm64/x86_64 matrix verifies the requested version against the source
+  version, builds unsigned native DMGs, reruns DMG readiness/usable-launch and
+  isolated CLI-install gates, then uploads the exact DMG, SHA-256, and build
+  metadata as unpublished 30-day Actions artifacts.
+- Added `macos/docs/native-candidate-release.md` with the artifact contract and
+  exact local reproduction commands.
 
 ### Work
 

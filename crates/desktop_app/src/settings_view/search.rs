@@ -73,6 +73,30 @@ mod tests {
     }
 
     #[test]
+    fn settings_navigation_order_matches_the_grouped_sidebar() {
+        assert_eq!(
+            SettingsWindow::settings_sections_in_order(),
+            [
+                SettingsSection::Advanced,
+                SettingsSection::Appearance,
+                SettingsSection::ThemeStore,
+                SettingsSection::Colors,
+                SettingsSection::Terminal,
+                SettingsSection::Tabs,
+                SettingsSection::Keybindings,
+            ]
+        );
+        assert_eq!(
+            SettingsWindow::settings_section_label(SettingsSection::Advanced),
+            "General"
+        );
+        assert_eq!(
+            SettingsWindow::settings_section_label(SettingsSection::Keybindings),
+            "Keyboard shortcuts"
+        );
+    }
+
+    #[test]
     fn should_skip_search_jump_when_target_repeats() {
         let now = Instant::now();
         assert!(SettingsWindow::should_skip_search_jump(
@@ -161,21 +185,21 @@ impl SettingsWindow {
             SettingsSection::Terminal => "Terminal",
             SettingsSection::Tabs => "Tabs",
             SettingsSection::ThemeStore => "Themes",
-            SettingsSection::Advanced => "Advanced",
+            SettingsSection::Advanced => "General",
             SettingsSection::Colors => "Colors",
-            SettingsSection::Keybindings => "Keybindings",
+            SettingsSection::Keybindings => "Keyboard shortcuts",
         }
     }
 
     pub(super) fn settings_section_subtitle(section: SettingsSection) -> &'static str {
         match section {
-            SettingsSection::Appearance => "Customize the look and feel",
-            SettingsSection::Terminal => "Configure terminal behavior",
-            SettingsSection::Tabs => "Tab bar and split-pane behavior",
-            SettingsSection::ThemeStore => "Browse and install themes",
-            SettingsSection::Advanced => "Power-user options",
-            SettingsSection::Colors => "Per-ANSI color overrides",
-            SettingsSection::Keybindings => "Keyboard shortcuts",
+            SettingsSection::Appearance => "Theme, type, and terminal surface",
+            SettingsSection::Terminal => "Shell, input, scrolling, and tmux",
+            SettingsSection::Tabs => "Tabs, sidebar, browser, and title bar",
+            SettingsSection::ThemeStore => "Find and install community themes",
+            SettingsSection::Advanced => "Startup, windows, updates, and app behavior",
+            SettingsSection::Colors => "Override individual terminal colors",
+            SettingsSection::Keybindings => "Assign keys to commands",
         }
     }
 
@@ -191,14 +215,14 @@ impl SettingsWindow {
         }
     }
 
-    pub(super) fn settings_sections_in_order(&self) -> Vec<SettingsSection> {
-        vec![
+    pub(super) const fn settings_sections_in_order() -> [SettingsSection; 7] {
+        [
+            SettingsSection::Advanced,
             SettingsSection::Appearance,
+            SettingsSection::ThemeStore,
+            SettingsSection::Colors,
             SettingsSection::Terminal,
             SettingsSection::Tabs,
-            SettingsSection::ThemeStore,
-            SettingsSection::Advanced,
-            SettingsSection::Colors,
             SettingsSection::Keybindings,
         ]
     }
@@ -227,7 +251,7 @@ impl SettingsWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let sections = self.settings_sections_in_order();
+        let sections = Self::settings_sections_in_order();
         let current_index = sections
             .iter()
             .position(|section| *section == self.active_section)
@@ -590,31 +614,77 @@ impl SettingsWindow {
             .flex_col()
             .child(
                 div()
-                    .pt_8()
+                    .pt_6()
                     .px_3()
-                    .pb_3()
+                    .pb_4()
+                    .flex()
+                    .flex_col()
+                    .gap(px(12.0))
+                    .child(
+                        div()
+                            .px_1()
+                            .text_size(px(18.0))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(self.text_primary())
+                            .child("Settings"),
+                    )
                     .child(self.render_sidebar_search(cx)),
             )
             .child(
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(2.0))
+                    .gap(px(SIDEBAR_GROUP_GAP))
                     .px_2()
-                    .child(self.render_sidebar_item("Appearance", SettingsSection::Appearance, cx))
-                    .child(self.render_sidebar_item("Terminal", SettingsSection::Terminal, cx))
-                    .child(self.render_sidebar_item("Tabs", SettingsSection::Tabs, cx))
-                    .child(self.render_sidebar_item("Themes", SettingsSection::ThemeStore, cx))
-                    .child(self.render_sidebar_item("Colors", SettingsSection::Colors, cx))
-                    .child(self.render_sidebar_item(
-                        "Keybindings",
-                        SettingsSection::Keybindings,
+                    .child(self.render_sidebar_group(
+                        "App",
+                        &[
+                            SettingsSection::Advanced,
+                            SettingsSection::Appearance,
+                            SettingsSection::ThemeStore,
+                            SettingsSection::Colors,
+                        ],
                         cx,
                     ))
-                    .child(self.render_sidebar_item("Advanced", SettingsSection::Advanced, cx)),
+                    .child(self.render_sidebar_group(
+                        "Workflow",
+                        &[
+                            SettingsSection::Terminal,
+                            SettingsSection::Tabs,
+                            SettingsSection::Keybindings,
+                        ],
+                        cx,
+                    )),
             )
             .child(div().flex_1())
             .child(self.render_sidebar_footer(cx))
+    }
+
+    pub(super) fn render_sidebar_group(
+        &self,
+        label: &'static str,
+        sections: &[SettingsSection],
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mut items = div().flex().flex_col().gap(px(2.0));
+        for section in sections {
+            items = items.child(self.render_sidebar_item(*section, cx));
+        }
+
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(5.0))
+            .child(
+                div()
+                    .px_2()
+                    .text_size(px(SIDEBAR_GROUP_LABEL_SIZE))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(self.text_muted())
+                    .child(label),
+            )
+            .child(items)
+            .into_any_element()
     }
 
     pub(super) fn render_sidebar_footer(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -947,10 +1017,10 @@ impl SettingsWindow {
 
     pub(super) fn render_sidebar_item(
         &self,
-        label: &'static str,
         section: SettingsSection,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let label = Self::settings_section_label(section);
         let is_active = self.active_section == section;
         let active_bg = self.sidebar_selection_bg();
         let hover_bg = self.bg_hover();

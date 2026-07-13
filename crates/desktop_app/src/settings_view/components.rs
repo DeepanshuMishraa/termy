@@ -120,7 +120,7 @@ impl SettingsWindow {
 
     pub(super) fn render_group_header(&self, title: &'static str) -> impl IntoElement {
         // Quiet, slightly inset caption above each card — mirrors the muted
-        // uppercase group labels in native macOS grouped settings.
+        // sentence-case group labels in native macOS grouped settings.
         div()
             .pl(px(2.0))
             .text_size(px(GROUP_TITLE_SIZE))

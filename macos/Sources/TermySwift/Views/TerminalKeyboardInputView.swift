@@ -4,6 +4,7 @@ import SwiftUI
 struct TerminalKeyboardInputView: NSViewRepresentable {
     var cols: Int
     var rows: Int
+    var cursorPosition: TerminalGridPosition?
     var renderConfig: TerminalRenderConfig
     var isFocused: Bool
     var isInputEnabled: Bool
@@ -54,6 +55,7 @@ struct TerminalKeyboardInputView: NSViewRepresentable {
 final class KeyboardCaptureView: NSView {
     var cols = 0
     var rows = 0
+    var cursorPosition: TerminalGridPosition?
     var renderConfig = TerminalRenderConfig.default
     var isTerminalFocused = false
     var isInputEnabled = true
@@ -827,11 +829,12 @@ enum MacKeyCode: UInt16 {
 // isolated to the main actor (matching this @MainActor NSView subclass).
 extension KeyboardCaptureView: @MainActor NSTextInputClient {
     func insertText(_ string: Any, replacementRange: NSRange) {
+        let hadMarkedText = hasMarkedText()
         markedText = ""
         onMarkedTextChanged("")
         // A plain keystroke (no active composition) is left to the terminal
         // encoder in keyDown; only emit text that came from an IME commit.
-        guard composingBeforeEvent || hasMarkedText() else {
+        guard composingBeforeEvent || hadMarkedText else {
             return
         }
         let text = Self.plainString(from: string)
@@ -874,12 +877,21 @@ extension KeyboardCaptureView: @MainActor NSTextInputClient {
     }
 
     func firstRect(forCharacterRange range: NSRange, actualRange: NSRangePointer?) -> NSRect {
-        // Anchor IME candidate windows to the input view; cursor-cell
-        // coordinates are not exposed through this NSView bridge.
         guard let window else {
             return .zero
         }
-        return window.convertToScreen(convert(bounds, to: nil))
+        let maxCol = max(0, cols - 1)
+        let maxRow = max(0, rows - 1)
+        let position = cursorPosition ?? TerminalGridPosition(col: 0, row: 0)
+        let col = max(0, min(position.col, maxCol))
+        let row = max(0, min(position.row, maxRow))
+        let cellRect = NSRect(
+            x: renderConfig.paddingX + CGFloat(col) * renderConfig.cellWidth,
+            y: bounds.height - renderConfig.paddingY - CGFloat(row + 1) * renderConfig.cellHeight,
+            width: renderConfig.cellWidth,
+            height: renderConfig.cellHeight
+        )
+        return window.convertToScreen(convert(cellRect, to: nil))
     }
 
     func characterIndex(for point: NSPoint) -> Int {
@@ -898,6 +910,7 @@ private extension KeyboardCaptureView {
     func apply(configuration: TerminalKeyboardInputView) {
         cols = configuration.cols
         rows = configuration.rows
+        cursorPosition = configuration.cursorPosition
         renderConfig = configuration.renderConfig
         isTerminalFocused = configuration.isFocused
         isInputEnabled = configuration.isInputEnabled

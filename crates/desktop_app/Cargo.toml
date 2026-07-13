@@ -38,9 +38,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 p256 = { workspace = true }
 rand_core = { workspace = true }
-sha2 = { workspace = true }
 bincode = "1.3"
-url = "2.5"
+url = { workspace = true }
 
 # File I/O
 tempfile = { workspace = true }
@@ -60,6 +59,7 @@ termy_native_sdk = { path = "../native_sdk" }
 termy_config_core = { path = "../config_core" }
 termy_command_core = { path = "../command_core" }
 termy_cli_install_core = { path = "../cli_install_core" }
+termy_plugin_runtime = { path = "../plugin_runtime" }
 sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runtime-tokio"] }
 tokio = { version = "1", default-features = false, features = ["rt"] }
 

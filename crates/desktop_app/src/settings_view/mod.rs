@@ -51,6 +51,8 @@ const SIDEBAR_ITEM_RADIUS: f32 = 7.0;
 // command-palette selection indicators so the chrome speaks one language.
 const SIDEBAR_SELECTED_ACCENT_WIDTH: f32 = 2.0;
 const SIDEBAR_SELECTED_ACCENT_INSET_Y: f32 = 8.0;
+const SIDEBAR_GROUP_GAP: f32 = 16.0;
+const SIDEBAR_GROUP_LABEL_SIZE: f32 = 11.0;
 // Settings content is constrained and centered like native macOS System
 // Settings so rows do not stretch label-to-control across wide windows.
 const SETTINGS_CONTENT_MAX_WIDTH: f32 = 800.0;
@@ -187,7 +189,7 @@ impl SettingsWindow {
         let content_scroll_handle = ScrollHandle::new();
         let setting_scroll_anchors = Self::build_setting_scroll_anchors(&content_scroll_handle);
         let mut view = Self {
-            active_section: SettingsSection::Appearance,
+            active_section: SettingsSection::Advanced,
             config,
             config_path,
             config_fingerprint,

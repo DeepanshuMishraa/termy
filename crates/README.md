@@ -11,6 +11,7 @@ Termy is a Rust workspace split by ownership boundary, not by implementation con
 ## Runtime And UI
 
 - `core/` (`termy_core`): headless terminal runtime/API for embedders.
+- `plugin_runtime/` (`termy_plugin_runtime`): plugin discovery, typed protocol validation, and the persistent Bun/Worker runtime.
 - `terminal_ui/` (`termy_terminal_ui`): GPUI-facing terminal adapter, grid paint cache, native pane runtime, and tmux support.
 - `native_sdk/` (`termy_native_sdk`): narrow platform-native helpers.
 
@@ -38,6 +39,7 @@ Each crate has its own `README.md` with `Owner`, `Validation`, and `Forbidden De
 - `termy_core`, `termy_ffi`, `termy_cli`, `termy_cli_install_core`, and pure domain crates must not depend on GPUI.
 - `termy_ffi` should wrap `termy_core`, not copy desktop app behavior.
 - `termy_command_core` must stay independent of config parsing and UI presentation.
+- `termy_plugin_runtime` must stay independent of GPUI, desktop command execution, and terminal presentation.
 - App-only behavior belongs in `desktop_app/` until another product surface needs it.
 
 Run `just check-boundaries` after changing crate dependencies, crate README metadata, generated docs, command/keybind behavior, or config behavior.

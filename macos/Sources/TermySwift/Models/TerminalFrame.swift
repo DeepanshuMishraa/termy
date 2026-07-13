@@ -317,6 +317,8 @@ struct TerminalCell: Identifiable, Equatable {
     var usesTerminalDefaultBackground: Bool
     var renderText: Bool
     var bold: Bool
+    var wideCharacterSpacer: Bool
+    var lineWrapped: Bool
 
     init(
         col: Int,
@@ -326,7 +328,9 @@ struct TerminalCell: Identifiable, Equatable {
         background: TerminalRGBA,
         usesTerminalDefaultBackground: Bool,
         renderText: Bool,
-        bold: Bool
+        bold: Bool,
+        wideCharacterSpacer: Bool = false,
+        lineWrapped: Bool = false
     ) {
         self.col = col
         self.row = row
@@ -336,6 +340,8 @@ struct TerminalCell: Identifiable, Equatable {
         self.usesTerminalDefaultBackground = usesTerminalDefaultBackground
         self.renderText = renderText
         self.bold = bold
+        self.wideCharacterSpacer = wideCharacterSpacer
+        self.lineWrapped = lineWrapped
     }
 
     init(
@@ -346,7 +352,9 @@ struct TerminalCell: Identifiable, Equatable {
         background: TerminalRGBA,
         usesTerminalDefaultBackground: Bool,
         renderText: Bool,
-        bold: Bool
+        bold: Bool,
+        wideCharacterSpacer: Bool = false,
+        lineWrapped: Bool = false
     ) {
         self.col = col
         self.row = row
@@ -356,6 +364,8 @@ struct TerminalCell: Identifiable, Equatable {
         self.usesTerminalDefaultBackground = usesTerminalDefaultBackground
         self.renderText = renderText
         self.bold = bold
+        self.wideCharacterSpacer = wideCharacterSpacer
+        self.lineWrapped = lineWrapped
     }
 
     var character: Character {
@@ -549,46 +559,68 @@ struct TerminalFrame: Equatable {
             return nil
         }
 
-        let lines = selection.rowRanges(cols: cols, rows: rows).map { range in
-            let characters = (range.startCol...range.endCol).map { col -> Character in
-                guard let cell = cell(row: range.row, col: col), cell.renderText else {
-                    return " "
-                }
-                return cell.character
-            }
-            return String(characters).trimmingTrailingSpaces()
-        }
-        guard !lines.isEmpty else {
+        let ranges = selection.rowRanges(cols: cols, rows: rows)
+        guard !ranges.isEmpty else {
             return nil
         }
-        return lines.joined(separator: "\n")
+        var text = ""
+        for (index, range) in ranges.enumerated() {
+            var characters = ""
+            for col in range.startCol...range.endCol {
+                guard let cell = cell(row: range.row, col: col) else {
+                    characters.append(" ")
+                    continue
+                }
+                if cell.wideCharacterSpacer {
+                    continue
+                }
+                characters.append(cell.renderText ? cell.character : " ")
+            }
+            text += characters.trimmingTrailingSpaces()
+            guard index < ranges.count - 1 else {
+                continue
+            }
+            let continuesSoftWrappedLine = range.endCol == cols - 1
+                && cell(row: range.row, col: cols - 1)?.lineWrapped == true
+            if !continuesSoftWrappedLine {
+                text.append("\n")
+            }
+        }
+        return text
     }
 
     /// Whether `selectedText(for:)` would return non-empty text, without
-    /// building the string (this runs per render pass). A multi-row selection
-    /// is always non-empty (the row join contributes a newline); a single-row
-    /// selection is non-empty exactly when some cell renders a non-space — the
-    /// trailing-space trim removes everything else.
+    /// building the string (this runs per render pass). A hard row boundary
+    /// contributes a newline; soft-wrapped boundaries do not. Otherwise the
+    /// selection is non-empty when some selected cell renders a non-space.
     func hasSelectedText(for selection: TerminalSelection?) -> Bool {
         guard let selection else {
             return false
         }
         let ranges = selection.rowRanges(cols: cols, rows: rows)
-        guard let range = ranges.first else {
+        guard !ranges.isEmpty else {
             return false
         }
-        if ranges.count > 1 {
-            return true
-        }
-        guard range.startCol <= range.endCol else {
-            return false
-        }
-        return (range.startCol...range.endCol).contains { col in
-            guard let cell = cell(row: range.row, col: col), cell.renderText else {
-                return false
+        for (index, range) in ranges.enumerated() {
+            if range.startCol <= range.endCol,
+               (range.startCol...range.endCol).contains(where: { col in
+                   guard let cell = cell(row: range.row, col: col), cell.renderText else {
+                       return false
+                   }
+                   return cell.character != " "
+               }) {
+                return true
             }
-            return cell.character != " "
+            guard index < ranges.count - 1 else {
+                continue
+            }
+            let continuesSoftWrappedLine = range.endCol == cols - 1
+                && cell(row: range.row, col: cols - 1)?.lineWrapped == true
+            if !continuesSoftWrappedLine {
+                return true
+            }
         }
+        return false
     }
 
     var hasVisibleContent: Bool {

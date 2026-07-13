@@ -5,18 +5,24 @@ use gpui::App;
 use gpui::Keystroke;
 use log::warn;
 use termy_command_core::{
-    CommandId, KeybindLineRef, KeybindWarning, ResolvedKeybind, default_resolved_keybinds,
-    parse_keybind_directives_from_iter, resolve_keybinds,
+    CommandId, KeybindLineRef, KeybindWarning, ResolvedKeybind, canonicalize_keybind_trigger,
+    default_resolved_keybinds, parse_keybind_directives_from_iter, resolve_keybinds,
 };
 
 const GLOBAL_KEYBIND_WARNING_LINE_NUMBER: usize = 0;
 
 pub fn install_keybindings(cx: &mut App, config: &AppConfig, tmux_enabled: bool) {
-    let (resolved, warnings) = resolve_keybinds_for_config(config, tmux_enabled);
+    let (mut resolved, mut warnings) = resolve_keybinds_for_config(config, tmux_enabled);
+    let (task_bindings, task_warnings) = resolve_task_keybinds_for_config(config);
+    warnings.extend(task_warnings);
+    remove_command_keybinds_shadowed_by_tasks(&mut resolved, &task_bindings);
     report_warnings(&warnings);
     let resolved = reorder_resolved_keybinds_for_menu_display(resolved);
 
     for binding in &resolved {
+        debug_assert_trigger_is_valid_for_gpui(&binding.trigger);
+    }
+    for binding in &task_bindings {
         debug_assert_trigger_is_valid_for_gpui(&binding.trigger);
     }
 
@@ -26,12 +32,84 @@ pub fn install_keybindings(cx: &mut App, config: &AppConfig, tmux_enabled: bool)
     cx.bind_keys(resolved.iter().map(|binding| {
         CommandAction::from_command_id(binding.action).to_key_binding(&binding.trigger)
     }));
+    cx.bind_keys(task_bindings.into_iter().map(|binding| {
+        let ResolvedTaskKeybind {
+            trigger, task_name, ..
+        } = binding;
+        crate::commands::RunNamedTask { task_name }.into_key_binding(&trigger)
+    }));
     cx.bind_keys(crate::commands::inline_input_keybindings());
     cx.set_menus(crate::menus::app_menus(
         !termy_cli_install_core::is_cli_installed(),
         tmux_enabled,
         config.simple_mode,
     ));
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedTaskKeybind {
+    line_number: usize,
+    trigger: String,
+    task_name: String,
+}
+
+fn resolve_task_keybinds_for_config(
+    config: &AppConfig,
+) -> (Vec<ResolvedTaskKeybind>, Vec<KeybindWarning>) {
+    let mut candidates = Vec::new();
+    let mut warnings = Vec::new();
+
+    for task in &config.tasks {
+        let Some(keybind) = task.keybind.as_ref() else {
+            continue;
+        };
+        match canonicalize_keybind_trigger(&keybind.value) {
+            Ok(trigger) => candidates.push(ResolvedTaskKeybind {
+                line_number: keybind.line_number,
+                trigger,
+                task_name: task.name.clone(),
+            }),
+            Err(message) => warnings.push(KeybindWarning {
+                line_number: keybind.line_number,
+                message: format!("invalid keybind for task \"{}\": {message}", task.name),
+            }),
+        }
+    }
+
+    candidates.sort_by_key(|binding| binding.line_number);
+    let mut resolved: Vec<ResolvedTaskKeybind> = Vec::with_capacity(candidates.len());
+    for candidate in candidates {
+        if let Some(index) = resolved
+            .iter()
+            .position(|binding| binding.trigger == candidate.trigger)
+        {
+            let overridden = resolved.remove(index);
+            warnings.push(KeybindWarning {
+                line_number: overridden.line_number,
+                message: format!(
+                    "task \"{}\" keybind `{}` is overridden by task \"{}\" on line {}",
+                    overridden.task_name,
+                    overridden.trigger,
+                    candidate.task_name,
+                    candidate.line_number
+                ),
+            });
+        }
+        resolved.push(candidate);
+    }
+
+    (resolved, warnings)
+}
+
+fn remove_command_keybinds_shadowed_by_tasks(
+    command_bindings: &mut Vec<ResolvedKeybind>,
+    task_bindings: &[ResolvedTaskKeybind],
+) {
+    command_bindings.retain(|binding| {
+        !task_bindings
+            .iter()
+            .any(|task_binding| task_binding.trigger == binding.trigger)
+    });
 }
 
 fn reorder_resolved_keybinds_for_menu_display(
@@ -136,29 +214,27 @@ fn report_warnings(warnings: &[KeybindWarning]) {
         return;
     }
 
-    let mut invalid_keybind_warning_count = 0usize;
+    let mut keybind_warning_count = 0usize;
     for warning in warnings {
         if warning.line_number == GLOBAL_KEYBIND_WARNING_LINE_NUMBER {
             warn!("Ignoring keybind: {}", warning.message);
             continue;
         }
 
-        invalid_keybind_warning_count += 1;
+        keybind_warning_count += 1;
         warn!(
-            "Ignoring invalid keybind at config line {}: {}",
+            "Ignoring keybind at config line {}: {}",
             warning.line_number, warning.message
         );
     }
 
-    if invalid_keybind_warning_count > 0 {
-        let noun = if invalid_keybind_warning_count == 1 {
+    if keybind_warning_count > 0 {
+        let noun = if keybind_warning_count == 1 {
             "line"
         } else {
             "lines"
         };
-        termy_toast::warning(format!(
-            "Ignored {invalid_keybind_warning_count} invalid keybind {noun}"
-        ));
+        termy_toast::warning(format!("Ignored {keybind_warning_count} keybind {noun}"));
     }
 }
 
@@ -177,7 +253,10 @@ fn debug_assert_trigger_is_valid_for_gpui(_trigger: &str) {}
 
 #[cfg(test)]
 mod tests {
-    use super::{reorder_resolved_keybinds_for_menu_display, resolve_keybinds_for_config};
+    use super::{
+        remove_command_keybinds_shadowed_by_tasks, reorder_resolved_keybinds_for_menu_display,
+        resolve_keybinds_for_config, resolve_task_keybinds_for_config,
+    };
     use crate::config::AppConfig;
     use termy_command_core::{
         CommandId, KeybindLineRef, ResolvedKeybind, default_resolved_keybinds,
@@ -387,6 +466,57 @@ mod tests {
                 trigger: "secondary-d".to_string(),
                 action: CommandId::SplitPaneVertical,
             }]
+        );
+    }
+
+    #[test]
+    fn task_keybinds_are_canonicalized_and_target_named_tasks() {
+        let config = AppConfig::from_contents(
+            "task.build.command = cargo build\n\
+             task.build.keybind = Shift-Secondary-B\n",
+        );
+
+        let (resolved, warnings) = resolve_task_keybinds_for_config(&config);
+
+        assert!(warnings.is_empty());
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].trigger, "shift-secondary-b");
+        assert_eq!(resolved[0].task_name, "build");
+    }
+
+    #[test]
+    fn later_task_keybind_wins_conflicts_by_config_line() {
+        let config = AppConfig::from_contents(
+            "task.zed.command = cargo test\n\
+             task.zed.keybind = secondary-shift-t\n\
+             task.alpha.command = cargo build\n\
+             task.alpha.keybind = secondary-shift-t\n",
+        );
+
+        let (resolved, warnings) = resolve_task_keybinds_for_config(&config);
+
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].task_name, "alpha");
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].line_number, 2);
+    }
+
+    #[test]
+    fn task_keybinds_shadow_command_bindings_with_the_same_trigger() {
+        let config = AppConfig::from_contents(
+            "task.build.command = cargo build\n\
+             task.build.keybind = secondary-t\n",
+        );
+        let (task_bindings, warnings) = resolve_task_keybinds_for_config(&config);
+        assert!(warnings.is_empty());
+
+        let mut command_bindings = default_resolved_keybinds();
+        remove_command_keybinds_shadowed_by_tasks(&mut command_bindings, &task_bindings);
+
+        assert!(
+            command_bindings
+                .iter()
+                .all(|binding| binding.trigger != "secondary-t")
         );
     }
 }

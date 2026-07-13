@@ -31,6 +31,10 @@ final class TmuxControlWorkspaceModel: ObservableObject {
         )
     }
 
+    init(session: TmuxControlSession) {
+        self.session = session
+    }
+
     var focusedTerminal: TerminalViewModel? {
         focusedPaneID.flatMap { terminals[$0] }
     }

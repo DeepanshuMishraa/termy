@@ -60,3 +60,35 @@ fn display_terminal_write_is_noop_without_pty() {
     );
     unsafe { termy_terminal_free(terminal) };
 }
+
+#[test]
+fn display_terminal_marks_wide_character_spacer_cells() {
+    let size = termy_size_default();
+    let mut terminal: *mut TermyFfiTerminal = std::ptr::null_mut();
+    assert_eq!(
+        unsafe { termy_display_terminal_new(size, &mut terminal) },
+        TermyFfiStatus::Ok
+    );
+
+    let text = "A界B".as_bytes();
+    assert_eq!(
+        unsafe { termy_terminal_feed_output(terminal, text.as_ptr(), text.len()) },
+        TermyFfiStatus::Ok
+    );
+    let mut frame: TermyFfiFrame = unsafe { std::mem::zeroed() };
+    assert_eq!(
+        unsafe { termy_terminal_snapshot(terminal, &mut frame) },
+        TermyFfiStatus::Ok
+    );
+
+    let cells = unsafe { std::slice::from_raw_parts(frame.cells_ptr, frame.cells_len) };
+    assert_eq!(cells[0].codepoint, 'A' as u32);
+    assert_eq!(cells[1].codepoint, '界' as u32);
+    assert!(cells[1].render_text);
+    assert!(cells[2].wide_character_spacer);
+    assert!(!cells[2].render_text);
+    assert_eq!(cells[3].codepoint, 'B' as u32);
+
+    unsafe { termy_frame_free(&mut frame) };
+    unsafe { termy_terminal_free(terminal) };
+}

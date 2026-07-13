@@ -426,6 +426,7 @@ pub struct TaskConfig {
     pub command: String,
     pub layout: Option<String>,
     pub working_dir: Option<String>,
+    pub keybind: Option<KeybindConfigLine>,
 }
 
 impl Default for AppConfig {

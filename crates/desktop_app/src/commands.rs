@@ -5,6 +5,18 @@ const GLOBAL_CONTEXT: Option<&str> = None;
 const TERMINAL_CONTEXT: Option<&str> = Some("Terminal");
 const INLINE_INPUT_CONTEXT: Option<&str> = Some("InlineInput");
 
+#[derive(Clone, Debug, PartialEq, Eq, gpui::Action)]
+#[action(namespace = termy, no_json)]
+pub struct RunNamedTask {
+    pub task_name: String,
+}
+
+impl RunNamedTask {
+    pub fn into_key_binding(self, trigger: &str) -> KeyBinding {
+        KeyBinding::new(trigger, self, TERMINAL_CONTEXT)
+    }
+}
+
 pub type MenuSection = u8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

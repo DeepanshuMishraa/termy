@@ -185,6 +185,11 @@ fn render_keybindings_doc() -> String {
     output.push_str("```txt\nkeybind = clear\nkeybind = cmd-p=toggle_command_palette\nkeybind = cmd-t=new_tab\nkeybind = cmd-w=close_pane_or_tab\nkeybind = cmd-c=copy\nkeybind = cmd-v=paste\n```\n\n");
     output.push_str("### 4) Use `secondary` for cross-platform configs\n\n");
     output.push_str("```txt\nkeybind = secondary-p=toggle_command_palette\nkeybind = secondary-t=new_tab\n```\n");
+    output.push_str("\n### 5) Run a named task directly\n\n");
+    output.push_str(
+        "```txt\ntask.build.command = cargo build\ntask.build.keybind = secondary-shift-b\n```\n\n",
+    );
+    output.push_str("Task keybinds use the same trigger syntax as regular keybinds. Later task entries win when task triggers conflict, and a task trigger overrides a regular command binding using the same trigger.\n");
 
     output
 }
@@ -323,11 +328,16 @@ const TASK_FIELD_DOCS: &[(&str, &str)] = &[
         "working_dir",
         "(optional): working directory for the launched tab",
     ),
+    (
+        "keybind",
+        "(optional): custom trigger that runs this task directly",
+    ),
 ];
 
 const TASK_EXAMPLE_LINES: &[&str] = &[
     "task.build.command = cargo build",
     "task.build.working_dir = crates/cli",
+    "task.build.keybind = secondary-shift-b",
     "task.dev_server.layout = dashboard",
     "task.dev_server.command = cargo run",
 ];

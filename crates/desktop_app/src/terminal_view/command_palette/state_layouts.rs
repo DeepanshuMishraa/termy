@@ -25,7 +25,7 @@ impl CommandPaletteItem {
                 layout_name.replace('-', " ")
             ),
             enabled: true,
-            status_hint: is_live.then_some(SAVED_LAYOUT_LIVE_HINT),
+            status_hint: is_live.then(|| SAVED_LAYOUT_LIVE_HINT.to_string()),
             tmux_status_hint: None,
             kind: CommandPaletteItemKind::SavedLayoutOpen {
                 layout_name: layout_name.to_string(),
@@ -56,7 +56,7 @@ impl CommandPaletteItem {
             title: exists_title,
             keywords: format!("saved layout save {}", trimmed.replace('-', " ")),
             enabled,
-            status_hint: (!enabled).then_some(SAVED_LAYOUT_NAME_REQUIRED_HINT),
+            status_hint: (!enabled).then(|| SAVED_LAYOUT_NAME_REQUIRED_HINT.to_string()),
             tmux_status_hint: None,
             kind: CommandPaletteItemKind::SavedLayoutSaveAs {
                 layout_name: trimmed.to_string(),
@@ -97,10 +97,10 @@ impl CommandPaletteItem {
         let mut status_hint = None;
         if next_layout_name.is_empty() {
             enabled = false;
-            status_hint = Some(SAVED_LAYOUT_NAME_REQUIRED_HINT);
+            status_hint = Some(SAVED_LAYOUT_NAME_REQUIRED_HINT.to_string());
         } else if current_layout_name.eq_ignore_ascii_case(&next_layout_name) {
             enabled = false;
-            status_hint = Some(SAVED_LAYOUT_NAME_UNCHANGED_HINT);
+            status_hint = Some(SAVED_LAYOUT_NAME_UNCHANGED_HINT.to_string());
         }
 
         let rendered_next = if next_layout_name.is_empty() {
@@ -279,6 +279,6 @@ mod tests {
             ))
             .expect("missing main layout item");
 
-        assert_eq!(main.status_hint, Some("live autosave"));
+        assert_eq!(main.status_hint.as_deref(), Some("live autosave"));
     }
 }

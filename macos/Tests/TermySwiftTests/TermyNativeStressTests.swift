@@ -1,7 +1,37 @@
 import XCTest
 @testable import TermySwift
 
+@MainActor
 final class TermyNativeStressTests: XCTestCase {
+    func testNormalAndAbnormalShellExitTearDownCleanly() async {
+        for command in ["exit 0", "kill -TERM $$"] {
+            let viewModel = TerminalViewModel(startupCommand: command)
+            viewModel.start()
+
+            let exited = await waitUntil { viewModel.isExited }
+            XCTAssertTrue(exited, "expected shell to exit for command: \(command)")
+            viewModel.stop()
+            XCTAssertTrue(viewModel.isExited)
+        }
+    }
+
+    func testRapidPaneCreateCloseReleasesEveryRemovedTerminal() {
+        let store = TerminalWorkspaceStore()
+        defer { store.focusedTerminal?.stop() }
+
+        for index in 0..<40 {
+            weak var removedTerminal: TerminalViewModel?
+            autoreleasepool {
+                store.splitFocused(index.isMultiple(of: 2) ? .horizontal : .vertical)
+                removedTerminal = store.focusedTerminal
+                XCTAssertEqual(store.paneCount, 2)
+                XCTAssertTrue(store.closeFocusedPaneIfSplit())
+            }
+            XCTAssertNil(removedTerminal, "closed pane \(index) retained its terminal view model")
+            XCTAssertEqual(store.paneCount, 1)
+        }
+    }
+
     func testWorkspacePersistenceRoundTripsLargeSavedLayouts() throws {
         let temporaryDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("TermySwiftTests-\(UUID().uuidString)", isDirectory: true)
@@ -81,6 +111,19 @@ final class TermyNativeStressTests: XCTestCase {
         XCTAssertEqual(configuration.measuredCellHeight, 1)
         XCTAssertEqual(configuration.mouseScrollMultiplier, 0)
         XCTAssertEqual(configuration.paneFocusStrength, 2)
+    }
+
+    private func waitUntil(
+        attempts: Int = 100,
+        condition: @escaping @MainActor () -> Bool
+    ) async -> Bool {
+        for _ in 0..<attempts {
+            if condition() {
+                return true
+            }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        return condition()
     }
 }
 

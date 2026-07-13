@@ -359,6 +359,50 @@ impl TerminalView {
         self.execute_command_action(CommandAction::RunTask, true, window, cx);
     }
 
+    pub(in super::super) fn handle_run_named_task_action(
+        &mut self,
+        action: &commands::RunNamedTask,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.simple_mode {
+            return;
+        }
+
+        let Some(task) = self
+            .tasks
+            .iter()
+            .find(|task| task.name == action.task_name)
+            .cloned()
+        else {
+            termy_toast::error(format!("Task \"{}\" no longer exists", action.task_name));
+            self.notify_overlay(cx);
+            return;
+        };
+
+        if let Some(layout_name) = task.layout.as_deref()
+            && !self
+                .current_named_layout
+                .as_deref()
+                .is_some_and(|current| current.eq_ignore_ascii_case(layout_name))
+        {
+            termy_toast::info(format!(
+                "Load saved layout \"{layout_name}\" before running task \"{}\"",
+                task.name
+            ));
+            self.notify_overlay(cx);
+            return;
+        }
+
+        self.run_task(
+            task.name.as_str(),
+            task.command.as_str(),
+            task.working_dir.as_deref(),
+            task.layout.as_deref(),
+            cx,
+        );
+    }
+
     pub(crate) fn open_new_tab_from_deeplink(
         &mut self,
         command: Option<&str>,

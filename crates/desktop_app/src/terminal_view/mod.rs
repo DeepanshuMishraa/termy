@@ -36,6 +36,7 @@ use std::{
 };
 use termy_auto_update::{AutoUpdater, UpdateState};
 use termy_config_core::{MAX_LINE_HEIGHT, MIN_LINE_HEIGHT};
+use termy_plugin_runtime::PluginRuntime;
 use termy_search::SearchState;
 use termy_terminal_ui::{
     CellRenderInfo, CommandLifecycle, PaneTerminal, ProgressState, TabTitleShellIntegration,
@@ -1073,6 +1074,9 @@ pub struct TerminalView {
     toast_animation_scheduled: bool,
     toast_manager: ToastManager,
     overlay_view: Option<Entity<TerminalOverlayView>>,
+    plugin_runtime: PluginRuntime,
+    plugin_refresh_in_flight: bool,
+    plugin_last_error: Option<String>,
     command_palette: CommandPaletteState,
     simple_mode: bool,
     last_viewport_size_px: Option<(i32, i32)>,
@@ -3450,6 +3454,7 @@ impl TerminalView {
         );
         let resolved_runtime_kind = runtime.kind();
 
+        let plugin_runtime = PluginRuntime::new(config_path.as_deref());
         let mut view = Self {
             tabs: Vec::new(),
             workspaces: vec![workspaces::WorkspaceEntry::new(1)],
@@ -3564,6 +3569,9 @@ impl TerminalView {
             toast_animation_scheduled: false,
             toast_manager: ToastManager::new(),
             overlay_view: None,
+            plugin_runtime,
+            plugin_refresh_in_flight: false,
+            plugin_last_error: None,
             command_palette: CommandPaletteState::new(config.command_palette_show_keybinds),
             simple_mode: config.simple_mode,
             last_viewport_size_px: None,
@@ -3738,6 +3746,8 @@ impl TerminalView {
             .detach();
         }
 
+        #[cfg(not(test))]
+        view.schedule_plugin_refresh(cx);
         view.sync_native_terminal_wakeup_interest();
         view.appearance_subscription =
             Some(cx.observe_window_appearance(window, |view, window, cx| {

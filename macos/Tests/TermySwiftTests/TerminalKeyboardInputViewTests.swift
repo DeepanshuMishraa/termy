@@ -4,6 +4,226 @@ import XCTest
 
 @MainActor
 final class TerminalKeyboardInputViewTests: XCTestCase {
+    func testWindowEventRoutesArrowThroughFirstResponderAndFFIEncoder() throws {
+        let harness = AppKitEventHarness()
+        let terminal = try LibTermyTerminal(displayCols: 80, rows: 24, loadUserConfig: false)
+        var encodedBytes: [UInt8]?
+        harness.inputView.onKeyInput = {
+            encodedBytes = try? terminal.encodeKey($0)
+        }
+
+        harness.sendKeyDown(keyCode: 126, characters: "\u{F700}")
+
+        XCTAssertEqual(encodedBytes, Array("\u{1b}[A".utf8))
+    }
+
+    func testWindowEventRoutesRepeatThroughKittyKeyboardFFIEncoder() throws {
+        let harness = AppKitEventHarness()
+        let terminal = try LibTermyTerminal(displayCols: 80, rows: 24, loadUserConfig: false)
+        try terminal.feedOutput(Array("\u{1b}[>10u".utf8))
+        var encodedBytes: [UInt8]?
+        harness.inputView.onKeyInput = {
+            encodedBytes = try? terminal.encodeKey($0)
+        }
+
+        harness.sendKeyDown(keyCode: 7, characters: "x", isRepeat: true)
+
+        XCTAssertEqual(encodedBytes, Array("\u{1b}[120;1:2u".utf8))
+    }
+
+    func testWindowEventRoutesModifiedKeyThroughFirstResponder() {
+        let harness = AppKitEventHarness()
+        var sentKeys: [TerminalKeyInput] = []
+        harness.inputView.onKeyInput = { sentKeys.append($0) }
+
+        harness.sendKeyDown(
+            keyCode: 126,
+            characters: "\u{F700}",
+            modifiers: [.option, .shift],
+            isRepeat: true
+        )
+
+        XCTAssertEqual(sentKeys, [
+            TerminalKeyInput(
+                key: "up",
+                alt: true,
+                shift: true,
+                eventKind: .repeat
+            )
+        ])
+    }
+
+    func testWindowEventsRoutePlainControlCommandFunctionNavigationAndKeypadKeys() {
+        let harness = AppKitEventHarness()
+        var sentKeys: [TerminalKeyInput] = []
+        harness.inputView.onKeyInput = { sentKeys.append($0) }
+
+        harness.sendKeyDown(keyCode: 7, characters: "x")
+        harness.sendKeyDown(keyCode: 0, characters: "a", modifiers: [.control])
+        harness.sendKeyDown(keyCode: 123, characters: "\u{F702}", modifiers: [.command])
+        harness.sendKeyDown(keyCode: 122, characters: "\u{F704}")
+        harness.sendKeyDown(keyCode: 115, characters: "\u{F729}")
+        harness.sendKeyDown(keyCode: 121, characters: "\u{F72D}")
+        harness.sendKeyDown(keyCode: 76, characters: "\r")
+
+        XCTAssertEqual(sentKeys, [
+            TerminalKeyInput(key: "x", keyChar: "x"),
+            TerminalKeyInput(key: "a", keyChar: "a", control: true),
+            TerminalKeyInput(key: "left", platform: true),
+            TerminalKeyInput(key: "f1", function: true),
+            TerminalKeyInput(key: "home"),
+            TerminalKeyInput(key: "pagedown"),
+            TerminalKeyInput(key: "enter")
+        ])
+    }
+
+    func testWindowEventGivesSearchShortcutPrecedenceOverTerminalInput() {
+        let harness = AppKitEventHarness()
+        var showedSearch = false
+        var sentKeys: [TerminalKeyInput] = []
+        harness.inputView.onShowSearch = { showedSearch = true }
+        harness.inputView.onKeyInput = { sentKeys.append($0) }
+
+        harness.sendKeyDown(keyCode: 3, characters: "f", modifiers: [.command])
+
+        XCTAssertTrue(showedSearch)
+        XCTAssertTrue(sentKeys.isEmpty)
+    }
+
+    func testWindowEventDismissesSearchBeforeEncodingEscape() {
+        let harness = AppKitEventHarness()
+        var dismissedSearch = false
+        var sentKeys: [TerminalKeyInput] = []
+        harness.inputView.isSearchVisible = true
+        harness.inputView.onDismissSearch = { dismissedSearch = true }
+        harness.inputView.onKeyInput = { sentKeys.append($0) }
+
+        harness.sendKeyDown(keyCode: 53, characters: "\u{1b}")
+
+        XCTAssertTrue(dismissedSearch)
+        XCTAssertTrue(sentKeys.isEmpty)
+    }
+
+    func testWindowEventsRouteMousePressDragAndRelease() {
+        let harness = AppKitEventHarness()
+        harness.inputView.cols = 80
+        harness.inputView.rows = 24
+        var sentMouse: [TerminalMouseInput] = []
+        harness.inputView.onMouseInput = {
+            sentMouse.append($0)
+            return true
+        }
+
+        harness.sendMouse(
+            type: .leftMouseDown,
+            at: harness.point(col: 3, row: 2),
+            modifiers: [.option, .shift]
+        )
+        harness.sendMouse(
+            type: .leftMouseDragged,
+            at: harness.point(col: 4, row: 3),
+            modifiers: [.option, .shift]
+        )
+        harness.sendMouse(
+            type: .leftMouseUp,
+            at: harness.point(col: 4, row: 3),
+            modifiers: [.option, .shift]
+        )
+
+        XCTAssertEqual(sentMouse, [
+            TerminalMouseInput(
+                kind: .press,
+                button: .left,
+                position: TerminalGridPosition(col: 3, row: 2),
+                control: false,
+                alt: true,
+                shift: true
+            ),
+            TerminalMouseInput(
+                kind: .drag,
+                button: .left,
+                position: TerminalGridPosition(col: 4, row: 3),
+                control: false,
+                alt: true,
+                shift: true
+            ),
+            TerminalMouseInput(
+                kind: .release,
+                button: .left,
+                position: TerminalGridPosition(col: 4, row: 3),
+                control: false,
+                alt: true,
+                shift: true
+            )
+        ])
+    }
+
+    func testWindowEventsRouteMouseReportingThroughFFIEncoder() throws {
+        let harness = AppKitEventHarness()
+        harness.inputView.cols = 80
+        harness.inputView.rows = 24
+        let terminal = try LibTermyTerminal(displayCols: 80, rows: 24, loadUserConfig: false)
+        try terminal.feedOutput(Array("\u{1b}[?1002h\u{1b}[?1006h".utf8))
+        var encoded: [[UInt8]] = []
+        harness.inputView.onMouseInput = {
+            guard let bytes = try? terminal.encodeMouse($0) else {
+                return false
+            }
+            encoded.append(bytes)
+            return true
+        }
+
+        harness.sendMouse(type: .leftMouseDown, at: harness.point(col: 3, row: 2))
+        harness.sendMouse(type: .leftMouseUp, at: harness.point(col: 3, row: 2))
+
+        XCTAssertEqual(encoded, [
+            Array("\u{1b}[<0;4;3M".utf8),
+            Array("\u{1b}[<0;4;3m".utf8)
+        ])
+    }
+
+    func testWindowEventsRouteLineScrollToScrollback() {
+        let harness = AppKitEventHarness()
+        var scrollDeltas: [Int] = []
+        harness.inputView.onMouseInput = { _ in false }
+        harness.inputView.onScrollLines = { scrollDeltas.append($0) }
+
+        harness.sendScroll(deltaY: 2, precise: false)
+
+        XCTAssertEqual(scrollDeltas, [6])
+    }
+
+    func testWindowEventsAccumulatePreciseTrackpadScroll() {
+        let harness = AppKitEventHarness()
+        var scrollDeltas: [Int] = []
+        harness.inputView.onMouseInput = { _ in false }
+        harness.inputView.onScrollLines = { scrollDeltas.append($0) }
+
+        harness.sendScroll(deltaY: 4, precise: true)
+        harness.sendScroll(deltaY: 4, precise: true)
+
+        XCTAssertEqual(scrollDeltas, [1])
+    }
+
+    func testWindowEventsFallBackToDragSelectionWhenMouseReportingIsDisabled() {
+        let harness = AppKitEventHarness()
+        harness.inputView.cols = 80
+        harness.inputView.rows = 24
+        var selections: [TerminalSelection?] = []
+        harness.inputView.onMouseInput = { _ in false }
+        harness.inputView.onSelectionChanged = { selections.append($0) }
+
+        harness.sendMouse(type: .leftMouseDown, at: harness.point(col: 2, row: 1))
+        harness.sendMouse(type: .leftMouseDragged, at: harness.point(col: 8, row: 4))
+        harness.sendMouse(type: .leftMouseUp, at: harness.point(col: 8, row: 4))
+
+        let selection = TerminalSelection(
+            anchor: TerminalGridPosition(col: 2, row: 1),
+            active: TerminalGridPosition(col: 8, row: 4)
+        )
+        XCTAssertEqual(selections.compactMap { $0 }, [selection, selection])
+    }
+
     func testDragSelectionIgnoresSameCellJitter() {
         let position = TerminalGridPosition(col: 12, row: 4)
 

@@ -34,6 +34,8 @@ pub struct TermyCell {
     pub uses_terminal_default_bg: bool,
     pub bold: bool,
     pub render_text: bool,
+    pub wide_character_spacer: bool,
+    pub line_wrapped: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -122,17 +124,22 @@ fn cell_from_renderable_cell(
         fg.b /= 2;
     }
 
+    let wide_character_spacer = cell
+        .flags
+        .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER);
+
     TermyCell {
         char: cell.c,
         fg,
         bg: color_to_rgba(bg, live_colors, query_colors),
         uses_terminal_default_bg,
         bold: cell.flags.contains(Flags::BOLD),
-        render_text: !cell
-            .flags
-            .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER | Flags::HIDDEN)
+        render_text: !wide_character_spacer
+            && !cell.flags.contains(Flags::HIDDEN)
             && cell.c != '\0'
             && !cell.c.is_control(),
+        wide_character_spacer,
+        line_wrapped: cell.flags.contains(Flags::WRAPLINE),
     }
 }
 
@@ -257,6 +264,24 @@ mod tests {
         assert_eq!(frame.cells[0].char, 'o');
         assert_eq!(frame.cells[1].char, 'k');
         assert_eq!(frame.cells.len(), 8);
+    }
+
+    #[test]
+    fn snapshot_marks_the_cell_that_soft_wraps_a_row() {
+        let size = TerminalSize {
+            cols: 4,
+            rows: 2,
+            cell_width: 9.0,
+            cell_height: 18.0,
+        };
+        let mut term = Term::new(TermConfig::default(), &size, VoidListener);
+        let mut parser: ansi::Processor = ansi::Processor::new();
+        parser.advance(&mut term, b"abcde");
+
+        let frame = snapshot_from_term(&term, size, TerminalQueryColors::default());
+
+        assert!(frame.cells[3].line_wrapped);
+        assert!(!frame.cells[4].line_wrapped);
     }
 
     #[test]

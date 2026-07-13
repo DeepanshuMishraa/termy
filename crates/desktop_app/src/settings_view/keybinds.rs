@@ -520,7 +520,7 @@ impl SettingsWindow {
             .flex_col()
             .gap(px(CARD_GAP))
             .child(self.render_section_header(
-                "Keybindings",
+                "Keyboard shortcuts",
                 "Click a shortcut box, then press a key combo",
                 SettingsSection::Keybindings,
                 cx,

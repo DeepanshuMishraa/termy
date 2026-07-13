@@ -252,27 +252,36 @@ impl TerminalView {
         &mut self,
         working_dir: Option<&str>,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         let Some(active_window_id) = self
             .tabs
             .get(self.active_tab)
             .map(|tab| tab.window_id.clone())
         else {
             termy_toast::error("Failed to create tab: active tmux window is unavailable");
-            return;
+            return false;
         };
         let working_dir = self.preferred_working_dir_for_new_session(working_dir, cx);
 
         if !self.run_tmux_action("Failed to create tab", |tmux_client| {
             tmux_client.new_window_after(active_window_id.as_str(), working_dir.as_deref())
         }) {
-            return;
+            return false;
         }
 
-        if self.refresh_tmux_snapshot() {
-            self.reset_tab_interaction_state();
-            cx.notify();
+        if !self.refresh_tmux_snapshot() {
+            return false;
         }
+        let created_terminal_is_active = self.tabs.get(self.active_tab).is_some_and(|tab| {
+            tab.window_id != active_window_id && tab.active_terminal().is_some()
+        });
+        if !created_terminal_is_active {
+            termy_toast::error("Failed to create tab: new tmux terminal is unavailable");
+            return false;
+        }
+        self.reset_tab_interaction_state();
+        cx.notify();
+        true
     }
 
     pub(in crate::terminal_view) fn tmux_close_tab(

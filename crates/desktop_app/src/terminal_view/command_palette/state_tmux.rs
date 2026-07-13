@@ -92,7 +92,7 @@ impl CommandPaletteItem {
             title,
             keywords,
             enabled: !is_active,
-            status_hint: is_active.then_some(TMUX_SESSION_ACTIVE_HINT),
+            status_hint: is_active.then(|| TMUX_SESSION_ACTIVE_HINT.to_string()),
             tmux_status_hint: is_active.then_some(TmuxSessionStatusHint::ActiveSession),
             kind: CommandPaletteItemKind::TmuxSessionRenameSelect {
                 session_name: row.summary.name.clone(),
@@ -112,11 +112,11 @@ impl CommandPaletteItem {
         let mut tmux_status_hint = None;
         if next_session_name.is_empty() {
             enabled = false;
-            status_hint = Some(TMUX_SESSION_NAME_REQUIRED_HINT);
+            status_hint = Some(TMUX_SESSION_NAME_REQUIRED_HINT.to_string());
             tmux_status_hint = Some(TmuxSessionStatusHint::NameRequired);
         } else if current_session_name.eq_ignore_ascii_case(&next_session_name) {
             enabled = false;
-            status_hint = Some(TMUX_SESSION_NAME_UNCHANGED_HINT);
+            status_hint = Some(TMUX_SESSION_NAME_UNCHANGED_HINT.to_string());
             tmux_status_hint = Some(TmuxSessionStatusHint::NameUnchanged);
         }
 
@@ -160,7 +160,7 @@ impl CommandPaletteItem {
             title,
             keywords,
             enabled: !is_active,
-            status_hint: is_active.then_some(TMUX_SESSION_ACTIVE_HINT),
+            status_hint: is_active.then(|| TMUX_SESSION_ACTIVE_HINT.to_string()),
             tmux_status_hint: is_active.then_some(TmuxSessionStatusHint::ActiveSession),
             kind: CommandPaletteItemKind::TmuxSessionKill {
                 session_name: row.summary.name.clone(),
@@ -478,7 +478,7 @@ mod tests {
             .expect("missing inactive session row");
 
         assert!(!active.enabled);
-        assert_eq!(active.status_hint, Some("active session"));
+        assert_eq!(active.status_hint.as_deref(), Some("active session"));
         assert!(inactive.enabled);
         assert_eq!(inactive.status_hint, None);
     }
@@ -503,12 +503,12 @@ mod tests {
         let empty = state.tmux_session_items_for_query("   ", Some("work"));
         assert_eq!(empty.len(), 1);
         assert!(!empty[0].enabled);
-        assert_eq!(empty[0].status_hint, Some("name required"));
+        assert_eq!(empty[0].status_hint.as_deref(), Some("name required"));
 
         let same = state.tmux_session_items_for_query("work", Some("work"));
         assert_eq!(same.len(), 1);
         assert!(!same[0].enabled);
-        assert_eq!(same[0].status_hint, Some("unchanged"));
+        assert_eq!(same[0].status_hint.as_deref(), Some("unchanged"));
 
         let valid = state.tmux_session_items_for_query("next", Some("work"));
         assert_eq!(valid.len(), 1);

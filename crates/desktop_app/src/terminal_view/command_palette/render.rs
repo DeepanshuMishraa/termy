@@ -147,6 +147,9 @@ impl TerminalView {
                     self.command_palette_shortcut(*action, window)
                 }
                 CommandPaletteItemKind::Theme(_)
+                | CommandPaletteItemKind::PluginCommand { .. }
+                | CommandPaletteItemKind::PluginInputSubmit { .. }
+                | CommandPaletteItemKind::PluginInputOption { .. }
                 | CommandPaletteItemKind::TmuxSessionAttachOrSwitch { .. }
                 | CommandPaletteItemKind::TmuxSessionCreateAndAttach { .. }
                 | CommandPaletteItemKind::TmuxSessionDetachCurrent
@@ -174,7 +177,7 @@ impl TerminalView {
                 | CommandPaletteItemKind::AppInfoCopyAll { .. } => None,
             };
             let title = item.title.clone();
-            let status_hint = item.status_hint;
+            let status_hint = item.status_hint.clone();
             let text_color = if is_enabled {
                 style.primary_text
             } else {
@@ -332,6 +335,14 @@ impl TerminalView {
                     },
                 },
             },
+            CommandPaletteMode::PluginInputs => {
+                let progress = self.plugin_input_progress_label();
+                if progress.is_empty() {
+                    self.plugin_input_mode_title()
+                } else {
+                    format!("{} · {progress}", self.plugin_input_mode_title())
+                }
+            }
             CommandPaletteMode::AppInfo => "App Info".to_string(),
         };
         // (keycap, action) pairs for the footer bar. An empty keycap renders the
@@ -384,6 +395,14 @@ impl TerminalView {
                     ("esc", "Back"),
                 ],
             },
+            CommandPaletteMode::PluginInputs => {
+                match (self.plugin_input_is_last(), self.plugin_input_can_go_back()) {
+                    (true, true) => &[("↵", "Run"), ("esc", "Previous"), ("↑↓", "Navigate")],
+                    (true, false) => &[("↵", "Run"), ("esc", "Back"), ("↑↓", "Navigate")],
+                    (false, true) => &[("↵", "Continue"), ("esc", "Previous"), ("↑↓", "Navigate")],
+                    (false, false) => &[("↵", "Continue"), ("esc", "Back"), ("↑↓", "Navigate")],
+                }
+            }
             CommandPaletteMode::AppInfo => &[("↵", "Copy"), ("esc", "Back"), ("↑↓", "Navigate")],
         };
         let style = CommandPaletteStyle::resolve(self);
@@ -414,6 +433,7 @@ impl TerminalView {
                 }
                 _ => "No matching items",
             },
+            CommandPaletteMode::PluginInputs => "No matching options",
             _ => "No matching items",
         };
 
@@ -550,6 +570,10 @@ impl TerminalView {
                 )
             };
 
+        let input_placeholder = (self.command_palette.mode() == CommandPaletteMode::PluginInputs
+            && self.command_palette.input().text().is_empty())
+        .then(|| self.plugin_input_placeholder())
+        .filter(|placeholder| !placeholder.is_empty());
         let input_head = div()
             .id("command-palette-input")
             .w_full()
@@ -564,16 +588,30 @@ impl TerminalView {
                     .size(px(18.0))
                     .text_color(style.muted_text),
             )
-            .child(div().flex_1().min_w(px(0.0)).h(px(22.0)).relative().child(
-                self.render_inline_input_layer(
-                    input_font,
-                    px(COMMAND_PALETTE_INPUT_TEXT_SIZE),
-                    style.primary_text.into(),
-                    style.input_selection.into(),
-                    InlineInputAlignment::Left,
-                    cx,
-                ),
-            ))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .h(px(22.0))
+                    .relative()
+                    .children(input_placeholder.map(|placeholder| {
+                        div()
+                            .absolute()
+                            .left_0()
+                            .top_0()
+                            .text_size(px(COMMAND_PALETTE_INPUT_TEXT_SIZE))
+                            .text_color(style.muted_text)
+                            .child(placeholder)
+                    }))
+                    .child(self.render_inline_input_layer(
+                        input_font,
+                        px(COMMAND_PALETTE_INPUT_TEXT_SIZE),
+                        style.primary_text.into(),
+                        style.input_selection.into(),
+                        InlineInputAlignment::Left,
+                        cx,
+                    )),
+            )
             .children(mode_chip);
 
         let result_counter = format!(

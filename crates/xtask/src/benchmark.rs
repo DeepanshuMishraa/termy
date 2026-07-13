@@ -21,7 +21,6 @@ const DEFAULT_DURATION_SECS: u64 = 13;
 const TRACE_PADDING_SECS: u64 = 5;
 const BENCHMARK_EVENTS_PATH_ENV: &str = "TERMY_BENCHMARK_EVENTS_PATH";
 const IDLE_BURST_PRE_IDLE: Duration = Duration::from_millis(1500);
-const IDLE_BURST_POST_IDLE: Duration = Duration::from_millis(1000);
 const ECHO_TRAIN_PRE_IDLE: Duration = Duration::from_millis(1500);
 const ECHO_TRAIN_INTERVAL: Duration = Duration::from_millis(250);
 const ECHO_TRAIN_POST_IDLE: Duration = Duration::from_millis(1000);
@@ -775,7 +774,7 @@ fn run_idle_burst(duration: Duration) -> Result<()> {
     out.flush()?;
     marker_writer.record("burst_end", None)?;
 
-    sleep_for_remaining(start, duration, IDLE_BURST_POST_IDLE);
+    thread::sleep(duration.saturating_sub(start.elapsed()));
     marker_writer.flush()?;
     Ok(())
 }
@@ -807,7 +806,7 @@ fn run_echo_train(duration: Duration) -> Result<()> {
     writeln!(out)?;
     out.flush()?;
 
-    sleep_for_remaining(start, duration, ECHO_TRAIN_POST_IDLE);
+    thread::sleep(duration.saturating_sub(start.elapsed()));
     marker_writer.flush()?;
     Ok(())
 }

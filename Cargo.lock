@@ -7008,7 +7008,6 @@ dependencies = [
  "rfd",
  "serde",
  "serde_json",
- "sha2",
  "smol",
  "sqlx",
  "sysinfo 0.37.2",
@@ -7019,6 +7018,7 @@ dependencies = [
  "termy_command_core",
  "termy_config_core",
  "termy_native_sdk",
+ "termy_plugin_runtime",
  "termy_search",
  "termy_terminal_ui",
  "termy_themes",
@@ -7138,6 +7138,19 @@ dependencies = [
  "objc2-app-kit",
  "objc2-foundation",
  "windows 0.61.3",
+]
+
+[[package]]
+name = "termy_plugin_runtime"
+version = "0.1.0"
+dependencies = [
+ "dirs 6.0.0",
+ "rand_core 0.6.4",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "url",
 ]
 
 [[package]]
