@@ -30,6 +30,14 @@ type PluginManifest = {
   main?: string;
 };
 type CapturedFile = { relativePath: string; contents: Uint8Array };
+type PluginToastLevel = "info" | "success" | "warning" | "error";
+type PluginToasts = {
+  info: (message: string) => void;
+  success: (message: string) => void;
+  warning: (message: string) => void;
+  error: (message: string) => void;
+};
+type PluginContext = Record<string, unknown> & { toasts: PluginToasts };
 type PluginCommand = {
   id: string;
   title: string;
@@ -42,7 +50,7 @@ type PluginCommand = {
   timeoutMs?: number;
   run: (request: {
     inputs: Record<string, unknown>;
-    context: Record<string, unknown>;
+    context: PluginContext;
   }) => unknown;
 };
 type PluginDefinition = {
@@ -150,7 +158,14 @@ async function capturePlugin(source: PluginSource): Promise<CapturedFile[]> {
       Buffer.compare(Buffer.from(left.name), Buffer.from(right.name)),
     );
     for (const entry of entries) {
-      if (entry.name === ".git" || entry.name === "node_modules") continue;
+      if (
+        entry.name === ".git" ||
+        entry.name === "node_modules" ||
+        entry.name === ".termy-disabled" ||
+        entry.name === ".termy-source.json"
+      ) {
+        continue;
+      }
       const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
       const path = join(directory, entry.name);
       if (entry.isSymbolicLink()) {
@@ -535,6 +550,30 @@ function normalizeActions(value: unknown): unknown[] {
   return [value];
 }
 
+function createPluginContext(
+  value: unknown,
+  emittedActions: unknown[],
+): PluginContext {
+  const context =
+    typeof value === "object" && value !== null && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
+  const toast = (level: PluginToastLevel, message: unknown) => {
+    assertText(message, "Toast message", 4_096);
+    emittedActions.push({ type: "toast", level, message });
+  };
+
+  return {
+    ...context,
+    toasts: Object.freeze({
+      info: (message: string) => toast("info", message),
+      success: (message: string) => toast("success", message),
+      warning: (message: string) => toast("warning", message),
+      error: (message: string) => toast("error", message),
+    }),
+  };
+}
+
 async function handle(message: Record<string, unknown>): Promise<unknown> {
   if (message.type === "load") {
     const source = await preparePlugin(
@@ -556,11 +595,12 @@ async function handle(message: Record<string, unknown>): Promise<unknown> {
     const commandId = String(message.commandId || "");
     const run = commandHandlers.get(commandId);
     if (!run) throw new Error(`Command ${commandId} is not registered`);
+    const emittedActions: unknown[] = [];
     const value = await run({
       inputs: (message.inputs || {}) as Record<string, unknown>,
-      context: (message.context || {}) as Record<string, unknown>,
+      context: createPluginContext(message.context, emittedActions),
     });
-    return { actions: normalizeActions(value) };
+    return { actions: [...emittedActions, ...normalizeActions(value)] };
   }
   throw new Error(`Unknown Worker request ${String(message.type)}`);
 }

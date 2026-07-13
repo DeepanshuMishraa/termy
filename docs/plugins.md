@@ -105,12 +105,8 @@ export default definePlugin({
       title: "Hello: Greet me",
       keywords: ["hello", "example"],
       icon: "info",
-      run() {
-        return {
-          type: "toast",
-          level: "success",
-          message: "Hello from Termy",
-        };
+      run({ context }) {
+        context.toasts.success("Hello from Termy");
       },
     },
   ],
@@ -207,10 +203,24 @@ type PluginContext = {
   activeCommand?: string;
   platform: "macos" | "linux" | "windows";
   appVersion: string;
+  toasts: {
+    info(message: string): void;
+    success(message: string): void;
+    warning(message: string): void;
+    error(message: string): void;
+  };
 };
 ```
 
 `workingDirectory` and `activeCommand` are absent when the active terminal cannot provide them. Plugins should handle that case instead of assuming both values exist.
+
+Use `context.toasts` when a command only needs to notify the user; no SDK import or returned action is required:
+
+```ts
+run({ context }) {
+  context.toasts.success("Finished syncing");
+}
+```
 
 ## Actions
 
@@ -224,7 +234,7 @@ A handler can return nothing, one action, an action array, or `{ actions: [...] 
 | Open a URL | `{ type: "url.open", url }` | Open an `http` or `https` URL with the system browser. |
 | Show a toast | `{ type: "toast", level, message }` | Show an `info`, `success`, `warning`, or `error` notification. |
 
-Actions run in returned order. Keep handlers focused and return only the effects the command needs.
+Toasts emitted through `context.toasts` run before returned actions, and returned actions keep their existing order. Keep handlers focused and return only the effects the command needs.
 
 ## Reloading and failures
 

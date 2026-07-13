@@ -78,11 +78,7 @@ export default definePlugin({
             ? `Welcome to Termy ${context.appVersion}`
             : "Hello from Termy";
 
-        return {
-          type: "toast",
-          level: "success",
-          message,
-        };
+        context.toasts.success(message);
       },
     },
   ],
@@ -99,7 +95,7 @@ Commands support `title`, search `keywords`, `status`, `enabled`, `disabledReaso
 - `select` returns the value from a fixed options list.
 - `confirm` returns a boolean.
 
-The handler receives `inputs` plus `context`, which includes the platform and app version and may include the active working directory and command. Never interpolate free-form text directly into a shell action; map select values to fixed commands or quote values for the target shell.
+The handler receives `inputs` plus `context`, which includes the platform and app version and may include the active working directory and command. It also provides `context.toasts.info(message)`, `success(message)`, `warning(message)`, and `error(message)`, so a plugin can notify the user without importing an SDK or returning an action. Never interpolate free-form text directly into a shell action; map select values to fixed commands or quote values for the target shell.
 
 ## Actions
 

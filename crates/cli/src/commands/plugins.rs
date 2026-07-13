@@ -285,12 +285,8 @@ fn plugin_template() -> &'static str {
       title: "Hello from my plugin",
       keywords: ["hello"],
       icon: "info",
-      run() {
-        return {
-          type: "toast",
-          level: "success",
-          message: "Hello from Termy",
-        };
+      run({ context }) {
+        context.toasts.success("Hello from Termy");
       },
     },
   ],
@@ -1252,11 +1248,9 @@ mod tests {
                 .expect("parse manifest");
         assert_eq!(manifest["id"], "my-plugin");
         assert_eq!(manifest["name"], "My Plugin");
-        assert!(
-            fs::read_to_string(target.join("plugin.ts"))
-                .expect("read plugin")
-                .contains("definePlugin")
-        );
+        let plugin = fs::read_to_string(target.join("plugin.ts")).expect("read plugin");
+        assert!(plugin.contains("definePlugin"));
+        assert!(plugin.contains("context.toasts.success"));
 
         fs::write(target.join("plugin.ts"), "keep me").expect("customize plugin");
         let error = init(&target, None, None).expect_err("refuse overwrite");

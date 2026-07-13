@@ -2828,6 +2828,15 @@ export default definePlugin({
       },
     },
     {
+      id: "context-toasts",
+      title: "Hello: Context toasts",
+      run({ context }) {
+        context.toasts.info(`Running on ${context.platform}`);
+        context.toasts.success(`Termy ${context.appVersion} is ready`);
+        return { type: "toast", level: "warning", message: "Returned action" };
+      },
+    },
+    {
       id: "greet",
       title: "Hello: Greet",
       inputs: [{ id: "name", type: "text", label: "Name", required: true }],
@@ -2845,6 +2854,11 @@ export default definePlugin({
             r#"export const greeting = (name: unknown) => `Hello ${String(name)}`;"#,
         )
         .expect("write imported helper");
+        fs::write(
+            plugin_dir.join(SOURCE_METADATA_FILE),
+            r#"{"repositoryUrl":"https://github.com/example/plugins"}"#,
+        )
+        .expect("write managed source metadata");
         let cache_key = discover_plugins(&plugins)
             .expect("discover plugin before loading")
             .sources
@@ -2868,7 +2882,7 @@ export default definePlugin({
                 .is_file(),
             "plugin bundle should be cached by content hash"
         );
-        assert_eq!(runtime.commands().len(), 4);
+        assert_eq!(runtime.commands().len(), 5);
         let revision = runtime
             .command_with_revision("hello", "greet")
             .expect("hello command revision")
@@ -2898,6 +2912,32 @@ export default definePlugin({
                 level: PluginToastLevel::Info,
                 message: "Still connected".to_string(),
             }]
+        );
+        let actions = runtime
+            .invoke(
+                "hello",
+                "context-toasts",
+                &revision,
+                BTreeMap::new(),
+                context.clone(),
+            )
+            .expect("context toast helpers should emit actions");
+        assert_eq!(
+            actions,
+            vec![
+                PluginAction::Toast {
+                    level: PluginToastLevel::Info,
+                    message: format!("Running on {}", std::env::consts::OS),
+                },
+                PluginAction::Toast {
+                    level: PluginToastLevel::Success,
+                    message: "Termy test is ready".to_string(),
+                },
+                PluginAction::Toast {
+                    level: PluginToastLevel::Warning,
+                    message: "Returned action".to_string(),
+                },
+            ]
         );
         let error = runtime
             .invoke(

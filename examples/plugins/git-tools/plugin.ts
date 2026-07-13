@@ -33,22 +33,16 @@ export default definePlugin({
       ],
       run({ inputs, context }) {
         if (inputs.confirmed !== true) {
-          return {
-            type: "toast",
-            level: "info",
-            message: "Git inspection cancelled",
-          };
+          context.toasts.info("Git inspection cancelled");
+          return;
         }
 
         const command =
           typeof inputs.view === "string" ? gitCommands[inputs.view] : undefined;
 
         if (!command) {
-          return {
-            type: "toast",
-            level: "error",
-            message: "Choose a Git view first",
-          };
+          context.toasts.error("Choose a Git view first");
+          return;
         }
 
         return {

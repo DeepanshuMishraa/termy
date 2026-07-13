@@ -48,11 +48,19 @@ type TermyPluginInput =
   | TermyPluginSelectInput
   | TermyPluginConfirmInput;
 
+type TermyPluginToasts = {
+  info(message: string): void;
+  success(message: string): void;
+  warning(message: string): void;
+  error(message: string): void;
+};
+
 type TermyPluginContext = {
   workingDirectory?: string;
   activeCommand?: string;
   platform: "macos" | "linux" | "windows";
   appVersion: string;
+  toasts: TermyPluginToasts;
 };
 
 type TermyPluginAction =
