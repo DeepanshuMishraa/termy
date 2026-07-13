@@ -8669,6 +8669,7 @@ dependencies = [
  "axum",
  "better-auth",
  "neon-serverless-sqlx",
+ "rustls",
  "serde_json",
  "sqlx 0.8.6",
  "tokio",

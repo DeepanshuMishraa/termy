@@ -104,6 +104,13 @@ fn build_router(auth: Arc<Auth>, db: Arc<QueryPool>) -> Router {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // The Neon websocket transport uses rustls without a compiled-in default
+    // crypto provider; a process-level provider must be installed before any
+    // TLS connection is made.
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .map_err(|_| anyhow::anyhow!("failed to install rustls crypto provider"))?;
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
