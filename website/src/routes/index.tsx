@@ -203,23 +203,26 @@ function Starfield() {
         <span
           key={i}
           className="absolute rounded-full motion-safe:animate-[home-twinkle_6s_ease-in-out_infinite]"
-          style={{
-            top: `${star.top}%`,
-            left: `${star.left}%`,
-            width: star.size,
-            height: star.size,
-            background: star.tint,
-            opacity: star.opacity,
-            animationDelay: `${star.delay}s`,
-            boxShadow:
-              star.size > 2 ? `0 0 6px 1px ${star.tint}55` : undefined,
-          }}
+          style={
+            {
+              top: `${star.top}%`,
+              left: `${star.left}%`,
+              width: star.size,
+              height: star.size,
+              background: star.tint,
+              opacity: star.opacity,
+              animationDelay: `${star.delay}s`,
+              boxShadow:
+                star.size > 2 ? `0 0 6px 1px ${star.tint}55` : undefined,
+              '--star-opacity': star.opacity,
+            } as React.CSSProperties
+          }
         />
       ))}
       <style>{`
         @keyframes home-twinkle {
-          0%, 100% { transform: scale(1); }
-          50% { transform: scale(0.6); filter: brightness(0.5); }
+          0%, 100% { opacity: var(--star-opacity); }
+          50% { opacity: calc(var(--star-opacity) * 0.35); }
         }
       `}</style>
     </div>
@@ -370,67 +373,50 @@ function NebulaCloud({
         className="text-[10px] leading-[1.8]"
         style={{ fontFamily: MONO, letterSpacing: '0.42em' }}
       >
-        {segments.map((line, row) => (
-          <div key={row}>
-            {line.map((segment, i) => {
-              if (!segment.color) return segment.text;
+        {segments.map((line, row) => {
+          const motionSeed = row * 37 + 11;
+          const duration = 9 + (motionSeed % 45) / 10;
+          const delay = -(motionSeed % 100) / 10;
 
-              const motionSeed = row * 37 + i * 17;
-              const duration = segment.token
-                ? 13 + (motionSeed % 50) / 10
-                : 8 + (motionSeed % 45) / 10;
-              const delay = -(motionSeed % 100) / 10;
-
-              return (
-                <span
-                  key={i}
-                  className={`inline-block ${
-                    segment.token
-                      ? 'motion-safe:animate-[home-nebula-token_ease-in-out_infinite]'
-                      : 'motion-safe:animate-[home-nebula-glyph_ease-in-out_infinite]'
-                  }`}
-                  style={
-                    {
-                      color: segment.color,
-                      opacity: segment.opacity,
-                      animationDuration: `${duration}s`,
-                      animationDelay: `${delay}s`,
-                      '--nebula-opacity': segment.opacity,
-                      '--nebula-x': `${
-                        (motionSeed % 2 === 0 ? 1 : -1) *
-                        (2 + (motionSeed % 3))
-                      }px`,
-                      '--nebula-y': `${2 + (motionSeed % 4)}px`,
-                    } as React.CSSProperties
-                  }
-                >
-                  {segment.text}
-                </span>
-              );
-            })}
-          </div>
-        ))}
+          return (
+            <div
+              key={row}
+              className="motion-safe:animate-[home-nebula-row_ease-in-out_infinite]"
+              style={
+                {
+                  animationDuration: `${duration}s`,
+                  animationDelay: `${delay}s`,
+                  '--nebula-x': `${
+                    (row % 2 === 0 ? 1 : -1) * (2 + (motionSeed % 3))
+                  }px`,
+                  '--nebula-y': `${2 + (motionSeed % 4)}px`,
+                } as React.CSSProperties
+              }
+            >
+              {line.map((segment, i) => {
+                if (!segment.color) return segment.text;
+                return (
+                  <span
+                    key={i}
+                    style={{ color: segment.color, opacity: segment.opacity }}
+                  >
+                    {segment.text}
+                  </span>
+                );
+              })}
+            </div>
+          );
+        })}
       </pre>
       <style>{`
-        @keyframes home-nebula-glyph {
+        @keyframes home-nebula-row {
           0%, 100% {
             transform: translate3d(0, 0, 0);
-            opacity: var(--nebula-opacity);
+            opacity: 1;
           }
           50% {
             transform: translate3d(var(--nebula-x), calc(var(--nebula-y) * -1), 0);
-            opacity: calc(var(--nebula-opacity) * 0.62);
-          }
-        }
-
-        @keyframes home-nebula-token {
-          0%, 100% {
-            transform: translate3d(0, 0, 0);
-            opacity: var(--nebula-opacity);
-          }
-          50% {
-            transform: translate3d(0, -1px, 0);
-            opacity: calc(var(--nebula-opacity) * 0.78);
+            opacity: 0.7;
           }
         }
       `}</style>
