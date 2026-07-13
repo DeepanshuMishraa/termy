@@ -32,12 +32,7 @@ impl PluginInputSession {
     }
 
     pub(super) fn progress_label(&self) -> String {
-        let label = self.current_input().map_or("Input", PluginInput::label);
-        format!(
-            "{} of {} · {label}",
-            self.input_index + 1,
-            self.command.inputs.len()
-        )
+        format!("{} of {}", self.input_index + 1, self.command.inputs.len())
     }
 
     pub(super) fn can_go_back(&self) -> bool {
@@ -53,7 +48,7 @@ impl PluginInputSession {
         }
         match input {
             PluginInput::Text { label, .. } => label.clone(),
-            PluginInput::Select { label, .. } => format!("Search {label}"),
+            PluginInput::Select { label, .. } => label.clone(),
             PluginInput::Confirm { .. } => "Choose Yes or No".to_string(),
         }
     }
@@ -306,7 +301,7 @@ impl TerminalView {
             .as_ref()
             .map_or_else(
                 || "Plugin input".to_string(),
-                |session| format!("{}: {}", session.command.plugin_name, session.command.title),
+                |session| session.command.title.clone(),
             )
     }
 
@@ -643,7 +638,7 @@ mod tests {
             "test-revision".to_string(),
         );
         assert_eq!(session.input_prefill(), "Termy");
-        assert_eq!(session.progress_label(), "1 of 2 · Name");
+        assert_eq!(session.progress_label(), "1 of 2");
         assert!(!session.is_last_input());
         assert!(!session.can_go_back());
     }
@@ -711,6 +706,8 @@ mod tests {
             ]),
             "test-revision".to_string(),
         );
+        assert_eq!(session.placeholder(), "Target");
+        assert_eq!(session.progress_label(), "1 of 3");
         session
             .values
             .insert("target".to_string(), Value::String("release".to_string()));

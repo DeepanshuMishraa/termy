@@ -27,6 +27,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Action {
+    /// Install and manage TypeScript plugins
+    Plugin {
+        #[command(subcommand)]
+        command: PluginCommand,
+    },
+
     /// Show version information
     #[command(name = "-version")]
     Version,
@@ -111,6 +117,79 @@ enum Action {
     },
 }
 
+#[derive(Subcommand)]
+enum PluginCommand {
+    /// Install a plugin from a GitHub repository
+    #[command(visible_alias = "install")]
+    Add {
+        /// GitHub repository or /tree/<ref>/<path> URL
+        #[arg(value_name = "GITHUB_URL")]
+        source: String,
+        /// Git branch, tag, or commit to install
+        #[arg(long = "ref", value_name = "REF")]
+        reference: Option<String>,
+        /// Plugin directory inside the repository
+        #[arg(long, value_name = "PATH")]
+        path: Option<String>,
+        /// Accept the trusted-code warning without prompting
+        #[arg(long)]
+        yes: bool,
+    },
+
+    /// Create a plain TypeScript plugin scaffold
+    Init {
+        /// Directory to initialize
+        #[arg(value_name = "PATH", default_value = ".")]
+        path: PathBuf,
+        /// Stable lowercase plugin ID; defaults to the directory name
+        #[arg(long)]
+        id: Option<String>,
+        /// Display name; defaults to a title made from the plugin ID
+        #[arg(long)]
+        name: Option<String>,
+    },
+
+    /// List installed plugins and their source revisions
+    List,
+
+    /// Show one plugin or the complete plugin inventory
+    Status {
+        /// Installed plugin ID; omit to show every plugin
+        id: Option<String>,
+    },
+
+    /// Enable an installed plugin
+    Enable {
+        /// Installed plugin ID
+        id: String,
+    },
+
+    /// Disable an installed plugin without removing it
+    Disable {
+        /// Installed plugin ID
+        id: String,
+    },
+
+    /// Update an installed GitHub plugin
+    Update {
+        /// Installed plugin ID
+        id: String,
+        /// Accept the trusted-code warning without prompting
+        #[arg(long)]
+        yes: bool,
+    },
+
+    /// Remove an installed plugin
+    #[command(visible_alias = "uninstall")]
+    Remove {
+        /// Installed plugin ID
+        id: String,
+        /// Remove without prompting
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
 fn main() {
     let cli = Cli::parse();
 
@@ -120,6 +199,7 @@ fn main() {
     }
 
     match cli.action {
+        Some(Action::Plugin { command }) => commands::plugins::run(command),
         Some(Action::Version) => commands::version::run(),
         Some(Action::Help) => commands::help::run(),
         Some(Action::ListFonts) => commands::list_fonts::run(),

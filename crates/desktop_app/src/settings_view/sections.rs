@@ -42,6 +42,7 @@ impl SettingsWindow {
                 SettingsSection::ThemeStore => {
                     self.render_theme_store_section(cx).into_any_element()
                 }
+                SettingsSection::Plugins => self.render_plugins_section(cx).into_any_element(),
                 SettingsSection::Advanced => self.render_advanced_section(cx).into_any_element(),
                 SettingsSection::Colors => self.render_colors_section(cx).into_any_element(),
                 SettingsSection::Keybindings => {

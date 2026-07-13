@@ -9,7 +9,7 @@ use std::{
     fs,
     io::{BufRead, BufReader, Read, Write},
     net::{Shutdown, TcpListener, TcpStream},
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
         Arc, Mutex, RwLock, TryLockError,
@@ -31,10 +31,12 @@ const MAX_PLUGIN_COMMANDS: usize = 512;
 const MAX_INPUTS_PER_COMMAND: usize = 16;
 const MAX_SELECT_OPTIONS: usize = 128;
 const MAX_ACTIONS: usize = 32;
-const MAX_PLUGINS: usize = 32;
-const MAX_PLUGIN_TREE_BYTES: u64 = 16 * 1024 * 1024;
-const MAX_PLUGIN_TREE_FILES: usize = 4_096;
+pub const MAX_INSTALLED_PLUGINS: usize = 32;
+pub const MAX_PLUGIN_SOURCE_BYTES: u64 = 16 * 1024 * 1024;
+pub const MAX_PLUGIN_SOURCE_FILES: usize = 4_096;
 const BUNDLE_CACHE_FORMAT: &[u8] = b"termy-plugin-bundle-v1\0";
+const DISABLED_MARKER: &str = ".termy-disabled";
+const SOURCE_METADATA_FILE: &str = ".termy-source.json";
 
 const HOST_SOURCE: &str = include_str!("host.ts");
 const WORKER_SOURCE: &str = include_str!("worker.ts");
@@ -68,6 +70,34 @@ struct PluginHostState {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PluginRefresh {
     pub changed: bool,
+    pub errors: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InstalledPlugin {
+    pub id: String,
+    pub name: String,
+    pub version: Option<String>,
+    pub enabled: bool,
+    pub path: PathBuf,
+    pub source: Option<PluginSourceMetadata>,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginSourceMetadata {
+    pub repository_url: String,
+    #[serde(default)]
+    pub requested_ref: Option<String>,
+    pub revision: String,
+    #[serde(default)]
+    pub subdirectory: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PluginInventory {
+    pub plugins: Vec<InstalledPlugin>,
     pub errors: Vec<String>,
 }
 
@@ -230,6 +260,20 @@ struct PluginSource {
     cache_key: String,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PluginManifestFile {
+    api_version: u32,
+    id: String,
+    name: String,
+    #[serde(default)]
+    version: Option<String>,
+    #[serde(default)]
+    main: Option<String>,
+}
+
+type PluginFiles = Vec<(String, Vec<u8>)>;
+
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 enum HostRequest<'a> {
@@ -301,6 +345,258 @@ impl PluginRuntime {
                 host: Mutex::new(PluginHostState::default()),
             }),
         }
+    }
+
+    pub fn plugins_directory(&self) -> Option<PathBuf> {
+        self.inner.plugins_dir.clone()
+    }
+
+    pub fn bun_path(&self) -> Result<Option<PathBuf>, String> {
+        resolve_bun_binary()
+    }
+
+    pub fn installed_plugins(&self) -> Result<PluginInventory, String> {
+        let plugins_dir = self
+            .inner
+            .plugins_dir
+            .as_deref()
+            .ok_or_else(|| "Termy config path is unavailable".to_string())?;
+        inventory_plugins(plugins_dir)
+    }
+
+    pub fn install_from_directory(&self, source: &Path) -> Result<InstalledPlugin, String> {
+        self.install_from_directory_inner(source, None)
+    }
+
+    pub fn install_from_directory_with_source(
+        &self,
+        source: &Path,
+        source_metadata: PluginSourceMetadata,
+    ) -> Result<InstalledPlugin, String> {
+        validate_source_metadata(&source_metadata)?;
+        self.install_from_directory_inner(source, Some(source_metadata))
+    }
+
+    fn install_from_directory_inner(
+        &self,
+        source: &Path,
+        source_metadata: Option<PluginSourceMetadata>,
+    ) -> Result<InstalledPlugin, String> {
+        let plugins_dir = self
+            .inner
+            .plugins_dir
+            .as_deref()
+            .ok_or_else(|| "Termy config path is unavailable".to_string())?;
+        let source_directory_metadata = fs::symlink_metadata(source).map_err(|error| {
+            format!(
+                "Failed to inspect plugin source {}: {error}",
+                source.display()
+            )
+        })?;
+        if source_directory_metadata.file_type().is_symlink() || !source_directory_metadata.is_dir()
+        {
+            return Err("Plugin source must be a real directory, not a symlink".to_string());
+        }
+        let manifest_path = source.join("plugin.json");
+        let manifest_metadata = fs::symlink_metadata(&manifest_path)
+            .map_err(|error| format!("Plugin source is missing plugin.json: {error}"))?;
+        if manifest_metadata.file_type().is_symlink() || !manifest_metadata.is_file() {
+            return Err("plugin.json must be a regular file".to_string());
+        }
+        let manifest: PluginManifestFile = serde_json::from_slice(
+            &fs::read(&manifest_path)
+                .map_err(|error| format!("Failed to read plugin.json: {error}"))?,
+        )
+        .map_err(|error| format!("Invalid plugin.json: {error}"))?;
+        let (manifest, files) = inspect_plugin_root(source, &manifest.id)?;
+
+        fs::create_dir_all(plugins_dir).map_err(|error| {
+            format!(
+                "Failed to create plugin directory {}: {error}",
+                plugins_dir.display()
+            )
+        })?;
+        let installed_count = fs::read_dir(plugins_dir)
+            .map_err(|error| format!("Failed to read {}: {error}", plugins_dir.display()))?
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                !entry.file_name().to_string_lossy().starts_with('.')
+                    && entry.file_type().is_ok_and(|file_type| file_type.is_dir())
+            })
+            .count();
+        if installed_count >= MAX_INSTALLED_PLUGINS {
+            return Err(format!(
+                "Termy supports at most {MAX_INSTALLED_PLUGINS} installed plugins"
+            ));
+        }
+        let destination = plugins_dir.join(&manifest.id);
+        match fs::symlink_metadata(&destination) {
+            Ok(_) => return Err(format!("Plugin `{}` is already installed", manifest.id)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "Failed to inspect plugin destination {}: {error}",
+                    destination.display()
+                ));
+            }
+        }
+
+        let mut random = [0_u8; 8];
+        OsRng.fill_bytes(&mut random);
+        let temporary =
+            plugins_dir.join(format!(".install-{}-{}", manifest.id, hex_digest(&random)));
+        let install_result = (|| {
+            write_plugin_installation(&temporary, &files, source_metadata.as_ref(), true)?;
+            fs::rename(&temporary, &destination)
+                .map_err(|error| format!("Failed to finish plugin installation: {error}"))
+        })();
+        if let Err(error) = install_result {
+            let _ = fs::remove_dir_all(&temporary);
+            return Err(error);
+        }
+        self.invalidate_after_management();
+        Ok(installed_plugin_from_manifest(
+            manifest,
+            destination,
+            true,
+            source_metadata,
+            None,
+        ))
+    }
+
+    pub fn update_plugin_from_directory(
+        &self,
+        id: &str,
+        source: &Path,
+        source_metadata: PluginSourceMetadata,
+    ) -> Result<InstalledPlugin, String> {
+        validate_source_metadata(&source_metadata)?;
+        let destination = self.plugin_root_for_management(id)?;
+        let enabled = plugin_is_enabled(&destination, id)?;
+        let (manifest, files) = inspect_plugin_root(source, id)?;
+        let plugins_dir = destination
+            .parent()
+            .ok_or_else(|| "Managed plugin directory has no parent".to_string())?;
+        let mut random = [0_u8; 8];
+        OsRng.fill_bytes(&mut random);
+        let suffix = hex_digest(&random);
+        let temporary = plugins_dir.join(format!(".update-{id}-{suffix}"));
+        let backup = plugins_dir.join(format!(".backup-{id}-{suffix}"));
+
+        if let Err(error) =
+            write_plugin_installation(&temporary, &files, Some(&source_metadata), enabled)
+        {
+            let _ = fs::remove_dir_all(&temporary);
+            return Err(error);
+        }
+        if let Err(error) = fs::rename(&destination, &backup) {
+            let _ = fs::remove_dir_all(&temporary);
+            return Err(format!("Failed to prepare plugin `{id}` update: {error}"));
+        }
+        if let Err(error) = fs::rename(&temporary, &destination) {
+            let restore_error = fs::rename(&backup, &destination).err();
+            let _ = fs::remove_dir_all(&temporary);
+            return Err(match restore_error {
+                Some(restore_error) => format!(
+                    "Failed to install plugin `{id}` update: {error}; restoring the previous plugin also failed: {restore_error}"
+                ),
+                None => format!("Failed to install plugin `{id}` update: {error}"),
+            });
+        }
+        let _ = fs::remove_dir_all(&backup);
+        self.clear_plugin_bundle_cache(id);
+        self.invalidate_after_management();
+        Ok(installed_plugin_from_manifest(
+            manifest,
+            destination,
+            enabled,
+            Some(source_metadata),
+            None,
+        ))
+    }
+
+    pub fn set_plugin_enabled(&self, id: &str, enabled: bool) -> Result<(), String> {
+        let root = self.plugin_root_for_management(id)?;
+        let marker = root.join(DISABLED_MARKER);
+        if enabled {
+            match fs::remove_file(&marker) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(format!("Failed to enable plugin `{id}`: {error}")),
+            }
+        } else {
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&marker)
+            {
+                Ok(mut file) => file
+                    .write_all(b"Managed by Termy settings.\n")
+                    .map_err(|error| format!("Failed to disable plugin `{id}`: {error}"))?,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let metadata = fs::symlink_metadata(&marker).map_err(|error| {
+                        format!("Failed to inspect disabled state for plugin `{id}`: {error}")
+                    })?;
+                    if metadata.file_type().is_symlink() || !metadata.is_file() {
+                        return Err(format!(
+                            "Plugin `{id}` has an invalid {DISABLED_MARKER} marker"
+                        ));
+                    }
+                }
+                Err(error) => return Err(format!("Failed to disable plugin `{id}`: {error}")),
+            }
+        }
+        self.invalidate_after_management();
+        Ok(())
+    }
+
+    pub fn uninstall_plugin(&self, id: &str) -> Result<(), String> {
+        let root = self.plugin_root_for_management(id)?;
+        fs::remove_dir_all(&root)
+            .map_err(|error| format!("Failed to uninstall plugin `{id}`: {error}"))?;
+        self.clear_plugin_bundle_cache(id);
+        self.invalidate_after_management();
+        Ok(())
+    }
+
+    fn clear_plugin_bundle_cache(&self, id: &str) {
+        let Some(plugins_dir) = self.inner.plugins_dir.as_deref() else {
+            return;
+        };
+        let cache = plugins_dir.join(".termy-cache/bundles").join(id);
+        let _ = fs::remove_dir_all(cache);
+    }
+
+    fn plugin_root_for_management(&self, id: &str) -> Result<PathBuf, String> {
+        if !valid_id(id) {
+            return Err(format!("Invalid plugin ID `{id}`"));
+        }
+        let plugins_dir = self
+            .inner
+            .plugins_dir
+            .as_deref()
+            .ok_or_else(|| "Termy config path is unavailable".to_string())?;
+        let root = plugins_dir.join(id);
+        let metadata = fs::symlink_metadata(&root)
+            .map_err(|error| format!("Plugin `{id}` is not installed: {error}"))?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(format!("Plugin `{id}` is not a managed plugin directory"));
+        }
+        Ok(root)
+    }
+
+    fn invalidate_after_management(&self) {
+        self.inner
+            .host
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .connection
+            .take();
+        self.inner
+            .catalog
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .fingerprint = None;
     }
 
     pub fn commands(&self) -> Vec<PluginCommand> {
@@ -1083,6 +1379,284 @@ struct DiscoveredPlugins {
     fingerprint: [u8; 32],
 }
 
+fn write_plugin_installation(
+    destination: &Path,
+    files: &PluginFiles,
+    source_metadata: Option<&PluginSourceMetadata>,
+    enabled: bool,
+) -> Result<(), String> {
+    fs::create_dir(destination)
+        .map_err(|error| format!("Failed to prepare plugin installation: {error}"))?;
+    for (relative_path, contents) in files {
+        let target = relative_path
+            .split('/')
+            .fold(destination.to_path_buf(), |path, component| {
+                path.join(component)
+            });
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).map_err(|error| {
+                format!(
+                    "Failed to create plugin directory {}: {error}",
+                    parent.display()
+                )
+            })?;
+        }
+        fs::write(&target, contents)
+            .map_err(|error| format!("Failed to copy plugin file {}: {error}", target.display()))?;
+    }
+    if let Some(source_metadata) = source_metadata {
+        let contents = serde_json::to_vec_pretty(source_metadata)
+            .map_err(|error| format!("Failed to encode plugin source metadata: {error}"))?;
+        fs::write(destination.join(SOURCE_METADATA_FILE), contents)
+            .map_err(|error| format!("Failed to save plugin source metadata: {error}"))?;
+    }
+    if !enabled {
+        fs::write(
+            destination.join(DISABLED_MARKER),
+            b"Managed by Termy settings.\n",
+        )
+        .map_err(|error| format!("Failed to preserve disabled plugin state: {error}"))?;
+    }
+    Ok(())
+}
+
+fn validate_source_metadata(metadata: &PluginSourceMetadata) -> Result<(), String> {
+    let repository = url::Url::parse(&metadata.repository_url)
+        .map_err(|error| format!("Plugin repository URL is invalid: {error}"))?;
+    if repository.scheme() != "https" || repository.host_str() != Some("github.com") {
+        return Err("Plugin repository URL must use https://github.com".to_string());
+    }
+    if metadata.revision.len() < 40
+        || metadata.revision.len() > 64
+        || !metadata
+            .revision
+            .chars()
+            .all(|character| character.is_ascii_hexdigit())
+    {
+        return Err("Plugin source revision must be a full Git commit hash".to_string());
+    }
+    if let Some(requested_ref) = metadata.requested_ref.as_deref() {
+        validate_text(requested_ref, 256, "source ref")?;
+    }
+    if !metadata.subdirectory.is_empty()
+        && normalized_relative_plugin_path(&metadata.subdirectory).as_deref()
+            != Some(metadata.subdirectory.as_str())
+    {
+        return Err("Plugin source subdirectory must be a normalized relative path".to_string());
+    }
+    Ok(())
+}
+
+fn read_source_metadata(root: &Path) -> Result<Option<PluginSourceMetadata>, String> {
+    let path = root.join(SOURCE_METADATA_FILE);
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("Failed to inspect plugin source metadata: {error}")),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(format!("{SOURCE_METADATA_FILE} must be a regular file"));
+    }
+    let source_metadata: PluginSourceMetadata = serde_json::from_slice(
+        &fs::read(&path)
+            .map_err(|error| format!("Failed to read plugin source metadata: {error}"))?,
+    )
+    .map_err(|error| format!("Invalid plugin source metadata: {error}"))?;
+    validate_source_metadata(&source_metadata)?;
+    Ok(Some(source_metadata))
+}
+
+fn inventory_plugins(plugins_dir: &Path) -> Result<PluginInventory, String> {
+    fs::create_dir_all(plugins_dir).map_err(|error| {
+        format!(
+            "Failed to create plugin directory {}: {error}",
+            plugins_dir.display()
+        )
+    })?;
+    let mut entries = fs::read_dir(plugins_dir)
+        .map_err(|error| format!("Failed to read {}: {error}", plugins_dir.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Failed to inspect {}: {error}", plugins_dir.display()))?;
+    entries.sort_by_key(|entry| entry.file_name());
+
+    let mut inventory = PluginInventory::default();
+    for entry in entries {
+        let id = entry.file_name().to_string_lossy().into_owned();
+        if id.starts_with('.') {
+            continue;
+        }
+        let root = entry.path();
+        let file_type = entry
+            .file_type()
+            .map_err(|error| format!("Failed to inspect {}: {error}", root.display()))?;
+        if file_type.is_symlink() {
+            inventory.errors.push(format!(
+                "Plugin source cannot be a symlink: {}",
+                root.display()
+            ));
+            continue;
+        }
+        if !file_type.is_dir() || !root.join("plugin.json").is_file() {
+            continue;
+        }
+        if !valid_id(&id) {
+            inventory
+                .errors
+                .push(format!("Invalid plugin directory ID `{id}`"));
+            continue;
+        }
+        let enabled = match plugin_is_enabled(&root, &id) {
+            Ok(enabled) => enabled,
+            Err(error) => {
+                inventory.plugins.push(InstalledPlugin {
+                    id: id.clone(),
+                    name: id,
+                    version: None,
+                    enabled: false,
+                    path: root,
+                    source: None,
+                    error: Some(error),
+                });
+                continue;
+            }
+        };
+        match validated_plugin_manifest(&root, &id) {
+            Ok((manifest, _)) => match read_source_metadata(&root) {
+                Ok(source) => inventory.plugins.push(installed_plugin_from_manifest(
+                    manifest, root, enabled, source, None,
+                )),
+                Err(error) => inventory.plugins.push(installed_plugin_from_manifest(
+                    manifest,
+                    root,
+                    enabled,
+                    None,
+                    Some(error),
+                )),
+            },
+            Err(error) => inventory.plugins.push(InstalledPlugin {
+                id: id.clone(),
+                name: id,
+                version: None,
+                enabled,
+                path: root,
+                source: None,
+                error: Some(error),
+            }),
+        }
+    }
+    Ok(inventory)
+}
+
+fn installed_plugin_from_manifest(
+    manifest: PluginManifestFile,
+    path: PathBuf,
+    enabled: bool,
+    source: Option<PluginSourceMetadata>,
+    error: Option<String>,
+) -> InstalledPlugin {
+    InstalledPlugin {
+        id: manifest.id,
+        name: manifest.name,
+        version: manifest.version,
+        enabled,
+        path,
+        source,
+        error,
+    }
+}
+
+fn inspect_plugin_root(
+    root: &Path,
+    expected_id: &str,
+) -> Result<(PluginManifestFile, PluginFiles), String> {
+    let (manifest, entrypoint) = validated_plugin_manifest(root, expected_id)?;
+    let files = plugin_tree_files(root)?;
+    if !files.iter().any(|(path, _)| path == &entrypoint) {
+        return Err(format!("Plugin entrypoint does not exist: {entrypoint}"));
+    }
+    Ok((manifest, files))
+}
+
+fn validated_plugin_manifest(
+    root: &Path,
+    expected_id: &str,
+) -> Result<(PluginManifestFile, String), String> {
+    if !valid_id(expected_id) {
+        return Err(format!("Invalid plugin ID `{expected_id}`"));
+    }
+    let manifest_path = root.join("plugin.json");
+    let manifest_metadata = fs::symlink_metadata(&manifest_path)
+        .map_err(|error| format!("Plugin source is missing plugin.json: {error}"))?;
+    if manifest_metadata.file_type().is_symlink() || !manifest_metadata.is_file() {
+        return Err("plugin.json must be a regular file".to_string());
+    }
+    let manifest: PluginManifestFile = serde_json::from_slice(
+        &fs::read(&manifest_path)
+            .map_err(|error| format!("Failed to read plugin.json: {error}"))?,
+    )
+    .map_err(|error| format!("Invalid plugin.json: {error}"))?;
+    if manifest.api_version != 1 {
+        return Err("plugin.json apiVersion must be 1".to_string());
+    }
+    if manifest.id != expected_id {
+        return Err(format!(
+            "plugin.json id `{}` must match plugin directory `{expected_id}`",
+            manifest.id
+        ));
+    }
+    validate_text(&manifest.name, 200, "name")?;
+    if let Some(version) = manifest.version.as_deref() {
+        validate_text(version, 100, "version")?;
+    }
+    let main = manifest.main.as_deref().unwrap_or("plugin.ts");
+    validate_text(main, 1_024, "entrypoint")?;
+    let entrypoint = normalized_relative_plugin_path(main)
+        .ok_or_else(|| "plugin.json main must stay inside the plugin directory".to_string())?;
+    let components = entrypoint.split('/').collect::<Vec<_>>();
+    let mut entrypoint_path = root.to_path_buf();
+    for (index, component) in components.iter().enumerate() {
+        entrypoint_path.push(component);
+        let metadata = fs::symlink_metadata(&entrypoint_path)
+            .map_err(|_| format!("Plugin entrypoint does not exist: {main}"))?;
+        let is_last = index + 1 == components.len();
+        if metadata.file_type().is_symlink()
+            || (is_last && !metadata.is_file())
+            || (!is_last && !metadata.is_dir())
+        {
+            return Err(format!(
+                "Plugin entrypoint must be a regular file inside the plugin directory: {main}"
+            ));
+        }
+    }
+    Ok((manifest, entrypoint))
+}
+
+fn plugin_is_enabled(root: &Path, id: &str) -> Result<bool, String> {
+    let marker = root.join(DISABLED_MARKER);
+    match fs::symlink_metadata(&marker) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => Err(format!(
+            "Plugin `{id}` has an invalid {DISABLED_MARKER} marker"
+        )),
+        Ok(_) => Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
+        Err(error) => Err(format!(
+            "Failed to inspect disabled state for plugin `{id}`: {error}"
+        )),
+    }
+}
+
+fn normalized_relative_plugin_path(path: &str) -> Option<String> {
+    let mut components = Vec::new();
+    for component in Path::new(path).components() {
+        match component {
+            Component::CurDir => {}
+            Component::Normal(value) => components.push(value.to_str()?.to_string()),
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => return None,
+        }
+    }
+    (!components.is_empty()).then(|| components.join("/"))
+}
+
 fn discover_plugins(plugins_dir: &Path) -> Result<DiscoveredPlugins, String> {
     if !plugins_dir.exists() {
         fs::create_dir_all(plugins_dir).map_err(|error| {
@@ -1123,12 +1697,15 @@ fn discover_plugins(plugins_dir: &Path) -> Result<DiscoveredPlugins, String> {
                 "Invalid plugin path ID `{id}`; use lowercase letters, numbers, dots, underscores, or hyphens"
             ));
         }
+        if !plugin_is_enabled(&root, &id)? {
+            continue;
+        }
         candidates.push((id, root));
     }
     candidates.sort_by(|left, right| left.0.cmp(&right.0));
-    if candidates.len() > MAX_PLUGINS {
+    if candidates.len() > MAX_INSTALLED_PLUGINS {
         return Err(format!(
-            "Plugin directory contains {} plugins; maximum is {MAX_PLUGINS}",
+            "Plugin directory contains {} plugins; maximum is {MAX_INSTALLED_PLUGINS}",
             candidates.len()
         ));
     }
@@ -1168,7 +1745,7 @@ fn discover_plugins(plugins_dir: &Path) -> Result<DiscoveredPlugins, String> {
     })
 }
 
-fn plugin_tree_files(root: &Path) -> Result<Vec<(String, Vec<u8>)>, String> {
+fn plugin_tree_files(root: &Path) -> Result<PluginFiles, String> {
     fn visit(
         root: &Path,
         directory: &Path,
@@ -1182,7 +1759,10 @@ fn plugin_tree_files(root: &Path) -> Result<Vec<(String, Vec<u8>)>, String> {
         entries.sort_by_key(|entry| entry.file_name());
         for entry in entries {
             let name = entry.file_name();
-            if matches!(name.to_str(), Some(".git" | "node_modules")) {
+            if matches!(
+                name.to_str(),
+                Some(".git" | "node_modules" | DISABLED_MARKER | SOURCE_METADATA_FILE)
+            ) {
                 continue;
             }
             let file_type = entry.file_type().map_err(|error| {
@@ -1203,7 +1783,7 @@ fn plugin_tree_files(root: &Path) -> Result<Vec<(String, Vec<u8>)>, String> {
                 format!("Failed to read plugin file {}: {error}", path.display())
             })?;
             *total_bytes = total_bytes.saturating_add(contents.len() as u64);
-            if *total_bytes > MAX_PLUGIN_TREE_BYTES {
+            if *total_bytes > MAX_PLUGIN_SOURCE_BYTES {
                 return Err(format!(
                     "Plugin {} exceeds the 16 MiB source-tree limit",
                     root.display()
@@ -1221,9 +1801,9 @@ fn plugin_tree_files(root: &Path) -> Result<Vec<(String, Vec<u8>)>, String> {
                 .collect::<Result<Vec<_>, _>>()?
                 .join("/");
             files.push((relative_path, contents));
-            if files.len() > MAX_PLUGIN_TREE_FILES {
+            if files.len() > MAX_PLUGIN_SOURCE_FILES {
                 return Err(format!(
-                    "Plugin {} exceeds the {MAX_PLUGIN_TREE_FILES}-file source-tree limit",
+                    "Plugin {} exceeds the {MAX_PLUGIN_SOURCE_FILES}-file source-tree limit",
                     root.display()
                 ));
             }
@@ -1564,7 +2144,7 @@ fn validate_text(value: &str, max_chars: usize, label: &str) -> Result<(), Strin
     Ok(())
 }
 
-fn valid_id(value: &str) -> bool {
+pub fn valid_plugin_id(value: &str) -> bool {
     let mut chars = value.chars();
     let Some(first) = chars.next() else {
         return false;
@@ -1576,6 +2156,10 @@ fn valid_id(value: &str) -> bool {
                 || character.is_ascii_digit()
                 || matches!(character, '.' | '_' | '-')
         })
+}
+
+fn valid_id(value: &str) -> bool {
+    valid_plugin_id(value)
 }
 
 fn default_invoke_timeout_ms() -> u64 {
@@ -1684,6 +2268,192 @@ mod tests {
         assert_eq!(discovered.sources[0].id, "hello");
     }
 
+    #[test]
+    fn local_plugin_management_installs_toggles_and_uninstalls() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("config");
+        fs::create_dir_all(&config_dir).expect("create config directory");
+        let config_path = config_dir.join("config.txt");
+        fs::write(&config_path, "").expect("write config");
+        let source_parent = temp.path().join("source");
+        let source = write_plugin(
+            &source_parent,
+            "managed",
+            "Managed Plugin",
+            "export default definePlugin({ commands: [] });",
+        );
+        fs::write(
+            source.join("plugin.json"),
+            r#"{"apiVersion":1,"id":"managed","name":"Managed Plugin","version":"1.2.3"}"#,
+        )
+        .expect("write versioned manifest");
+
+        let runtime = PluginRuntime::new(Some(&config_path));
+        assert!(
+            runtime
+                .installed_plugins()
+                .expect("empty inventory")
+                .plugins
+                .is_empty()
+        );
+        let installed = runtime
+            .install_from_directory(&source)
+            .expect("install local plugin");
+        assert_eq!(installed.id, "managed");
+        assert_eq!(installed.version.as_deref(), Some("1.2.3"));
+        assert!(installed.enabled);
+        assert!(installed.path.join("plugin.ts").is_file());
+
+        runtime
+            .set_plugin_enabled("managed", false)
+            .expect("disable plugin");
+        let disabled = runtime.installed_plugins().expect("disabled inventory");
+        assert!(!disabled.plugins[0].enabled);
+        assert!(
+            discover_plugins(&config_dir.join("plugins"))
+                .expect("discover disabled catalog")
+                .sources
+                .is_empty()
+        );
+
+        runtime
+            .set_plugin_enabled("managed", true)
+            .expect("enable plugin");
+        assert_eq!(
+            discover_plugins(&config_dir.join("plugins"))
+                .expect("discover enabled catalog")
+                .sources
+                .len(),
+            1
+        );
+        runtime
+            .uninstall_plugin("managed")
+            .expect("uninstall plugin");
+        assert!(
+            runtime
+                .installed_plugins()
+                .expect("inventory after uninstall")
+                .plugins
+                .is_empty()
+        );
+        assert!(
+            source.is_dir(),
+            "uninstall must preserve the selected source"
+        );
+    }
+
+    #[test]
+    fn github_plugin_management_tracks_source_and_updates_atomically() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("config");
+        fs::create_dir_all(&config_dir).expect("create config directory");
+        let config_path = config_dir.join("config.txt");
+        fs::write(&config_path, "").expect("write config");
+        let first_source = write_plugin(
+            &temp.path().join("first-source"),
+            "github-plugin",
+            "GitHub Plugin",
+            "export const revision = 1; export default definePlugin({ commands: [] });",
+        );
+        let first_metadata = PluginSourceMetadata {
+            repository_url: "https://github.com/termy-org/plugins".to_string(),
+            requested_ref: Some("main".to_string()),
+            revision: "1111111111111111111111111111111111111111".to_string(),
+            subdirectory: "github-plugin".to_string(),
+        };
+        let runtime = PluginRuntime::new(Some(&config_path));
+        let installed = runtime
+            .install_from_directory_with_source(&first_source, first_metadata.clone())
+            .expect("install GitHub plugin");
+        assert_eq!(installed.source.as_ref(), Some(&first_metadata));
+
+        let conflicting_source = write_plugin(
+            &temp.path().join("conflicting-source"),
+            "github-plugin",
+            "Replacement",
+            "export const revision = 99; export default definePlugin({ commands: [] });",
+        );
+        let error = runtime
+            .install_from_directory_with_source(&conflicting_source, first_metadata.clone())
+            .expect_err("conflicting install");
+        assert!(error.contains("already installed"));
+        assert!(
+            fs::read_to_string(installed.path.join("plugin.ts"))
+                .expect("installed source")
+                .contains("revision = 1")
+        );
+
+        runtime
+            .set_plugin_enabled("github-plugin", false)
+            .expect("disable before update");
+        let updated_source = write_plugin(
+            &temp.path().join("updated-source"),
+            "github-plugin",
+            "GitHub Plugin",
+            "export const revision = 2; export default definePlugin({ commands: [] });",
+        );
+        let updated_metadata = PluginSourceMetadata {
+            revision: "2222222222222222222222222222222222222222".to_string(),
+            ..first_metadata
+        };
+        let updated = runtime
+            .update_plugin_from_directory(
+                "github-plugin",
+                &updated_source,
+                updated_metadata.clone(),
+            )
+            .expect("update GitHub plugin");
+        assert!(!updated.enabled);
+        assert_eq!(updated.source.as_ref(), Some(&updated_metadata));
+        assert!(
+            fs::read_to_string(updated.path.join("plugin.ts"))
+                .expect("updated source")
+                .contains("revision = 2")
+        );
+        let inventory = runtime.installed_plugins().expect("updated inventory");
+        assert_eq!(
+            inventory.plugins[0].source.as_ref(),
+            Some(&updated_metadata)
+        );
+        assert!(!inventory.plugins[0].enabled);
+        assert!(
+            plugin_tree_files(&updated.path)
+                .expect("managed source tree")
+                .iter()
+                .all(|(path, _)| path != SOURCE_METADATA_FILE)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn invalid_disabled_marker_is_reported_and_not_loaded() {
+        use std::os::unix::fs::symlink;
+
+        let temp = TempDir::new().expect("temp dir");
+        let plugins = temp.path().join("plugins");
+        let plugin = write_plugin(
+            &plugins,
+            "unsafe-marker",
+            "Unsafe marker",
+            "export default { commands: [] };",
+        );
+        let outside = temp.path().join("outside");
+        fs::write(&outside, "outside").expect("write marker target");
+        symlink(&outside, plugin.join(DISABLED_MARKER)).expect("create marker symlink");
+
+        let inventory = inventory_plugins(&plugins).expect("inventory plugins");
+        assert_eq!(inventory.plugins.len(), 1);
+        assert!(!inventory.plugins[0].enabled);
+        assert!(
+            inventory.plugins[0]
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("invalid .termy-disabled marker"))
+        );
+        let error = discover_plugins(&plugins).expect_err("invalid marker must block loading");
+        assert!(error.contains("invalid .termy-disabled marker"));
+    }
+
     #[cfg(unix)]
     #[test]
     fn discovery_rejects_symlinked_plugin_sources() {
@@ -1774,7 +2544,7 @@ mod tests {
     fn discovery_caps_plugin_count_before_starting_workers() {
         let temp = TempDir::new().expect("temp dir");
         let plugins = temp.path().join("plugins");
-        for index in 0..=MAX_PLUGINS {
+        for index in 0..=MAX_INSTALLED_PLUGINS {
             write_plugin(
                 &plugins,
                 &format!("plugin-{index:02}"),

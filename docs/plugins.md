@@ -21,6 +21,26 @@ Termy starts one long-lived Bun host and gives each plugin its own Worker. This 
 
 ## Plugin directory
 
+The easiest install path is **Settings → Plugins → Install from folder**. Choose a plugin folder containing `plugin.json` and its TypeScript entrypoint; Termy validates the source, copies it into the managed plugin directory, and shows its name, version, and enabled state. The same screen can refresh the inventory, open the plugin directory, enable or disable a plugin, and uninstall it with confirmation.
+
+The CLI can scaffold a plugin and install trusted source directly from GitHub:
+
+```sh
+termy plugin init my-plugin
+termy plugin add https://github.com/example/termy-plugins --path my-plugin
+termy plugin status my-plugin
+termy plugin disable my-plugin
+termy plugin enable my-plugin
+termy plugin update my-plugin
+termy plugin uninstall my-plugin
+```
+
+`add` also has the `install` alias, while `remove` has the `uninstall` alias. Repository URLs, `/tree/<ref>/<path>` URLs, `--ref`, and `--path` are supported. Termy resolves the selected ref to a full commit, downloads only regular files, validates the manifest and source limits, and saves the repository, requested ref, plugin subdirectory, and pinned revision for later status and updates. A repository containing multiple valid plugins requires `--path` so Termy never guesses which one to install.
+
+GitHub installation never clones the repository, runs package scripts, installs dependencies, or evaluates source during installation. Plugins are still trusted code when the command palette loads them through Bun, so the CLI shows a warning and requires confirmation; automation must pass `--yes` explicitly.
+
+You can also manage the directory manually:
+
 Create one directory per plugin under Termy's config directory:
 
 ```text
@@ -58,7 +78,7 @@ Every plugin directory contains a `plugin.json` manifest:
 | `apiVersion` | yes | Plugin API version; v1 requires `1`. |
 | `id` | yes | Stable plugin ID. It should match the directory name. |
 | `name` | yes | Human-readable plugin name shown by Termy. |
-| `version` | no | Metadata reserved for plugin management. V1 does not display it yet. |
+| `version` | no | Version shown in Settings when the plugin is managed there. |
 | `main` | no | TypeScript entrypoint relative to the plugin directory. Defaults to `plugin.ts`. |
 
 Use lowercase letters, numbers, and hyphens for IDs so saved references remain stable when a display name changes. `main` must resolve to a regular file inside the plugin directory; out-of-root paths and symlinks are rejected.
@@ -209,6 +229,8 @@ Actions run in returned order. Keep handlers focused and return only the effects
 ## Reloading and failures
 
 Termy checks plugin content when the command palette opens. When `plugin.json`, `plugin.ts`, or another local source file changes, Termy creates or reuses the matching bundle, replaces that plugin's Worker, and refreshes the command list; restarting Termy is unnecessary.
+
+Disabling a plugin in Settings keeps its files installed but removes its commands the next time the command palette refreshes. Enabling it makes the commands available again. Uninstalling removes Termy's managed copy, not the source folder you originally selected.
 
 Plugin loading and command execution have timeouts. A thrown error or timeout is contained to that plugin Worker and reported in Termy, while other plugins and the terminal keep running. A subprocess started by plugin code can outlive its Worker, so plugins that spawn processes must stop them themselves when cancellation matters. Plugins share the persistent host transport; if that transport exits, Termy discards it and rebuilds the host and Workers on the next plugin refresh instead of taking down the app. Fix a failed plugin and reopen the palette to load it again.
 

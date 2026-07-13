@@ -7060,17 +7060,22 @@ dependencies = [
  "core-foundation 0.10.0",
  "core-text",
  "crossterm",
+ "percent-encoding",
  "ratatui",
  "semver",
+ "serde",
  "serde_json",
  "sha2",
  "tempfile",
  "termy_cli_install_core",
  "termy_command_core",
  "termy_config_core",
+ "termy_plugin_runtime",
  "termy_release_core",
  "termy_theme_core",
  "termy_themes",
+ "ureq",
+ "url",
 ]
 
 [[package]]

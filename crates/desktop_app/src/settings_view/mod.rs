@@ -26,11 +26,13 @@ use termy_config_core::{
     color_setting_from_key, color_setting_specs, format_line_height, root_setting_default_value,
     root_setting_enum_choices, root_setting_from_key, root_setting_specs, root_setting_value_kind,
 };
+use termy_plugin_runtime::{InstalledPlugin, PluginRuntime};
 
 mod colors;
 mod components;
 mod input_mode;
 mod keybinds;
+mod plugins;
 mod search;
 mod sections;
 mod state;
@@ -97,6 +99,7 @@ pub(crate) enum SettingsSection {
     Terminal,
     Tabs,
     ThemeStore,
+    Plugins,
     Advanced,
     Colors,
     Keybindings,
@@ -159,6 +162,12 @@ pub struct SettingsWindow {
     theme_store_auth_loading: bool,
     theme_store_auth_error: Option<String>,
     theme_store_installed_versions: HashMap<String, String>,
+    plugin_runtime: PluginRuntime,
+    installed_plugins: Vec<InstalledPlugin>,
+    plugin_inventory_errors: Vec<String>,
+    plugin_bun_path: Option<PathBuf>,
+    plugin_bun_error: Option<String>,
+    plugin_operation_in_flight: bool,
 }
 
 impl SettingsWindow {
@@ -188,6 +197,16 @@ impl SettingsWindow {
             Self::build_searchable_setting_indices(&searchable_settings);
         let content_scroll_handle = ScrollHandle::new();
         let setting_scroll_anchors = Self::build_setting_scroll_anchors(&content_scroll_handle);
+        let plugin_runtime = PluginRuntime::new(config_path.as_deref());
+        let (installed_plugins, plugin_inventory_errors) = match plugin_runtime.installed_plugins()
+        {
+            Ok(inventory) => (inventory.plugins, inventory.errors),
+            Err(error) => (Vec::new(), vec![error]),
+        };
+        let (plugin_bun_path, plugin_bun_error) = match plugin_runtime.bun_path() {
+            Ok(path) => (path, None),
+            Err(error) => (None, Some(error)),
+        };
         let mut view = Self {
             active_section: SettingsSection::Advanced,
             config,
@@ -235,6 +254,12 @@ impl SettingsWindow {
             theme_store_auth_loading: false,
             theme_store_auth_error: None,
             theme_store_installed_versions: theme_store::load_installed_theme_versions(),
+            plugin_runtime,
+            installed_plugins,
+            plugin_inventory_errors,
+            plugin_bun_path,
+            plugin_bun_error,
+            plugin_operation_in_flight: false,
         };
         view.focus_handle.focus(window, cx);
 

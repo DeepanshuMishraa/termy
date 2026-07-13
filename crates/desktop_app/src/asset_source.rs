@@ -49,6 +49,7 @@ const SETTINGS_ICONS: &[(&str, &[u8])] = &[
     settings_icon!("terminal"),
     settings_icon!("tabs"),
     settings_icon!("themes"),
+    settings_icon!("plugins"),
     settings_icon!("colors"),
     settings_icon!("keybindings"),
     settings_icon!("advanced"),
@@ -128,5 +129,20 @@ impl AssetSource for EmbeddedAssets {
             }
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plugin_settings_icon_is_embedded() {
+        assert!(
+            EmbeddedAssets
+                .load("icons/settings/plugins.svg")
+                .expect("load embedded plugin icon")
+                .is_some()
+        );
     }
 }

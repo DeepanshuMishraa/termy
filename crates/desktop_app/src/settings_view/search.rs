@@ -79,8 +79,9 @@ mod tests {
             [
                 SettingsSection::Advanced,
                 SettingsSection::Appearance,
-                SettingsSection::ThemeStore,
                 SettingsSection::Colors,
+                SettingsSection::ThemeStore,
+                SettingsSection::Plugins,
                 SettingsSection::Terminal,
                 SettingsSection::Tabs,
                 SettingsSection::Keybindings,
@@ -93,6 +94,10 @@ mod tests {
         assert_eq!(
             SettingsWindow::settings_section_label(SettingsSection::Keybindings),
             "Keyboard shortcuts"
+        );
+        assert_eq!(
+            SettingsWindow::setting_metadata("plugins").map(|metadata| metadata.section),
+            Some(SettingsSection::Plugins)
         );
     }
 
@@ -165,6 +170,13 @@ static SETTINGS_METADATA: LazyLock<Vec<SettingMetadata>> = LazyLock::new(|| {
         description: "Browse and install community themes from the online store.",
         keywords: &["theme", "store", "install", "colors"],
     });
+    entries.push(SettingMetadata {
+        key: "plugins",
+        section: SettingsSection::Plugins,
+        title: "Plugins",
+        description: "Install and manage trusted local TypeScript plugins.",
+        keywords: &["plugin", "extension", "bun", "typescript", "install"],
+    });
     entries
 });
 
@@ -185,6 +197,7 @@ impl SettingsWindow {
             SettingsSection::Terminal => "Terminal",
             SettingsSection::Tabs => "Tabs",
             SettingsSection::ThemeStore => "Themes",
+            SettingsSection::Plugins => "Plugins",
             SettingsSection::Advanced => "General",
             SettingsSection::Colors => "Colors",
             SettingsSection::Keybindings => "Keyboard shortcuts",
@@ -197,6 +210,7 @@ impl SettingsWindow {
             SettingsSection::Terminal => "Shell, input, scrolling, and tmux",
             SettingsSection::Tabs => "Tabs, sidebar, browser, and title bar",
             SettingsSection::ThemeStore => "Find and install community themes",
+            SettingsSection::Plugins => "Install and manage TypeScript extensions",
             SettingsSection::Advanced => "Startup, windows, updates, and app behavior",
             SettingsSection::Colors => "Override individual terminal colors",
             SettingsSection::Keybindings => "Assign keys to commands",
@@ -209,18 +223,20 @@ impl SettingsWindow {
             SettingsSection::Terminal => "icons/settings/terminal.svg",
             SettingsSection::Tabs => "icons/settings/tabs.svg",
             SettingsSection::ThemeStore => "icons/settings/themes.svg",
+            SettingsSection::Plugins => "icons/settings/plugins.svg",
             SettingsSection::Advanced => "icons/settings/advanced.svg",
             SettingsSection::Colors => "icons/settings/colors.svg",
             SettingsSection::Keybindings => "icons/settings/keybindings.svg",
         }
     }
 
-    pub(super) const fn settings_sections_in_order() -> [SettingsSection; 7] {
+    pub(super) const fn settings_sections_in_order() -> [SettingsSection; 8] {
         [
             SettingsSection::Advanced,
             SettingsSection::Appearance,
-            SettingsSection::ThemeStore,
             SettingsSection::Colors,
+            SettingsSection::ThemeStore,
+            SettingsSection::Plugins,
             SettingsSection::Terminal,
             SettingsSection::Tabs,
             SettingsSection::Keybindings,
@@ -641,9 +657,13 @@ impl SettingsWindow {
                         &[
                             SettingsSection::Advanced,
                             SettingsSection::Appearance,
-                            SettingsSection::ThemeStore,
                             SettingsSection::Colors,
                         ],
+                        cx,
+                    ))
+                    .child(self.render_sidebar_group(
+                        "Extensions",
+                        &[SettingsSection::ThemeStore, SettingsSection::Plugins],
                         cx,
                     ))
                     .child(self.render_sidebar_group(

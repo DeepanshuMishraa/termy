@@ -557,15 +557,17 @@ impl TerminalView {
                 Some(
                     div()
                         .flex_none()
+                        .max_w(px(260.0))
                         .h(px(22.0))
                         .px(px(8.0))
                         .rounded(px(COMMAND_PALETTE_SHORTCUT_RADIUS))
                         .bg(style.shortcut_bg)
+                        .overflow_hidden()
                         .text_size(px(10.0))
                         .text_color(style.muted_text)
                         .flex()
                         .items_center()
-                        .child(mode_title)
+                        .child(div().min_w(px(0.0)).truncate().child(mode_title))
                         .into_any_element(),
                 )
             };
@@ -594,11 +596,14 @@ impl TerminalView {
                     .min_w(px(0.0))
                     .h(px(22.0))
                     .relative()
+                    .overflow_hidden()
                     .children(input_placeholder.map(|placeholder| {
                         div()
                             .absolute()
                             .left_0()
+                            .right_0()
                             .top_0()
+                            .truncate()
                             .text_size(px(COMMAND_PALETTE_INPUT_TEXT_SIZE))
                             .text_color(style.muted_text)
                             .child(placeholder)

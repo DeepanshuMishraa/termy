@@ -3,7 +3,23 @@ title: TypeScript plugins
 description: Add custom commands and native inputs to the command palette.
 ---
 
-Plugins add commands to Termy's command palette with a JSON manifest and plain TypeScript. Install [Bun](https://bun.sh/), then create these files under Termy's config directory:
+Plugins add commands to Termy's command palette with a JSON manifest and plain TypeScript. Install [Bun](https://bun.sh/), then use **Settings → Plugins → Install from folder** to choose a plugin directory. Termy validates and copies the folder into its managed plugin directory; the same screen shows Bun status and lets you refresh, open the folder, enable, disable, or uninstall plugins.
+
+The CLI can scaffold a plugin and install trusted source from GitHub:
+
+```sh
+termy plugin init my-plugin
+termy plugin add https://github.com/example/termy-plugins --path my-plugin
+termy plugin status my-plugin
+termy plugin disable my-plugin
+termy plugin enable my-plugin
+termy plugin update my-plugin
+termy plugin uninstall my-plugin
+```
+
+`add` also accepts the `install` alias, while `remove` accepts `uninstall`. GitHub repository URLs, `/tree/<ref>/<path>` URLs, `--ref`, and `--path` are supported. Termy resolves refs to full commits and stores the source metadata for predictable status and updates. Monorepos with multiple valid plugins require `--path` instead of guessing.
+
+The installer downloads regular files as data and never clones the repository, runs its scripts, evaluates plugin code, or installs dependencies. The plugin becomes trusted Bun code when the command palette loads it, so interactive installs require confirmation and automation must pass `--yes`.
 
 Handlers execute as normal Bun code, so they can use async functions, `fetch`, `Bun.*`, Node-compatible standard-library APIs, files, subprocesses, network requests, and local relative TypeScript imports. The action result is only the typed bridge back into Termy's native UI.
 
@@ -25,7 +41,7 @@ The full directory is `$XDG_CONFIG_HOME/termy/plugins` when `XDG_CONFIG_HOME` is
 }
 ```
 
-`version` is optional metadata reserved for plugin management and is not currently shown. Set `main` to a relative TypeScript path when the entrypoint is not `plugin.ts`; it must stay inside the plugin directory and cannot be a symlink.
+`version` is optional metadata shown in Settings. Set `main` to a relative TypeScript path when the entrypoint is not `plugin.ts`; it must stay inside the plugin directory and cannot be a symlink.
 
 `plugin.ts` exports the commands without repeating manifest metadata:
 
@@ -102,6 +118,8 @@ A handler can return one action, an action array, `{ actions: [...] }`, or nothi
 Termy keeps one external Bun host warm and isolates each plugin in its own Worker with execution timeouts. It resolves Bun from `TERMY_BUN_PATH`, beside the Termy executable, `PATH`, Bun's default user install, Homebrew, and `/usr/local/bin`; set `TERMY_BUN_PATH` to an absolute executable path when automatic resolution misses your installation.
 
 Plugin content is checked whenever the command palette opens. Termy fingerprints the manifest and source tree, then bundles each changed plugin once with `Bun.build({ target: "bun" })` into `plugins/.termy-cache/bundles/<id>/<content-hash>.mjs`. Local relative imports are included in both the content hash and bundle, while unchanged plugins reuse their cached module.
+
+Disabling a plugin keeps its managed files but removes its commands on the next command-palette refresh. Uninstalling removes Termy's managed copy and leaves the source folder you selected untouched.
 
 The cached module is imported in a warm per-plugin Worker. Termy does not use `bun build --compile`, because a standalone executable would embed another Bun runtime for every plugin; shared `.mjs` bundles avoid that size and startup overhead. Saving a manifest or source file replaces the changed Worker and refreshes its commands without restarting Termy.
 

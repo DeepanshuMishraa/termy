@@ -41,6 +41,7 @@ fn is_cli_entrypoint(arg: &str) -> bool {
             | "--version"
             | "-help"
             | "-version"
+            | "plugin"
             | "-list-fonts"
             | "-list-keybinds"
             | "-list-themes"
@@ -137,6 +138,7 @@ mod tests {
     #[test]
     fn delegates_all_cli_commands() {
         for command in [
+            "plugin",
             "-list-fonts",
             "-list-keybinds",
             "-list-themes",
