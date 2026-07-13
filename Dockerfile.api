@@ -8,7 +8,9 @@
 # Build: docker build -f Dockerfile.api -t termy-api .
 # Run:   docker run -p 8080:8080 -e DATABASE_URL=... -e TERMY_API_SECRET=... termy-api
 
-FROM rust:1.96 AS builder
+# Builder and runtime must share the same Debian release, or the binary links
+# against a newer glibc than the runtime ships.
+FROM rust:1.96-bookworm AS builder
 WORKDIR /build
 
 COPY crates/api ./crates/api
