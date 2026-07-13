@@ -268,10 +268,15 @@ html:not(.dark) .marketing-theme .prose :where(h1, h2, h3, h4, strong, code) {
   box-shadow: 0 30px 90px rgba(0, 0, 0, 0.3);
 }
 
-.docs-theme-page > h1,
+.docs-theme-page > h1 {
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 500;
+  color: var(--color-fd-foreground);
+}
+
 .docs-theme-body :is(h1, h2, h3, h4) {
-  font-family: 'Instrument Serif', Georgia, 'Times New Roman', serif;
-  font-weight: 400;
+  font-weight: 600;
+  letter-spacing: -0.02em;
   color: var(--color-fd-foreground);
 }
 

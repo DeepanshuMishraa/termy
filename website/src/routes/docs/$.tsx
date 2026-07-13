@@ -19,7 +19,6 @@ import { useMDXComponents } from '@/components/mdx';
 import {
   marketingFontLinks,
   marketingMono,
-  marketingSerif,
 } from '@/components/marketing-page-shell';
 
 export const Route = createFileRoute('/docs/$')({
@@ -68,8 +67,8 @@ const clientLoader = browserCollections.docs.createClientLoader({
           $ termy docs
         </p>
         <DocsTitle
-          className="mt-1 text-5xl font-normal leading-tight tracking-tight md:text-6xl"
-          style={{ fontFamily: marketingSerif }}
+          className="mt-1 text-3xl leading-tight tracking-tight md:text-4xl"
+          style={{ fontFamily: marketingMono }}
         >
           {frontmatter.title}
         </DocsTitle>
