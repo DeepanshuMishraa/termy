@@ -5,6 +5,7 @@ Termy is a Rust workspace split by ownership boundary, not by implementation con
 ## Product Surface
 
 - `desktop_app/` (`termy`): GPUI desktop app, windows, app chrome, settings, onboarding, command execution, and user-visible desktop workflows.
+- `api/` (`termy_api`): hosted cloud API backend (`termy-api`) — auth via better-auth, axum, sqlx/Postgres.
 - `cli/` (`termy_cli`): `termy-cli` command-line companion.
 - `ffi/` (`termy_ffi`): C-compatible libtermy surface.
 
@@ -40,6 +41,7 @@ Each crate has its own `README.md` with `Owner`, `Validation`, and `Forbidden De
 - `termy_ffi` should wrap `termy_core`, not copy desktop app behavior.
 - `termy_command_core` must stay independent of config parsing and UI presentation.
 - `termy_plugin_runtime` must stay independent of GPUI, desktop command execution, and terminal presentation.
+- `termy_api` is a headless server crate: no GPUI, no desktop UI crates.
 - App-only behavior belongs in `desktop_app/` until another product surface needs it.
 
 Run `just check-boundaries` after changing crate dependencies, crate README metadata, generated docs, command/keybind behavior, or config behavior.
