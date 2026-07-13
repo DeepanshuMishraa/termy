@@ -23,10 +23,12 @@ Termy starts one long-lived Bun host and gives each plugin its own Worker. This 
 
 The easiest install path is **Settings → Plugins → Install from folder**. Choose a plugin folder containing `plugin.json` and its TypeScript entrypoint; Termy validates the source, copies it into the managed plugin directory, and shows its name, version, and enabled state. The same screen can refresh the inventory, open the plugin directory, enable or disable a plugin, and uninstall it with confirmation.
 
-The CLI can scaffold a plugin and install trusted source directly from GitHub:
+The CLI can scaffold a plugin locally, install its managed copy, or install trusted source directly from GitHub:
 
 ```sh
 termy plugin init my-plugin
+termy plugin dev ./my-plugin
+termy plugin add ./my-plugin
 termy plugin add https://github.com/example/termy-plugins --path my-plugin
 termy plugin status my-plugin
 termy plugin disable my-plugin
@@ -35,7 +37,9 @@ termy plugin update my-plugin
 termy plugin uninstall my-plugin
 ```
 
-`add` also has the `install` alias, while `remove` has the `uninstall` alias. Repository URLs, `/tree/<ref>/<path>` URLs, `--ref`, and `--path` are supported. Termy resolves the selected ref to a full commit, downloads only regular files, validates the manifest and source limits, and saves the repository, requested ref, plugin subdirectory, and pinned revision for later status and updates. A repository containing multiple valid plugins requires `--path` so Termy never guesses which one to install.
+`add` also has the `install` alias, while `remove` has the `uninstall` alias. A local directory is validated and copied into Termy's managed global plugins directory, leaving the development source untouched. Repository URLs, `/tree/<ref>/<path>` URLs, `--ref`, and `--path` are also supported. Termy resolves the selected ref to a full commit, downloads only regular files, validates the manifest and source limits, and saves the repository, requested ref, plugin subdirectory, and pinned revision for later status and updates. A repository containing multiple valid plugins requires `--path` so Termy never guesses which one to install.
+
+`termy plugin dev ./my-plugin` installs or updates the managed local copy, then watches the development directory recursively. Source changes are debounced, source-tree validated, and swapped into the managed directory atomically. A validation or copy failure leaves the managed copy untouched; Bun load errors appear in Termy when the command palette refreshes. Pressing Ctrl+C stops watching but leaves the plugin installed. Dev mode ignores `.git` and `node_modules`, preserves enabled state and plugin storage, and refuses to overwrite a GitHub-tracked installation.
 
 GitHub installation never clones the repository, runs package scripts, installs dependencies, or evaluates source during installation. Plugins are still trusted code when the command palette loads them through Bun, so the CLI shows a warning and requires confirmation; automation must pass `--yes` explicitly.
 
@@ -48,9 +52,15 @@ termy/
 └── plugins/
     ├── termy.d.ts
     ├── .termy-cache/
-    │   └── bundles/
+    │   ├── bundles/
+    │   │   └── git-tools/
+    │   │       └── <content-hash>.mjs
+    │   └── data/
     │       └── git-tools/
-    │           └── <content-hash>.mjs
+    ├── .termy-data/
+    │   └── git-tools/
+    │       ├── storage.json
+    │       └── files/
     └── git-tools/
         ├── plugin.json
         └── plugin.ts
@@ -58,7 +68,7 @@ termy/
 
 The config directory is `$XDG_CONFIG_HOME/termy` when `XDG_CONFIG_HOME` is set, `~/.config/termy` otherwise on macOS and Linux, and `%APPDATA%\termy` on Windows.
 
-Termy manages `plugins/termy.d.ts` and everything under `plugins/.termy-cache`; do not edit either. The declarations provide the global `definePlugin` function and ambient `TermyPlugin` types for editor completion, so plugin source does not import an SDK package.
+Termy manages `plugins/termy.d.ts`, `plugins/.termy-cache`, and `plugins/.termy-data`; do not edit them directly. The declarations provide the global `definePlugin` function and ambient `TermyPlugin` types for editor completion, so plugin source does not import an SDK package.
 
 ## Manifest
 
@@ -113,7 +123,7 @@ export default definePlugin({
 } satisfies TermyPlugin);
 ```
 
-The manifest owns API and identity metadata. `definePlugin` owns runtime behavior and therefore contains only `commands`; do not duplicate `apiVersion`, `id`, `name`, `version`, or `main` in `plugin.ts`.
+The manifest owns API and identity metadata. `definePlugin` owns runtime behavior and contains commands plus optional user settings; do not duplicate `apiVersion`, `id`, `name`, `version`, or `main` in `plugin.ts`.
 
 ## Command fields
 
@@ -193,21 +203,89 @@ Text inputs support `placeholder`, `defaultValue`, `required`, and `maxLength`. 
 
 Treat text input as untrusted. Do not interpolate it directly into a shell command; prefer a select input mapped to fixed commands, or apply quoting appropriate for the target shell.
 
+## Plugin settings
+
+Declare user-editable settings beside `commands`. Termy validates the schema, renders it under **Settings → Plugins**, and infers the value type for `context.settings.get(...)`:
+
+```ts
+export default definePlugin({
+  settings: {
+    autoFetch: {
+      type: "toggle",
+      title: "Fetch before running",
+      defaultValue: true,
+    },
+    format: {
+      type: "select",
+      title: "Output format",
+      options: [
+        { value: "compact", label: "Compact" },
+        { value: "detailed", label: "Detailed" },
+      ],
+      defaultValue: "compact",
+    },
+    username: {
+      type: "text",
+      title: "Username",
+      placeholder: "octocat",
+      maxLength: 100,
+    },
+    token: {
+      type: "secret",
+      title: "API token",
+      description: "Used for authenticated requests.",
+    },
+  },
+  commands: [{
+    id: "run",
+    title: "Example: Run",
+    run({ context }) {
+      const format = context.settings.get("format");
+      const token = context.settings.get("token");
+      context.toasts.info(`Running in ${format} mode${token ? " with auth" : ""}`);
+    },
+  }],
+});
+```
+
+Supported types are `toggle`, `text`, `select`, and `secret`. Text and secret settings accept `placeholder` and `maxLength`; toggles accept a boolean default; selects require fixed options and may choose a default. Ordinary overrides live in the plugin's managed data directory. Secret values are masked in the UI and stored through the operating-system credential store, never in `settings.json`. Changes apply to the next command invocation without restarting the Worker, and uninstalling the plugin removes its settings and secrets.
+
 ## Context
 
 Every handler receives the current Termy context:
 
 ```ts
+type JsonValue =
+  | null
+  | boolean
+  | number
+  | string
+  | JsonValue[]
+  | { [key: string]: JsonValue };
+
 type PluginContext = {
   workingDirectory?: string;
   activeCommand?: string;
   platform: "macos" | "linux" | "windows";
   appVersion: string;
+  settings: {
+    get<T = string | boolean>(key: string): T | undefined;
+  };
   toasts: {
     info(message: string): void;
     success(message: string): void;
     warning(message: string): void;
     error(message: string): void;
+  };
+  storage: {
+    get<T = JsonValue>(key: string): Promise<T | undefined>;
+    set(key: string, value: JsonValue): Promise<void>;
+    delete(key: string): Promise<boolean>;
+    clear(): Promise<void>;
+  };
+  paths: {
+    dataDirectory: string;
+    cacheDirectory: string;
   };
 };
 ```
@@ -221,6 +299,18 @@ run({ context }) {
   context.toasts.success("Finished syncing");
 }
 ```
+
+`context.storage` persists small JSON values outside the content-hashed plugin source. Storage is isolated by plugin, limited to 512 keys and 1 MiB, survives reloads and updates, and is deleted when the plugin is uninstalled:
+
+```ts
+async run({ context }) {
+  const runs = (await context.storage.get<number>("runs")) ?? 0;
+  await context.storage.set("runs", runs + 1);
+  context.toasts.success(`Run ${runs + 1}`);
+}
+```
+
+Use `context.paths.dataDirectory` for larger persistent files and `context.paths.cacheDirectory` for disposable files with Bun or Node filesystem APIs. Both directories are outside the plugin source tree, so writing there does not trigger a rebuild. Storage is plain local JSON; declare a `secret` plugin setting for tokens and passwords so Termy uses the operating-system credential store.
 
 ## Actions
 
@@ -240,7 +330,7 @@ Toasts emitted through `context.toasts` run before returned actions, and returne
 
 Termy checks plugin content when the command palette opens. When `plugin.json`, `plugin.ts`, or another local source file changes, Termy creates or reuses the matching bundle, replaces that plugin's Worker, and refreshes the command list; restarting Termy is unnecessary.
 
-Disabling a plugin in Settings keeps its files installed but removes its commands the next time the command palette refreshes. Enabling it makes the commands available again. Uninstalling removes Termy's managed copy, not the source folder you originally selected.
+Disabling a plugin in Settings keeps its files and storage installed but removes its commands the next time the command palette refreshes. Enabling it makes the commands available again. Uninstalling removes Termy's managed copy, storage, and cache, but not the source folder you originally selected.
 
 Plugin loading and command execution have timeouts. A thrown error or timeout is contained to that plugin Worker and reported in Termy, while other plugins and the terminal keep running. A subprocess started by plugin code can outlive its Worker, so plugins that spawn processes must stop them themselves when cancellation matters. Plugins share the persistent host transport; if that transport exits, Termy discards it and rebuilds the host and Workers on the next plugin refresh instead of taking down the app. Fix a failed plugin and reopen the palette to load it again.
 

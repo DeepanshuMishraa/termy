@@ -125,6 +125,8 @@ run_case() {
     sleep 0.05
   done
   [[ -s "$probe_file" ]] || fail "$name usable window probe was not written"
+  [[ "$(awk -F= '$1 == "terminal_ready" { print $2; exit }' "$probe_file")" == "true" ]] || \
+    fail "$name probe did not report a ready terminal"
   current_ms="$(now_ms)"
   elapsed_ms=$((current_ms - start_ms))
   printf '%s\n' "$elapsed_ms" >"$startup_file"

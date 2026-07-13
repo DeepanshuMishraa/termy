@@ -11,7 +11,7 @@ usage() {
 Usage: $0 --app PATH [--timeout-seconds N]
 
 Launch a native Termy.app with an isolated HOME/config directory and require a
-probe from a visible AppKit window with non-empty content.
+probe from a visible AppKit window containing a ready terminal surface.
 EOF
 }
 
@@ -105,9 +105,11 @@ visible="$(probe_value visible)"
 window_number="$(probe_value window_number)"
 content_width="$(probe_value content_width)"
 content_height="$(probe_value content_height)"
+terminal_ready="$(probe_value terminal_ready)"
 
 [[ "$probe_pid" == "$PID" ]] || fail "probe PID $probe_pid differs from launched PID $PID"
 [[ "$visible" == "true" ]] || fail "probe did not report a visible window"
+[[ "$terminal_ready" == "true" ]] || fail "probe did not report a ready terminal"
 [[ "$window_number" =~ ^[1-9][0-9]*$ ]] || fail "invalid window number: ${window_number:-missing}"
 [[ "$content_width" =~ ^[1-9][0-9]*$ ]] || fail "invalid content width: ${content_width:-missing}"
 [[ "$content_height" =~ ^[1-9][0-9]*$ ]] || fail "invalid content height: ${content_height:-missing}"

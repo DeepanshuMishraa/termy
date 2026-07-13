@@ -5,7 +5,6 @@ import {
   marketingFontLinks,
   marketingMono,
   marketingPanelClass,
-  marketingSerif,
 } from '@/components/marketing-page-shell';
 import {
   fetchGitHubReleaseByTag,
@@ -54,7 +53,7 @@ function ReleaseDetail() {
           >
             {formatReleaseDate(release.publishedAt)}
           </time>
-          <h1 className="mt-3 text-balance text-5xl leading-tight tracking-tight text-[#e8eeff] md:text-6xl" style={{ fontFamily: marketingSerif }}>
+          <h1 className="mt-3 text-balance text-3xl font-medium leading-tight tracking-tight text-[#e8eeff] md:text-4xl" style={{ fontFamily: marketingMono }}>
             {release.name}
           </h1>
           <div className={`${marketingPanelClass} prose prose-invert prose-sm mt-10 max-w-none px-6 py-8 text-[#c0caf5] sm:px-9 sm:py-10`}>

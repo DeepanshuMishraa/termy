@@ -181,7 +181,7 @@ checking that a few files exist.
 - Added DMG checksum verification, controlled read-only mounting, exact root app
   checks, and `/Applications` symlink validation.
 - Added `TERMY_LAUNCH_PROBE_FILE`: the app reports readiness only after AppKit
-  presents a visible window with non-empty content.
+  presents a visible window containing a ready terminal surface.
 - Added a clean HOME/XDG config launch gate that checks the probe instead of
   accepting a PID alone.
 - Ad-hoc-sign unsigned candidates inside-out so post-link edits and staged

@@ -33,6 +33,7 @@ type WorkerRecord = {
     }
   >;
   commands: unknown[];
+  settings: unknown[];
   invocationCommands: InvocationCommand[];
 };
 type PluginLoadResult = {
@@ -40,6 +41,7 @@ type PluginLoadResult = {
   reused: boolean;
   record?: WorkerRecord;
   commands?: unknown[];
+  settings?: unknown[];
   error?: string;
 };
 
@@ -71,6 +73,8 @@ const MAX_PLUGINS = 32;
 const MAX_LOAD_CONCURRENCY = 4;
 const MAX_PLUGIN_COMMANDS = 512;
 const bundleCacheRoot = join(process.cwd(), ".termy-cache", "bundles");
+const pluginDataRoot = join(process.cwd(), ".termy-data");
+const pluginCacheRoot = join(process.cwd(), ".termy-cache", "data");
 
 class WorkerExecutionTimeoutError extends Error {}
 
@@ -136,6 +140,7 @@ function createRecord(source: PluginSource): WorkerRecord {
     invocationCount: 0,
     pending: new Map(),
     commands: [],
+    settings: [],
     invocationCommands: [],
   };
   worker.onmessage = (event) => {
@@ -302,17 +307,25 @@ async function loadPlugin(source: PluginSource): Promise<PluginLoadResult> {
   try {
     const result = await requestWorker(
       record,
-      { type: "load", source, bundleCacheRoot },
+      {
+        type: "load",
+        source,
+        bundleCacheRoot,
+        pluginDataRoot,
+        pluginCacheRoot,
+      },
       LOAD_TIMEOUT_MS,
     );
     record.invocationCommands = invocationCommands(result);
     record.commands = (result as { commands: unknown[] }).commands;
+    record.settings = (result as { settings: unknown[] }).settings;
     await cleanupBuildArtifacts(source);
     return {
       source,
       reused: false,
       record,
       commands: record.commands,
+      settings: record.settings,
     };
   } catch (error) {
     terminateRecord(record);
@@ -333,7 +346,13 @@ async function loadOrReusePlugin(source: PluginSource): Promise<PluginLoadResult
     existing.source.root === source.root &&
     existing.source.cacheKey === source.cacheKey
   ) {
-    return { source, reused: true, record: existing, commands: existing.commands };
+    return {
+      source,
+      reused: true,
+      record: existing,
+      commands: existing.commands,
+      settings: existing.settings,
+    };
   }
   return loadPlugin(source);
 }
@@ -379,16 +398,21 @@ async function handleLoad(plugins: PluginSource[]): Promise<unknown> {
     MAX_LOAD_CONCURRENCY,
     loadOrReusePlugin,
   );
-  const pluginsResult: Array<{ pluginId: string; commands: unknown[] }> = [];
+  const pluginsResult: Array<{
+    pluginId: string;
+    commands: unknown[];
+    settings: unknown[];
+  }> = [];
   const nextRecords = new Map<string, WorkerRecord>();
   let commandCount = 0;
   for (const result of loaded) {
-    if (result.record && result.commands) {
+    if (result.record && result.commands && result.settings) {
       nextRecords.set(result.source.id, result.record);
       commandCount += result.commands.length;
       pluginsResult.push({
         pluginId: result.source.id,
         commands: result.commands,
+        settings: result.settings,
       });
     } else {
       errors.push(`${result.source.id}: ${result.error || "failed to load"}`);

@@ -7,6 +7,7 @@ struct TerminalWorkspaceView: View {
     @ObservedObject private var configurationStore = TermyConfigurationStore.shared
     @State private var tmuxControlModel: TmuxControlWorkspaceModel?
     @State private var appConfigurationError = TermyAppConfiguration.loadErrorMessage
+    @State private var tmuxFallbackMessage: String?
     @State private var workspacePersistenceError: String?
     @State private var didRestoreWorkspace = false
     @State private var didConfigurePerformancePanes = false
@@ -105,7 +106,9 @@ struct TerminalWorkspaceView: View {
     private var terminalContent: some View {
         ZStack {
             if let tmuxControlModel {
-                TmuxControlWorkspaceView(model: tmuxControlModel)
+                TmuxControlWorkspaceView(model: tmuxControlModel) { errorMessage in
+                    fallBackFromTmux(errorMessage)
+                }
             } else if let zoomedPane = store.zoomedPane {
                 TerminalPaneLeafView(pane: zoomedPane, store: store)
             } else {
@@ -115,6 +118,12 @@ struct TerminalWorkspaceView: View {
             if let appConfigurationError {
                 dismissibleBanner(appConfigurationError, color: .red) {
                     self.appConfigurationError = nil
+                }
+            }
+
+            if let tmuxFallbackMessage {
+                dismissibleBanner(tmuxFallbackMessage, color: .orange) {
+                    self.tmuxFallbackMessage = nil
                 }
             }
 
@@ -371,6 +380,20 @@ struct TerminalWorkspaceView: View {
             )
             workspacePersistenceError = "Could not reset workspace: \(error)"
         }
+    }
+
+    private func fallBackFromTmux(_ errorMessage: String) {
+        guard tmuxControlModel != nil else {
+            return
+        }
+        TermyNativeLog.lifecycle.error(
+            "Native tmux startup failed; using shell fallback: \(errorMessage, privacy: .public)"
+        )
+        tmuxControlModel?.stop()
+        tmuxControlModel = nil
+        didRestoreWorkspace = false
+        restoreWorkspaceIfNeeded()
+        tmuxFallbackMessage = "Native tmux couldn't start (\(errorMessage)). Using the shell fallback."
     }
 
     private var shouldPersistWorkspace: Bool {
@@ -704,6 +727,7 @@ private final class RoutingRegistrationView: NSView {
 private struct TmuxControlWorkspaceView: View {
     @ObservedObject var model: TmuxControlWorkspaceModel
     @ObservedObject private var configurationStore = TermyConfigurationStore.shared
+    let onUnavailable: (String) -> Void
 
     var body: some View {
         ZStack {
@@ -756,7 +780,9 @@ private struct TmuxControlWorkspaceView: View {
             }
         }
         .onAppear {
-            model.start()
+            if !model.start() {
+                onUnavailable(model.errorMessage ?? "tmux control mode failed to start")
+            }
         }
         .onDisappear {
             model.stop()
@@ -803,7 +829,11 @@ private struct TmuxControlLayoutView: View {
     @ViewBuilder
     private func split(children: [TmuxLayoutNode], axis: TerminalSplitAxis) -> some View {
         if children.isEmpty {
-            Color.clear
+            Text("tmux returned an empty layout")
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(.red)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .padding(10)
         } else if children.count == 1, let only = children.first {
             TmuxControlLayoutView(node: only, model: model)
         } else if let first = children.first {
@@ -899,8 +929,11 @@ private struct TmuxControlPaneView: View {
             .id(paneID)
             .frame(minWidth: 240, minHeight: 120)
         } else {
-            Color.clear
-                .frame(minWidth: 240, minHeight: 120)
+            Text("tmux pane %\(paneID) is unavailable")
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(.red)
+                .frame(minWidth: 240, minHeight: 120, alignment: .topLeading)
+                .padding(10)
         }
     }
 }

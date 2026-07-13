@@ -479,6 +479,7 @@ impl TerminalView {
             active_command: self.active_current_command().map(str::to_string),
             platform: std::env::consts::OS.to_string(),
             app_version: crate::APP_VERSION.to_string(),
+            settings: BTreeMap::new(),
         };
         let runtime = self.plugin_runtime.clone();
         let plugin_id = command.plugin_id.clone();

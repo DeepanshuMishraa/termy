@@ -119,16 +119,16 @@ enum Action {
 
 #[derive(Subcommand)]
 enum PluginCommand {
-    /// Install a plugin from a GitHub repository
+    /// Install a plugin from a local directory or GitHub repository
     #[command(visible_alias = "install")]
     Add {
-        /// GitHub repository or /tree/<ref>/<path> URL
-        #[arg(value_name = "GITHUB_URL")]
+        /// Local plugin directory, GitHub repository, or /tree/<ref>/<path> URL
+        #[arg(value_name = "SOURCE")]
         source: String,
-        /// Git branch, tag, or commit to install
+        /// Git branch, tag, or commit to install from GitHub
         #[arg(long = "ref", value_name = "REF")]
         reference: Option<String>,
-        /// Plugin directory inside the repository
+        /// Plugin directory inside a GitHub repository
         #[arg(long, value_name = "PATH")]
         path: Option<String>,
         /// Accept the trusted-code warning without prompting
@@ -147,6 +147,13 @@ enum PluginCommand {
         /// Display name; defaults to a title made from the plugin ID
         #[arg(long)]
         name: Option<String>,
+    },
+
+    /// Install a local plugin and sync source changes until stopped
+    Dev {
+        /// Local plugin development directory
+        #[arg(value_name = "PATH", default_value = ".")]
+        path: PathBuf,
     },
 
     /// List installed plugins and their source revisions

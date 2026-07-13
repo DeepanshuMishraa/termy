@@ -118,7 +118,7 @@ impl SettingsWindow {
             }))
     }
 
-    pub(super) fn render_group_header(&self, title: &'static str) -> impl IntoElement {
+    pub(super) fn render_group_header(&self, title: impl Into<SharedString>) -> impl IntoElement {
         // Quiet, slightly inset caption above each card — mirrors the muted
         // sentence-case group labels in native macOS grouped settings.
         div()
@@ -126,7 +126,7 @@ impl SettingsWindow {
             .text_size(px(GROUP_TITLE_SIZE))
             .font_weight(gpui::FontWeight::SEMIBOLD)
             .text_color(self.text_muted())
-            .child(title)
+            .child(title.into())
     }
 
     pub(super) fn render_reset_setting_button(

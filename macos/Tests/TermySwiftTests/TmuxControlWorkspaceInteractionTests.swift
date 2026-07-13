@@ -5,6 +5,10 @@ import XCTest
 
 @MainActor
 final class TmuxControlWorkspaceInteractionTests: XCTestCase {
+    private enum ExpectedFailure: Error {
+        case displayTerminalCreation
+    }
+
     func testControlWorkspaceDeclinesLaunchWhenTmuxIsDisabled() {
         var configuration = TermyConfigurationStore.shared.configuration
         configuration.tmux.enabled = false
@@ -22,6 +26,30 @@ final class TmuxControlWorkspaceInteractionTests: XCTestCase {
         XCTAssertThrowsError(try TmuxControlWorkspaceModel(configuration: configuration)) { error in
             XCTAssertEqual(String(describing: error), "tmux control mode is disabled")
         }
+    }
+
+    func testControlWorkspaceDeclinesStartWhenDisplayPaneCreationFails() throws {
+        let socket = "termy-gui-failed-pane-\(ProcessInfo.processInfo.processIdentifier)-\(UUID().uuidString.prefix(8))"
+        let session: TmuxControlSession
+        do {
+            session = try TmuxControlSession(
+                binary: "/opt/homebrew/bin/tmux",
+                socket: socket,
+                session: "gui-failed-pane",
+                displayTerminalFactory: { _, _ in
+                    throw ExpectedFailure.displayTerminalCreation
+                }
+            )
+        } catch {
+            throw XCTSkip("tmux unavailable: \(error)")
+        }
+        defer { killTmuxServer(socket: socket) }
+
+        let model = TmuxControlWorkspaceModel(session: session)
+        XCTAssertFalse(model.start())
+        XCTAssertEqual(model.errorMessage, String(describing: ExpectedFailure.displayTerminalCreation))
+        XCTAssertNil(model.layout)
+        XCTAssertEqual(model.paneCount, 0)
     }
 
     func testAppKitInputRoutesToFocusedPaneAcrossNestedLayoutChanges() async throws {

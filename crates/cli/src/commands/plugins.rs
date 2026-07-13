@@ -2,10 +2,12 @@ use std::{
     collections::HashSet,
     fs,
     io::{self, IsTerminal, Read, Write},
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
+    sync::mpsc::{self, RecvTimeoutError},
     time::Duration,
 };
 
+use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
 use percent_encoding::{NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
 use serde::Deserialize;
 use tempfile::TempDir;
@@ -31,6 +33,7 @@ pub fn run(command: PluginCommand) {
             yes,
         } => add(&source, reference.as_deref(), path.as_deref(), yes),
         PluginCommand::Init { path, id, name } => init(&path, id.as_deref(), name.as_deref()),
+        PluginCommand::Dev { path } => dev(&path),
         PluginCommand::List => list(),
         PluginCommand::Status { id } => status(id.as_deref()),
         PluginCommand::Enable { id } => set_enabled(&id, true),
@@ -46,6 +49,30 @@ pub fn run(command: PluginCommand) {
 }
 
 fn add(
+    source: &str,
+    explicit_ref: Option<&str>,
+    explicit_path: Option<&str>,
+    yes: bool,
+) -> Result<(), String> {
+    if source.contains("://") {
+        return add_from_github(source, explicit_ref, explicit_path, yes);
+    }
+    if explicit_ref.is_some() || explicit_path.is_some() {
+        return Err("--ref and --path can only be used with a GitHub source".to_string());
+    }
+
+    let installed = plugin_runtime()?.install_from_directory(Path::new(source))?;
+    println!(
+        "Installed {} ({}) at {}",
+        installed.name,
+        installed.id,
+        installed.path.display()
+    );
+    println!("It will be available the next time the command palette opens.");
+    Ok(())
+}
+
+fn add_from_github(
     source_url: &str,
     explicit_ref: Option<&str>,
     explicit_path: Option<&str>,
@@ -86,6 +113,91 @@ fn add(
 
 fn list() -> Result<(), String> {
     status(None)
+}
+
+fn dev(path: &Path) -> Result<(), String> {
+    let source = fs::canonicalize(path).map_err(|error| {
+        format!(
+            "failed to resolve plugin source {}: {error}",
+            path.display()
+        )
+    })?;
+    let runtime = plugin_runtime()?;
+    let installed = runtime.sync_from_directory(&source)?;
+    println!(
+        "Synced {} ({}) to {}",
+        installed.name,
+        installed.id,
+        installed.path.display()
+    );
+
+    let (sender, receiver) = mpsc::channel::<notify::Result<Event>>();
+    let mut watcher = RecommendedWatcher::new(sender, Config::default())
+        .map_err(|error| format!("failed to create plugin watcher: {error}"))?;
+    watcher
+        .watch(&source, RecursiveMode::Recursive)
+        .map_err(|error| format!("failed to watch {}: {error}", source.display()))?;
+    println!("Watching {}. Press Ctrl+C to stop.", source.display());
+    io::stdout()
+        .flush()
+        .map_err(|error| format!("failed to report watcher readiness: {error}"))?;
+
+    loop {
+        let first = receiver
+            .recv()
+            .map_err(|_| "plugin watcher stopped unexpectedly".to_string())?;
+        let mut changed = dev_event_requires_sync(first, &source);
+        loop {
+            match receiver.recv_timeout(Duration::from_millis(200)) {
+                Ok(event) => changed |= dev_event_requires_sync(event, &source),
+                Err(RecvTimeoutError::Timeout) => break,
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err("plugin watcher stopped unexpectedly".to_string());
+                }
+            }
+        }
+        if !changed {
+            continue;
+        }
+        match runtime.sync_from_directory(&source) {
+            Ok(plugin) => println!("Synced {} ({})", plugin.name, plugin.id),
+            Err(error) => eprintln!("Plugin sync failed: {error}"),
+        }
+    }
+}
+
+fn dev_event_requires_sync(event: notify::Result<Event>, source: &Path) -> bool {
+    let event = match event {
+        Ok(event) => event,
+        Err(error) => {
+            eprintln!("Plugin watcher warning: {error}");
+            return false;
+        }
+    };
+    if event.kind.is_access() {
+        return false;
+    }
+    event.paths.is_empty()
+        || event
+            .paths
+            .iter()
+            .any(|path| !dev_path_is_ignored(source, path))
+}
+
+fn dev_path_is_ignored(source: &Path, path: &Path) -> bool {
+    let Ok(relative) = path.strip_prefix(source) else {
+        return false;
+    };
+    relative.components().any(|component| {
+        matches!(
+            component,
+            Component::Normal(name)
+                if matches!(name.to_str(), Some(".git" | "node_modules"))
+        )
+    }) || matches!(
+        relative.file_name().and_then(|name| name.to_str()),
+        Some(".termy-disabled" | ".termy-source.json")
+    )
 }
 
 fn status(selected_id: Option<&str>) -> Result<(), String> {
@@ -226,7 +338,10 @@ fn init(
     }
 
     println!("Initialized plugin `{id}` in {}", path.display());
-    println!("Edit plugin.ts, then publish the directory with plugin.json beside it.");
+    println!(
+        "Edit plugin.ts, then run `termy plugin dev {}`.",
+        path.display()
+    );
     Ok(())
 }
 
@@ -279,6 +394,13 @@ fn title_from_id(id: &str) -> String {
 
 fn plugin_template() -> &'static str {
     r#"export default definePlugin({
+  settings: {
+    greeting: {
+      type: "text",
+      title: "Greeting",
+      defaultValue: "Hello from Termy",
+    },
+  },
   commands: [
     {
       id: "hello",
@@ -286,7 +408,7 @@ fn plugin_template() -> &'static str {
       keywords: ["hello"],
       icon: "info",
       run({ context }) {
-        context.toasts.success("Hello from Termy");
+        context.toasts.success(context.settings.get("greeting") ?? "Hello from Termy");
       },
     },
   ],

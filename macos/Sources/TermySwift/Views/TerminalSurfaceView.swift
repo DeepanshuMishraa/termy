@@ -189,6 +189,7 @@ struct TerminalSurfaceView: View {
                 backgroundOpacity: terminal.renderConfig.backgroundOpacity,
                 backgroundBlur: terminal.renderConfig.backgroundBlur
             ))
+            .background(NativeLaunchProbeView(terminalReady: terminal.isReady))
             .onTapGesture {
                 onFocus()
                 if isSearchVisible {

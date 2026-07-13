@@ -953,7 +953,6 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
             window.level = .floating
             window.orderFrontRegardless()
         }
-        NativeLaunchProbe.recordWhenUsable(window)
         postTabsChanged()
     }
 

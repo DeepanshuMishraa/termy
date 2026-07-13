@@ -242,7 +242,7 @@ impl SettingsWindow {
 
     pub(super) fn render_settings_group(
         &self,
-        title: &'static str,
+        title: impl Into<SharedString>,
         rows: Vec<AnyElement>,
     ) -> AnyElement {
         let divider = self.row_separator_color();

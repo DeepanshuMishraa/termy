@@ -251,6 +251,8 @@ impl SettingsWindow {
     ) {
         self.active_section = section;
         self.active_input = None;
+        self.plugin_setting_input = None;
+        self.active_plugin_setting_select = None;
         self.capturing_action = None;
         self.blur_sidebar_search();
         self.theme_store_search_active = section == SettingsSection::ThemeStore;
@@ -259,6 +261,9 @@ impl SettingsWindow {
         self.content_scroll_handle
             .set_offset(point(px(0.0), px(0.0)));
         self.request_scrollbar_refresh_frames(3, window, cx);
+        if section == SettingsSection::Plugins {
+            self.refresh_plugin_settings(cx);
+        }
     }
 
     pub(super) fn cycle_active_section(
@@ -520,6 +525,8 @@ impl SettingsWindow {
 
         self.active_section = setting.metadata.section;
         self.active_input = None;
+        self.plugin_setting_input = None;
+        self.active_plugin_setting_select = None;
         self.capturing_action = None;
         self.sidebar_search_active = true;
         self.sidebar_search_selecting = false;

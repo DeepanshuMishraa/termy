@@ -54,17 +54,21 @@ final class TmuxControlWorkspaceModel: ObservableObject {
         terminals[id]
     }
 
-    func start() {
+    @discardableResult
+    func start() -> Bool {
         guard pumpTask == nil else {
-            return
+            return layout != nil && !terminals.isEmpty
         }
-        reconcileLayout()
+        guard reconcileLayout() else {
+            return false
+        }
         pumpTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 self?.pump()
                 try? await Task.sleep(nanoseconds: 33_000_000)
             }
         }
+        return true
     }
 
     func stop() {
@@ -208,16 +212,24 @@ final class TmuxControlWorkspaceModel: ObservableObject {
         }
     }
 
-    private func reconcileLayout() {
+    @discardableResult
+    private func reconcileLayout() -> Bool {
         do {
-            let nextLayout = try session.reconcileLayout()
+            guard let nextLayout = try session.reconcileLayout() else {
+                throw TmuxControlWorkspaceError.noRenderablePane
+            }
             syncTerminals()
+            guard !terminals.isEmpty else {
+                throw TmuxControlWorkspaceError.noRenderablePane
+            }
             if layout != nextLayout {
                 layout = nextLayout
             }
             errorMessage = nil
+            return true
         } catch {
             report(error)
+            return false
         }
     }
 
@@ -269,11 +281,14 @@ final class TmuxControlWorkspaceModel: ObservableObject {
 
 enum TmuxControlWorkspaceError: Error, CustomStringConvertible {
     case disabled
+    case noRenderablePane
 
     var description: String {
         switch self {
         case .disabled:
             return "tmux control mode is disabled"
+        case .noRenderablePane:
+            return "tmux control mode did not provide a renderable pane"
         }
     }
 }

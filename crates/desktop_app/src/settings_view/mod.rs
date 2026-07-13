@@ -12,7 +12,7 @@ use gpui::{
     SharedString, StatefulInteractiveElement, Styled, StyledImage, TextAlign, WeakEntity, Window,
     WindowBackgroundAppearance, canvas, deferred, div, img, point, prelude::FluentBuilder, px, svg,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::{
@@ -26,7 +26,7 @@ use termy_config_core::{
     color_setting_from_key, color_setting_specs, format_line_height, root_setting_default_value,
     root_setting_enum_choices, root_setting_from_key, root_setting_specs, root_setting_value_kind,
 };
-use termy_plugin_runtime::{InstalledPlugin, PluginRuntime};
+use termy_plugin_runtime::{InstalledPlugin, PluginRuntime, PluginSettingState};
 
 mod colors;
 mod components;
@@ -164,6 +164,9 @@ pub struct SettingsWindow {
     theme_store_installed_versions: HashMap<String, String>,
     plugin_runtime: PluginRuntime,
     installed_plugins: Vec<InstalledPlugin>,
+    plugin_settings: BTreeMap<String, Vec<PluginSettingState>>,
+    plugin_setting_input: Option<plugins::ActivePluginSettingInput>,
+    active_plugin_setting_select: Option<(String, String)>,
     plugin_inventory_errors: Vec<String>,
     plugin_bun_path: Option<PathBuf>,
     plugin_bun_error: Option<String>,
@@ -256,6 +259,9 @@ impl SettingsWindow {
             theme_store_installed_versions: theme_store::load_installed_theme_versions(),
             plugin_runtime,
             installed_plugins,
+            plugin_settings: BTreeMap::new(),
+            plugin_setting_input: None,
+            active_plugin_setting_select: None,
             plugin_inventory_errors,
             plugin_bun_path,
             plugin_bun_error,
@@ -766,6 +772,7 @@ impl SettingsWindow {
         cx: &mut Context<Self>,
     ) -> bool {
         if self.active_input.is_none()
+            && self.plugin_setting_input.is_none()
             && event.keystroke.key.eq_ignore_ascii_case("tab")
             && !event.keystroke.modifiers.alt
             && !event.keystroke.modifiers.control
@@ -888,6 +895,10 @@ impl SettingsWindow {
     }
 
     fn handle_active_input_key_down(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+        if self.plugin_setting_input.is_some() {
+            self.handle_plugin_setting_input_key_down(event, cx);
+            return;
+        }
         let active_field = self.active_input.as_ref().map(|input| input.field);
         let active_input_query = self
             .active_input
@@ -999,7 +1010,10 @@ impl SettingsWindow {
             return;
         }
 
-        if Self::is_plain_escape(event) {
+        if Self::is_plain_escape(event)
+            && self.active_input.is_none()
+            && self.plugin_setting_input.is_none()
+        {
             window.remove_window();
             return;
         }
@@ -1026,6 +1040,9 @@ impl SettingsWindow {
 
 impl TextInputProvider for SettingsWindow {
     fn text_input_state(&self) -> Option<&TextInputState> {
+        if let Some(input) = self.plugin_setting_input.as_ref() {
+            return Some(&input.state);
+        }
         let settings_input = self
             .active_input
             .as_ref()
@@ -1043,6 +1060,9 @@ impl TextInputProvider for SettingsWindow {
     }
 
     fn text_input_state_mut(&mut self) -> Option<&mut TextInputState> {
+        if let Some(input) = self.plugin_setting_input.as_mut() {
+            return Some(&mut input.state);
+        }
         let settings_input = self.active_input.as_mut().and_then(|input| {
             Self::uses_text_input_for_field(input.field).then_some(&mut input.state)
         });

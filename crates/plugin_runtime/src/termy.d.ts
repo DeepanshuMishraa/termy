@@ -55,12 +55,82 @@ type TermyPluginToasts = {
   error(message: string): void;
 };
 
-type TermyPluginContext = {
+type TermyPluginJsonValue =
+  | null
+  | boolean
+  | number
+  | string
+  | TermyPluginJsonValue[]
+  | { [key: string]: TermyPluginJsonValue };
+
+type TermyPluginStorage = {
+  get<T = TermyPluginJsonValue>(key: string): Promise<T | undefined>;
+  set(key: string, value: TermyPluginJsonValue): Promise<void>;
+  delete(key: string): Promise<boolean>;
+  clear(): Promise<void>;
+};
+
+type TermyPluginToggleSetting = {
+  type: "toggle";
+  title: string;
+  description?: string;
+  defaultValue?: boolean;
+};
+
+type TermyPluginTextSetting = {
+  type: "text";
+  title: string;
+  description?: string;
+  placeholder?: string;
+  defaultValue?: string;
+  maxLength?: number;
+};
+
+type TermyPluginSelectSetting = {
+  type: "select";
+  title: string;
+  description?: string;
+  defaultValue?: string;
+  options: Array<{ value: string; label: string }>;
+};
+
+type TermyPluginSecretSetting = {
+  type: "secret";
+  title: string;
+  description?: string;
+  placeholder?: string;
+  maxLength?: number;
+};
+
+type TermyPluginSetting =
+  | TermyPluginToggleSetting
+  | TermyPluginTextSetting
+  | TermyPluginSelectSetting
+  | TermyPluginSecretSetting;
+
+type TermyPluginSettingValue<T extends TermyPluginSetting> =
+  T extends TermyPluginToggleSetting ? boolean : string;
+
+type TermyPluginSettings<
+  T extends Record<string, TermyPluginSetting> = Record<string, TermyPluginSetting>,
+> = {
+  get<K extends keyof T & string>(key: K): TermyPluginSettingValue<T[K]> | undefined;
+};
+
+type TermyPluginContext<
+  T extends Record<string, TermyPluginSetting> = Record<string, TermyPluginSetting>,
+> = {
   workingDirectory?: string;
   activeCommand?: string;
   platform: "macos" | "linux" | "windows";
   appVersion: string;
+  settings: TermyPluginSettings<T>;
   toasts: TermyPluginToasts;
+  storage: TermyPluginStorage;
+  paths: {
+    dataDirectory: string;
+    cacheDirectory: string;
+  };
 };
 
 type TermyPluginAction =
@@ -80,7 +150,9 @@ type TermyPluginResult =
   | TermyPluginAction[]
   | { actions: TermyPluginAction[] };
 
-type TermyPluginCommand = {
+type TermyPluginCommand<
+  T extends Record<string, TermyPluginSetting> = Record<string, TermyPluginSetting>,
+> = {
   id: string;
   title: string;
   keywords?: string[];
@@ -92,12 +164,17 @@ type TermyPluginCommand = {
   timeoutMs?: number;
   run(request: {
     inputs: Record<string, TermyPluginInputValue>;
-    context: TermyPluginContext;
+    context: TermyPluginContext<T>;
   }): TermyPluginResult | Promise<TermyPluginResult>;
 };
 
-type TermyPlugin = {
-  commands: TermyPluginCommand[];
+type TermyPlugin<
+  T extends Record<string, TermyPluginSetting> = Record<string, TermyPluginSetting>,
+> = {
+  settings?: T;
+  commands: TermyPluginCommand<T>[];
 };
 
-declare function definePlugin<T extends TermyPlugin>(plugin: T): T;
+declare function definePlugin<const T extends Record<string, TermyPluginSetting>>(
+  plugin: TermyPlugin<T>,
+): TermyPlugin<T>;

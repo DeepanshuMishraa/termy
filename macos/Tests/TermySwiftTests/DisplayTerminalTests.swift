@@ -22,6 +22,7 @@ final class DisplayTerminalTests: XCTestCase {
         let terminal = try LibTermyTerminal(displayCols: 20, rows: 4, loadUserConfig: false)
         let viewModel = TerminalViewModel(displayTerminal: terminal)
         viewModel.start()
+        XCTAssertTrue(viewModel.isReady)
 
         try terminal.feedOutput(Array("tmux pane".utf8))
         viewModel.refreshExternalOutput()
@@ -29,6 +30,7 @@ final class DisplayTerminalTests: XCTestCase {
         XCTAssertTrue(viewModel.hasVisibleContent)
         XCTAssertTrue(viewModel.visibleTextSnapshot().contains("tmux pane"))
         viewModel.stop()
+        XCTAssertFalse(viewModel.isReady)
     }
 
     /// FFI cells carry no position; the binding derives it from row-major

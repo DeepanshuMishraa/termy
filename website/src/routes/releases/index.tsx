@@ -5,7 +5,6 @@ import {
   marketingFontLinks,
   marketingMono,
   marketingPanelClass,
-  marketingSerif,
 } from '@/components/marketing-page-shell';
 import {
   fetchGitHubReleases,
@@ -42,7 +41,7 @@ function ReleasesPage() {
     <MarketingPageShell>
       <main className="mx-auto flex w-full max-w-4xl flex-col px-6 pt-20 pb-20 md:pt-28">
         <p className="text-sm text-[#7aa2f7]" style={{ fontFamily: marketingMono }}>$ termy releases</p>
-        <h1 className="mt-3 text-6xl leading-none tracking-tight text-[#e8eeff] md:text-7xl" style={{ fontFamily: marketingSerif }}>
+        <h1 className="mt-3 text-4xl font-medium leading-none tracking-tight text-[#e8eeff] md:text-5xl" style={{ fontFamily: marketingMono }}>
           Releases
         </h1>
 

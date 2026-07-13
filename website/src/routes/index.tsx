@@ -25,7 +25,7 @@ export const Route = createFileRoute('/')({
       },
       {
         rel: 'stylesheet',
-        href: 'https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500;700&display=swap',
+        href: 'https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap',
       },
     ],
   }),
@@ -33,7 +33,6 @@ export const Route = createFileRoute('/')({
 });
 
 const MONO = "'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace";
-const SERIF = "'Instrument Serif', Georgia, 'Times New Roman', serif";
 
 /* Deterministic PRNG so SSR and client render the identical sky. */
 function mulberry32(seed: number) {
@@ -302,8 +301,8 @@ function Hero() {
       </p>
 
       <h1
-        className="mt-4 text-6xl leading-[1.02] tracking-tight text-balance sm:text-7xl md:text-[92px]"
-        style={{ fontFamily: SERIF }}
+        className="mt-4 text-4xl font-medium leading-[1.1] tracking-tight text-balance sm:text-5xl md:text-6xl"
+        style={{ fontFamily: MONO }}
       >
         <span className="block text-[#e8eeff]">The terminal,</span>
         <span

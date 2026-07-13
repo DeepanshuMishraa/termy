@@ -10,6 +10,7 @@ final class TerminalViewModel: ObservableObject {
     @Published private(set) var title = "Shell"
     @Published private(set) var progress = TerminalProgress.clear
     @Published private(set) var isExited = false
+    @Published private(set) var isReady = false
     @Published private(set) var hasVisibleContent = false
     @Published private(set) var frameMetadata = TerminalFrameMetadata.empty
     @Published private(set) var canCopySelection = false
@@ -395,6 +396,7 @@ final class TerminalViewModel: ObservableObject {
         observers.removeAll()
         terminal = nil
         didStart = false
+        isReady = false
         isExited = true
         progress = .clear
         startupRefreshUntil = nil
@@ -871,6 +873,9 @@ final class TerminalViewModel: ObservableObject {
             }
 
             publishFrameState()
+            if !isReady {
+                isReady = true
+            }
             // Once the scrollback fills, eviction would drift recorded marks, so
             // stop tracking and drop them rather than show stale positions.
             if commandMarkTrackingActive,

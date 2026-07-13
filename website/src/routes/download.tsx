@@ -8,7 +8,6 @@ import {
   marketingLinkClass,
   marketingMono,
   marketingPanelClass,
-  marketingSerif,
 } from '@/components/marketing-page-shell';
 import {
   assetArch,
@@ -68,7 +67,7 @@ function DownloadPage() {
         <p className="text-sm text-[#7aa2f7]" style={{ fontFamily: marketingMono }}>
           $ termy install
         </p>
-        <h1 className="mt-3 text-6xl leading-none tracking-tight text-[#e8eeff] md:text-7xl" style={{ fontFamily: marketingSerif }}>
+        <h1 className="mt-3 text-4xl font-medium leading-none tracking-tight text-[#e8eeff] md:text-5xl" style={{ fontFamily: marketingMono }}>
           Download
         </h1>
         {release && (
@@ -110,7 +109,7 @@ function DownloadPage() {
 
           {groups.map((group) => (
             <section key={group.id} className="py-7">
-              <h2 className="text-lg text-[#e8eeff]" style={{ fontFamily: marketingSerif }}>{group.title}</h2>
+              <h2 className="text-base font-medium text-[#e8eeff]" style={{ fontFamily: marketingMono }}>{group.title}</h2>
               <ul className="mt-3 divide-y divide-white/[0.06]">
                 {group.assets.map((asset) => {
                   const arch = assetArch(asset.name);
@@ -189,8 +188,8 @@ function DownloadPage() {
                 </p>
                 <h2
                   id="macos-download-warning-title"
-                  className="mt-1 text-3xl leading-tight text-[#e8eeff]"
-                  style={{ fontFamily: marketingSerif }}
+                  className="mt-1 text-2xl font-medium leading-tight text-[#e8eeff]"
+                  style={{ fontFamily: marketingMono }}
                 >
                   Termy is not signed yet.
                 </h2>

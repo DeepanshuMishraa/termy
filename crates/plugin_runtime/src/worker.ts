@@ -1,6 +1,13 @@
 // One isolated Bun Worker per loaded Termy plugin.
 import { createHash } from "node:crypto";
-import { mkdir, readFile, readdir, rename, rm } from "node:fs/promises";
+import {
+  mkdir,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { isBuiltin } from "node:module";
 import {
   dirname,
@@ -37,7 +44,29 @@ type PluginToasts = {
   warning: (message: string) => void;
   error: (message: string) => void;
 };
-type PluginContext = Record<string, unknown> & { toasts: PluginToasts };
+type PluginJsonValue =
+  | null
+  | boolean
+  | number
+  | string
+  | PluginJsonValue[]
+  | { [key: string]: PluginJsonValue };
+type PluginStorage = {
+  get: <T = PluginJsonValue>(key: string) => Promise<T | undefined>;
+  set: (key: string, value: PluginJsonValue) => Promise<void>;
+  delete: (key: string) => Promise<boolean>;
+  clear: () => Promise<void>;
+};
+type PluginPaths = {
+  dataDirectory: string;
+  cacheDirectory: string;
+};
+type PluginSettings = {
+  get: <T = string | boolean>(key: string) => T | undefined;
+};
+type PluginServices = { storage: PluginStorage; paths: PluginPaths };
+type PluginContext = Record<string, unknown> &
+  PluginServices & { settings: PluginSettings; toasts: PluginToasts };
 type PluginCommand = {
   id: string;
   title: string;
@@ -53,8 +82,18 @@ type PluginCommand = {
     context: PluginContext;
   }) => unknown;
 };
+type PluginSettingDefinition = {
+  type: "toggle" | "text" | "select" | "secret";
+  title: string;
+  description?: string;
+  placeholder?: string;
+  defaultValue?: string | boolean;
+  maxLength?: number;
+  options?: Array<{ value: string; label: string }>;
+};
 type PluginDefinition = {
   commands: PluginCommand[];
+  settings?: Record<string, PluginSettingDefinition>;
 };
 
 declare global {
@@ -63,8 +102,11 @@ declare global {
 
 const MAX_PLUGIN_TREE_BYTES = 16 * 1024 * 1024;
 const MAX_PLUGIN_TREE_FILES = 4_096;
+const MAX_STORAGE_BYTES = 1024 * 1024;
+const MAX_STORAGE_ENTRIES = 512;
 globalThis.definePlugin = (plugin) => plugin;
 let plugin: PluginDefinition | undefined;
+let pluginServices: PluginServices | undefined;
 let commandHandlers = new Map<string, PluginCommand["run"]>();
 let queue = Promise.resolve();
 
@@ -464,7 +506,7 @@ function normalizeInput(input: unknown, commandId: string, seen: Set<string>): u
 function normalizePlugin(
   candidate: unknown,
   source: PreparedPluginSource,
-): { commands: Record<string, unknown>[] } {
+): { commands: Record<string, unknown>[]; settings: Record<string, unknown>[] } {
   if (!candidate || typeof candidate !== "object") {
     throw new Error("Default export must be definePlugin({...})");
   }
@@ -533,8 +575,117 @@ function normalizePlugin(
       timeoutMs,
     };
   });
+  const settings = normalizeSettings(definition.settings);
   plugin = definition;
-  return { commands };
+  return { commands, settings };
+}
+
+function normalizeSettings(value: unknown): Record<string, unknown>[] {
+  if (value === undefined) return [];
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Plugin settings must be an object");
+  }
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length > 64) throw new Error("Plugin settings must have at most 64 entries");
+  return entries.map(([id, candidate]) => {
+    assertId(id, "Setting ID");
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+      throw new Error(`Setting ${id} must be an object`);
+    }
+    const setting = candidate as PluginSettingDefinition;
+    assertText(setting.title, `Setting title for ${id}`, 200);
+    const description = optionalText(
+      setting.description,
+      `Setting description for ${id}`,
+      500,
+    );
+    if (setting.type === "toggle") {
+      if (setting.defaultValue !== undefined && typeof setting.defaultValue !== "boolean") {
+        throw new Error(`Setting ${id} defaultValue must be a boolean`);
+      }
+      return {
+        id,
+        type: "toggle",
+        title: setting.title,
+        description,
+        defaultValue: setting.defaultValue === true,
+      };
+    }
+    if (setting.type === "text" || setting.type === "secret") {
+      const maxLength = setting.maxLength ?? 4_096;
+      if (!Number.isInteger(maxLength) || maxLength < 1 || maxLength > 4_096) {
+        throw new Error(`Setting ${id} maxLength must be between 1 and 4096`);
+      }
+      const placeholder = optionalText(
+        setting.placeholder,
+        `Setting placeholder for ${id}`,
+        300,
+      );
+      if (setting.type === "secret") {
+        if (setting.defaultValue !== undefined) {
+          throw new Error(`Secret setting ${id} cannot define defaultValue`);
+        }
+        return {
+          id,
+          type: "secret",
+          title: setting.title,
+          description,
+          placeholder,
+          maxLength,
+        };
+      }
+      if (setting.defaultValue !== undefined && typeof setting.defaultValue !== "string") {
+        throw new Error(`Setting ${id} defaultValue must be text`);
+      }
+      const defaultValue = String(setting.defaultValue ?? "");
+      if ([...defaultValue].length > maxLength) {
+        throw new Error(`Setting ${id} defaultValue exceeds maxLength`);
+      }
+      return {
+        id,
+        type: "text",
+        title: setting.title,
+        description,
+        placeholder,
+        defaultValue,
+        maxLength,
+      };
+    }
+    if (setting.type === "select") {
+      if (!Array.isArray(setting.options) || setting.options.length < 1 || setting.options.length > 128) {
+        throw new Error(`Setting ${id} must have between 1 and 128 options`);
+      }
+      const seen = new Set<string>();
+      const options = setting.options.map((option) => {
+        if (!option || typeof option !== "object") {
+          throw new Error(`Setting ${id} has an invalid option`);
+        }
+        assertText(option.value, `Setting option value for ${id}`, 1_024);
+        assertText(option.label, `Setting option label for ${id}`, 200);
+        if (seen.has(option.value)) {
+          throw new Error(`Setting ${id} has duplicate option ${option.value}`);
+        }
+        seen.add(option.value);
+        return { value: option.value, label: option.label };
+      });
+      if (setting.defaultValue !== undefined && typeof setting.defaultValue !== "string") {
+        throw new Error(`Setting ${id} defaultValue must be text`);
+      }
+      const defaultValue = String(setting.defaultValue ?? options[0].value);
+      if (!seen.has(defaultValue)) {
+        throw new Error(`Setting ${id} defaultValue must match an option`);
+      }
+      return {
+        id,
+        type: "select",
+        title: setting.title,
+        description,
+        defaultValue,
+        options,
+      };
+    }
+    throw new Error(`Setting ${id} has unsupported type ${String(setting.type)}`);
+  });
 }
 
 function normalizeActions(value: unknown): unknown[] {
@@ -550,13 +701,171 @@ function normalizeActions(value: unknown): unknown[] {
   return [value];
 }
 
+function assertStorageKey(value: unknown): asserts value is string {
+  if (
+    typeof value !== "string" ||
+    value.trim() === "" ||
+    value.length > 200 ||
+    value.includes("\0")
+  ) {
+    throw new Error("Plugin storage key must be a non-empty string up to 200 characters");
+  }
+}
+
+function emptyStorage(): Record<string, PluginJsonValue> {
+  return Object.create(null) as Record<string, PluginJsonValue>;
+}
+
+function createPluginStorage(storageDirectory: string): PluginStorage {
+  const storagePath = join(storageDirectory, "storage.json");
+  let values: Record<string, PluginJsonValue> | undefined;
+  let operations = Promise.resolve();
+
+  const enqueue = <T>(operation: () => Promise<T>): Promise<T> => {
+    const result = operations.then(operation, operation);
+    operations = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  };
+  const load = async (): Promise<Record<string, PluginJsonValue>> => {
+    if (values) return values;
+    let contents: Uint8Array;
+    try {
+      contents = new Uint8Array(await readFile(storagePath));
+    } catch (error) {
+      if ((error as { code?: string }).code === "ENOENT") {
+        values = emptyStorage();
+        return values;
+      }
+      throw error;
+    }
+    if (contents.byteLength > MAX_STORAGE_BYTES) {
+      throw new Error("Plugin storage exceeds the 1 MiB limit");
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(Buffer.from(contents).toString("utf8"));
+    } catch {
+      throw new Error("Plugin storage contains invalid JSON");
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("Plugin storage must contain a JSON object");
+    }
+    const entries = Object.entries(parsed as Record<string, PluginJsonValue>);
+    if (entries.length > MAX_STORAGE_ENTRIES) {
+      throw new Error(`Plugin storage exceeds ${MAX_STORAGE_ENTRIES} entries`);
+    }
+    values = emptyStorage();
+    for (const [key, value] of entries) {
+      assertStorageKey(key);
+      values[key] = value;
+    }
+    return values;
+  };
+  const persist = async (next: Record<string, PluginJsonValue>): Promise<void> => {
+    const contents = JSON.stringify(next);
+    if (Buffer.byteLength(contents) > MAX_STORAGE_BYTES) {
+      throw new Error("Plugin storage exceeds the 1 MiB limit");
+    }
+    await mkdir(storageDirectory, { recursive: true });
+    const temporaryPath = join(
+      storageDirectory,
+      `.storage-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.tmp`,
+    );
+    try {
+      await writeFile(temporaryPath, contents, { flag: "wx" });
+      await rename(temporaryPath, storagePath);
+    } finally {
+      await rm(temporaryPath, { force: true });
+    }
+  };
+  const cloneValue = (value: PluginJsonValue): PluginJsonValue =>
+    structuredClone(value);
+
+  return Object.freeze({
+    get: <T = PluginJsonValue>(key: string): Promise<T | undefined> =>
+      enqueue(async () => {
+        assertStorageKey(key);
+        const current = await load();
+        if (!Object.hasOwn(current, key)) return undefined;
+        return cloneValue(current[key]) as unknown as T;
+      }),
+    set: (key: string, value: PluginJsonValue): Promise<void> =>
+      enqueue(async () => {
+        assertStorageKey(key);
+        let normalized: PluginJsonValue;
+        try {
+          const serialized = JSON.stringify(value);
+          if (serialized === undefined) throw new Error();
+          normalized = JSON.parse(serialized) as PluginJsonValue;
+        } catch {
+          throw new Error("Plugin storage values must be JSON-serializable");
+        }
+        const current = await load();
+        const next = Object.assign(emptyStorage(), current);
+        next[key] = normalized;
+        if (Object.keys(next).length > MAX_STORAGE_ENTRIES) {
+          throw new Error(`Plugin storage exceeds ${MAX_STORAGE_ENTRIES} entries`);
+        }
+        await persist(next);
+        values = next;
+      }),
+    delete: (key: string): Promise<boolean> =>
+      enqueue(async () => {
+        assertStorageKey(key);
+        const current = await load();
+        if (!Object.hasOwn(current, key)) return false;
+        const next = Object.assign(emptyStorage(), current);
+        delete next[key];
+        await persist(next);
+        values = next;
+        return true;
+      }),
+    clear: (): Promise<void> =>
+      enqueue(async () => {
+        await rm(storagePath, { force: true });
+        values = emptyStorage();
+      }),
+  });
+}
+
+async function createPluginServices(
+  source: PluginSource,
+  dataRoot: string,
+  cacheRoot: string,
+): Promise<PluginServices> {
+  if (!isAbsolute(dataRoot) || !isAbsolute(cacheRoot)) {
+    throw new Error("Plugin storage paths must be absolute");
+  }
+  const storageDirectory = join(dataRoot, source.id);
+  const dataDirectory = join(storageDirectory, "files");
+  const cacheDirectory = join(cacheRoot, source.id);
+  await Promise.all([
+    mkdir(dataDirectory, { recursive: true }),
+    mkdir(cacheDirectory, { recursive: true }),
+  ]);
+  return Object.freeze({
+    storage: createPluginStorage(storageDirectory),
+    paths: Object.freeze({ dataDirectory, cacheDirectory }),
+  });
+}
+
 function createPluginContext(
   value: unknown,
   emittedActions: unknown[],
+  services: PluginServices,
 ): PluginContext {
   const context =
     typeof value === "object" && value !== null && !Array.isArray(value)
       ? (value as Record<string, unknown>)
+      : {};
+  const settingValues =
+    context.settings &&
+    typeof context.settings === "object" &&
+    !Array.isArray(context.settings)
+      ? (context.settings as Record<string, string | boolean>)
       : {};
   const toast = (level: PluginToastLevel, message: unknown) => {
     assertText(message, "Toast message", 4_096);
@@ -565,6 +874,14 @@ function createPluginContext(
 
   return {
     ...context,
+    ...services,
+    settings: Object.freeze({
+      get: <T = string | boolean>(key: string): T | undefined => {
+        assertId(key, "Setting ID");
+        if (!Object.hasOwn(settingValues, key)) return undefined;
+        return structuredClone(settingValues[key]) as T;
+      },
+    }),
     toasts: Object.freeze({
       info: (message: string) => toast("info", message),
       success: (message: string) => toast("success", message),
@@ -576,9 +893,15 @@ function createPluginContext(
 
 async function handle(message: Record<string, unknown>): Promise<unknown> {
   if (message.type === "load") {
+    const pluginSource = message.source as PluginSource;
     const source = await preparePlugin(
-      message.source as PluginSource,
+      pluginSource,
       String(message.bundleCacheRoot || ""),
+    );
+    pluginServices = await createPluginServices(
+      pluginSource,
+      String(message.pluginDataRoot || ""),
+      String(message.pluginCacheRoot || ""),
     );
     const moduleUrl = `${pathToFileURL(source.path).href}?termy=${source.cacheKey}`;
     let loaded: Record<string, unknown>;
@@ -592,13 +915,14 @@ async function handle(message: Record<string, unknown>): Promise<unknown> {
   }
   if (message.type === "invoke") {
     if (!plugin) throw new Error("Plugin is not loaded");
+    if (!pluginServices) throw new Error("Plugin services are unavailable");
     const commandId = String(message.commandId || "");
     const run = commandHandlers.get(commandId);
     if (!run) throw new Error(`Command ${commandId} is not registered`);
     const emittedActions: unknown[] = [];
     const value = await run({
       inputs: (message.inputs || {}) as Record<string, unknown>,
-      context: createPluginContext(message.context, emittedActions),
+      context: createPluginContext(message.context, emittedActions, pluginServices),
     });
     return { actions: [...emittedActions, ...normalizeActions(value)] };
   }

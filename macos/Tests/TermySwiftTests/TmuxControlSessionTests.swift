@@ -2,6 +2,10 @@ import XCTest
 @testable import TermySwift
 
 final class TmuxControlSessionTests: XCTestCase {
+    private enum ExpectedFailure: Error {
+        case displayTerminalCreation
+    }
+
     func testPaneIndexParsing() {
         XCTAssertEqual(TmuxControlSession.paneIndex("%3"), 3)
         XCTAssertEqual(TmuxControlSession.paneIndex("7"), 7)
@@ -15,6 +19,41 @@ final class TmuxControlSessionTests: XCTestCase {
         XCTAssertEqual(geometry[1]?.cols, 40)
         XCTAssertEqual(geometry[1]?.rows, 24)
         XCTAssertEqual(geometry[2]?.cols, 39)
+    }
+
+    func testPaneReconciliationPropagatesDisplayTerminalCreationFailure() throws {
+        let node = try XCTUnwrap(TmuxLayout.parse("a1b2,80x24,0,0,1"))
+
+        XCTAssertThrowsError(try TmuxControlSession.reconciledPanes(
+            current: [:],
+            to: node,
+            makeDisplayTerminal: { _, _ in
+                throw ExpectedFailure.displayTerminalCreation
+            }
+        )) { error in
+            XCTAssertTrue(error is ExpectedFailure)
+        }
+    }
+
+    func testFailedDisplayTerminalCreationDoesNotPublishLayout() throws {
+        let socket = "termy-failed-pane-\(ProcessInfo.processInfo.processIdentifier)-\(UUID().uuidString.prefix(8))"
+        let session: TmuxControlSession
+        do {
+            session = try TmuxControlSession(
+                socket: socket,
+                session: "failed-pane",
+                displayTerminalFactory: { _, _ in
+                    throw ExpectedFailure.displayTerminalCreation
+                }
+            )
+        } catch {
+            throw XCTSkip("tmux unavailable: \(error)")
+        }
+        defer { killTmuxServer(socket: socket) }
+
+        XCTAssertThrowsError(try session.reconcileLayout())
+        XCTAssertNil(session.layout)
+        XCTAssertTrue(session.panes.isEmpty)
     }
 
     /// End-to-end against real tmux: a split is reconciled into two display

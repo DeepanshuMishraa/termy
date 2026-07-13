@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fs,
     io::{BufRead, BufReader, Read, Write},
     net::{Shutdown, TcpListener, TcpStream},
@@ -30,6 +30,9 @@ const MAX_INVOKE_QUEUE_WAIT_MS: u64 = 30_000;
 const MAX_PLUGIN_COMMANDS: usize = 512;
 const MAX_INPUTS_PER_COMMAND: usize = 16;
 const MAX_SELECT_OPTIONS: usize = 128;
+const MAX_PLUGIN_SETTINGS: usize = 64;
+const MAX_SETTING_VALUE_LENGTH: usize = 4_096;
+const MAX_SETTINGS_FILE_BYTES: u64 = 64 * 1024;
 const MAX_ACTIONS: usize = 32;
 pub const MAX_INSTALLED_PLUGINS: usize = 32;
 pub const MAX_PLUGIN_SOURCE_BYTES: u64 = 16 * 1024 * 1024;
@@ -37,6 +40,9 @@ pub const MAX_PLUGIN_SOURCE_FILES: usize = 4_096;
 const BUNDLE_CACHE_FORMAT: &[u8] = b"termy-plugin-bundle-v1\0";
 const DISABLED_MARKER: &str = ".termy-disabled";
 const SOURCE_METADATA_FILE: &str = ".termy-source.json";
+const SETTINGS_FILE: &str = "settings.json";
+#[cfg(not(test))]
+const KEYRING_SERVICE: &str = "com.lassevestergaard.termy.plugin";
 
 const HOST_SOURCE: &str = include_str!("host.ts");
 const WORKER_SOURCE: &str = include_str!("worker.ts");
@@ -50,6 +56,7 @@ pub struct PluginRuntime {
 struct PluginRuntimeInner {
     plugins_dir: Option<PathBuf>,
     refresh: Mutex<()>,
+    settings: Mutex<()>,
     catalog: RwLock<PluginCatalog>,
     host: Mutex<PluginHostState>,
 }
@@ -58,6 +65,7 @@ struct PluginRuntimeInner {
 struct PluginCatalog {
     fingerprint: Option<[u8; 32]>,
     commands: Vec<PluginCommand>,
+    settings: BTreeMap<String, Vec<PluginSetting>>,
     revisions: BTreeMap<String, String>,
 }
 
@@ -99,6 +107,118 @@ pub struct PluginSourceMetadata {
 pub struct PluginInventory {
     pub plugins: Vec<InstalledPlugin>,
     pub errors: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum PluginSetting {
+    Toggle {
+        id: String,
+        title: String,
+        #[serde(default)]
+        description: Option<String>,
+        #[serde(default, rename = "defaultValue")]
+        default_value: bool,
+    },
+    Text {
+        id: String,
+        title: String,
+        #[serde(default)]
+        description: Option<String>,
+        #[serde(default)]
+        placeholder: Option<String>,
+        #[serde(default, rename = "defaultValue")]
+        default_value: String,
+        #[serde(default = "default_setting_max_length", rename = "maxLength")]
+        max_length: usize,
+    },
+    Select {
+        id: String,
+        title: String,
+        #[serde(default)]
+        description: Option<String>,
+        #[serde(default, rename = "defaultValue")]
+        default_value: String,
+        options: Vec<PluginSettingOption>,
+    },
+    Secret {
+        id: String,
+        title: String,
+        #[serde(default)]
+        description: Option<String>,
+        #[serde(default)]
+        placeholder: Option<String>,
+        #[serde(default = "default_setting_max_length", rename = "maxLength")]
+        max_length: usize,
+    },
+}
+
+impl PluginSetting {
+    pub fn id(&self) -> &str {
+        match self {
+            Self::Toggle { id, .. }
+            | Self::Text { id, .. }
+            | Self::Select { id, .. }
+            | Self::Secret { id, .. } => id,
+        }
+    }
+
+    pub fn title(&self) -> &str {
+        match self {
+            Self::Toggle { title, .. }
+            | Self::Text { title, .. }
+            | Self::Select { title, .. }
+            | Self::Secret { title, .. } => title,
+        }
+    }
+
+    pub fn description(&self) -> Option<&str> {
+        match self {
+            Self::Toggle { description, .. }
+            | Self::Text { description, .. }
+            | Self::Select { description, .. }
+            | Self::Secret { description, .. } => description.as_deref(),
+        }
+    }
+
+    fn default_value(&self) -> Option<Value> {
+        match self {
+            Self::Toggle { default_value, .. } => Some(Value::Bool(*default_value)),
+            Self::Text { default_value, .. } | Self::Select { default_value, .. } => {
+                Some(Value::String(default_value.clone()))
+            }
+            Self::Secret { .. } => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginSettingOption {
+    pub value: String,
+    pub label: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PluginSettingState {
+    pub definition: PluginSetting,
+    pub value: Option<Value>,
+    pub configured: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PluginSettingsSnapshot {
+    pub plugins: BTreeMap<String, Vec<PluginSettingState>>,
+    pub errors: Vec<String>,
+}
+
+#[derive(Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PluginSettingsFile {
+    #[serde(default)]
+    values: BTreeMap<String, Value>,
+    #[serde(default)]
+    secret_keys: BTreeSet<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -219,6 +339,8 @@ pub struct PluginContext {
     pub active_command: Option<String>,
     pub platform: String,
     pub app_version: String,
+    #[serde(default)]
+    pub settings: BTreeMap<String, Value>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -324,6 +446,7 @@ struct HostLoadResult {
 struct HostLoadedPlugin {
     plugin_id: String,
     commands: Value,
+    settings: Value,
 }
 
 #[derive(Deserialize)]
@@ -341,6 +464,7 @@ impl PluginRuntime {
             inner: Arc::new(PluginRuntimeInner {
                 plugins_dir,
                 refresh: Mutex::new(()),
+                settings: Mutex::new(()),
                 catalog: RwLock::new(PluginCatalog::default()),
                 host: Mutex::new(PluginHostState::default()),
             }),
@@ -387,27 +511,7 @@ impl PluginRuntime {
             .plugins_dir
             .as_deref()
             .ok_or_else(|| "Termy config path is unavailable".to_string())?;
-        let source_directory_metadata = fs::symlink_metadata(source).map_err(|error| {
-            format!(
-                "Failed to inspect plugin source {}: {error}",
-                source.display()
-            )
-        })?;
-        if source_directory_metadata.file_type().is_symlink() || !source_directory_metadata.is_dir()
-        {
-            return Err("Plugin source must be a real directory, not a symlink".to_string());
-        }
-        let manifest_path = source.join("plugin.json");
-        let manifest_metadata = fs::symlink_metadata(&manifest_path)
-            .map_err(|error| format!("Plugin source is missing plugin.json: {error}"))?;
-        if manifest_metadata.file_type().is_symlink() || !manifest_metadata.is_file() {
-            return Err("plugin.json must be a regular file".to_string());
-        }
-        let manifest: PluginManifestFile = serde_json::from_slice(
-            &fs::read(&manifest_path)
-                .map_err(|error| format!("Failed to read plugin.json: {error}"))?,
-        )
-        .map_err(|error| format!("Invalid plugin.json: {error}"))?;
+        let manifest = source_plugin_manifest(source)?;
         let (manifest, files) = inspect_plugin_root(source, &manifest.id)?;
 
         fs::create_dir_all(plugins_dir).map_err(|error| {
@@ -471,6 +575,63 @@ impl PluginRuntime {
         source_metadata: PluginSourceMetadata,
     ) -> Result<InstalledPlugin, String> {
         validate_source_metadata(&source_metadata)?;
+        self.replace_plugin_from_directory(id, source, Some(source_metadata))
+    }
+
+    pub fn sync_from_directory(&self, source: &Path) -> Result<InstalledPlugin, String> {
+        let manifest = source_plugin_manifest(source)?;
+        let plugins_dir = self
+            .inner
+            .plugins_dir
+            .as_deref()
+            .ok_or_else(|| "Termy config path is unavailable".to_string())?;
+        let destination = plugins_dir.join(&manifest.id);
+        match fs::symlink_metadata(&destination) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return self.install_from_directory(source);
+            }
+            Err(error) => {
+                return Err(format!(
+                    "Failed to inspect plugin destination {}: {error}",
+                    destination.display()
+                ));
+            }
+        }
+        let destination = self.plugin_root_for_management(&manifest.id)?;
+        let source_path = fs::canonicalize(source).map_err(|error| {
+            format!(
+                "Failed to resolve plugin source {}: {error}",
+                source.display()
+            )
+        })?;
+        let destination_path = fs::canonicalize(&destination).map_err(|error| {
+            format!(
+                "Failed to resolve plugin destination {}: {error}",
+                destination.display()
+            )
+        })?;
+        if source_path == destination_path {
+            return Err(
+                "Plugin development source must be outside Termy's managed plugins directory"
+                    .to_string(),
+            );
+        }
+        if read_source_metadata(&destination)?.is_some() {
+            return Err(format!(
+                "Plugin `{}` is tracked from GitHub; uninstall it before starting local development",
+                manifest.id
+            ));
+        }
+        self.replace_plugin_from_directory(&manifest.id, source, None)
+    }
+
+    fn replace_plugin_from_directory(
+        &self,
+        id: &str,
+        source: &Path,
+        source_metadata: Option<PluginSourceMetadata>,
+    ) -> Result<InstalledPlugin, String> {
         let destination = self.plugin_root_for_management(id)?;
         let enabled = plugin_is_enabled(&destination, id)?;
         let (manifest, files) = inspect_plugin_root(source, id)?;
@@ -484,7 +645,7 @@ impl PluginRuntime {
         let backup = plugins_dir.join(format!(".backup-{id}-{suffix}"));
 
         if let Err(error) =
-            write_plugin_installation(&temporary, &files, Some(&source_metadata), enabled)
+            write_plugin_installation(&temporary, &files, source_metadata.as_ref(), enabled)
         {
             let _ = fs::remove_dir_all(&temporary);
             return Err(error);
@@ -510,7 +671,7 @@ impl PluginRuntime {
             manifest,
             destination,
             enabled,
-            Some(source_metadata),
+            source_metadata,
             None,
         ))
     }
@@ -552,9 +713,21 @@ impl PluginRuntime {
 
     pub fn uninstall_plugin(&self, id: &str) -> Result<(), String> {
         let root = self.plugin_root_for_management(id)?;
+        {
+            let _settings = self
+                .inner
+                .settings
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let stored = self.read_plugin_settings_file(id)?;
+            for key in stored.secret_keys {
+                delete_plugin_secret(id, &key)?;
+            }
+        }
         fs::remove_dir_all(&root)
             .map_err(|error| format!("Failed to uninstall plugin `{id}`: {error}"))?;
         self.clear_plugin_bundle_cache(id);
+        self.clear_plugin_storage(id);
         self.invalidate_after_management();
         Ok(())
     }
@@ -565,6 +738,14 @@ impl PluginRuntime {
         };
         let cache = plugins_dir.join(".termy-cache/bundles").join(id);
         let _ = fs::remove_dir_all(cache);
+    }
+
+    fn clear_plugin_storage(&self, id: &str) {
+        let Some(plugins_dir) = self.inner.plugins_dir.as_deref() else {
+            return;
+        };
+        let _ = fs::remove_dir_all(plugins_dir.join(".termy-data").join(id));
+        let _ = fs::remove_dir_all(plugins_dir.join(".termy-cache/data").join(id));
     }
 
     fn plugin_root_for_management(&self, id: &str) -> Result<PathBuf, String> {
@@ -606,6 +787,259 @@ impl PluginRuntime {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .commands
             .clone()
+    }
+
+    pub fn plugin_settings_snapshot(&self) -> PluginSettingsSnapshot {
+        let definitions = self
+            .inner
+            .catalog
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .settings
+            .clone();
+        let _settings = self
+            .inner
+            .settings
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut snapshot = PluginSettingsSnapshot::default();
+        for (plugin_id, settings) in definitions {
+            let stored = match self.read_plugin_settings_file(&plugin_id) {
+                Ok(stored) => stored,
+                Err(error) => {
+                    snapshot.errors.push(error);
+                    PluginSettingsFile::default()
+                }
+            };
+            let mut states = Vec::with_capacity(settings.len());
+            for definition in settings {
+                let (value, configured) = if let PluginSetting::Secret { id, .. } = &definition {
+                    if !stored.secret_keys.contains(id) {
+                        (None, false)
+                    } else {
+                        match read_plugin_secret(&plugin_id, id) {
+                            Ok(value) => (None, value.is_some()),
+                            Err(error) => {
+                                snapshot.errors.push(error);
+                                (None, false)
+                            }
+                        }
+                    }
+                } else {
+                    let value = stored
+                        .values
+                        .get(definition.id())
+                        .filter(|value| validate_setting_value(&definition, value).is_ok())
+                        .cloned()
+                        .or_else(|| definition.default_value());
+                    let configured = stored.values.contains_key(definition.id());
+                    (value, configured)
+                };
+                states.push(PluginSettingState {
+                    definition,
+                    value,
+                    configured,
+                });
+            }
+            snapshot.plugins.insert(plugin_id, states);
+        }
+        snapshot
+    }
+
+    pub fn set_plugin_setting(
+        &self,
+        plugin_id: &str,
+        key: &str,
+        value: Value,
+    ) -> Result<(), String> {
+        let definition = self.plugin_setting_definition(plugin_id, key)?;
+        validate_setting_value(&definition, &value)?;
+        let _settings = self
+            .inner
+            .settings
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut stored = self.read_plugin_settings_file(plugin_id)?;
+        match &definition {
+            PluginSetting::Secret { .. } => {
+                let secret = value
+                    .as_str()
+                    .expect("validated secret setting must be a string");
+                if secret.is_empty() {
+                    delete_plugin_secret(plugin_id, key)?;
+                    stored.secret_keys.remove(key);
+                } else {
+                    write_plugin_secret(plugin_id, key, secret)?;
+                    stored.secret_keys.insert(key.to_string());
+                }
+            }
+            _ if definition.default_value().as_ref() == Some(&value) => {
+                stored.values.remove(key);
+            }
+            _ => {
+                stored.values.insert(key.to_string(), value);
+            }
+        }
+        self.write_plugin_settings_file(plugin_id, &stored)
+    }
+
+    pub fn reset_plugin_setting(&self, plugin_id: &str, key: &str) -> Result<(), String> {
+        let definition = self.plugin_setting_definition(plugin_id, key)?;
+        let _settings = self
+            .inner
+            .settings
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut stored = self.read_plugin_settings_file(plugin_id)?;
+        stored.values.remove(key);
+        if matches!(definition, PluginSetting::Secret { .. }) {
+            delete_plugin_secret(plugin_id, key)?;
+            stored.secret_keys.remove(key);
+        }
+        self.write_plugin_settings_file(plugin_id, &stored)
+    }
+
+    fn plugin_setting_definition(
+        &self,
+        plugin_id: &str,
+        key: &str,
+    ) -> Result<PluginSetting, String> {
+        self.plugin_root_for_management(plugin_id)?;
+        let catalog = self
+            .inner
+            .catalog
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        catalog
+            .settings
+            .get(plugin_id)
+            .and_then(|settings| settings.iter().find(|setting| setting.id() == key))
+            .cloned()
+            .ok_or_else(|| format!("Plugin setting `{plugin_id}.{key}` is not available"))
+    }
+
+    fn resolved_plugin_settings(&self, plugin_id: &str) -> Result<BTreeMap<String, Value>, String> {
+        let definitions = self
+            .inner
+            .catalog
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .settings
+            .get(plugin_id)
+            .cloned()
+            .unwrap_or_default();
+        let _settings = self
+            .inner
+            .settings
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let stored = self.read_plugin_settings_file(plugin_id)?;
+        let mut values = BTreeMap::new();
+        for definition in definitions {
+            let value = match &definition {
+                PluginSetting::Secret { id, .. } if stored.secret_keys.contains(id) => {
+                    read_plugin_secret(plugin_id, id)?.map(Value::String)
+                }
+                PluginSetting::Secret { .. } => None,
+                _ => stored
+                    .values
+                    .get(definition.id())
+                    .filter(|value| validate_setting_value(&definition, value).is_ok())
+                    .cloned()
+                    .or_else(|| definition.default_value()),
+            };
+            if let Some(value) = value {
+                values.insert(definition.id().to_string(), value);
+            }
+        }
+        Ok(values)
+    }
+
+    fn plugin_settings_file_path(&self, plugin_id: &str) -> Result<PathBuf, String> {
+        if !valid_id(plugin_id) {
+            return Err(format!("Invalid plugin ID `{plugin_id}`"));
+        }
+        let plugins_dir = self
+            .inner
+            .plugins_dir
+            .as_deref()
+            .ok_or_else(|| "Termy config path is unavailable".to_string())?;
+        Ok(plugins_dir
+            .join(".termy-data")
+            .join(plugin_id)
+            .join(SETTINGS_FILE))
+    }
+
+    fn read_plugin_settings_file(&self, plugin_id: &str) -> Result<PluginSettingsFile, String> {
+        let path = self.plugin_settings_file_path(plugin_id)?;
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(PluginSettingsFile::default());
+            }
+            Err(error) => {
+                return Err(format!(
+                    "Failed to inspect plugin settings {}: {error}",
+                    path.display()
+                ));
+            }
+        };
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(format!(
+                "Plugin settings must be a regular file: {}",
+                path.display()
+            ));
+        }
+        if metadata.len() > MAX_SETTINGS_FILE_BYTES {
+            return Err(format!(
+                "Plugin settings exceed the 64 KiB limit: {plugin_id}"
+            ));
+        }
+        serde_json::from_slice(
+            &fs::read(&path)
+                .map_err(|error| format!("Failed to read {}: {error}", path.display()))?,
+        )
+        .map_err(|error| format!("Invalid plugin settings for `{plugin_id}`: {error}"))
+    }
+
+    fn write_plugin_settings_file(
+        &self,
+        plugin_id: &str,
+        settings: &PluginSettingsFile,
+    ) -> Result<(), String> {
+        let path = self.plugin_settings_file_path(plugin_id)?;
+        if settings.values.is_empty() && settings.secret_keys.is_empty() {
+            return match fs::remove_file(&path) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(format!("Failed to clear {}: {error}", path.display())),
+            };
+        }
+        let contents = serde_json::to_vec_pretty(settings)
+            .map_err(|error| format!("Failed to encode plugin settings: {error}"))?;
+        if contents.len() as u64 > MAX_SETTINGS_FILE_BYTES {
+            return Err(format!(
+                "Plugin settings exceed the 64 KiB limit: {plugin_id}"
+            ));
+        }
+        let parent = path
+            .parent()
+            .ok_or_else(|| "Plugin settings path has no parent".to_string())?;
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("Failed to create {}: {error}", parent.display()))?;
+        let mut random = [0_u8; 8];
+        OsRng.fill_bytes(&mut random);
+        let temporary = parent.join(format!(".settings-{}.tmp", hex_digest(&random)));
+        let result = (|| {
+            fs::write(&temporary, contents)
+                .map_err(|error| format!("Failed to write {}: {error}", temporary.display()))?;
+            fs::rename(&temporary, &path)
+                .map_err(|error| format!("Failed to save {}: {error}", path.display()))
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        result
     }
 
     pub fn command_with_revision(
@@ -691,6 +1125,7 @@ impl PluginRuntime {
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             catalog.fingerprint = Some(discovered.fingerprint);
             catalog.commands.clear();
+            catalog.settings.clear();
             catalog.revisions.clear();
             let bundles = plugins_dir.join(".termy-cache/bundles");
             if bundles.exists() {
@@ -756,6 +1191,7 @@ impl PluginRuntime {
             .collect::<HashMap<_, _>>();
         let mut seen_plugins = HashSet::new();
         let mut commands = Vec::new();
+        let mut settings = BTreeMap::new();
         let mut revisions = BTreeMap::new();
         for loaded in load_result.plugins {
             let Some(revision) = source_revisions.get(loaded.plugin_id.as_str()) else {
@@ -797,7 +1233,23 @@ impl PluginRuntime {
                 errors.push(format!("{}: {error}", loaded.plugin_id));
                 continue;
             }
+            let plugin_settings =
+                match serde_json::from_value::<Vec<PluginSetting>>(loaded.settings) {
+                    Ok(settings) => settings,
+                    Err(error) => {
+                        errors.push(format!(
+                            "{}: invalid settings descriptor: {error}",
+                            loaded.plugin_id
+                        ));
+                        continue;
+                    }
+                };
+            if let Err(error) = validate_plugin_settings(&plugin_settings) {
+                errors.push(format!("{}: {error}", loaded.plugin_id));
+                continue;
+            }
             commands.extend(plugin_commands);
+            settings.insert(loaded.plugin_id.clone(), plugin_settings);
             revisions.insert(loaded.plugin_id, (*revision).to_string());
         }
         validate_commands(&commands)?;
@@ -808,6 +1260,7 @@ impl PluginRuntime {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         catalog.fingerprint = errors.is_empty().then_some(discovered.fingerprint);
         catalog.commands = commands;
+        catalog.settings = settings;
         catalog.revisions = revisions;
         Ok(PluginRefresh {
             changed: true,
@@ -821,7 +1274,7 @@ impl PluginRuntime {
         command_id: &str,
         expected_revision: &str,
         inputs: BTreeMap<String, Value>,
-        context: PluginContext,
+        mut context: PluginContext,
     ) -> Result<Vec<PluginAction>, String> {
         let (command, current_revision) = self
             .command_with_revision(plugin_id, command_id)
@@ -832,6 +1285,7 @@ impl PluginRuntime {
             );
         }
         validate_inputs(&command, &inputs)?;
+        context.settings = self.resolved_plugin_settings(plugin_id)?;
         let timeout_ms = command.timeout_ms.clamp(100, MAX_INVOKE_TIMEOUT_MS);
         let (request_id, connection) = {
             let mut host = self
@@ -1565,6 +2019,29 @@ fn installed_plugin_from_manifest(
     }
 }
 
+fn source_plugin_manifest(source: &Path) -> Result<PluginManifestFile, String> {
+    let source_directory_metadata = fs::symlink_metadata(source).map_err(|error| {
+        format!(
+            "Failed to inspect plugin source {}: {error}",
+            source.display()
+        )
+    })?;
+    if source_directory_metadata.file_type().is_symlink() || !source_directory_metadata.is_dir() {
+        return Err("Plugin source must be a real directory, not a symlink".to_string());
+    }
+    let manifest_path = source.join("plugin.json");
+    let manifest_metadata = fs::symlink_metadata(&manifest_path)
+        .map_err(|error| format!("Plugin source is missing plugin.json: {error}"))?;
+    if manifest_metadata.file_type().is_symlink() || !manifest_metadata.is_file() {
+        return Err("plugin.json must be a regular file".to_string());
+    }
+    serde_json::from_slice(
+        &fs::read(&manifest_path)
+            .map_err(|error| format!("Failed to read plugin.json: {error}"))?,
+    )
+    .map_err(|error| format!("Invalid plugin.json: {error}"))
+}
+
 fn inspect_plugin_root(
     root: &Path,
     expected_id: &str,
@@ -2021,6 +2498,202 @@ fn validate_commands(commands: &[PluginCommand]) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_plugin_settings(settings: &[PluginSetting]) -> Result<(), String> {
+    if settings.len() > MAX_PLUGIN_SETTINGS {
+        return Err(format!(
+            "Plugin has {} settings; maximum is {MAX_PLUGIN_SETTINGS}",
+            settings.len()
+        ));
+    }
+    let mut ids = HashSet::new();
+    for setting in settings {
+        if !valid_id(setting.id()) || !ids.insert(setting.id().to_string()) {
+            return Err(format!(
+                "Plugin has an invalid or duplicate setting ID `{}`",
+                setting.id()
+            ));
+        }
+        validate_text(setting.title(), 200, "setting title")?;
+        if let Some(description) = setting.description() {
+            validate_text(description, 500, "setting description")?;
+        }
+        match setting {
+            PluginSetting::Toggle { .. } => {}
+            PluginSetting::Text {
+                placeholder,
+                default_value,
+                max_length,
+                ..
+            } => {
+                validate_setting_length(*max_length, setting.id())?;
+                if let Some(placeholder) = placeholder {
+                    validate_text(placeholder, 300, "setting placeholder")?;
+                }
+                if default_value.chars().count() > *max_length {
+                    return Err(format!(
+                        "Plugin setting `{}` defaultValue exceeds maxLength",
+                        setting.id()
+                    ));
+                }
+            }
+            PluginSetting::Select {
+                default_value,
+                options,
+                ..
+            } => {
+                if options.is_empty() || options.len() > MAX_SELECT_OPTIONS {
+                    return Err(format!(
+                        "Plugin setting `{}` has an invalid select option count",
+                        setting.id()
+                    ));
+                }
+                let mut values = HashSet::new();
+                for option in options {
+                    validate_text(&option.value, 1_024, "setting option value")?;
+                    validate_text(&option.label, 200, "setting option label")?;
+                    if !values.insert(option.value.as_str()) {
+                        return Err(format!(
+                            "Plugin setting `{}` has duplicate option `{}`",
+                            setting.id(),
+                            option.value
+                        ));
+                    }
+                }
+                if !options.iter().any(|option| option.value == *default_value) {
+                    return Err(format!(
+                        "Plugin setting `{}` defaultValue must match an option",
+                        setting.id()
+                    ));
+                }
+            }
+            PluginSetting::Secret {
+                placeholder,
+                max_length,
+                ..
+            } => {
+                validate_setting_length(*max_length, setting.id())?;
+                if let Some(placeholder) = placeholder {
+                    validate_text(placeholder, 300, "setting placeholder")?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_setting_length(max_length: usize, key: &str) -> Result<(), String> {
+    if max_length == 0 || max_length > MAX_SETTING_VALUE_LENGTH {
+        return Err(format!("Plugin setting `{key}` has an invalid maxLength"));
+    }
+    Ok(())
+}
+
+fn validate_setting_value(setting: &PluginSetting, value: &Value) -> Result<(), String> {
+    match setting {
+        PluginSetting::Toggle { .. } if value.is_boolean() => Ok(()),
+        PluginSetting::Text { max_length, .. } | PluginSetting::Secret { max_length, .. } => {
+            let Some(value) = value.as_str() else {
+                return Err(format!("Plugin setting `{}` must be text", setting.id()));
+            };
+            if value.chars().count() > *max_length {
+                return Err(format!(
+                    "Plugin setting `{}` exceeds {max_length} characters",
+                    setting.id()
+                ));
+            }
+            Ok(())
+        }
+        PluginSetting::Select { options, .. } => {
+            let Some(value) = value.as_str() else {
+                return Err(format!(
+                    "Plugin setting `{}` must be a select option",
+                    setting.id()
+                ));
+            };
+            if options.iter().any(|option| option.value == value) {
+                Ok(())
+            } else {
+                Err(format!(
+                    "Plugin setting `{}` contains an unknown select value",
+                    setting.id()
+                ))
+            }
+        }
+        _ => Err(format!(
+            "Plugin setting `{}` has the wrong value type",
+            setting.id()
+        )),
+    }
+}
+
+#[cfg(not(test))]
+fn plugin_secret_entry(plugin_id: &str, key: &str) -> Result<keyring::Entry, String> {
+    keyring::Entry::new(KEYRING_SERVICE, &format!("{plugin_id}.{key}"))
+        .map_err(|error| format!("Failed to access the credential store: {error}"))
+}
+
+#[cfg(not(test))]
+fn read_plugin_secret(plugin_id: &str, key: &str) -> Result<Option<String>, String> {
+    match plugin_secret_entry(plugin_id, key)?.get_password() {
+        Ok(secret) => Ok(Some(secret)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(error) => Err(format!(
+            "Failed to read secret setting `{plugin_id}.{key}`: {error}"
+        )),
+    }
+}
+
+#[cfg(not(test))]
+fn write_plugin_secret(plugin_id: &str, key: &str, secret: &str) -> Result<(), String> {
+    plugin_secret_entry(plugin_id, key)?
+        .set_password(secret)
+        .map_err(|error| format!("Failed to save secret setting `{plugin_id}.{key}`: {error}"))
+}
+
+#[cfg(not(test))]
+fn delete_plugin_secret(plugin_id: &str, key: &str) -> Result<(), String> {
+    match plugin_secret_entry(plugin_id, key)?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(error) => Err(format!(
+            "Failed to clear secret setting `{plugin_id}.{key}`: {error}"
+        )),
+    }
+}
+
+#[cfg(test)]
+static TEST_PLUGIN_SECRETS: std::sync::LazyLock<Mutex<BTreeMap<String, String>>> =
+    std::sync::LazyLock::new(|| Mutex::new(BTreeMap::new()));
+
+#[cfg(test)]
+#[allow(clippy::unnecessary_wraps)]
+fn read_plugin_secret(plugin_id: &str, key: &str) -> Result<Option<String>, String> {
+    Ok(TEST_PLUGIN_SECRETS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(&format!("{plugin_id}.{key}"))
+        .cloned())
+}
+
+#[cfg(test)]
+#[allow(clippy::unnecessary_wraps)]
+fn write_plugin_secret(plugin_id: &str, key: &str, secret: &str) -> Result<(), String> {
+    TEST_PLUGIN_SECRETS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(format!("{plugin_id}.{key}"), secret.to_string());
+    Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::unnecessary_wraps)]
+fn delete_plugin_secret(plugin_id: &str, key: &str) -> Result<(), String> {
+    TEST_PLUGIN_SECRETS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(&format!("{plugin_id}.{key}"));
+    Ok(())
+}
+
 fn validate_inputs(
     command: &PluginCommand,
     inputs: &BTreeMap<String, Value>,
@@ -2170,6 +2843,10 @@ fn default_text_max_length() -> usize {
     1_024
 }
 
+fn default_setting_max_length() -> usize {
+    MAX_SETTING_VALUE_LENGTH
+}
+
 fn hex_digest(bytes: &[u8]) -> String {
     let mut output = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
@@ -2303,10 +2980,34 @@ mod tests {
         assert_eq!(installed.version.as_deref(), Some("1.2.3"));
         assert!(installed.enabled);
         assert!(installed.path.join("plugin.ts").is_file());
+        let managed_data = config_dir.join("plugins/.termy-data/managed");
+        let managed_cache = config_dir.join("plugins/.termy-cache/data/managed");
+        fs::create_dir_all(&managed_data).expect("create managed plugin data");
+        fs::create_dir_all(&managed_cache).expect("create managed plugin cache");
+        fs::write(managed_data.join("storage.json"), "{}").expect("write plugin storage");
+        fs::write(managed_cache.join("cached.txt"), "cached").expect("write plugin cache");
+        let error = runtime
+            .sync_from_directory(&installed.path)
+            .expect_err("managed copy cannot become its own development source");
+        assert!(error.contains("must be outside"));
 
         runtime
             .set_plugin_enabled("managed", false)
             .expect("disable plugin");
+        fs::write(
+            source.join("plugin.ts"),
+            "export const revision = 2; export default definePlugin({ commands: [] });",
+        )
+        .expect("edit local source");
+        let synced = runtime
+            .sync_from_directory(&source)
+            .expect("sync local development source");
+        assert!(!synced.enabled, "sync must preserve disabled state");
+        assert!(
+            fs::read_to_string(synced.path.join("plugin.ts"))
+                .expect("read synced plugin")
+                .contains("revision = 2")
+        );
         let disabled = runtime.installed_plugins().expect("disabled inventory");
         assert!(!disabled.plugins[0].enabled);
         assert!(
@@ -2340,6 +3041,11 @@ mod tests {
             source.is_dir(),
             "uninstall must preserve the selected source"
         );
+        assert!(!managed_data.exists(), "uninstall must remove plugin data");
+        assert!(
+            !managed_cache.exists(),
+            "uninstall must remove plugin cache"
+        );
     }
 
     #[test]
@@ -2366,6 +3072,10 @@ mod tests {
             .install_from_directory_with_source(&first_source, first_metadata.clone())
             .expect("install GitHub plugin");
         assert_eq!(installed.source.as_ref(), Some(&first_metadata));
+        let error = runtime
+            .sync_from_directory(&first_source)
+            .expect_err("local development must not replace a GitHub installation");
+        assert!(error.contains("tracked from GitHub"));
 
         let conflicting_source = write_plugin(
             &temp.path().join("conflicting-source"),
@@ -2754,6 +3464,7 @@ export default definePlugin({
             active_command: None,
             platform: std::env::consts::OS.to_string(),
             app_version: "test".to_string(),
+            settings: BTreeMap::new(),
         };
 
         let error = runtime
@@ -2797,10 +3508,25 @@ export default definePlugin({
             "Hello",
             r#"
 import { greeting } from "./helper.ts";
+import { join } from "node:path";
 
 let invocationCount = 0;
 
 export default definePlugin({
+  settings: {
+    enabled: { type: "toggle", title: "Enabled", defaultValue: true },
+    greeting: { type: "text", title: "Greeting", defaultValue: "Hello" },
+    style: {
+      type: "select",
+      title: "Style",
+      options: [
+        { value: "short", label: "Short" },
+        { value: "long", label: "Long" },
+      ],
+      defaultValue: "short",
+    },
+    token: { type: "secret", title: "Token" },
+  },
   commands: [
     {
       id: "fail",
@@ -2834,6 +3560,30 @@ export default definePlugin({
         context.toasts.info(`Running on ${context.platform}`);
         context.toasts.success(`Termy ${context.appVersion} is ready`);
         return { type: "toast", level: "warning", message: "Returned action" };
+      },
+    },
+    {
+      id: "settings",
+      title: "Hello: Settings",
+      run({ context }) {
+        return {
+          type: "toast",
+          level: "info",
+          message: `${context.settings.get("enabled")} ${context.settings.get("greeting")} ${context.settings.get("style")} ${context.settings.get("token")}`,
+        };
+      },
+    },
+    {
+      id: "storage",
+      title: "Hello: Storage",
+      async run({ context }) {
+        const stored = await context.storage.get("count");
+        const count = typeof stored === "number" ? stored + 1 : 1;
+        await context.storage.set("count", count);
+        const removed = await context.storage.delete("missing");
+        await Bun.write(join(context.paths.dataDirectory, "count.txt"), String(count));
+        await Bun.write(join(context.paths.cacheDirectory, "marker.txt"), "cached");
+        return { type: "toast", level: "success", message: `Storage ${count} ${removed}` };
       },
     },
     {
@@ -2882,7 +3632,7 @@ export default definePlugin({
                 .is_file(),
             "plugin bundle should be cached by content hash"
         );
-        assert_eq!(runtime.commands().len(), 5);
+        assert_eq!(runtime.commands().len(), 7);
         let revision = runtime
             .command_with_revision("hello", "greet")
             .expect("hello command revision")
@@ -2892,7 +3642,42 @@ export default definePlugin({
             active_command: None,
             platform: std::env::consts::OS.to_string(),
             app_version: "test".to_string(),
+            settings: BTreeMap::new(),
         };
+        let settings = runtime.plugin_settings_snapshot();
+        assert!(settings.errors.is_empty(), "errors: {:?}", settings.errors);
+        assert_eq!(settings.plugins["hello"].len(), 4);
+        runtime
+            .set_plugin_setting("hello", "enabled", Value::Bool(false))
+            .expect("set toggle setting");
+        runtime
+            .set_plugin_setting("hello", "greeting", Value::String("Yo".to_string()))
+            .expect("set text setting");
+        runtime
+            .set_plugin_setting("hello", "style", Value::String("long".to_string()))
+            .expect("set select setting");
+        runtime
+            .set_plugin_setting("hello", "token", Value::String("super-secret".to_string()))
+            .expect("set secret setting");
+        let settings_file = fs::read_to_string(plugins.join(".termy-data/hello/settings.json"))
+            .expect("read settings file");
+        assert!(!settings_file.contains("super-secret"));
+        let actions = runtime
+            .invoke(
+                "hello",
+                "settings",
+                &revision,
+                BTreeMap::new(),
+                context.clone(),
+            )
+            .expect("plugin context should receive resolved settings");
+        assert_eq!(
+            actions,
+            vec![PluginAction::Toast {
+                level: PluginToastLevel::Info,
+                message: "false Yo long super-secret".to_string(),
+            }]
+        );
         let error = runtime
             .invoke("hello", "fail", &revision, BTreeMap::new(), context.clone())
             .expect_err("plugin failure should be reported");
@@ -2938,6 +3723,22 @@ export default definePlugin({
                     message: "Returned action".to_string(),
                 },
             ]
+        );
+        let actions = runtime
+            .invoke(
+                "hello",
+                "storage",
+                &revision,
+                BTreeMap::new(),
+                context.clone(),
+            )
+            .expect("plugin storage should persist values");
+        assert_eq!(
+            actions,
+            vec![PluginAction::Toast {
+                level: PluginToastLevel::Success,
+                message: "Storage 1 false".to_string(),
+            }]
         );
         let error = runtime
             .invoke(
@@ -3005,6 +3806,7 @@ export default definePlugin({
                     active_command: None,
                     platform: std::env::consts::OS.to_string(),
                     app_version: "test".to_string(),
+                    settings: BTreeMap::new(),
                 },
             )
             .expect("invoke unchanged plugin after catalog reload");
@@ -3035,6 +3837,7 @@ export default definePlugin({
                     active_command: None,
                     platform: std::env::consts::OS.to_string(),
                     app_version: "test".to_string(),
+                    settings: BTreeMap::new(),
                 },
             )
             .expect_err("stale command schema revision must be rejected");
@@ -3044,6 +3847,38 @@ export default definePlugin({
             .expect("reloaded command revision")
             .1;
         assert_ne!(revision, new_revision);
+        let actions = runtime
+            .invoke(
+                "hello",
+                "storage",
+                &new_revision,
+                BTreeMap::new(),
+                PluginContext {
+                    working_directory: None,
+                    active_command: None,
+                    platform: std::env::consts::OS.to_string(),
+                    app_version: "test".to_string(),
+                    settings: BTreeMap::new(),
+                },
+            )
+            .expect("plugin storage should survive Worker replacement");
+        assert_eq!(
+            actions,
+            vec![PluginAction::Toast {
+                level: PluginToastLevel::Success,
+                message: "Storage 2 false".to_string(),
+            }]
+        );
+        assert_eq!(
+            fs::read_to_string(plugins.join(".termy-data/hello/files/count.txt"))
+                .expect("read plugin data file"),
+            "2"
+        );
+        assert_eq!(
+            fs::read_to_string(plugins.join(".termy-cache/data/hello/marker.txt"))
+                .expect("read plugin cache file"),
+            "cached"
+        );
     }
 
     #[test]
@@ -3190,6 +4025,7 @@ export default definePlugin({
             active_command: None,
             platform: std::env::consts::OS.to_string(),
             app_version: "test".to_string(),
+            settings: BTreeMap::new(),
         };
         let slow_runtime = runtime.clone();
         let (started_tx, started_rx) = mpsc::channel();
@@ -3205,6 +4041,7 @@ export default definePlugin({
                     active_command: None,
                     platform: std::env::consts::OS.to_string(),
                     app_version: "test".to_string(),
+                    settings: BTreeMap::new(),
                 },
             )
         });
@@ -3292,6 +4129,7 @@ export default definePlugin({
                     active_command: None,
                     platform: std::env::consts::OS.to_string(),
                     app_version: "test".to_string(),
+                    settings: BTreeMap::new(),
                 },
             )
         });
@@ -3316,6 +4154,7 @@ export default definePlugin({
                     active_command: None,
                     platform: std::env::consts::OS.to_string(),
                     app_version: "test".to_string(),
+                    settings: BTreeMap::new(),
                 },
             )
             .expect("queued quick invocation should receive its full execution timeout");

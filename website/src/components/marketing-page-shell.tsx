@@ -11,14 +11,12 @@ export const marketingFontLinks = [
   },
   {
     rel: 'stylesheet',
-    href: 'https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500;700&display=swap',
+    href: 'https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap',
   },
 ];
 
 export const marketingMono =
   "'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace";
-export const marketingSerif =
-  "'Instrument Serif', Georgia, 'Times New Roman', serif";
 
 function setTheme(theme: 'light' | 'dark') {
   document.documentElement.classList.toggle('dark', theme === 'dark');

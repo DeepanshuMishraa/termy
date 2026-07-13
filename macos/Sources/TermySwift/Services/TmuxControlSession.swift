@@ -5,27 +5,44 @@ import Foundation
 /// input via `send-keys`. UI-agnostic and testable; the SwiftUI workspace renders
 /// `layout` + `terminal(forPane:)`. Not thread-safe — drive from one actor.
 final class TmuxControlSession {
+    typealias DisplayTerminalFactory = (_ cols: UInt16, _ rows: UInt16) throws -> LibTermyTerminal
+
     private let control: LibTermyTmuxControl
-    private let loadUserConfig: Bool
+    private let makeDisplayTerminal: DisplayTerminalFactory
 
     /// The most recently reconciled tmux layout (pane tree).
     private(set) var layout: TmuxLayoutNode?
     /// Display terminals keyed by tmux pane id (the integer in `%N`).
     private(set) var panes: [Int: LibTermyTerminal] = [:]
 
-    init(control: LibTermyTmuxControl, loadUserConfig: Bool = false) {
+    init(
+        control: LibTermyTmuxControl,
+        loadUserConfig: Bool = false,
+        displayTerminalFactory: DisplayTerminalFactory? = nil
+    ) {
         self.control = control
-        self.loadUserConfig = loadUserConfig
+        makeDisplayTerminal = displayTerminalFactory ?? { cols, rows in
+            try LibTermyTerminal(
+                displayCols: cols,
+                rows: rows,
+                loadUserConfig: loadUserConfig
+            )
+        }
     }
 
     convenience init(
         binary: String = "tmux",
         socket: String,
         session: String,
-        loadUserConfig: Bool = false
+        loadUserConfig: Bool = false,
+        displayTerminalFactory: DisplayTerminalFactory? = nil
     ) throws {
         let control = try LibTermyTmuxControl(binary: binary, socket: socket, session: session)
-        self.init(control: control, loadUserConfig: loadUserConfig)
+        self.init(
+            control: control,
+            loadUserConfig: loadUserConfig,
+            displayTerminalFactory: displayTerminalFactory
+        )
     }
 
     /// Run an arbitrary tmux command over the control channel (e.g. `split-window`).
@@ -56,7 +73,7 @@ final class TmuxControlSession {
         else {
             return layout
         }
-        reconcile(to: parsed)
+        try reconcile(to: parsed)
         layout = parsed
         return layout
     }
@@ -83,27 +100,40 @@ final class TmuxControlSession {
         return alive
     }
 
-    private func reconcile(to node: TmuxLayoutNode) {
+    private func reconcile(to node: TmuxLayoutNode) throws {
+        panes = try Self.reconciledPanes(
+            current: panes,
+            to: node,
+            makeDisplayTerminal: makeDisplayTerminal
+        )
+    }
+
+    /// Build the next pane set before publishing it. If any display terminal
+    /// fails to initialize, the caller keeps the previous layout and panes
+    /// instead of rendering an incomplete, permanently blank workspace.
+    static func reconciledPanes(
+        current: [Int: LibTermyTerminal],
+        to node: TmuxLayoutNode,
+        makeDisplayTerminal: DisplayTerminalFactory
+    ) throws -> [Int: LibTermyTerminal] {
         let wanted = Self.paneGeometry(in: node)
-        for id in panes.keys where wanted[id] == nil {
-            panes.removeValue(forKey: id)
+        var nextPanes = current
+        for id in current.keys where wanted[id] == nil {
+            nextPanes.removeValue(forKey: id)
         }
         for (id, size) in wanted {
-            if let terminal = panes[id] {
-                try? terminal.resize(
+            if let terminal = nextPanes[id] {
+                try terminal.resize(
                     cols: size.cols,
                     rows: size.rows,
                     cellWidth: Float(terminal.renderConfig.cellWidth),
                     cellHeight: Float(terminal.renderConfig.cellHeight)
                 )
-            } else if let terminal = try? LibTermyTerminal(
-                displayCols: size.cols,
-                rows: size.rows,
-                loadUserConfig: loadUserConfig
-            ) {
-                panes[id] = terminal
+            } else {
+                nextPanes[id] = try makeDisplayTerminal(size.cols, size.rows)
             }
         }
+        return nextPanes
     }
 
     /// Map of pane id → cell dimensions for every leaf in a layout tree.
