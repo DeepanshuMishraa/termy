@@ -1,0 +1,142 @@
+---
+title: Commands and context
+description: Define palette commands, inputs, settings, actions, and keybindings.
+---
+
+Commands are searchable actions that run inside the plugin's Bun Worker. They can
+collect native inputs, inspect a read-only Termy context, emit notifications, and
+return typed actions to the app.
+
+```ts title="plugin.ts"
+export default definePlugin({
+  settings: {
+    greeting: {
+      type: "text",
+      title: "Greeting",
+      defaultValue: "Hello from Termy",
+    },
+    token: {
+      type: "secret",
+      title: "API token",
+    },
+  },
+  commands: [
+    {
+      id: "greet",
+      title: "Hello: Greet me",
+      keywords: ["hello", "example"],
+      icon: "info",
+      inputs: [
+        {
+          id: "style",
+          type: "select",
+          label: "Greeting style",
+          options: [
+            { value: "short", label: "Short" },
+            { value: "friendly", label: "Friendly" },
+          ],
+        },
+        {
+          id: "confirmed",
+          type: "confirm",
+          label: "Show greeting?",
+          defaultValue: true,
+        },
+      ],
+      async run({ inputs, context }) {
+        if (inputs.confirmed !== true) return;
+
+        const message =
+          inputs.style === "friendly"
+            ? `Welcome to Termy ${context.appVersion}`
+            : context.settings.get("greeting") ?? "Hello from Termy";
+
+        context.toasts.success(message);
+      },
+    },
+  ],
+} satisfies TermyPlugin);
+```
+
+## Command fields and inputs
+
+Commands require `id`, `title`, and `run`. They may also declare search `keywords`,
+`status`, `enabled`, `disabledReason`, `timeoutMs`, and one of Termy's built-in
+`icon` names.
+
+Inputs appear sequentially before the handler runs:
+
+- `text` returns a string and supports a placeholder, default, required flag, and maximum length.
+- `select` returns the value of one fixed option.
+- `confirm` returns a boolean.
+
+Commands without inputs run immediately. Inputs are delivered as
+`inputs.<input-id>` to `run`.
+
+## Read the active context
+
+Every handler receives a read-only snapshot with `platform`, `appVersion`, the
+resolved session launch `shell`, and the active `runtime` (`native` or `tmux`). It
+may also include `workingDirectory`, `activeCommand`, `selectedText`, `activeTab`,
+and `activePane`.
+
+Tab and pane indexes are zero-based. Selected text is capped at 64 KiB on a UTF-8
+boundary; `selectedTextTruncated` reports whether Termy shortened it.
+
+```ts
+run({ context }) {
+  if (!context.selectedText) {
+    context.toasts.info("Select terminal text first");
+    return;
+  }
+  return { type: "clipboard.write", text: context.selectedText };
+}
+```
+
+The context also exposes `context.toasts.info(message)`, `success(message)`,
+`warning(message)`, and `error(message)`. These emit notifications directly and do
+not require an SDK import or returned action.
+
+## Plugin settings
+
+Declare typed `toggle`, `text`, `select`, and `secret` settings beside `commands`.
+Termy renders them under **Settings → Plugins**, and handlers read the resolved
+values with `context.settings.get("settingName")`.
+
+Ordinary overrides live in the plugin data directory. Secrets are masked and stored
+through the operating-system credential store instead of `settings.json`. Changes
+apply to the next invocation without restarting the Worker.
+
+## Return actions
+
+A command, lifecycle handler, or native-view action handler can return one action,
+an action array, `{ actions: [...] }`, or nothing. Handlers may be async.
+
+| Type | Purpose |
+| --- | --- |
+| `terminal.run` | Run a shell command, optionally in a working directory. |
+| `termy.command` | Invoke a built-in Termy command. |
+| `clipboard.write` | Copy text to the system clipboard. |
+| `url.open` | Open an `http` or `https` URL. |
+| `view.open` | Open a native view declared by the same plugin. |
+| `toast` | Show an info, success, warning, or error notification. |
+
+Never interpolate free-form text directly into `terminal.run`. Map select values to
+fixed commands or quote values correctly for the target shell.
+
+## Bind a plugin command
+
+Use the manifest and command IDs in `~/.config/termy/config.txt`:
+
+```txt
+keybind = secondary-g=plugin:git-tools/status
+```
+
+Commands with inputs open their input form. Termy refreshes the plugin catalog
+before invoking a shortcut, so saved plugin changes are picked up. Normal keybinding
+ordering applies: later lines win, `unbind` removes the shortcut, and a task
+keybinding takes priority on conflicts.
+
+See [Native UI](/docs/using-termy/plugins/native-ui) for `view.open` and
+[Lifecycle and storage](/docs/using-termy/plugins/lifecycle-storage) for events and
+persistence.
