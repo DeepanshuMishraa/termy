@@ -795,10 +795,6 @@ impl TerminalView {
         button == MouseButton::Left && selection_dragging
     }
 
-    fn is_terminal_context_menu_passthrough(modifiers: gpui::Modifiers) -> bool {
-        modifiers.shift
-    }
-
     pub(in super::super) fn handle_global_mouse_move_event(
         &mut self,
         event: &MouseMoveEvent,
@@ -907,12 +903,6 @@ impl TerminalView {
             return true;
         }
 
-        if event.button == MouseButton::Right
-            && Self::is_terminal_context_menu_passthrough(event.modifiers)
-        {
-            return self.force_forward_right_mouse_up(event, cx);
-        }
-
         if self.try_forward_mouse_up(event, cx) {
             return true;
         }
@@ -957,9 +947,8 @@ impl TerminalView {
         }
 
         if event.button == MouseButton::Right {
-            if Self::is_terminal_context_menu_passthrough(event.modifiers) {
+            if self.try_forward_mouse_down(event, cx) {
                 let _ = self.close_terminal_context_menu(cx);
-                let _ = self.force_forward_right_mouse_down(event, cx);
                 return;
             }
 
@@ -1209,13 +1198,6 @@ impl TerminalView {
             return;
         }
 
-        if event.button == MouseButton::Right
-            && Self::is_terminal_context_menu_passthrough(event.modifiers)
-        {
-            let _ = self.force_forward_right_mouse_up(event, cx);
-            return;
-        }
-
         if event.button == MouseButton::Left && self.stop_terminal_scrollbar_track_hold() {
             cx.stop_propagation();
             cx.notify();
@@ -1324,18 +1306,6 @@ mod tests {
             MouseButton::Right,
             true
         ));
-    }
-
-    #[test]
-    fn terminal_context_menu_passthrough_requires_shift_modifier() {
-        let shifted = gpui::Modifiers {
-            shift: true,
-            ..gpui::Modifiers::default()
-        };
-        let plain = gpui::Modifiers::default();
-
-        assert!(TerminalView::is_terminal_context_menu_passthrough(shifted));
-        assert!(!TerminalView::is_terminal_context_menu_passthrough(plain));
     }
 
     #[test]

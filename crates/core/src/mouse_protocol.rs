@@ -213,6 +213,18 @@ mod tests {
     }
 
     #[test]
+    fn sgr_right_press_encodes_expected_packet() {
+        let bytes = encode_mouse_report(
+            mode(),
+            TerminalMouseEventKind::Press(TerminalMouseButton::Right),
+            TerminalMousePosition { col: 1, row: 1 },
+            TerminalMouseModifiers::default(),
+        )
+        .expect("packet");
+        assert_eq!(bytes, b"\x1b[<2;2;2M");
+    }
+
+    #[test]
     fn sgr_release_uses_lowercase_suffix() {
         let bytes = encode_mouse_report(
             mode(),
@@ -301,5 +313,21 @@ mod tests {
             TerminalMouseModifiers::default(),
         );
         assert!(packet.is_none());
+    }
+
+    #[test]
+    fn disabled_mode_rejects_right_button_events() {
+        for event in [
+            TerminalMouseEventKind::Press(TerminalMouseButton::Right),
+            TerminalMouseEventKind::Release(TerminalMouseButton::Right),
+        ] {
+            let packet = encode_mouse_report(
+                TerminalMouseMode::default(),
+                event,
+                TerminalMousePosition { col: 0, row: 0 },
+                TerminalMouseModifiers::default(),
+            );
+            assert!(packet.is_none());
+        }
     }
 }

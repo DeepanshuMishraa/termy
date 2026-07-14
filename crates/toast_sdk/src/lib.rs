@@ -1,5 +1,14 @@
-use std::sync::{Mutex, OnceLock};
+use std::sync::{
+    Mutex, OnceLock,
+    atomic::{AtomicU64, Ordering},
+};
 use std::time::{Duration, Instant};
+
+static NEXT_TOAST_ID: AtomicU64 = AtomicU64::new(0);
+
+fn next_toast_id() -> u64 {
+    NEXT_TOAST_ID.fetch_add(1, Ordering::Relaxed)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ToastKind {
@@ -84,7 +93,6 @@ pub struct ToastRequest {
 
 #[derive(Default)]
 pub struct ToastManager {
-    next_id: u64,
     active: Vec<Toast>,
 }
 
@@ -98,8 +106,7 @@ impl ToastManager {
     }
 
     pub fn push(&mut self, request: ToastRequest) -> u64 {
-        let id = self.next_id;
-        self.next_id = self.next_id.wrapping_add(1);
+        let id = next_toast_id();
         self.active.push(Toast {
             id,
             kind: request.kind,
@@ -307,8 +314,7 @@ pub fn enqueue_actionable_toast_with_id(
     duration: Option<Duration>,
     action_label: Option<String>,
 ) -> u64 {
-    static NEXT_PENDING_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let id = NEXT_PENDING_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let id = next_toast_id();
 
     let request = ToastRequestWithId {
         id,
@@ -397,4 +403,22 @@ pub fn drain_pending_dismisses() -> Vec<ToastDismiss> {
         .lock()
         .expect("toast dismiss queue lock poisoned");
     std::mem::take(&mut *queue)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dismissing_loading_toast_keeps_follow_up_toast() {
+        let mut manager = ToastManager::new();
+        let loading_id = loading("Running plugin");
+        success("Plugin finished");
+        dismiss_toast(loading_id);
+
+        manager.ingest_pending();
+
+        assert_eq!(manager.active().len(), 1);
+        assert_eq!(manager.active()[0].message, "Plugin finished");
+    }
 }
