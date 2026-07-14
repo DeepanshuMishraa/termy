@@ -146,8 +146,12 @@ impl TerminalView {
                 CommandPaletteItemKind::Command(action) => {
                     self.command_palette_shortcut(*action, window)
                 }
+                CommandPaletteItemKind::PluginCommand {
+                    plugin_id,
+                    command_id,
+                    ..
+                } => self.command_palette_plugin_shortcut(plugin_id, command_id, window),
                 CommandPaletteItemKind::Theme(_)
-                | CommandPaletteItemKind::PluginCommand { .. }
                 | CommandPaletteItemKind::PluginInputSubmit { .. }
                 | CommandPaletteItemKind::PluginInputOption { .. }
                 | CommandPaletteItemKind::TmuxSessionAttachOrSwitch { .. }

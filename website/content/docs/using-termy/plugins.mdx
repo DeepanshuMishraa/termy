@@ -110,13 +110,51 @@ Commands support `title`, search `keywords`, `status`, `enabled`, `disabledReaso
 - `select` returns the value from a fixed options list.
 - `confirm` returns a boolean.
 
-The handler receives `inputs` plus `context`, which includes the platform and app version and may include the active working directory and command. It also provides `context.toasts.info(message)`, `success(message)`, `warning(message)`, and `error(message)`, so a plugin can notify the user without importing an SDK or returning an action.
+The handler receives `inputs` plus a read-only `context` snapshot. It includes `platform`, `appVersion`, the resolved session launch `shell`, and the active `runtime` (`native` or `tmux`), and may include `workingDirectory`, `activeCommand`, `selectedText`, `activeTab`, and `activePane`. Tab and pane indexes are zero-based. Selected text is capped at 64 KiB on a UTF-8 boundary; `selectedTextTruncated` reports whether the snapshot was shortened.
+
+```ts
+run({ context }) {
+  if (!context.selectedText) {
+    context.toasts.info("Select terminal text first");
+    return;
+  }
+  return { type: "clipboard.write", text: context.selectedText };
+}
+```
+
+The context also provides `context.toasts.info(message)`, `success(message)`, `warning(message)`, and `error(message)`, so a plugin can notify the user without importing an SDK or returning an action.
 
 Plugins may declare typed `toggle`, `text`, `select`, and `secret` settings beside `commands`. Termy renders them under **Settings → Plugins**, and commands read resolved values with `context.settings.get("settingName")`. Ordinary overrides live in the plugin data directory; secrets are masked and stored through the operating-system credential store instead of `settings.json`. Changes apply to the next command invocation without restarting the plugin Worker.
 
 Plugins can persist up to 512 JSON values and 1 MiB through `context.storage.get(key)`, `set(key, value)`, `delete(key)`, and `clear()`. `context.paths.dataDirectory` is available for larger persistent files, while `context.paths.cacheDirectory` is for disposable data. These locations are isolated per plugin, live outside the content-hashed source tree, survive reloads and updates, and are removed on uninstall. Storage is plain local JSON; use a declared `secret` setting for credentials.
 
 Never interpolate free-form text directly into a shell action; map select values to fixed commands or quote values for the target shell.
+
+## Lifecycle events
+
+Plugins can explicitly subscribe to active-terminal lifecycle events beside `commands`. Use `commands: []` for an event-only plugin.
+
+```ts
+export default definePlugin({
+  commands: [],
+  events: {
+    "terminal.ready"({ context }) {
+      context.toasts.info("Terminal ready");
+    },
+    "tab.activated"({ event, context }) {
+      console.log(event.previousTabIndex, context.activeTab?.index);
+    },
+    "workingDirectory.changed"({ event }) {
+      console.log(event.previousWorkingDirectory, event.workingDirectory);
+    },
+    "command.finished"({ event }) {
+      console.log(event.command, event.exitCode, event.durationMs);
+    },
+  },
+} satisfies TermyPlugin);
+```
+
+Handlers receive the same read-only context and can emit toasts or return the same actions as command handlers. `terminal.ready` runs once after the plugin catalog is ready. The other events track the active terminal tab, working directory, and completed command. Native shell integration provides command exit codes and measured durations; tmux completion is inferred, so unavailable fields are omitted instead of guessed. Events remain ordered within a plugin, while separate plugins can handle them concurrently under the normal timeout.
 
 ## Actions
 
@@ -138,10 +176,20 @@ Plugin content is checked whenever the command palette opens. Termy fingerprints
 
 Disabling a plugin keeps its managed files and storage but removes its commands on the next command-palette refresh. Uninstalling removes Termy's managed copy, storage, and cache while leaving the source folder you selected untouched.
 
+## Plugin keybindings
+
+Bind a plugin command in `~/.config/termy/config.txt` with its manifest IDs:
+
+```txt
+keybind = secondary-g=plugin:git-tools/status
+```
+
+Commands without inputs run immediately. Commands with inputs open their input form. Termy refreshes the plugin catalog before invoking the shortcut, so saved plugin changes are picked up. Normal keybinding ordering applies: later lines win, `unbind` removes the shortcut, and a task keybinding takes priority on conflicts.
+
 The cached module is imported in a warm per-plugin Worker. Termy does not use `bun build --compile`, because a standalone executable would embed another Bun runtime for every plugin; shared `.mjs` bundles avoid that size and startup overhead. Saving a manifest or source file replaces the changed Worker and refreshes its commands without restarting Termy.
 
 Crashes and timeouts are contained to the failed plugin Worker. Subprocesses started by plugin code can outlive that Worker, so a plugin must stop its own child processes when cancellation matters. Plugins share the persistent host transport, but if that transport exits, Termy rebuilds it and reloads the Workers on the next plugin refresh without taking down the app.
 
 Worker isolation and import validation are not a security sandbox. Plugins are trusted local code running with your user account's file, network, and process access, so read the source before installing one.
 
-V1 does not support plugin keybindings, custom UI, build hooks, package imports, or automatic package installation.
+V1 supports command-palette commands, lifecycle events, and plugin keybindings. It does not support custom UI, build hooks, package imports, or automatic package installation.

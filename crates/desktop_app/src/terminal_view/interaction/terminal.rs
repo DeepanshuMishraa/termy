@@ -1,5 +1,37 @@
 use super::*;
 
+impl DeferredTerminalResize {
+    fn is_ready_for(&self, signature: TerminalResizeSignature) -> bool {
+        matches!(self, Self::Ready { signature: ready } if *ready == signature)
+    }
+
+    fn schedule(&mut self, signature: TerminalResizeSignature, deadline: Instant) -> bool {
+        if matches!(self, Self::Pending { signature: pending, .. } if *pending == signature) {
+            return false;
+        }
+        let timer_running = matches!(self, Self::Pending { .. });
+        *self = Self::Pending {
+            signature,
+            deadline,
+        };
+        !timer_running
+    }
+
+    #[cfg(test)]
+    fn mark_ready(&mut self, signature: TerminalResizeSignature, deadline: Instant) -> bool {
+        if *self
+            != (Self::Pending {
+                signature,
+                deadline,
+            })
+        {
+            return false;
+        }
+        *self = Self::Ready { signature };
+        true
+    }
+}
+
 impl TerminalView {
     const TERMINAL_RESIZE_FINGERPRINT_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
     const TERMINAL_RESIZE_FINGERPRINT_PRIME: u64 = 0x0000_0100_0000_01b3;
@@ -57,8 +89,51 @@ impl TerminalView {
             padding_x_bits: self.padding_x.to_bits(),
             padding_y_bits: self.padding_y.to_bits(),
             runtime_kind,
+            active_tab_id: self.tabs.get(self.active_tab).map(|tab| tab.id),
             pane_layout_fingerprint: self.pane_layout_fingerprint(),
         }
+    }
+
+    fn schedule_deferred_inactive_resize(
+        &mut self,
+        signature: TerminalResizeSignature,
+        cx: &mut Context<Self>,
+    ) {
+        let delay = Duration::from_millis(INACTIVE_RESIZE_DEBOUNCE_MS);
+        let deadline = Instant::now() + delay;
+        if !self.deferred_inactive_resize.schedule(signature, deadline) {
+            return;
+        }
+
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let mut remaining = delay;
+            loop {
+                smol::Timer::after(remaining).await;
+                let next_delay = cx.update(|cx| {
+                    this.update(cx, |view, cx| {
+                        let DeferredTerminalResize::Pending {
+                            signature,
+                            deadline,
+                        } = view.deferred_inactive_resize
+                        else {
+                            return None;
+                        };
+                        let now = Instant::now();
+                        if deadline > now {
+                            return Some(deadline.duration_since(now));
+                        }
+                        view.deferred_inactive_resize = DeferredTerminalResize::Ready { signature };
+                        cx.notify();
+                        None
+                    })
+                });
+                match next_delay {
+                    Ok(Some(next_delay)) => remaining = next_delay,
+                    _ => return,
+                }
+            }
+        })
+        .detach();
     }
 
     fn sync_active_alternate_screen_state(&self) {
@@ -375,7 +450,11 @@ impl TerminalView {
             content_top_inset,
             backend_mode,
         );
-        if self.last_terminal_resize_signature == Some(resize_signature) {
+        let apply_deferred_inactive_resize =
+            self.deferred_inactive_resize.is_ready_for(resize_signature);
+        if self.last_terminal_resize_signature == Some(resize_signature)
+            && !apply_deferred_inactive_resize
+        {
             self.sync_active_alternate_screen_state();
             return;
         }
@@ -408,6 +487,11 @@ impl TerminalView {
             RuntimeKind::Native => {
                 let mut tab_index = 0usize;
                 while tab_index < self.tabs.len() {
+                    let resize_tab = tab_index == self.active_tab || apply_deferred_inactive_resize;
+                    if !resize_tab {
+                        tab_index += 1;
+                        continue;
+                    }
                     let (tab_id, pane_count, should_sync) = {
                         let tab = &mut self.tabs[tab_index];
                         (
@@ -443,6 +527,9 @@ impl TerminalView {
         let mut needs_throttle_follow_up = false;
 
         for tab_index in 0..self.tabs.len() {
+            if tab_index != self.active_tab && !apply_deferred_inactive_resize {
+                continue;
+            }
             let pane_count = self.tabs[tab_index].panes.len();
             let tab_uses_native_split_padding =
                 Self::uses_native_split_content_padding(runtime_uses_tmux, pane_count);
@@ -505,19 +592,38 @@ impl TerminalView {
             }
         }
 
+        let final_resize_signature = self.terminal_resize_signature(
+            viewport_width,
+            viewport_height,
+            cell_width,
+            cell_height,
+            total_sidebar_width,
+            content_top_inset,
+            backend_mode,
+        );
+        let has_inactive_terminal = self.tabs.iter().enumerate().any(|(tab_index, tab)| {
+            tab_index != self.active_tab
+                && tab.panes.iter().any(|pane| pane.maybe_terminal().is_some())
+        });
+        if apply_deferred_inactive_resize {
+            self.deferred_inactive_resize = if needs_throttle_follow_up {
+                DeferredTerminalResize::Ready {
+                    signature: final_resize_signature,
+                }
+            } else {
+                DeferredTerminalResize::Idle
+            };
+        } else if has_inactive_terminal {
+            self.schedule_deferred_inactive_resize(final_resize_signature, cx);
+        } else {
+            self.deferred_inactive_resize = DeferredTerminalResize::Idle;
+        }
+
         if needs_throttle_follow_up {
             self.last_terminal_resize_signature = None;
             self.schedule_resize_throttle_follow_up(throttle_follow_up_delay, cx);
         } else {
-            self.last_terminal_resize_signature = Some(self.terminal_resize_signature(
-                viewport_width,
-                viewport_height,
-                cell_width,
-                cell_height,
-                total_sidebar_width,
-                content_top_inset,
-                backend_mode,
-            ));
+            self.last_terminal_resize_signature = Some(final_resize_signature);
         }
         self.sync_active_alternate_screen_state();
     }
@@ -546,6 +652,47 @@ mod tests {
             last_alternate_screen: Cell::new(false),
             cached_element_ids: PaneCachedElementIds::new(id),
         }
+    }
+
+    fn test_resize_signature(active_tab_id: TabId) -> TerminalResizeSignature {
+        TerminalResizeSignature {
+            viewport_width_bits: 800.0_f32.to_bits(),
+            viewport_height_bits: 600.0_f32.to_bits(),
+            cell_width_bits: 10.0_f32.to_bits(),
+            cell_height_bits: 20.0_f32.to_bits(),
+            sidebar_width_bits: 0.0_f32.to_bits(),
+            content_top_inset_bits: 32.0_f32.to_bits(),
+            padding_x_bits: 8.0_f32.to_bits(),
+            padding_y_bits: 8.0_f32.to_bits(),
+            runtime_kind: RuntimeKind::Native,
+            active_tab_id: Some(active_tab_id),
+            pane_layout_fingerprint: 1,
+        }
+    }
+
+    #[test]
+    fn deferred_resize_keeps_one_deadline_and_rejects_stale_wakeups() {
+        let first_signature = test_resize_signature(1);
+        let second_signature = test_resize_signature(2);
+        let first_deadline = Instant::now() + Duration::from_millis(120);
+        let second_deadline = first_deadline + Duration::from_millis(16);
+        let mut deferred = DeferredTerminalResize::Idle;
+
+        assert!(deferred.schedule(first_signature, first_deadline));
+        assert!(!deferred.schedule(first_signature, second_deadline));
+        assert_eq!(
+            deferred,
+            DeferredTerminalResize::Pending {
+                signature: first_signature,
+                deadline: first_deadline,
+            }
+        );
+
+        assert!(!deferred.schedule(second_signature, second_deadline));
+        assert!(!deferred.mark_ready(first_signature, first_deadline));
+        assert!(deferred.mark_ready(second_signature, second_deadline));
+        assert!(deferred.is_ready_for(second_signature));
+        assert!(!deferred.is_ready_for(first_signature));
     }
 
     #[test]

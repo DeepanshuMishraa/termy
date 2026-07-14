@@ -20,6 +20,15 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod context;
+mod events;
+
+pub use context::{
+    PluginContext, PluginPaneContext, PluginPaneKind, PluginRuntimeKind, PluginTabContext,
+};
+pub use events::{PluginEvent, PluginEventDispatch, PluginEventKind};
+use events::{PluginEventSubscriptionDescriptor, RegisteredPluginEvent};
+
 const MAX_PROTOCOL_BYTES: usize = 1024 * 1024;
 const MAX_PROTOCOL_HANDSHAKE_BYTES: usize = 1024;
 const LOAD_TIMEOUT: Duration = Duration::from_secs(90);
@@ -65,6 +74,7 @@ struct PluginRuntimeInner {
 struct PluginCatalog {
     fingerprint: Option<[u8; 32]>,
     commands: Vec<PluginCommand>,
+    events: Vec<RegisteredPluginEvent>,
     settings: BTreeMap<String, Vec<PluginSetting>>,
     revisions: BTreeMap<String, String>,
 }
@@ -332,17 +342,6 @@ pub struct PluginSelectOption {
     pub status: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PluginContext {
-    pub working_directory: Option<String>,
-    pub active_command: Option<String>,
-    pub platform: String,
-    pub app_version: String,
-    #[serde(default)]
-    pub settings: BTreeMap<String, Value>,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(tag = "type")]
 pub enum PluginAction {
@@ -413,12 +412,20 @@ enum HostRequest<'a> {
         inputs: &'a BTreeMap<String, Value>,
         context: &'a PluginContext,
     },
+    Event {
+        id: u64,
+        #[serde(rename = "pluginId")]
+        plugin_id: &'a str,
+        revision: &'a str,
+        event: &'a PluginEvent,
+        context: &'a PluginContext,
+    },
 }
 
 impl HostRequest<'_> {
     fn id(&self) -> u64 {
         match self {
-            Self::Load { id, .. } | Self::Invoke { id, .. } => *id,
+            Self::Load { id, .. } | Self::Invoke { id, .. } | Self::Event { id, .. } => *id,
         }
     }
 }
@@ -446,6 +453,7 @@ struct HostLoadResult {
 struct HostLoadedPlugin {
     plugin_id: String,
     commands: Value,
+    events: Value,
     settings: Value,
 }
 
@@ -1125,6 +1133,7 @@ impl PluginRuntime {
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             catalog.fingerprint = Some(discovered.fingerprint);
             catalog.commands.clear();
+            catalog.events.clear();
             catalog.settings.clear();
             catalog.revisions.clear();
             let bundles = plugins_dir.join(".termy-cache/bundles");
@@ -1191,6 +1200,7 @@ impl PluginRuntime {
             .collect::<HashMap<_, _>>();
         let mut seen_plugins = HashSet::new();
         let mut commands = Vec::new();
+        let mut events = Vec::new();
         let mut settings = BTreeMap::new();
         let mut revisions = BTreeMap::new();
         for loaded in load_result.plugins {
@@ -1233,6 +1243,32 @@ impl PluginRuntime {
                 errors.push(format!("{}: {error}", loaded.plugin_id));
                 continue;
             }
+            let plugin_events = match serde_json::from_value::<Vec<PluginEventSubscriptionDescriptor>>(
+                loaded.events,
+            ) {
+                Ok(events) => events,
+                Err(error) => {
+                    errors.push(format!(
+                        "{}: invalid event subscription: {error}",
+                        loaded.plugin_id
+                    ));
+                    continue;
+                }
+            };
+            if plugin_events
+                .iter()
+                .any(|subscription| subscription.plugin_id != loaded.plugin_id)
+            {
+                errors.push(format!(
+                    "{}: event subscription used the wrong plugin ID",
+                    loaded.plugin_id
+                ));
+                continue;
+            }
+            if let Err(error) = validate_event_subscriptions(&plugin_events) {
+                errors.push(format!("{}: {error}", loaded.plugin_id));
+                continue;
+            }
             let plugin_settings =
                 match serde_json::from_value::<Vec<PluginSetting>>(loaded.settings) {
                     Ok(settings) => settings,
@@ -1249,6 +1285,16 @@ impl PluginRuntime {
                 continue;
             }
             commands.extend(plugin_commands);
+            events.extend(
+                plugin_events
+                    .into_iter()
+                    .map(|subscription| RegisteredPluginEvent {
+                        plugin_id: subscription.plugin_id,
+                        event: subscription.event,
+                        timeout_ms: subscription.timeout_ms,
+                        revision: (*revision).to_string(),
+                    }),
+            );
             settings.insert(loaded.plugin_id.clone(), plugin_settings);
             revisions.insert(loaded.plugin_id, (*revision).to_string());
         }
@@ -1260,6 +1306,7 @@ impl PluginRuntime {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         catalog.fingerprint = errors.is_empty().then_some(discovered.fingerprint);
         catalog.commands = commands;
+        catalog.events = events;
         catalog.settings = settings;
         catalog.revisions = revisions;
         Ok(PluginRefresh {
@@ -1287,21 +1334,7 @@ impl PluginRuntime {
         validate_inputs(&command, &inputs)?;
         context.settings = self.resolved_plugin_settings(plugin_id)?;
         let timeout_ms = command.timeout_ms.clamp(100, MAX_INVOKE_TIMEOUT_MS);
-        let (request_id, connection) = {
-            let mut host = self
-                .inner
-                .host
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let request_id = host.next_id();
-            let Some(connection) = host.connection.as_ref().map(Arc::clone) else {
-                return Err(
-                    "Plugin runtime is unavailable; reopen the command palette to reload plugins"
-                        .to_string(),
-                );
-            };
-            (request_id, connection)
-        };
+        let (request_id, connection) = self.next_host_request()?;
         let request = HostRequest::Invoke {
             id: request_id,
             plugin_id,
@@ -1310,12 +1343,111 @@ impl PluginRuntime {
             inputs: &inputs,
             context: &context,
         };
+        self.request_actions(&connection, &request, timeout_ms)
+    }
+
+    pub fn has_event_subscribers(&self, event: PluginEventKind) -> bool {
+        self.inner
+            .catalog
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .events
+            .iter()
+            .any(|subscription| subscription.event == event)
+    }
+
+    pub fn dispatch_event(
+        &self,
+        event: PluginEvent,
+        context: PluginContext,
+    ) -> PluginEventDispatch {
+        let subscriptions = self
+            .inner
+            .catalog
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .events
+            .iter()
+            .filter(|subscription| subscription.event == event.kind())
+            .cloned()
+            .collect::<Vec<_>>();
+        if subscriptions.is_empty() {
+            return PluginEventDispatch::default();
+        }
+
+        let results = thread::scope(|scope| {
+            subscriptions
+                .iter()
+                .map(|subscription| {
+                    let event = &event;
+                    let context = context.clone();
+                    scope.spawn(move || self.dispatch_event_to_plugin(subscription, event, context))
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|handle| handle.join())
+                .collect::<Vec<_>>()
+        });
+
+        let mut dispatch = PluginEventDispatch::default();
+        for (subscription, result) in subscriptions.iter().zip(results) {
+            match result {
+                Ok(Ok(actions)) => dispatch.actions.extend(actions),
+                Ok(Err(error)) => dispatch
+                    .errors
+                    .push(format!("{}: {error}", subscription.plugin_id)),
+                Err(_) => dispatch.errors.push(format!(
+                    "{}: plugin event worker panicked",
+                    subscription.plugin_id
+                )),
+            }
+        }
+        dispatch
+    }
+
+    fn dispatch_event_to_plugin(
+        &self,
+        subscription: &RegisteredPluginEvent,
+        event: &PluginEvent,
+        mut context: PluginContext,
+    ) -> Result<Vec<PluginAction>, String> {
+        context.settings = self.resolved_plugin_settings(&subscription.plugin_id)?;
+        let (request_id, connection) = self.next_host_request()?;
+        let request = HostRequest::Event {
+            id: request_id,
+            plugin_id: &subscription.plugin_id,
+            revision: &subscription.revision,
+            event,
+            context: &context,
+        };
+        self.request_actions(&connection, &request, subscription.timeout_ms)
+    }
+
+    fn next_host_request(&self) -> Result<(u64, Arc<HostConnection>), String> {
+        let mut host = self
+            .inner
+            .host
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let request_id = host.next_id();
+        let connection = host.connection.as_ref().map(Arc::clone).ok_or_else(|| {
+            "Plugin runtime is unavailable; reload plugins and try again".to_string()
+        })?;
+        Ok((request_id, connection))
+    }
+
+    fn request_actions(
+        &self,
+        connection: &Arc<HostConnection>,
+        request: &HostRequest<'_>,
+        timeout_ms: u64,
+    ) -> Result<Vec<PluginAction>, String> {
         let timeout = Duration::from_millis(
             timeout_ms
                 .saturating_add(MAX_INVOKE_QUEUE_WAIT_MS)
                 .saturating_add(1_000),
         );
-        let invoke_result = match connection.request::<HostInvokeResult>(&request, timeout) {
+        let invoke_result = match connection.request::<HostInvokeResult>(request, timeout) {
             Ok(result) => result,
             Err(error) => {
                 if matches!(error, HostRequestError::Transport(_)) {
@@ -1327,7 +1459,7 @@ impl PluginRuntime {
                     if host
                         .connection
                         .as_ref()
-                        .is_some_and(|current| Arc::ptr_eq(current, &connection))
+                        .is_some_and(|current| Arc::ptr_eq(current, connection))
                     {
                         host.connection.take();
                     }
@@ -2493,6 +2625,26 @@ fn validate_commands(commands: &[PluginCommand]) -> Result<(), String> {
                 }
                 PluginInput::Text { .. } | PluginInput::Confirm { .. } => {}
             }
+        }
+    }
+    Ok(())
+}
+
+fn validate_event_subscriptions(
+    subscriptions: &[PluginEventSubscriptionDescriptor],
+) -> Result<(), String> {
+    let mut events = HashSet::new();
+    for subscription in subscriptions {
+        if !valid_id(&subscription.plugin_id) {
+            return Err("Plugin event subscription has an invalid plugin ID".to_string());
+        }
+        if !events.insert(subscription.event) {
+            return Err("Plugin subscribes to the same event more than once".to_string());
+        }
+        if !(100..=MAX_INVOKE_TIMEOUT_MS).contains(&subscription.timeout_ms) {
+            return Err(format!(
+                "Plugin event timeout must be between 100 and {MAX_INVOKE_TIMEOUT_MS} ms"
+            ));
         }
     }
     Ok(())

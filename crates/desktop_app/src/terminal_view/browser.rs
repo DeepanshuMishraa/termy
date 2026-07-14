@@ -163,7 +163,8 @@ impl TerminalView {
         self.mark_tab_strip_layout_dirty();
         self.reset_tab_interaction_state();
         self.sync_tab_strip_for_active_tab();
-        self.schedule_persist_native_workspace();
+        self.sync_plugin_lifecycle_state(false, cx);
+        self.schedule_persist_native_workspace(cx);
         self.start_new_tab_animation(tab_id, cx);
         cx.notify();
     }

@@ -1,4 +1,5 @@
 use crate::frame::TermyFrame;
+use std::sync::Arc;
 use termy_search::{SearchConfig, SearchEngine, SearchMode};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -8,6 +9,31 @@ pub struct TermySearchMatch {
     /// Inclusive end column for Swift/FFI consumers.
     pub end_col: usize,
     pub line: String,
+}
+
+/// Allocation-efficient search result whose line text is shared by matches on
+/// the same row. Use this for large result sets; [`TermySearchMatch`] remains
+/// available for callers that require independently owned strings.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TermySharedSearchMatch {
+    pub row: usize,
+    pub start_col: usize,
+    /// Inclusive end column for Swift/FFI consumers.
+    pub end_col: usize,
+    /// Shared by every match on this row so common queries do not duplicate
+    /// the complete line for each match.
+    pub line: Arc<String>,
+}
+
+impl From<TermySharedSearchMatch> for TermySearchMatch {
+    fn from(search_match: TermySharedSearchMatch) -> Self {
+        Self {
+            row: search_match.row,
+            start_col: search_match.start_col,
+            end_col: search_match.end_col,
+            line: Arc::unwrap_or_clone(search_match.line),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -25,24 +51,39 @@ pub fn search_frame_with_options(
     query: &str,
     options: TermySearchOptions,
 ) -> Vec<TermySearchMatch> {
+    search_frame_shared_with_options(frame, query, options)
+        .into_iter()
+        .map(Into::into)
+        .collect()
+}
+
+pub fn search_frame_shared(frame: &TermyFrame, query: &str) -> Vec<TermySharedSearchMatch> {
+    search_frame_shared_with_options(frame, query, TermySearchOptions::default())
+}
+
+pub fn search_frame_shared_with_options(
+    frame: &TermyFrame,
+    query: &str,
+    options: TermySearchOptions,
+) -> Vec<TermySharedSearchMatch> {
     if query.is_empty() || frame.cols == 0 {
         return Vec::new();
     }
 
     let cols = usize::from(frame.cols);
     let rows = usize::from(frame.rows);
-    search_lines(
+    search_lines_shared(
         (0..rows).map(|row| (row, line_text(frame, row, cols))),
         query,
         options,
     )
 }
 
-pub(crate) fn search_lines(
+pub(crate) fn search_lines_shared(
     lines: impl IntoIterator<Item = (usize, String)>,
     query: &str,
     options: TermySearchOptions,
-) -> Vec<TermySearchMatch> {
+) -> Vec<TermySharedSearchMatch> {
     if query.is_empty() {
         return Vec::new();
     }
@@ -61,15 +102,21 @@ pub(crate) fn search_lines(
 
     let mut matches = Vec::new();
     for (row, line) in lines {
-        for search_match in engine.search_line(row as i32, &line) {
+        let line_matches = engine.search_line(row as i32, &line);
+        if line_matches.is_empty() {
+            continue;
+        }
+
+        let line = Arc::new(line);
+        for search_match in line_matches {
             if search_match.end_col <= search_match.start_col {
                 continue;
             }
-            matches.push(TermySearchMatch {
+            matches.push(TermySharedSearchMatch {
                 row,
                 start_col: search_match.start_col,
                 end_col: search_match.end_col.saturating_sub(1),
-                line: line.clone(),
+                line: Arc::clone(&line),
             });
         }
     }
@@ -121,6 +168,17 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn matches_on_the_same_row_share_line_text() {
+        let frame = frame_from_rows(20, &["needle needle", "needle"]);
+
+        let matches = search_frame_shared(&frame, "needle");
+
+        assert_eq!(matches.len(), 3);
+        assert!(Arc::ptr_eq(&matches[0].line, &matches[1].line));
+        assert!(!Arc::ptr_eq(&matches[0].line, &matches[2].line));
     }
 
     #[test]

@@ -1127,7 +1127,7 @@ impl TerminalView {
             } else if self.pane_resize_drag.take().is_some() {
                 self.pane_resize_blocked = false;
                 if self.runtime_kind() == RuntimeKind::Native {
-                    self.schedule_persist_native_workspace();
+                    self.schedule_persist_native_workspace(cx);
                 }
                 cx.notify();
             }
@@ -1216,7 +1216,7 @@ impl TerminalView {
         if event.button == MouseButton::Left && self.pane_resize_drag.take().is_some() {
             self.pane_resize_blocked = false;
             if self.runtime_kind() == RuntimeKind::Native {
-                self.schedule_persist_native_workspace();
+                self.schedule_persist_native_workspace(cx);
             }
             cx.stop_propagation();
             cx.notify();

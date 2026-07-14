@@ -403,6 +403,15 @@ impl TerminalView {
         );
     }
 
+    pub(in super::super) fn handle_run_plugin_command_action(
+        &mut self,
+        action: &commands::RunPluginCommand,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.run_plugin_command_from_keybinding(&action.plugin_id, &action.command_id, window, cx);
+    }
+
     pub(crate) fn open_new_tab_from_deeplink(
         &mut self,
         command: Option<&str>,

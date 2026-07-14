@@ -46,7 +46,10 @@ impl SearchState {
     }
 
     pub fn set_query(&mut self, query: &str) {
-        self.query = query.to_string();
+        if self.query != query {
+            self.query.clear();
+            self.query.push_str(query);
+        }
         match self.engine.set_pattern(query) {
             Ok(()) => self.error = None,
             Err(e) => self.error = Some(e),

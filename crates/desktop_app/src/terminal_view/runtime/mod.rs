@@ -137,6 +137,7 @@ impl TerminalView {
     pub(super) fn runtime_startup_from_app_config(
         config: &AppConfig,
         event_wakeup_tx: &Sender<()>,
+        native_terminal_wakeup_router: &NativeTerminalWakeupRouter,
         configured_working_dir: Option<&str>,
         tab_shell_integration: &TabTitleShellIntegration,
         terminal_runtime: &TerminalRuntimeConfig,
@@ -206,7 +207,7 @@ impl TerminalView {
                         ..TerminalSize::default()
                     },
                     configured_working_dir,
-                    Some(event_wakeup_tx.clone()),
+                    Some(native_terminal_wakeup_router),
                     Some(tab_shell_integration),
                     Some(terminal_runtime),
                     startup_command,

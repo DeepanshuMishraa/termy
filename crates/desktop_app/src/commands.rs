@@ -17,6 +17,34 @@ impl RunNamedTask {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, gpui::Action)]
+#[action(namespace = termy, no_json)]
+pub struct RunPluginCommand {
+    pub plugin_id: String,
+    pub command_id: String,
+}
+
+impl RunPluginCommand {
+    pub fn into_key_binding(self, trigger: &str) -> KeyBinding {
+        KeyBinding::new(trigger, self, TERMINAL_CONTEXT)
+    }
+
+    pub fn keybinding_label(&self, window: &Window, focus_handle: &FocusHandle) -> Option<String> {
+        window
+            .bindings_for_action_in(self, focus_handle)
+            .into_iter()
+            .next()
+            .map(|binding| {
+                binding
+                    .keystrokes()
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+    }
+}
+
 pub type MenuSection = u8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

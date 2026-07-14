@@ -29,6 +29,22 @@ fn bun_is_available() -> bool {
     }
 }
 
+fn test_plugin_context() -> PluginContext {
+    PluginContext {
+        working_directory: None,
+        active_command: None,
+        selected_text: None,
+        selected_text_truncated: false,
+        shell: "/bin/test-shell".to_string(),
+        runtime: PluginRuntimeKind::Native,
+        active_tab: None,
+        active_pane: None,
+        platform: std::env::consts::OS.to_string(),
+        app_version: "test".to_string(),
+        settings: BTreeMap::new(),
+    }
+}
+
 #[test]
 fn discovery_is_sorted_and_fingerprints_contents() {
     let temp = TempDir::new().expect("temp dir");
@@ -594,13 +610,7 @@ export default definePlugin({
     let inputs = (0..16)
         .map(|index| (format!("input-{index}"), large_value.clone()))
         .collect();
-    let context = || PluginContext {
-        working_directory: None,
-        active_command: None,
-        platform: std::env::consts::OS.to_string(),
-        app_version: "test".to_string(),
-        settings: BTreeMap::new(),
-    };
+    let context = test_plugin_context;
 
     let error = runtime
         .invoke("large-input", "run", &revision, inputs, context())
@@ -693,7 +703,17 @@ export default definePlugin({
       title: "Hello: Context toasts",
       run({ context }) {
         context.toasts.info(`Running on ${context.platform}`);
-        context.toasts.success(`Termy ${context.appVersion} is ready`);
+        context.toasts.success([
+          context.runtime,
+          context.shell,
+          context.activeTab?.title,
+          context.activePane?.kind,
+          context.selectedText,
+          context.selectedTextTruncated,
+          Object.isFrozen(context),
+          Object.isFrozen(context.activeTab),
+          Object.isFrozen(context.activePane),
+        ].join("|"));
         return { type: "toast", level: "warning", message: "Returned action" };
       },
     },
@@ -731,6 +751,15 @@ export default definePlugin({
       },
     },
   ],
+  events: {
+    "terminal.ready"({ event, context }) {
+      return {
+        type: "toast",
+        level: "success",
+        message: `${event.type}|${context.runtime}|${context.settings.get("greeting")}|${Object.isFrozen(event)}`,
+      };
+    },
+  },
 });
 "#,
     );
@@ -773,11 +802,21 @@ export default definePlugin({
         .expect("hello command revision")
         .1;
     let context = PluginContext {
-        working_directory: None,
-        active_command: None,
-        platform: std::env::consts::OS.to_string(),
-        app_version: "test".to_string(),
-        settings: BTreeMap::new(),
+        working_directory: Some("/repo".to_string()),
+        active_command: Some("cargo test".to_string()),
+        selected_text: Some("failed assertion".to_string()),
+        shell: "/bin/zsh".to_string(),
+        runtime: PluginRuntimeKind::Tmux,
+        active_tab: Some(PluginTabContext {
+            index: 2,
+            title: "tests".to_string(),
+            pane_count: 3,
+        }),
+        active_pane: Some(PluginPaneContext {
+            index: 1,
+            kind: PluginPaneKind::Terminal,
+        }),
+        ..test_plugin_context()
     };
     let settings = runtime.plugin_settings_snapshot();
     assert!(settings.errors.is_empty(), "errors: {:?}", settings.errors);
@@ -851,13 +890,25 @@ export default definePlugin({
             },
             PluginAction::Toast {
                 level: PluginToastLevel::Success,
-                message: "Termy test is ready".to_string(),
+                message: "tmux|/bin/zsh|tests|terminal|failed assertion|false|true|true|true"
+                    .to_string(),
             },
             PluginAction::Toast {
                 level: PluginToastLevel::Warning,
                 message: "Returned action".to_string(),
             },
         ]
+    );
+    assert!(runtime.has_event_subscribers(PluginEventKind::TerminalReady));
+    assert!(!runtime.has_event_subscribers(PluginEventKind::TabActivated));
+    let dispatch = runtime.dispatch_event(PluginEvent::TerminalReady, context.clone());
+    assert!(dispatch.errors.is_empty(), "errors: {:?}", dispatch.errors);
+    assert_eq!(
+        dispatch.actions,
+        vec![PluginAction::Toast {
+            level: PluginToastLevel::Success,
+            message: "terminal.ready|tmux|Yo|true".to_string(),
+        }]
     );
     let actions = runtime
         .invoke(
@@ -936,13 +987,7 @@ export default definePlugin({
             "greet",
             &revision,
             BTreeMap::from([("name".to_string(), Value::String("Again".to_string()))]),
-            PluginContext {
-                working_directory: None,
-                active_command: None,
-                platform: std::env::consts::OS.to_string(),
-                app_version: "test".to_string(),
-                settings: BTreeMap::new(),
-            },
+            test_plugin_context(),
         )
         .expect("invoke unchanged plugin after catalog reload");
     assert_eq!(
@@ -967,13 +1012,7 @@ export default definePlugin({
             "greet",
             &revision,
             BTreeMap::from([("name".to_string(), Value::String("Old".to_string()))]),
-            PluginContext {
-                working_directory: None,
-                active_command: None,
-                platform: std::env::consts::OS.to_string(),
-                app_version: "test".to_string(),
-                settings: BTreeMap::new(),
-            },
+            test_plugin_context(),
         )
         .expect_err("stale command schema revision must be rejected");
     assert!(error.contains("Plugin changed"));
@@ -988,13 +1027,7 @@ export default definePlugin({
             "storage",
             &new_revision,
             BTreeMap::new(),
-            PluginContext {
-                working_directory: None,
-                active_command: None,
-                platform: std::env::consts::OS.to_string(),
-                app_version: "test".to_string(),
-                settings: BTreeMap::new(),
-            },
+            test_plugin_context(),
         )
         .expect("plugin storage should survive Worker replacement");
     assert_eq!(
@@ -1155,13 +1188,7 @@ export default definePlugin({
         .command_with_revision("fast", "run")
         .expect("fast command")
         .1;
-    let context = || PluginContext {
-        working_directory: None,
-        active_command: None,
-        platform: std::env::consts::OS.to_string(),
-        app_version: "test".to_string(),
-        settings: BTreeMap::new(),
-    };
+    let context = test_plugin_context;
     let slow_runtime = runtime.clone();
     let (started_tx, started_rx) = mpsc::channel();
     let slow = thread::spawn(move || {
@@ -1171,13 +1198,7 @@ export default definePlugin({
             "run",
             &slow_revision,
             BTreeMap::new(),
-            PluginContext {
-                working_directory: None,
-                active_command: None,
-                platform: std::env::consts::OS.to_string(),
-                app_version: "test".to_string(),
-                settings: BTreeMap::new(),
-            },
+            test_plugin_context(),
         )
     });
     started_rx.recv().expect("wait for slow invocation");
@@ -1259,13 +1280,7 @@ export default definePlugin({
             "slow",
             &slow_revision,
             BTreeMap::new(),
-            PluginContext {
-                working_directory: None,
-                active_command: None,
-                platform: std::env::consts::OS.to_string(),
-                app_version: "test".to_string(),
-                settings: BTreeMap::new(),
-            },
+            test_plugin_context(),
         )
     });
     let marker_deadline = Instant::now() + Duration::from_secs(2);
@@ -1284,13 +1299,7 @@ export default definePlugin({
             "quick",
             &revision,
             BTreeMap::new(),
-            PluginContext {
-                working_directory: None,
-                active_command: None,
-                platform: std::env::consts::OS.to_string(),
-                app_version: "test".to_string(),
-                settings: BTreeMap::new(),
-            },
+            test_plugin_context(),
         )
         .expect("queued quick invocation should receive its full execution timeout");
     assert!(

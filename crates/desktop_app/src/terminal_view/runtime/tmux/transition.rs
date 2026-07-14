@@ -31,7 +31,7 @@ impl TerminalView {
         let terminal = Terminal::new_native(
             size,
             self.configured_working_dir.as_deref(),
-            Some(self.event_wakeup_tx.clone()),
+            Some(&self.native_terminal_wakeup_router),
             Some(&self.tab_shell_integration),
             Some(&self.terminal_runtime),
             None,

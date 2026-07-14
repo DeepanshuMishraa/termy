@@ -7,7 +7,9 @@ use crate::osc_intercept::{OscEvent, OscInterceptor};
 use crate::path_env::normalized_path_env;
 use crate::protocol::{TerminalQueryColors, TerminalReplyHost, reply_bytes_for_event};
 use crate::render_metrics::increment_runtime_wakeup_count;
-use crate::search::{TermySearchMatch, TermySearchOptions, search_lines};
+use crate::search::{
+    TermySearchMatch, TermySearchOptions, TermySharedSearchMatch, search_lines_shared,
+};
 use crate::shell_integration::ProgressState;
 use alacritty_terminal::{
     event::{Event as AlacEvent, EventListener, OnResize, WindowSize},
@@ -155,6 +157,12 @@ impl Default for TerminalRuntimeConfig {
             scrollback_history: DEFAULT_SCROLLBACK_HISTORY,
             default_cursor_style: TerminalCursorStyle::Block,
         }
+    }
+}
+
+impl TerminalRuntimeConfig {
+    pub fn resolved_shell_program(&self) -> String {
+        default_shell_launch(self).program
     }
 }
 
@@ -719,6 +727,28 @@ pub enum TerminalEvent {
     WorkingDirectory(String),
 }
 
+/// Host-provided callback used to schedule terminal event draining.
+///
+/// The callback is intentionally payload-free: hosts that multiplex several
+/// terminals can capture their own stable terminal identifier, while the FFI
+/// host can keep using its existing one-terminal wake channel.
+#[derive(Clone)]
+pub struct TerminalWakeupNotifier {
+    notify: Arc<dyn Fn() + Send + Sync>,
+}
+
+impl TerminalWakeupNotifier {
+    pub fn new(notify: impl Fn() + Send + Sync + 'static) -> Self {
+        Self {
+            notify: Arc::new(notify),
+        }
+    }
+
+    fn notify(&self) {
+        (self.notify)();
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TerminalDirtySpan {
     pub row: usize,
@@ -763,6 +793,17 @@ fn search_term_buffer<T: EventListener>(
     query: &str,
     options: TermySearchOptions,
 ) -> Vec<TermySearchMatch> {
+    search_term_buffer_shared(term, query, options)
+        .into_iter()
+        .map(Into::into)
+        .collect()
+}
+
+fn search_term_buffer_shared<T: EventListener>(
+    term: &Term<T>,
+    query: &str,
+    options: TermySearchOptions,
+) -> Vec<TermySharedSearchMatch> {
     let grid = term.grid();
     let cols = grid.columns();
     let history_size = grid.history_size();
@@ -775,7 +816,7 @@ fn search_term_buffer<T: EventListener>(
         let line = Line(absolute_row as i32 - history_size as i32);
         (absolute_row, searchable_grid_line(term, line, cols))
     });
-    search_lines(lines, query, options)
+    search_lines_shared(lines, query, options)
 }
 
 fn searchable_grid_line<T: EventListener>(term: &Term<T>, line: Line, cols: usize) -> String {
@@ -829,7 +870,7 @@ pub fn take_term_damage_snapshot<T: EventListener>(term: &mut Term<T>) -> Termin
 #[derive(Clone)]
 pub struct JsonEventListener {
     events_tx: Sender<RuntimeEvent>,
-    wake_tx: Option<Sender<()>>,
+    wakeup_notifier: Option<TerminalWakeupNotifier>,
     replay_suppressed: Arc<AtomicBool>,
     wakeup_queued: Arc<AtomicBool>,
     wakeup_signal_pending: Arc<AtomicBool>,
@@ -838,9 +879,21 @@ pub struct JsonEventListener {
 
 impl JsonEventListener {
     fn new(events_tx: Sender<RuntimeEvent>, wake_tx: Option<Sender<()>>) -> Self {
+        let wakeup_notifier = wake_tx.map(|wake_tx| {
+            TerminalWakeupNotifier::new(move || {
+                let _ = wake_tx.try_send(());
+            })
+        });
+        Self::new_with_wakeup_notifier(events_tx, wakeup_notifier)
+    }
+
+    fn new_with_wakeup_notifier(
+        events_tx: Sender<RuntimeEvent>,
+        wakeup_notifier: Option<TerminalWakeupNotifier>,
+    ) -> Self {
         Self {
             events_tx,
-            wake_tx,
+            wakeup_notifier,
             replay_suppressed: Arc::new(AtomicBool::new(false)),
             wakeup_queued: Arc::new(AtomicBool::new(false)),
             wakeup_signal_pending: Arc::new(AtomicBool::new(false)),
@@ -883,8 +936,8 @@ impl JsonEventListener {
     }
 
     fn send_wake_signal(&self) {
-        if let Some(wake_tx) = &self.wake_tx {
-            let _ = wake_tx.try_send(());
+        if let Some(wakeup_notifier) = &self.wakeup_notifier {
+            wakeup_notifier.notify();
         }
     }
 
@@ -1349,7 +1402,7 @@ impl NativeEventLoop {
 }
 
 /// Terminal dimensions in cells and pixels
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TerminalSize {
     pub cols: u16,
     pub rows: u16,
@@ -1456,6 +1509,33 @@ impl Terminal {
         runtime_config: Option<&TerminalRuntimeConfig>,
         startup_command: Option<&str>,
     ) -> anyhow::Result<Self> {
+        let wakeup_notifier = event_wakeup_tx.map(|event_wakeup_tx| {
+            TerminalWakeupNotifier::new(move || {
+                let _ = event_wakeup_tx.try_send(());
+            })
+        });
+        Self::new_with_wakeup_notifier(
+            size,
+            configured_working_dir,
+            wakeup_notifier,
+            tab_title_shell_integration,
+            runtime_config,
+            startup_command,
+        )
+    }
+
+    /// Create a terminal whose wakeups are routed through a host callback.
+    ///
+    /// Multi-terminal hosts can capture a stable terminal identifier in the
+    /// callback and drain only the terminal that produced the wakeup.
+    pub fn new_with_wakeup_notifier(
+        size: TerminalSize,
+        configured_working_dir: Option<&str>,
+        wakeup_notifier: Option<TerminalWakeupNotifier>,
+        tab_title_shell_integration: Option<&TabTitleShellIntegration>,
+        runtime_config: Option<&TerminalRuntimeConfig>,
+        startup_command: Option<&str>,
+    ) -> anyhow::Result<Self> {
         let size = size.clamped();
         let (events_tx, events_rx) = unbounded();
         let runtime_config = runtime_config.cloned().unwrap_or_default();
@@ -1477,7 +1557,7 @@ impl Terminal {
 
         let term_config = runtime_config.term_options().term_config();
 
-        let listener = JsonEventListener::new(events_tx, event_wakeup_tx);
+        let listener = JsonEventListener::new_with_wakeup_notifier(events_tx, wakeup_notifier);
         let term = Term::new(term_config, &size, listener.clone());
         let term = Arc::new(FairMutex::new(term));
 
@@ -1591,9 +1671,13 @@ impl Terminal {
         self.write(input.as_bytes());
     }
 
-    /// Resize the terminal
+    /// Resize the terminal. Identical sizes are ignored; use [`Self::nudge_resize`]
+    /// when the child needs a fresh `SIGWINCH` without a dimension change.
     pub fn resize(&mut self, new_size: TerminalSize) {
         let new_size = new_size.clamped();
+        if self.size == new_size {
+            return;
+        }
         self.size = new_size;
         if let Some(pty_tx) = &self.pty_tx {
             let _ = pty_tx.send(EventLoopMsg::Resize(new_size.into()));
@@ -1630,9 +1714,9 @@ impl Terminal {
         // event even though wake-channel nudges continue.
         self.listener.reset_wakeup_queued();
 
-        // The desktop host checks every pane whenever the shared wake channel
-        // fires. Consume the first item before allocating drain state so empty
-        // panes stay allocation-free without an `is_empty`/`try_recv` race.
+        // Consume the first item before allocating drain state so a coalesced
+        // or otherwise spurious host drain stays allocation-free without an
+        // `is_empty`/`try_recv` race.
         let Ok(first_event) = self.events_rx.try_recv() else {
             return (Vec::new(), false);
         };
@@ -1682,6 +1766,21 @@ impl Terminal {
         options: TermySearchOptions,
     ) -> Vec<TermySearchMatch> {
         self.with_term(|term| search_term_buffer(term, query, options))
+    }
+
+    /// Search the full terminal buffer while sharing line storage between
+    /// matches on the same row.
+    pub fn search_shared(&self, query: &str) -> Vec<TermySharedSearchMatch> {
+        self.search_shared_with_options(query, TermySearchOptions::default())
+    }
+
+    /// Allocation-efficient variant of [`Self::search_with_options`].
+    pub fn search_shared_with_options(
+        &self,
+        query: &str,
+        options: TermySearchOptions,
+    ) -> Vec<TermySharedSearchMatch> {
+        self.with_term(|term| search_term_buffer_shared(term, query, options))
     }
 
     /// The OSC 8 hyperlink under the given viewport cell, if any, expanded to
@@ -1941,11 +2040,11 @@ mod tests {
         GHOSTTY_COMPAT_TERM_PROGRAM_VERSION, JsonEventListener, MAX_SCROLLBACK_HISTORY,
         MAX_TERMINAL_COLS, MAX_TERMINAL_ROWS, RuntimeEvent, TERMY_TERM_PROGRAM, Terminal,
         TerminalCursorState, TerminalCursorStyle, TerminalDamageSnapshot, TerminalEvent,
-        TerminalOptions, TerminalRuntimeConfig, TerminalSize, WindowsShell, WorkingDirFallback,
-        apply_term_config, cursor_position_from_term, cursor_state_from_term, default_shell_launch,
-        drain_runtime_events, normalize_working_directory_candidate, pty_env_overrides,
-        resolve_launch_working_directory, resolve_shell_path, search_term_buffer,
-        should_drop_event, take_term_damage_snapshot, terminal_event_from_osc,
+        TerminalOptions, TerminalRuntimeConfig, TerminalSize, TerminalWakeupNotifier, WindowsShell,
+        WorkingDirFallback, apply_term_config, cursor_position_from_term, cursor_state_from_term,
+        default_shell_launch, drain_runtime_events, normalize_working_directory_candidate,
+        pty_env_overrides, resolve_launch_working_directory, resolve_shell_path,
+        search_term_buffer, should_drop_event, take_term_damage_snapshot, terminal_event_from_osc,
         termmode_to_terminal_mouse_mode, user_home_dir,
     };
     use crate::keyboard::{
@@ -1962,7 +2061,7 @@ mod tests {
     };
     use flume::unbounded;
     use std::collections::HashMap;
-    use std::sync::Arc;
+    use std::sync::{Arc, atomic::Ordering};
 
     #[test]
     fn terminal_size_clamps_absurd_dimensions() {
@@ -1988,6 +2087,28 @@ mod tests {
         .clamped();
         assert_eq!(clamped.cols, 200);
         assert_eq!(clamped.rows, 60);
+    }
+
+    #[test]
+    fn identical_terminal_resize_does_not_redamage_the_grid() {
+        let size = TerminalSize {
+            cols: 80,
+            rows: 24,
+            cell_width: 9.0,
+            cell_height: 18.0,
+        };
+        let mut terminal = Terminal::new_display(size, None);
+        assert_eq!(
+            terminal.take_damage_snapshot(),
+            TerminalDamageSnapshot::Full
+        );
+        let stable_damage = terminal.take_damage_snapshot();
+        assert_eq!(terminal.take_damage_snapshot(), stable_damage);
+
+        terminal.resize(size);
+
+        assert_eq!(terminal.size(), size);
+        assert_eq!(terminal.take_damage_snapshot(), stable_damage);
     }
 
     #[test]
@@ -2413,6 +2534,27 @@ mod tests {
             RuntimeEvent::Alacritty(alacritty_terminal::event::Event::Wakeup)
         ));
         assert_eq!(wake_rx.try_iter().count(), 1);
+    }
+
+    #[test]
+    fn json_event_listener_routes_coalesced_wakeups_through_notifier() {
+        let (events_tx, _events_rx) = unbounded();
+        let notifications = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let notification_count = notifications.clone();
+        let listener = JsonEventListener::new_with_wakeup_notifier(
+            events_tx,
+            Some(TerminalWakeupNotifier::new(move || {
+                notification_count.fetch_add(1, Ordering::Relaxed);
+            })),
+        );
+
+        listener.send_event(alacritty_terminal::event::Event::Wakeup);
+        listener.send_event(alacritty_terminal::event::Event::Wakeup);
+        assert_eq!(notifications.load(Ordering::Relaxed), 1);
+
+        listener.reset_wakeup_queued();
+        listener.send_event(alacritty_terminal::event::Event::Wakeup);
+        assert_eq!(notifications.load(Ordering::Relaxed), 2);
     }
 
     #[test]
@@ -3126,12 +3268,14 @@ mod tests {
     #[test]
     fn explicit_shell_path_wins() {
         assert_eq!(resolve_shell_path(Some("/bin/custom")), "/bin/custom");
-        let launch = default_shell_launch(&TerminalRuntimeConfig {
+        let config = TerminalRuntimeConfig {
             shell: Some("/bin/custom".to_string()),
             windows_shell: WindowsShell::PowerShell,
             ..TerminalRuntimeConfig::default()
-        });
+        };
+        let launch = default_shell_launch(&config);
         assert_eq!(launch.program, "/bin/custom");
+        assert_eq!(config.resolved_shell_program(), "/bin/custom");
     }
 
     #[cfg(target_os = "windows")]

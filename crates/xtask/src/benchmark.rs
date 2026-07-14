@@ -281,11 +281,41 @@ impl BenchmarkGateThresholds {
         let mut failures = Vec::new();
         let max_memory_delta_bytes = (self.max_memory_delta_mib * 1024.0 * 1024.0) as i64;
 
+        if summary.scenarios.is_empty() {
+            failures.push("benchmark summary contains no scenarios".to_string());
+        }
+
         for scenario in &summary.scenarios {
-            if matches!(
-                scenario.scenario.as_str(),
-                "steady-scroll" | "alt-screen-anim"
-            ) {
+            for (label, run) in [
+                ("baseline", &scenario.baseline),
+                ("candidate", &scenario.candidate),
+            ] {
+                if let Some(animation) = run.animation_summary.as_ref()
+                    && matches!(
+                        animation.displayed_frame_capture_status,
+                        FrameCaptureStatus::ParserError
+                    )
+                {
+                    failures.push(format!(
+                        "{}: {label} displayed-frame trace parser failed{}",
+                        scenario.scenario,
+                        animation
+                            .displayed_frame_capture_detail
+                            .as_ref()
+                            .map(|detail| format!(": {detail}"))
+                            .unwrap_or_default()
+                    ));
+                }
+            }
+            let minimum_displayed_frames = match scenario.scenario.as_str() {
+                "steady-scroll" | "alt-screen-anim" => self.min_displayed_frames,
+                // These scenarios actively produce terminal output, but may
+                // legitimately render fewer than the cadence sample floor.
+                // Still require proof that both targets displayed something.
+                "idle-burst" | "echo-train" => 1,
+                _ => 0,
+            };
+            if minimum_displayed_frames > 0 {
                 for (label, run) in [
                     ("baseline", &scenario.baseline),
                     ("candidate", &scenario.candidate),
@@ -294,15 +324,15 @@ impl BenchmarkGateThresholds {
                         .animation_summary
                         .as_ref()
                         .map_or(0, |animation| animation.displayed_frame_count);
-                    if count < self.min_displayed_frames {
+                    if count < minimum_displayed_frames {
                         failures.push(format!(
                             "{}: {label} displayed frame count {count} is below minimum {}",
-                            scenario.scenario, self.min_displayed_frames
+                            scenario.scenario, minimum_displayed_frames
                         ));
                     }
                 }
             }
-            check_optional_f32(
+            check_required_f32(
                 &mut failures,
                 &scenario.scenario,
                 "activity-monitor CPU delta",
@@ -310,7 +340,7 @@ impl BenchmarkGateThresholds {
                 self.max_cpu_delta_percent,
                 "%",
             );
-            check_optional_i64(
+            check_required_i64(
                 &mut failures,
                 &scenario.scenario,
                 "memory delta",
@@ -328,7 +358,7 @@ impl BenchmarkGateThresholds {
                     "ms",
                 );
             }
-            check_optional_i64(
+            check_required_i64(
                 &mut failures,
                 &scenario.scenario,
                 "hitch count delta",
@@ -337,7 +367,7 @@ impl BenchmarkGateThresholds {
                 "hitches",
             );
             if matches!(scenario.scenario.as_str(), "idle-blink" | "idle-burst") {
-                check_optional_i64(
+                check_required_i64(
                     &mut failures,
                     &scenario.scenario,
                     "idle wakeup delta",
@@ -365,6 +395,44 @@ impl BenchmarkGateThresholds {
         }
 
         failures
+    }
+}
+
+fn check_required_f32(
+    failures: &mut Vec<String>,
+    scenario: &str,
+    metric: &str,
+    value: Option<f32>,
+    max_allowed: f32,
+    unit: &str,
+) {
+    let Some(value) = value else {
+        failures.push(format!("{scenario}: required {metric} is missing"));
+        return;
+    };
+    if value > max_allowed {
+        failures.push(format!(
+            "{scenario}: {metric} {value:.2}{unit} exceeded {max_allowed:.2}{unit}"
+        ));
+    }
+}
+
+fn check_required_i64(
+    failures: &mut Vec<String>,
+    scenario: &str,
+    metric: &str,
+    value: Option<i64>,
+    max_allowed: i64,
+    unit: &str,
+) {
+    let Some(value) = value else {
+        failures.push(format!("{scenario}: required {metric} is missing"));
+        return;
+    };
+    if value > max_allowed {
+        failures.push(format!(
+            "{scenario}: {metric} {value}{unit} exceeded {max_allowed}{unit}"
+        ));
     }
 }
 
@@ -3493,6 +3561,112 @@ mod tests {
                 .iter()
                 .any(|failure| failure.contains("idle wakeup"))
         );
+    }
+
+    #[test]
+    fn benchmark_gates_fail_when_required_external_metrics_are_missing() {
+        let mut scenario = super::ScenarioComparison::new(
+            "idle-burst".to_string(),
+            run_result("baseline", 3.0, 10, 10 * 1024 * 1024),
+            run_result("candidate", 3.0, 10, 10 * 1024 * 1024),
+        );
+        scenario.deltas.activity_monitor_cpu_percent = None;
+        scenario.deltas.memory_bytes = None;
+        scenario.deltas.idle_wakeups = None;
+        scenario.deltas.hitch_count = None;
+        let summary = super::ComparisonSummary {
+            baseline: compared_target("baseline"),
+            candidate: compared_target("candidate"),
+            scenarios: vec![scenario],
+        };
+
+        let failures = super::BenchmarkGateThresholds::default().failures(&summary);
+
+        assert!(
+            failures
+                .iter()
+                .any(|failure| failure.contains("required activity-monitor CPU delta is missing"))
+        );
+        assert!(
+            failures
+                .iter()
+                .any(|failure| failure.contains("required memory delta is missing"))
+        );
+        assert!(
+            failures
+                .iter()
+                .any(|failure| failure.contains("required idle wakeup delta is missing"))
+        );
+        assert!(
+            failures
+                .iter()
+                .any(|failure| failure.contains("required hitch count delta is missing"))
+        );
+    }
+
+    #[test]
+    fn benchmark_gates_require_a_displayed_frame_for_active_output_scenarios() {
+        for scenario_name in ["idle-burst", "echo-train"] {
+            let summary = super::ComparisonSummary {
+                baseline: compared_target("baseline"),
+                candidate: compared_target("candidate"),
+                scenarios: vec![super::ScenarioComparison::new(
+                    scenario_name.to_string(),
+                    run_result("baseline", 3.0, 10, 10 * 1024 * 1024),
+                    run_result("candidate", 3.0, 10, 10 * 1024 * 1024),
+                )],
+            };
+
+            let failures = super::BenchmarkGateThresholds::default().failures(&summary);
+
+            assert!(failures.iter().any(|failure| {
+                failure.contains(&format!(
+                    "{scenario_name}: candidate displayed frame count 0 is below minimum 1"
+                ))
+            }));
+        }
+    }
+
+    #[test]
+    fn benchmark_gates_fail_when_summary_contains_no_scenarios() {
+        let summary = super::ComparisonSummary {
+            baseline: compared_target("baseline"),
+            candidate: compared_target("candidate"),
+            scenarios: Vec::new(),
+        };
+
+        let failures = super::BenchmarkGateThresholds::default().failures(&summary);
+
+        assert_eq!(failures, ["benchmark summary contains no scenarios"]);
+    }
+
+    #[test]
+    fn benchmark_gates_fail_when_displayed_frame_trace_parser_fails() {
+        let mut baseline = run_result("baseline", 3.0, 10, 10 * 1024 * 1024);
+        baseline.animation_summary = Some(super::AnimationSummary::default());
+        let mut candidate = run_result("candidate", 3.0, 10, 10 * 1024 * 1024);
+        candidate.animation_summary = Some(super::AnimationSummary {
+            displayed_frame_capture_status: super::FrameCaptureStatus::ParserError,
+            displayed_frame_capture_detail: Some("unparseable timestamp".to_string()),
+            ..super::AnimationSummary::default()
+        });
+        let summary = super::ComparisonSummary {
+            baseline: compared_target("baseline"),
+            candidate: compared_target("candidate"),
+            scenarios: vec![super::ScenarioComparison::new(
+                "idle-burst".to_string(),
+                baseline,
+                candidate,
+            )],
+        };
+
+        let failures = super::BenchmarkGateThresholds::default().failures(&summary);
+
+        assert!(failures.iter().any(|failure| {
+            failure.contains(
+                "idle-burst: candidate displayed-frame trace parser failed: unparseable timestamp",
+            )
+        }));
     }
 
     #[test]

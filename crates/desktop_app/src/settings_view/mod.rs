@@ -62,7 +62,6 @@ const SETTINGS_CONTROL_WIDTH: f32 = 300.0;
 const SETTINGS_CONTROL_HEIGHT: f32 = 30.0;
 const NUMERIC_STEP_BUTTON_SIZE: f32 = 22.0;
 const SETTINGS_INPUT_TEXT_SIZE: f32 = 13.0;
-const SETTINGS_CONFIG_WATCH_INTERVAL_MS: u64 = 750;
 const SETTINGS_SEARCH_NAV_THROTTLE_MS: u64 = 70;
 const SETTINGS_SCROLL_ANIMATION_DURATION_MS: u64 = 170;
 const SETTINGS_SCROLL_ANIMATION_TICK_MS: u64 = 16;
@@ -273,8 +272,7 @@ impl SettingsWindow {
         {
             cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
                 loop {
-                    let wait_rx = config_change_rx.clone();
-                    if smol::unblock(move || wait_rx.recv()).await.is_err() {
+                    if config_change_rx.recv_async().await.is_err() {
                         break;
                     }
                     while config_change_rx.try_recv().is_ok() {}
@@ -297,8 +295,7 @@ impl SettingsWindow {
         {
             cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
                 loop {
-                    let wait_rx = background_opacity_preview_rx.clone();
-                    let Ok(mut opacity) = smol::unblock(move || wait_rx.recv()).await else {
+                    let Ok(mut opacity) = background_opacity_preview_rx.recv_async().await else {
                         break;
                     };
                     while let Ok(next_opacity) = background_opacity_preview_rx.try_recv() {
@@ -318,24 +315,6 @@ impl SettingsWindow {
             })
             .detach();
         }
-
-        // Fallback polling in case filesystem notifications are coalesced/missed.
-        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            loop {
-                smol::Timer::after(Duration::from_millis(SETTINGS_CONFIG_WATCH_INTERVAL_MS)).await;
-                let result = cx.update(|cx| {
-                    this.update(cx, |view, cx| {
-                        if view.reload_config_if_changed(cx) {
-                            cx.notify();
-                        }
-                    })
-                });
-                if result.is_err() {
-                    break;
-                }
-            }
-        })
-        .detach();
 
         view.appearance_subscription =
             Some(cx.observe_window_appearance(window, |view, window, cx| {

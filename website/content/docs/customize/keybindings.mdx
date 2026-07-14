@@ -10,11 +10,14 @@ keybind = clear
 keybind = secondary-p=toggle_command_palette
 keybind = secondary-t=new_tab
 keybind = secondary-w=unbind
+keybind = secondary-g=plugin:git-tools/status
 ```
 
 - Lines apply in order; later lines win for the same trigger.
 - `clear` removes all defaults before later lines apply.
 - `unbind` removes a mapping.
 - `secondary` → `cmd` on macOS, `ctrl` elsewhere.
+- `plugin:<plugin-id>/<command-id>` runs a plugin command. Commands with inputs open their input form.
+- Termy refreshes plugins before a plugin shortcut runs, so changed manifests and source are picked up.
 
 Defaults: [Keybinding defaults](/docs/reference/keybinding-defaults). Actions: [Actions](/docs/reference/actions).

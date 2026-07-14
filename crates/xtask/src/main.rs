@@ -156,12 +156,14 @@ fn render_keybindings_doc() -> String {
     output.push_str("Supported forms:\n\n");
     output.push_str("- `keybind = clear`\n");
     output.push_str("- `keybind = <trigger>=<action>`\n");
+    output.push_str("- `keybind = <trigger>=plugin:<plugin-id>/<command-id>`\n");
     output.push_str("- `keybind = <trigger>=unbind`\n\n");
     output.push_str("Behavior:\n\n");
     output.push_str("- Directives are applied in file order.\n");
     output.push_str("- Later lines win for the same trigger.\n");
     output.push_str("- `clear` removes all defaults before later lines are applied.\n");
     output.push_str("- `unbind` removes the current mapping for a trigger.\n");
+    output.push_str("- Plugin commands without inputs run immediately. Commands with inputs open their input form.\n");
     output.push_str("- Invalid lines are ignored (with warnings).\n\n");
 
     output.push_str("Related UI option:\n\n");
@@ -185,7 +187,10 @@ fn render_keybindings_doc() -> String {
     output.push_str("```txt\nkeybind = clear\nkeybind = cmd-p=toggle_command_palette\nkeybind = cmd-t=new_tab\nkeybind = cmd-w=close_pane_or_tab\nkeybind = cmd-c=copy\nkeybind = cmd-v=paste\n```\n\n");
     output.push_str("### 4) Use `secondary` for cross-platform configs\n\n");
     output.push_str("```txt\nkeybind = secondary-p=toggle_command_palette\nkeybind = secondary-t=new_tab\n```\n");
-    output.push_str("\n### 5) Run a named task directly\n\n");
+    output.push_str("\n### 5) Run a plugin command\n\n");
+    output.push_str("```txt\nkeybind = secondary-g=plugin:git-tools/status\n```\n\n");
+    output.push_str("Use the plugin and command IDs from the plugin manifest. Termy refreshes plugins before invoking the command.\n");
+    output.push_str("\n### 6) Run a named task directly\n\n");
     output.push_str(
         "```txt\ntask.build.command = cargo build\ntask.build.keybind = secondary-shift-b\n```\n\n",
     );
@@ -301,6 +306,7 @@ fn render_default_config_template() -> String {
     output.push_str("# keybind = cmd-c=unbind\n");
     output.push_str("# keybind = clear\n");
     output.push_str("# keybind = secondary-alt-shift-left=resize_pane_left\n");
+    output.push_str("# keybind = secondary-g=plugin:git-tools/status\n");
     output.push_str(&render_task_docs(TaskDocsFormat::Template));
 
     output.push_str("\n# Color overrides\n");

@@ -346,7 +346,7 @@ impl TerminalView {
         self.clear_selection();
         self.clear_hovered_link();
         self.clear_terminal_scrollbar_marker_cache();
-        self.schedule_persist_native_workspace();
+        self.schedule_persist_native_workspace(cx);
         cx.notify();
         true
     }

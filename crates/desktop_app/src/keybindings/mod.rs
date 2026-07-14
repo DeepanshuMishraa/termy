@@ -5,17 +5,24 @@ use gpui::App;
 use gpui::Keystroke;
 use log::warn;
 use termy_command_core::{
-    CommandId, KeybindLineRef, KeybindWarning, ResolvedKeybind, canonicalize_keybind_trigger,
-    default_resolved_keybinds, parse_keybind_directives_from_iter, resolve_keybinds,
+    CommandId, KeybindDirective, KeybindLineRef, KeybindWarning, ResolvedKeybind,
+    canonicalize_keybind_trigger, default_resolved_keybinds, parse_keybind_directives_from_iter,
+    resolve_keybinds,
 };
+use termy_config_core::KeybindConfigLine;
 
 const GLOBAL_KEYBIND_WARNING_LINE_NUMBER: usize = 0;
+const PLUGIN_KEYBIND_PREFIX: &str = "plugin:";
 
 pub fn install_keybindings(cx: &mut App, config: &AppConfig, tmux_enabled: bool) {
-    let (mut resolved, mut warnings) = resolve_keybinds_for_config(config, tmux_enabled);
+    let (command_lines, mut plugin_bindings, mut warnings) = partition_plugin_keybinds(config);
+    let (mut resolved, command_warnings) =
+        resolve_command_keybinds_for_lines(config, tmux_enabled, &command_lines);
+    warnings.extend(command_warnings);
     let (task_bindings, task_warnings) = resolve_task_keybinds_for_config(config);
     warnings.extend(task_warnings);
     remove_command_keybinds_shadowed_by_tasks(&mut resolved, &task_bindings);
+    remove_plugin_keybinds_shadowed_by_tasks(&mut plugin_bindings, &task_bindings);
     report_warnings(&warnings);
     let resolved = reorder_resolved_keybinds_for_menu_display(resolved);
 
@@ -23,6 +30,9 @@ pub fn install_keybindings(cx: &mut App, config: &AppConfig, tmux_enabled: bool)
         debug_assert_trigger_is_valid_for_gpui(&binding.trigger);
     }
     for binding in &task_bindings {
+        debug_assert_trigger_is_valid_for_gpui(&binding.trigger);
+    }
+    for binding in &plugin_bindings {
         debug_assert_trigger_is_valid_for_gpui(&binding.trigger);
     }
 
@@ -38,6 +48,13 @@ pub fn install_keybindings(cx: &mut App, config: &AppConfig, tmux_enabled: bool)
         } = binding;
         crate::commands::RunNamedTask { task_name }.into_key_binding(&trigger)
     }));
+    cx.bind_keys(plugin_bindings.into_iter().map(|binding| {
+        crate::commands::RunPluginCommand {
+            plugin_id: binding.plugin_id,
+            command_id: binding.command_id,
+        }
+        .into_key_binding(&binding.trigger)
+    }));
     cx.bind_keys(crate::commands::inline_input_keybindings());
     cx.set_menus(crate::menus::app_menus(
         !termy_cli_install_core::is_cli_installed(),
@@ -51,6 +68,134 @@ struct ResolvedTaskKeybind {
     line_number: usize,
     trigger: String,
     task_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedPluginKeybind {
+    trigger: String,
+    plugin_id: String,
+    command_id: String,
+}
+
+fn parse_plugin_keybind_action(action: &str) -> Result<Option<(String, String)>, String> {
+    let Some(target) = action.strip_prefix(PLUGIN_KEYBIND_PREFIX) else {
+        return Ok(None);
+    };
+    let Some((plugin_id, command_id)) = target.split_once('/') else {
+        return Err("plugin keybind action must use `plugin:<plugin-id>/<command-id>`".to_string());
+    };
+    if !termy_plugin_runtime::valid_plugin_id(plugin_id) {
+        return Err(format!("invalid plugin ID `{plugin_id}` in keybind action"));
+    }
+    if !termy_plugin_runtime::valid_plugin_id(command_id) {
+        return Err(format!(
+            "invalid plugin command ID `{command_id}` in keybind action"
+        ));
+    }
+    Ok(Some((plugin_id.to_string(), command_id.to_string())))
+}
+
+fn canonical_trigger_for_assignment(
+    line_number: usize,
+    trigger: &str,
+) -> Result<String, KeybindWarning> {
+    let rewritten = format!("{trigger}=unbind");
+    let (directives, mut warnings) = parse_keybind_directives_from_iter([KeybindLineRef {
+        line_number,
+        value: rewritten.as_str(),
+    }]);
+    if let Some(warning) = warnings.pop() {
+        return Err(warning);
+    }
+    match directives.into_iter().next() {
+        Some(KeybindDirective::Unbind { trigger }) => Ok(trigger),
+        _ => Err(KeybindWarning {
+            line_number,
+            message: "invalid keybind trigger".to_string(),
+        }),
+    }
+}
+
+fn partition_plugin_keybinds(
+    config: &AppConfig,
+) -> (
+    Vec<KeybindConfigLine>,
+    Vec<ResolvedPluginKeybind>,
+    Vec<KeybindWarning>,
+) {
+    let mut command_lines = Vec::with_capacity(config.keybind_lines.len());
+    let mut plugin_bindings: Vec<ResolvedPluginKeybind> = Vec::new();
+    let mut warnings = Vec::new();
+
+    for line in &config.keybind_lines {
+        let value = line.value.trim();
+        if value.eq_ignore_ascii_case("clear") {
+            plugin_bindings.clear();
+            command_lines.push(line.clone());
+            continue;
+        }
+
+        let Some((trigger_raw, action_raw)) = value.rsplit_once('=') else {
+            command_lines.push(line.clone());
+            continue;
+        };
+        let action_raw = action_raw.trim();
+        match parse_plugin_keybind_action(action_raw) {
+            Ok(Some((plugin_id, command_id))) => {
+                let trigger = match canonical_trigger_for_assignment(line.line_number, trigger_raw)
+                {
+                    Ok(trigger) => trigger,
+                    Err(warning) => {
+                        warnings.push(warning);
+                        continue;
+                    }
+                };
+                plugin_bindings.retain(|binding| binding.trigger != trigger);
+                plugin_bindings.push(ResolvedPluginKeybind {
+                    trigger: trigger.clone(),
+                    plugin_id,
+                    command_id,
+                });
+                command_lines.push(KeybindConfigLine {
+                    line_number: line.line_number,
+                    value: format!("{trigger}=unbind"),
+                });
+            }
+            Err(message) => warnings.push(KeybindWarning {
+                line_number: line.line_number,
+                message,
+            }),
+            Ok(None) => {
+                if (action_raw.eq_ignore_ascii_case("unbind")
+                    || CommandId::from_config_name(action_raw).is_some())
+                    && let Ok(trigger) =
+                        canonical_trigger_for_assignment(line.line_number, trigger_raw)
+                {
+                    plugin_bindings.retain(|binding| binding.trigger != trigger);
+                }
+                command_lines.push(line.clone());
+            }
+        }
+    }
+
+    (command_lines, plugin_bindings, warnings)
+}
+
+pub(crate) fn plugin_keybind_lines_for_settings(
+    config: &AppConfig,
+    replaced_trigger: Option<&str>,
+) -> Vec<String> {
+    let (_command_lines, plugin_bindings, _warnings) = partition_plugin_keybinds(config);
+    plugin_bindings
+        .into_iter()
+        .filter(|binding| replaced_trigger != Some(binding.trigger.as_str()))
+        .map(|binding| {
+            format!(
+                "{}=plugin:{}/{}",
+                binding.trigger, binding.plugin_id, binding.command_id
+            )
+        })
+        .collect()
 }
 
 fn resolve_task_keybinds_for_config(
@@ -112,6 +257,17 @@ fn remove_command_keybinds_shadowed_by_tasks(
     });
 }
 
+fn remove_plugin_keybinds_shadowed_by_tasks(
+    plugin_bindings: &mut Vec<ResolvedPluginKeybind>,
+    task_bindings: &[ResolvedTaskKeybind],
+) {
+    plugin_bindings.retain(|binding| {
+        !task_bindings
+            .iter()
+            .any(|task_binding| task_binding.trigger == binding.trigger)
+    });
+}
+
 fn reorder_resolved_keybinds_for_menu_display(
     resolved: Vec<ResolvedKeybind>,
 ) -> Vec<ResolvedKeybind> {
@@ -140,19 +296,33 @@ fn reorder_resolved_keybinds_for_menu_display(
     primary
 }
 
-pub(crate) fn resolve_keybinds_for_config(
+#[cfg(test)]
+fn resolve_keybinds_for_config(
     config: &AppConfig,
     tmux_enabled: bool,
 ) -> (
     Vec<termy_command_core::ResolvedKeybind>,
     Vec<KeybindWarning>,
 ) {
+    let (command_lines, _plugin_bindings, mut warnings) = partition_plugin_keybinds(config);
+    let (resolved, command_warnings) =
+        resolve_command_keybinds_for_lines(config, tmux_enabled, &command_lines);
+    warnings.extend(command_warnings);
+    (resolved, warnings)
+}
+
+fn resolve_command_keybinds_for_lines(
+    config: &AppConfig,
+    tmux_enabled: bool,
+    keybind_lines: &[KeybindConfigLine],
+) -> (
+    Vec<termy_command_core::ResolvedKeybind>,
+    Vec<KeybindWarning>,
+) {
     let (directives, mut warnings) =
-        parse_keybind_directives_from_iter(config.keybind_lines.iter().map(|line| {
-            KeybindLineRef {
-                line_number: line.line_number,
-                value: line.value.as_str(),
-            }
+        parse_keybind_directives_from_iter(keybind_lines.iter().map(|line| KeybindLineRef {
+            line_number: line.line_number,
+            value: line.value.as_str(),
         }));
 
     let resolved = resolve_keybinds(default_resolved_keybinds(), &directives);
@@ -254,7 +424,8 @@ fn debug_assert_trigger_is_valid_for_gpui(_trigger: &str) {}
 #[cfg(test)]
 mod tests {
     use super::{
-        remove_command_keybinds_shadowed_by_tasks, reorder_resolved_keybinds_for_menu_display,
+        partition_plugin_keybinds, remove_command_keybinds_shadowed_by_tasks,
+        remove_plugin_keybinds_shadowed_by_tasks, reorder_resolved_keybinds_for_menu_display,
         resolve_keybinds_for_config, resolve_task_keybinds_for_config,
     };
     use crate::config::AppConfig;
@@ -517,6 +688,122 @@ mod tests {
             command_bindings
                 .iter()
                 .all(|binding| binding.trigger != "secondary-t")
+        );
+    }
+
+    #[test]
+    fn plugin_keybind_replaces_a_default_command_binding() {
+        let config = AppConfig {
+            keybind_lines: vec![KeybindConfigLine {
+                line_number: 7,
+                value: "Shift-Secondary-T=plugin:git-tools/status".to_string(),
+            }],
+            ..Default::default()
+        };
+
+        let (command_lines, plugin_bindings, warnings) = partition_plugin_keybinds(&config);
+        assert!(warnings.is_empty());
+        assert_eq!(
+            plugin_bindings,
+            vec![super::ResolvedPluginKeybind {
+                trigger: "shift-secondary-t".to_string(),
+                plugin_id: "git-tools".to_string(),
+                command_id: "status".to_string(),
+            }]
+        );
+
+        let command_config = AppConfig {
+            keybind_lines: command_lines,
+            ..config
+        };
+        let (commands, command_warnings) = resolve_keybinds_for_config(&command_config, true);
+        assert!(command_warnings.is_empty());
+        assert!(
+            commands
+                .iter()
+                .all(|binding| binding.trigger != "shift-secondary-t")
+        );
+    }
+
+    #[test]
+    fn later_builtin_or_unbind_directives_replace_plugin_keybinds() {
+        let config = AppConfig {
+            keybind_lines: vec![
+                KeybindConfigLine {
+                    line_number: 1,
+                    value: "secondary-g=plugin:git-tools/status".to_string(),
+                },
+                KeybindConfigLine {
+                    line_number: 2,
+                    value: "secondary-g=search_next".to_string(),
+                },
+                KeybindConfigLine {
+                    line_number: 3,
+                    value: "secondary-h=plugin:git-tools/history".to_string(),
+                },
+                KeybindConfigLine {
+                    line_number: 4,
+                    value: "secondary-h=unbind".to_string(),
+                },
+            ],
+            ..Default::default()
+        };
+
+        let (_command_lines, plugin_bindings, warnings) = partition_plugin_keybinds(&config);
+        assert!(warnings.is_empty());
+        assert!(plugin_bindings.is_empty());
+    }
+
+    #[test]
+    fn malformed_plugin_keybind_is_ignored_with_a_targeted_warning() {
+        let config = AppConfig {
+            keybind_lines: vec![KeybindConfigLine {
+                line_number: 12,
+                value: "secondary-g=plugin:git-tools".to_string(),
+            }],
+            ..Default::default()
+        };
+
+        let (_command_lines, plugin_bindings, warnings) = partition_plugin_keybinds(&config);
+        assert!(plugin_bindings.is_empty());
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].line_number, 12);
+        assert!(
+            warnings[0]
+                .message
+                .contains("plugin:<plugin-id>/<command-id>")
+        );
+    }
+
+    #[test]
+    fn task_keybinds_shadow_plugin_bindings_with_the_same_trigger() {
+        let config = AppConfig::from_contents(
+            "keybind = secondary-b=plugin:git-tools/branches\n\
+             task.build.command = cargo build\n\
+             task.build.keybind = secondary-b\n",
+        );
+        let (_command_lines, mut plugin_bindings, plugin_warnings) =
+            partition_plugin_keybinds(&config);
+        let (task_bindings, task_warnings) = resolve_task_keybinds_for_config(&config);
+        assert!(plugin_warnings.is_empty());
+        assert!(task_warnings.is_empty());
+
+        remove_plugin_keybinds_shadowed_by_tasks(&mut plugin_bindings, &task_bindings);
+        assert!(plugin_bindings.is_empty());
+    }
+
+    #[test]
+    fn settings_preserve_only_effective_plugin_keybinds() {
+        let config = AppConfig::from_contents(
+            "keybind = secondary-a=plugin:git-tools/first\n\
+             keybind = clear\n\
+             keybind = secondary-b=plugin:git-tools/second\n\
+             keybind = secondary-c=plugin:git-tools/third\n",
+        );
+
+        assert_eq!(
+            super::plugin_keybind_lines_for_settings(&config, Some("secondary-c")),
+            vec!["secondary-b=plugin:git-tools/second"]
         );
     }
 }

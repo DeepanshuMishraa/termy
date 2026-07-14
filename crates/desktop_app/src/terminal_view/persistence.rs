@@ -471,8 +471,15 @@ impl TerminalView {
             if index == self.active_workspace {
                 active_position = workspaces.len();
             }
+            // Auto-titled workspaces persist an empty name: their label is
+            // derived from tab titles, so only user-chosen names are stored.
+            let stored_name = if entry.custom_named {
+                entry.name.clone()
+            } else {
+                String::new()
+            };
             workspaces.push(Self::stored_workspace_from_persisted(
-                entry.name.clone(),
+                stored_name,
                 workspace,
             ));
             if let Some(stored) = workspaces.last_mut() {
@@ -783,7 +790,7 @@ impl TerminalView {
                         ..TerminalSize::default()
                     },
                     working_dir,
-                    Some(self.event_wakeup_tx.clone()),
+                    Some(&self.native_terminal_wakeup_router),
                     Some(&self.tab_shell_integration),
                     Some(&self.terminal_runtime),
                     None,
@@ -988,12 +995,23 @@ impl TerminalView {
             if index == stored_active {
                 active_entry = Some(entries.len());
             }
+            let id = entries.len() as u64 + 1;
+            // Empty names mark auto-titled workspaces; default `Workspace N`
+            // names from sessions predating the flag also stay auto-titled.
+            let custom_named =
+                !name.is_empty() && !workspaces::WorkspaceEntry::is_default_workspace_name(&name);
             entries.push(workspaces::WorkspaceEntry {
-                id: entries.len() as u64 + 1,
-                name,
+                id,
+                name: if name.is_empty() {
+                    format!("Workspace {id}")
+                } else {
+                    name
+                },
+                custom_named,
                 pinned,
                 tabs,
                 active_tab,
+                attention: false,
             });
         }
 
@@ -1020,6 +1038,7 @@ impl TerminalView {
     fn finish_workspace_restore(&mut self, cx: &mut Context<Self>) {
         self.mark_tab_strip_layout_dirty();
         self.sync_tab_strip_for_active_tab();
+        self.sync_plugin_lifecycle_state(false, cx);
         for index in 0..self.tabs.len() {
             self.refresh_tab_title(index);
         }
@@ -1069,36 +1088,75 @@ impl TerminalView {
     }
 
     pub(in super::super) fn sync_persisted_native_workspace(&self) {
+        // Cancel any still-debouncing write before collecting the state for this
+        // synchronous flush.
+        self.native_persist_revision
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         let Some(request) = self.persisted_native_workspace_write_request() else {
             return;
         };
-        self.native_persist_revision
-            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        let _write_guard = self
+            .native_persist_write_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Err(error) = Self::apply_persisted_native_workspace_write_request(request) {
             log::error!("Failed to persist native tab workspace: {error}");
         }
     }
 
-    pub(in super::super) fn schedule_persist_native_workspace(&self) {
-        let Some(request) = self.persisted_native_workspace_write_request() else {
-            return;
-        };
+    pub(in super::super) fn schedule_persist_native_workspace(&self, cx: &mut Context<Self>) {
         let next_revision = self
             .native_persist_revision
             .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
             .saturating_add(1);
+        if !self.should_sync_persisted_native_workspace() {
+            return;
+        }
+
         let latest_revision = self.native_persist_revision.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(80));
+        let write_gate = self.native_persist_write_gate.clone();
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            smol::Timer::after(Duration::from_millis(80)).await;
             if latest_revision.load(std::sync::atomic::Ordering::Acquire) != next_revision {
                 return;
             }
-            if let Err(error) =
-                TerminalView::apply_persisted_native_workspace_write_request(request)
+
+            // Collect only after the debounce window. Session snapshots may include
+            // every pane's scrollback, so stale requests must not retain those copies.
+            let mut request = None;
+            if cx
+                .update(|cx| {
+                    this.update(cx, |view, _| {
+                        if latest_revision.load(std::sync::atomic::Ordering::Acquire)
+                            == next_revision
+                        {
+                            request = view.persisted_native_workspace_write_request();
+                        }
+                    })
+                })
+                .is_err()
             {
+                return;
+            }
+            let Some(request) = request else {
+                return;
+            };
+
+            let result = smol::unblock(move || {
+                let _write_guard = write_gate
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if latest_revision.load(std::sync::atomic::Ordering::Acquire) != next_revision {
+                    return Ok(());
+                }
+                TerminalView::apply_persisted_native_workspace_write_request(request)
+            })
+            .await;
+            if let Err(error) = result {
                 log::error!("Failed to persist native tab workspace: {error}");
             }
-        });
+        })
+        .detach();
     }
 
     fn require_workspace_store(&self) -> Result<Arc<WorkspaceStore>, String> {

@@ -15,6 +15,7 @@ mod state_tmux;
 pub(super) mod style;
 mod tmux_sessions;
 
+pub(super) use plugins::PluginLifecycleState;
 pub(super) use state::{CommandPaletteMode, CommandPaletteState, TaskIntent};
 pub(super) use state_layouts::SavedLayoutIntent;
 pub(super) use state_tmux::TmuxSessionIntent;
@@ -205,6 +206,22 @@ impl TerminalView {
         self.command_palette
             .cache_shortcut(action, shortcut.clone());
         shortcut
+    }
+
+    fn command_palette_plugin_shortcut(
+        &self,
+        plugin_id: &str,
+        command_id: &str,
+        window: &Window,
+    ) -> Option<String> {
+        if !self.command_palette.show_keybinds() {
+            return None;
+        }
+        crate::commands::RunPluginCommand {
+            plugin_id: plugin_id.to_string(),
+            command_id: command_id.to_string(),
+        }
+        .keybinding_label(window, &self.focus_handle)
     }
 
     fn command_palette_action_availability_for_state(

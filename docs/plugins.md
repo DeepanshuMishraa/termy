@@ -264,33 +264,62 @@ type JsonValue =
   | { [key: string]: JsonValue };
 
 type PluginContext = {
-  workingDirectory?: string;
-  activeCommand?: string;
-  platform: "macos" | "linux" | "windows";
-  appVersion: string;
-  settings: {
+  readonly workingDirectory?: string;
+  readonly activeCommand?: string;
+  readonly selectedText?: string;
+  readonly selectedTextTruncated: boolean;
+  readonly shell: string;
+  readonly runtime: "native" | "tmux";
+  readonly activeTab?: {
+    readonly index: number;
+    readonly title: string;
+    readonly paneCount: number;
+  };
+  readonly activePane?: {
+    readonly index: number;
+    readonly kind: "terminal" | "browser";
+  };
+  readonly platform: "macos" | "linux" | "windows";
+  readonly appVersion: string;
+  readonly settings: {
     get<T = string | boolean>(key: string): T | undefined;
   };
-  toasts: {
+  readonly toasts: {
     info(message: string): void;
     success(message: string): void;
     warning(message: string): void;
     error(message: string): void;
   };
-  storage: {
+  readonly storage: {
     get<T = JsonValue>(key: string): Promise<T | undefined>;
     set(key: string, value: JsonValue): Promise<void>;
     delete(key: string): Promise<boolean>;
     clear(): Promise<void>;
   };
-  paths: {
-    dataDirectory: string;
-    cacheDirectory: string;
+  readonly paths: {
+    readonly dataDirectory: string;
+    readonly cacheDirectory: string;
   };
 };
 ```
 
-`workingDirectory` and `activeCommand` are absent when the active terminal cannot provide them. Plugins should handle that case instead of assuming both values exist.
+The context is a read-only snapshot taken when the command starts. `shell` is the resolved shell program Termy uses to launch sessions, while `runtime` identifies the active `native` or `tmux` backend. `workingDirectory`, `activeCommand`, `selectedText`, `activeTab`, and `activePane` are absent when Termy cannot provide them. Tab and pane indexes are zero-based. Selected text is capped at 64 KiB on a UTF-8 boundary; check `selectedTextTruncated` before assuming it is complete.
+
+For example, a command can copy the current terminal selection while identifying where it came from:
+
+```ts
+run({ context }) {
+  if (!context.selectedText) {
+    context.toasts.info("Select terminal text first");
+    return;
+  }
+  const tab = context.activeTab ? `Tab ${context.activeTab.index + 1}` : "Termy";
+  return {
+    type: "clipboard.write",
+    text: `${tab} (${context.runtime})\n\n${context.selectedText}`,
+  };
+}
+```
 
 Use `context.toasts` when a command only needs to notify the user; no SDK import or returned action is required:
 
@@ -312,6 +341,41 @@ async run({ context }) {
 
 Use `context.paths.dataDirectory` for larger persistent files and `context.paths.cacheDirectory` for disposable files with Bun or Node filesystem APIs. Both directories are outside the plugin source tree, so writing there does not trigger a rebuild. Storage is plain local JSON; declare a `secret` plugin setting for tokens and passwords so Termy uses the operating-system credential store.
 
+## Lifecycle events
+
+Subscribe by adding an `events` object beside `commands`. Termy only dispatches events a plugin explicitly handles; an event-only plugin should use `commands: []`.
+
+```ts
+export default definePlugin({
+  commands: [],
+  events: {
+    "terminal.ready"({ context }) {
+      context.toasts.info("Terminal ready");
+    },
+    "tab.activated"({ event, context }) {
+      context.toasts.info(`Active tab: ${context.activeTab?.index ?? "unknown"}`);
+    },
+    "workingDirectory.changed"({ event }) {
+      console.log(event.previousWorkingDirectory, "->", event.workingDirectory);
+    },
+    "command.finished"({ event }) {
+      console.log(event.command, event.exitCode, event.durationMs);
+    },
+  },
+} satisfies TermyPlugin);
+```
+
+| Event | Payload | When it runs |
+| --- | --- | --- |
+| `terminal.ready` | `{ type }` | Once for a terminal window after the plugin catalog is ready. |
+| `tab.activated` | `{ type, previousTabIndex? }` | When the active terminal tab changes. |
+| `workingDirectory.changed` | `{ type, previousWorkingDirectory?, workingDirectory? }` | When the active terminal's working directory changes. |
+| `command.finished` | `{ type, command?, exitCode?, durationMs? }` | When a command finishes in the active terminal. |
+
+Event handlers receive the same read-only context, settings, storage, paths, and toast helpers as commands. They may be synchronous or async and return the same native actions. Events stay ordered within each plugin; different subscribed plugins can run concurrently and retain the normal execution timeout.
+
+Native shell integration supplies the exit code and measured duration for `command.finished`. Tmux completion is inferred from command-state changes, so `exitCode` and other unavailable fields are omitted instead of guessed. Lifecycle events describe the active terminal only; background tabs do not emit active-context changes.
+
 ## Actions
 
 A handler can return nothing, one action, an action array, or `{ actions: [...] }`. Async handlers may return the same values through a Promise.
@@ -330,6 +394,16 @@ Toasts emitted through `context.toasts` run before returned actions, and returne
 
 Termy checks plugin content when the command palette opens. When `plugin.json`, `plugin.ts`, or another local source file changes, Termy creates or reuses the matching bundle, replaces that plugin's Worker, and refreshes the command list; restarting Termy is unnecessary.
 
+## Plugin keybindings
+
+Bind a plugin command in `~/.config/termy/config.txt` with its manifest IDs:
+
+```txt
+keybind = secondary-g=plugin:git-tools/status
+```
+
+Commands without inputs run immediately. Commands with inputs open their input form. Termy refreshes the plugin catalog before invoking the shortcut, so saved plugin changes are picked up. Normal keybinding ordering applies: later lines win, `unbind` removes the shortcut, and a task keybinding takes priority on conflicts.
+
 Disabling a plugin in Settings keeps its files and storage installed but removes its commands the next time the command palette refreshes. Enabling it makes the commands available again. Uninstalling removes Termy's managed copy, storage, and cache, but not the source folder you originally selected.
 
 Plugin loading and command execution have timeouts. A thrown error or timeout is contained to that plugin Worker and reported in Termy, while other plugins and the terminal keep running. A subprocess started by plugin code can outlive its Worker, so plugins that spawn processes must stop them themselves when cancellation matters. Plugins share the persistent host transport; if that transport exits, Termy discards it and rebuilds the host and Workers on the next plugin refresh instead of taking down the app. Fix a failed plugin and reopen the palette to load it again.
@@ -338,6 +412,6 @@ Plugin loading and command execution have timeouts. A thrown error or timeout is
 
 Plugins are trusted local code. Worker isolation, import validation, and timeouts improve reliability, but they are not a security sandbox: after loading, a plugin runs through Bun with your user account's access to files, network, and processes. Only install plugins whose source you trust.
 
-The v1 runtime deliberately supports command-palette commands only. It does not provide plugin keybindings, custom UI, build hooks, package imports, or automatic package installation. Bun is launched with dependency installation and environment-file loading disabled; local relative TypeScript imports are bundled from the plugin directory, while Bun and Node built-ins remain available at runtime.
+The v1 runtime supports command-palette commands, lifecycle events, and user-configured keybindings. It does not provide custom UI, build hooks, package imports, or automatic package installation. Bun is launched with dependency installation and environment-file loading disabled; local relative TypeScript imports are bundled from the plugin directory, while Bun and Node built-ins remain available at runtime.
 
 See [`examples/plugins/git-tools/plugin.json`](../examples/plugins/git-tools/plugin.json) and [`plugin.ts`](../examples/plugins/git-tools/plugin.ts) for a safe command example that maps a select value to a fixed shell command.

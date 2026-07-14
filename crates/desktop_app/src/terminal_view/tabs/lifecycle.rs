@@ -212,7 +212,7 @@ impl TerminalView {
                     .tab_strip
                     .hovered_tab_close
                     .map(|index| Self::remap_index_after_move(index, from, to));
-                self.schedule_persist_native_workspace();
+                self.schedule_persist_native_workspace(cx);
             }
         }
         self.reset_tab_drag_state();
@@ -250,7 +250,13 @@ impl TerminalView {
         };
 
         match self.runtime_kind() {
-            RuntimeKind::Tmux => self.tmux_switch_active_tab_left(cx),
+            RuntimeKind::Tmux => {
+                let switched = self.tmux_switch_active_tab_left(cx);
+                if switched {
+                    self.sync_plugin_lifecycle_state(true, cx);
+                }
+                switched
+            }
             RuntimeKind::Native => {
                 self.switch_tab(target_index, cx);
                 self.focus_terminal_after_tab_activation(window, cx);
@@ -270,7 +276,13 @@ impl TerminalView {
         };
 
         match self.runtime_kind() {
-            RuntimeKind::Tmux => self.tmux_switch_active_tab_right(cx),
+            RuntimeKind::Tmux => {
+                let switched = self.tmux_switch_active_tab_right(cx);
+                if switched {
+                    self.sync_plugin_lifecycle_state(true, cx);
+                }
+                switched
+            }
             RuntimeKind::Native => {
                 self.switch_tab(target_index, cx);
                 self.focus_terminal_after_tab_activation(window, cx);
@@ -285,7 +297,13 @@ impl TerminalView {
         };
 
         match self.runtime_kind() {
-            RuntimeKind::Tmux => self.tmux_switch_active_tab_right(cx),
+            RuntimeKind::Tmux => {
+                let switched = self.tmux_switch_active_tab_right(cx);
+                if switched {
+                    self.sync_plugin_lifecycle_state(true, cx);
+                }
+                switched
+            }
             RuntimeKind::Native => {
                 self.switch_tab(target_index, cx);
                 self.focus_terminal_after_tab_activation(window, cx);
@@ -332,7 +350,13 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) -> bool {
         match self.runtime_kind() {
-            RuntimeKind::Tmux => self.tmux_add_tab(working_dir, cx),
+            RuntimeKind::Tmux => {
+                let added = self.tmux_add_tab(working_dir, cx);
+                if added {
+                    self.sync_plugin_lifecycle_state(true, cx);
+                }
+                added
+            }
             RuntimeKind::Native => {
                 // Tab creation should stay robust if active pane state is transiently missing.
                 let size = self
@@ -344,7 +368,7 @@ impl TerminalView {
                 let terminal = match Terminal::new_native(
                     size,
                     preferred_working_dir.as_deref(),
-                    Some(self.event_wakeup_tx.clone()),
+                    Some(&self.native_terminal_wakeup_router),
                     Some(&self.tab_shell_integration),
                     Some(&self.terminal_runtime),
                     None,
@@ -402,7 +426,8 @@ impl TerminalView {
                 self.mark_tab_strip_layout_dirty();
                 self.reset_tab_interaction_state();
                 self.sync_tab_strip_for_active_tab();
-                self.schedule_persist_native_workspace();
+                self.sync_plugin_lifecycle_state(false, cx);
+                self.schedule_persist_native_workspace(cx);
                 self.start_new_tab_animation(tab_id, cx);
                 cx.notify();
                 true
@@ -425,6 +450,7 @@ impl TerminalView {
         match self.runtime_kind() {
             RuntimeKind::Tmux => {
                 self.tmux_close_tab(index, cx);
+                self.sync_plugin_lifecycle_state(true, cx);
                 return;
             }
             RuntimeKind::Native => {}
@@ -467,7 +493,8 @@ impl TerminalView {
 
         self.clear_selection();
         self.sync_tab_strip_for_active_tab();
-        self.schedule_persist_native_workspace();
+        self.sync_plugin_lifecycle_state(false, cx);
+        self.schedule_persist_native_workspace(cx);
         cx.notify();
     }
 
@@ -491,7 +518,7 @@ impl TerminalView {
         tab.pinned = pinned;
         self.mark_tab_strip_layout_dirty();
         if self.runtime_kind() == RuntimeKind::Native {
-            self.schedule_persist_native_workspace();
+            self.schedule_persist_native_workspace(cx);
         }
         cx.notify();
         true
@@ -546,7 +573,10 @@ impl TerminalView {
         self.cancel_active_browser_url_edit_quietly();
 
         match self.runtime_kind() {
-            RuntimeKind::Tmux => self.tmux_switch_tab(index, cx),
+            RuntimeKind::Tmux => {
+                self.tmux_switch_tab(index, cx);
+                self.sync_plugin_lifecycle_state(true, cx);
+            }
             RuntimeKind::Native => {
                 let old_active = self.active_tab;
                 self.active_tab = index;
@@ -577,7 +607,8 @@ impl TerminalView {
                 self.reset_tab_drag_state();
                 self.clear_selection();
                 self.sync_tab_strip_for_active_tab();
-                self.schedule_persist_native_workspace();
+                self.sync_plugin_lifecycle_state(false, cx);
+                self.schedule_persist_native_workspace(cx);
                 cx.notify();
             }
         }
@@ -607,7 +638,7 @@ impl TerminalView {
                     .then(|| Self::truncate_tab_title(trimmed))
                     .filter(|title| !title.is_empty());
                 self.refresh_tab_title(index);
-                self.schedule_persist_native_workspace();
+                self.schedule_persist_native_workspace(cx);
             }
         }
 
@@ -730,7 +761,7 @@ impl TerminalView {
                     self.clear_hovered_link();
                     self.clear_terminal_scrollbar_marker_cache();
                 }
-                self.schedule_persist_native_workspace();
+                self.schedule_persist_native_workspace(cx);
                 cx.notify();
                 return true;
             }
@@ -763,7 +794,7 @@ impl TerminalView {
             self.clear_hovered_link();
             self.clear_terminal_scrollbar_marker_cache();
         }
-        self.schedule_persist_native_workspace();
+        self.schedule_persist_native_workspace(cx);
         cx.notify();
         true
     }
@@ -926,7 +957,7 @@ impl TerminalView {
         }
         self.clear_selection();
         self.clear_hovered_link();
-        self.schedule_persist_native_workspace();
+        self.schedule_persist_native_workspace(cx);
         cx.notify();
         true
     }
@@ -962,7 +993,7 @@ impl TerminalView {
             self.clear_hovered_link();
             self.evict_inactive_terminal_render_caches();
             self.sync_native_terminal_wakeup_interest();
-            self.schedule_persist_native_workspace();
+            self.schedule_persist_native_workspace(cx);
             cx.notify();
             return true;
         }
@@ -1025,7 +1056,7 @@ impl TerminalView {
         self.clear_hovered_link();
         self.evict_inactive_terminal_render_caches();
         self.sync_native_terminal_wakeup_interest();
-        self.schedule_persist_native_workspace();
+        self.schedule_persist_native_workspace(cx);
         cx.notify();
         true
     }
@@ -1057,7 +1088,7 @@ impl TerminalView {
                 cell_height: cell_size.height.into(),
             },
             preferred_working_dir.as_deref(),
-            Some(self.event_wakeup_tx.clone()),
+            Some(&self.native_terminal_wakeup_router),
             Some(&self.tab_shell_integration),
             Some(&self.terminal_runtime),
             None,
@@ -1080,7 +1111,7 @@ impl TerminalView {
         tab.assert_active_pane_invariant();
         self.clear_selection();
         self.clear_hovered_link();
-        self.schedule_persist_native_workspace();
+        self.schedule_persist_native_workspace(cx);
         cx.notify();
         true
     }
@@ -1235,7 +1266,7 @@ impl TerminalView {
         }
         self.clear_selection();
         self.clear_hovered_link();
-        self.schedule_persist_native_workspace();
+        self.schedule_persist_native_workspace(cx);
         cx.notify();
         true
     }
@@ -1577,7 +1608,7 @@ impl TerminalView {
                     self.clear_selection();
                     self.clear_hovered_link();
                     self.clear_terminal_scrollbar_marker_cache();
-                    self.schedule_persist_native_workspace();
+                    self.schedule_persist_native_workspace(cx);
                     cx.notify();
                     return true;
                 }
@@ -1604,7 +1635,7 @@ impl TerminalView {
         self.clear_selection();
         self.clear_hovered_link();
         self.clear_terminal_scrollbar_marker_cache();
-        self.schedule_persist_native_workspace();
+        self.schedule_persist_native_workspace(cx);
         cx.notify();
         true
     }

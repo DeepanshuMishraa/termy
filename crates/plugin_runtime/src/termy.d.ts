@@ -120,16 +120,29 @@ type TermyPluginSettings<
 type TermyPluginContext<
   T extends Record<string, TermyPluginSetting> = Record<string, TermyPluginSetting>,
 > = {
-  workingDirectory?: string;
-  activeCommand?: string;
-  platform: "macos" | "linux" | "windows";
-  appVersion: string;
-  settings: TermyPluginSettings<T>;
-  toasts: TermyPluginToasts;
-  storage: TermyPluginStorage;
-  paths: {
-    dataDirectory: string;
-    cacheDirectory: string;
+  readonly workingDirectory?: string;
+  readonly activeCommand?: string;
+  readonly selectedText?: string;
+  readonly selectedTextTruncated: boolean;
+  readonly shell: string;
+  readonly runtime: "native" | "tmux";
+  readonly activeTab?: {
+    readonly index: number;
+    readonly title: string;
+    readonly paneCount: number;
+  };
+  readonly activePane?: {
+    readonly index: number;
+    readonly kind: "terminal" | "browser";
+  };
+  readonly platform: "macos" | "linux" | "windows";
+  readonly appVersion: string;
+  readonly settings: TermyPluginSettings<T>;
+  readonly toasts: TermyPluginToasts;
+  readonly storage: TermyPluginStorage;
+  readonly paths: {
+    readonly dataDirectory: string;
+    readonly cacheDirectory: string;
   };
 };
 
@@ -149,6 +162,30 @@ type TermyPluginResult =
   | TermyPluginAction
   | TermyPluginAction[]
   | { actions: TermyPluginAction[] };
+
+type TermyPluginEvent =
+  | { readonly type: "terminal.ready" }
+  | { readonly type: "tab.activated"; readonly previousTabIndex?: number }
+  | {
+      readonly type: "workingDirectory.changed";
+      readonly previousWorkingDirectory?: string;
+      readonly workingDirectory?: string;
+    }
+  | {
+      readonly type: "command.finished";
+      readonly command?: string;
+      readonly exitCode?: number;
+      readonly durationMs?: number;
+    };
+
+type TermyPluginEvents<
+  T extends Record<string, TermyPluginSetting> = Record<string, TermyPluginSetting>,
+> = {
+  readonly [K in TermyPluginEvent["type"]]?: (request: {
+    readonly event: Extract<TermyPluginEvent, { type: K }>;
+    readonly context: TermyPluginContext<T>;
+  }) => TermyPluginResult | Promise<TermyPluginResult>;
+};
 
 type TermyPluginCommand<
   T extends Record<string, TermyPluginSetting> = Record<string, TermyPluginSetting>,
@@ -173,6 +210,7 @@ type TermyPlugin<
 > = {
   settings?: T;
   commands: TermyPluginCommand<T>[];
+  events?: TermyPluginEvents<T>;
 };
 
 declare function definePlugin<const T extends Record<string, TermyPluginSetting>>(

@@ -437,26 +437,31 @@ fn pane_render_cells_match_dimensions(cells: &PaneRenderCells, cols: usize, rows
     cells.len() == rows && cells.iter().all(|row_cells| row_cells.len() == cols)
 }
 
-fn patch_pane_render_cell(
-    cells: &mut PaneRenderCells,
+fn patch_pane_render_row(
+    cells: &mut [Arc<Vec<CellRenderInfo>>],
     rows: usize,
     cols: usize,
     row: usize,
-    col: usize,
-    cell: CellRenderInfo,
-) -> bool {
-    if row >= rows || col >= cols {
-        return false;
+    left_col: usize,
+    right_col: usize,
+    mut build_cell: impl FnMut(usize) -> CellRenderInfo,
+) -> usize {
+    if row >= rows || left_col >= cols || left_col > right_col {
+        return 0;
     }
-    let Some(row_cells) = Arc::make_mut(cells).get_mut(row) else {
-        return false;
+    let Some(row_cells) = cells.get_mut(row) else {
+        return 0;
     };
+    if row_cells.len() != cols {
+        return 0;
+    }
+
     let row_cells = Arc::make_mut(row_cells);
-    let Some(slot) = row_cells.get_mut(col) else {
-        return false;
-    };
-    *slot = cell;
-    true
+    let right_col = right_col.min(cols.saturating_sub(1));
+    for col in left_col..=right_col {
+        row_cells[col] = build_cell(col);
+    }
+    right_col.saturating_sub(left_col).saturating_add(1)
 }
 
 fn command_palette_backdrop_transform() -> CellColorTransform {
@@ -760,6 +765,10 @@ impl TerminalView {
         }
 
         let mut patched_cell_count = 0usize;
+        // Clone the outer row table at most once for this partial update. Each
+        // dirty row is then made mutable once before all cells in its span are
+        // patched, instead of checking both Arcs for every individual cell.
+        let cells: &mut Vec<_> = Arc::make_mut(cells);
         let _ = terminal.with_grid(|grid| {
             let Some(screen_lines) = i32::try_from(grid.screen_lines()).ok() else {
                 return;
@@ -790,14 +799,18 @@ impl TerminalView {
                     continue;
                 }
 
-                for col in left_col..=right_col {
-                    let cell_content = &line_ref[Column(col)];
-                    let cell =
-                        self.build_cell_render_info(col, row, term_line, cell_content, context);
-                    if patch_pane_render_cell(cells, rows, cols, row, col, cell) {
-                        patched_cell_count = patched_cell_count.saturating_add(1);
-                    }
-                }
+                patched_cell_count = patched_cell_count.saturating_add(patch_pane_render_row(
+                    cells,
+                    rows,
+                    cols,
+                    row,
+                    left_col,
+                    right_col,
+                    |col| {
+                        let cell_content = &line_ref[Column(col)];
+                        self.build_cell_render_info(col, row, term_line, cell_content, context)
+                    },
+                ));
             }
         });
 
@@ -3351,6 +3364,7 @@ impl Render for TerminalView {
                     .on_action(cx.listener(Self::handle_manage_saved_layouts_action))
                     .on_action(cx.listener(Self::handle_run_task_action))
                     .on_action(cx.listener(Self::handle_run_named_task_action))
+                    .on_action(cx.listener(Self::handle_run_plugin_command_action))
                     .on_action(cx.listener(Self::handle_split_pane_vertical_action))
                     .on_action(cx.listener(Self::handle_split_pane_horizontal_action))
                     .on_action(cx.listener(Self::handle_close_pane_action))
@@ -3796,7 +3810,7 @@ mod tests {
     }
 
     #[test]
-    fn patch_pane_render_cell_updates_only_touched_row_cells() {
+    fn patch_pane_render_row_updates_only_touched_row_cells() {
         let mut cells = test_render_rows(vec![
             vec![test_render_cell(0, 0, 'a'), test_render_cell(1, 0, 'b')],
             vec![test_render_cell(0, 1, 'c'), test_render_cell(1, 1, 'd')],
@@ -3804,48 +3818,39 @@ mod tests {
         ]);
         let original = cells.clone();
 
-        assert!(patch_pane_render_cell(
-            &mut cells,
-            3,
-            2,
-            1,
-            1,
-            test_render_cell(1, 1, 'x'),
-        ));
+        let rows: &mut Vec<_> = Arc::make_mut(&mut cells);
+        let patched = patch_pane_render_row(rows, 3, 2, 1, 0, 1, |col| {
+            test_render_cell(col, 1, if col == 0 { 'w' } else { 'x' })
+        });
 
+        assert_eq!(patched, 2);
         assert!(Arc::ptr_eq(&original[0], &cells[0]));
         assert!(!Arc::ptr_eq(&original[1], &cells[1]));
         assert!(Arc::ptr_eq(&original[2], &cells[2]));
         assert_eq!(cells[0][0].char, 'a');
+        assert_eq!(cells[1][0].char, 'w');
         assert_eq!(cells[1][1].char, 'x');
         assert_eq!(cells[2][1].char, 'f');
     }
 
     #[test]
-    fn patch_pane_render_cell_rejects_out_of_bounds_updates() {
+    fn patch_pane_render_row_rejects_out_of_bounds_updates() {
         let mut cells = test_render_rows(vec![vec![
             test_render_cell(0, 0, 'a'),
             test_render_cell(1, 0, 'b'),
         ]]);
-        let original_ptr = Arc::as_ptr(&cells);
+        let original = cells.clone();
+        let rows: &mut Vec<_> = Arc::make_mut(&mut cells);
 
-        assert!(!patch_pane_render_cell(
-            &mut cells,
-            1,
-            2,
-            7,
-            0,
-            test_render_cell(0, 7, 'x'),
-        ));
-        assert!(!patch_pane_render_cell(
-            &mut cells,
-            1,
-            2,
-            0,
-            7,
-            test_render_cell(7, 0, 'x'),
-        ));
-        assert_eq!(Arc::as_ptr(&cells), original_ptr);
+        assert_eq!(
+            patch_pane_render_row(rows, 1, 2, 7, 0, 0, |col| test_render_cell(col, 7, 'x'),),
+            0
+        );
+        assert_eq!(
+            patch_pane_render_row(rows, 1, 2, 0, 7, 7, |col| test_render_cell(col, 0, 'x'),),
+            0
+        );
+        assert!(Arc::ptr_eq(&original[0], &cells[0]));
         assert_eq!(cells[0][0].char, 'a');
         assert_eq!(cells[0][1].char, 'b');
     }

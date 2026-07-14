@@ -15,9 +15,18 @@ type HostRequest =
       revision: string;
       inputs: Record<string, unknown>;
       context: Record<string, unknown>;
+    }
+  | {
+      id: number;
+      type: "event";
+      pluginId: string;
+      revision: string;
+      event: Record<string, unknown>;
+      context: Record<string, unknown>;
     };
 
 type InvocationCommand = { id: string; timeoutMs: number };
+type InvocationEvent = { event: string; timeoutMs: number };
 type WorkerRecord = {
   worker: Worker;
   source: PluginSource;
@@ -33,14 +42,17 @@ type WorkerRecord = {
     }
   >;
   commands: unknown[];
+  events: unknown[];
   settings: unknown[];
   invocationCommands: InvocationCommand[];
+  invocationEvents: InvocationEvent[];
 };
 type PluginLoadResult = {
   source: PluginSource;
   reused: boolean;
   record?: WorkerRecord;
   commands?: unknown[];
+  events?: unknown[];
   settings?: unknown[];
   error?: string;
 };
@@ -140,8 +152,10 @@ function createRecord(source: PluginSource): WorkerRecord {
     invocationCount: 0,
     pending: new Map(),
     commands: [],
+    events: [],
     settings: [],
     invocationCommands: [],
+    invocationEvents: [],
   };
   worker.onmessage = (event) => {
     const message = event.data as {
@@ -288,6 +302,26 @@ function invocationCommands(value: unknown): InvocationCommand[] {
   });
 }
 
+function invocationEvents(value: unknown): InvocationEvent[] {
+  if (!value || typeof value !== "object") {
+    throw new Error("Plugin Worker returned an invalid load result");
+  }
+  const events = (value as { events?: unknown }).events;
+  if (!Array.isArray(events)) {
+    throw new Error("Plugin Worker returned an invalid event subscription list");
+  }
+  return events.map((entry) => {
+    if (!entry || typeof entry !== "object") {
+      throw new Error("Plugin Worker returned an invalid event subscription");
+    }
+    const event = entry as Record<string, unknown>;
+    if (typeof event.event !== "string" || typeof event.timeoutMs !== "number") {
+      throw new Error("Plugin Worker returned an invalid event subscription descriptor");
+    }
+    return { event: event.event, timeoutMs: event.timeoutMs };
+  });
+}
+
 async function loadPlugin(source: PluginSource): Promise<PluginLoadResult> {
   try {
     await cleanupBuildArtifacts(source);
@@ -317,7 +351,9 @@ async function loadPlugin(source: PluginSource): Promise<PluginLoadResult> {
       LOAD_TIMEOUT_MS,
     );
     record.invocationCommands = invocationCommands(result);
+    record.invocationEvents = invocationEvents(result);
     record.commands = (result as { commands: unknown[] }).commands;
+    record.events = (result as { events: unknown[] }).events;
     record.settings = (result as { settings: unknown[] }).settings;
     await cleanupBuildArtifacts(source);
     return {
@@ -325,6 +361,7 @@ async function loadPlugin(source: PluginSource): Promise<PluginLoadResult> {
       reused: false,
       record,
       commands: record.commands,
+      events: record.events,
       settings: record.settings,
     };
   } catch (error) {
@@ -351,6 +388,7 @@ async function loadOrReusePlugin(source: PluginSource): Promise<PluginLoadResult
       reused: true,
       record: existing,
       commands: existing.commands,
+      events: existing.events,
       settings: existing.settings,
     };
   }
@@ -401,17 +439,19 @@ async function handleLoad(plugins: PluginSource[]): Promise<unknown> {
   const pluginsResult: Array<{
     pluginId: string;
     commands: unknown[];
+    events: unknown[];
     settings: unknown[];
   }> = [];
   const nextRecords = new Map<string, WorkerRecord>();
   let commandCount = 0;
   for (const result of loaded) {
-    if (result.record && result.commands && result.settings) {
+    if (result.record && result.commands && result.events && result.settings) {
       nextRecords.set(result.source.id, result.record);
       commandCount += result.commands.length;
       pluginsResult.push({
         pluginId: result.source.id,
         commands: result.commands,
+        events: result.events,
         settings: result.settings,
       });
     } else {
@@ -442,27 +482,34 @@ async function handle(request: HostRequest): Promise<unknown> {
   if (record.source.cacheKey !== request.revision) {
     throw new Error("Plugin changed while its input form was open; run the command again");
   }
-  const command = record.invocationCommands.find(
-    (entry) => entry.id === request.commandId,
-  );
-  if (!command) {
-    throw new Error(
-      `Plugin command ${request.pluginId}.${request.commandId} is not registered`,
-    );
+  const invocation =
+    request.type === "invoke"
+      ? record.invocationCommands.find((entry) => entry.id === request.commandId)
+      : record.invocationEvents.find((entry) => entry.event === request.event.type);
+  if (!invocation) {
+    const target =
+      request.type === "invoke" ? request.commandId : String(request.event.type || "");
+    throw new Error(`Plugin ${request.pluginId} is not registered for ${target}`);
   }
   const timeoutMs = Math.max(
     100,
-    Math.min(30_000, command.timeoutMs || DEFAULT_TIMEOUT_MS),
+    Math.min(30_000, invocation.timeoutMs || DEFAULT_TIMEOUT_MS),
   );
   try {
     return await enqueueWorkerInvocation(
       record,
-      {
-        type: "invoke",
-        commandId: request.commandId,
-        inputs: request.inputs,
-        context: request.context,
-      },
+      request.type === "invoke"
+        ? {
+            type: "invoke",
+            commandId: request.commandId,
+            inputs: request.inputs,
+            context: request.context,
+          }
+        : {
+            type: "event",
+            event: request.event,
+            context: request.context,
+          },
       timeoutMs,
     );
   } catch (error) {

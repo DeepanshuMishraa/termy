@@ -10,8 +10,6 @@ pub(super) const TITLEBAR_HEIGHT: f32 = 34.0;
 pub(super) const MAX_TAB_TITLE_CHARS: usize = 96;
 pub(super) const DEFAULT_TAB_TITLE: &str = "Terminal";
 pub(super) const COMMAND_TITLE_DELAY_MS: u64 = 250;
-#[cfg(not(test))]
-pub(super) const CONFIG_WATCH_INTERVAL_MS: u64 = 750;
 pub(super) const CURSOR_BLINK_INTERVAL_MS: u64 = 530;
 pub(super) const TMUX_TITLE_REFRESH_DEBOUNCE_MS: u64 = 120;
 const CHILD_WORKING_DIR_CACHE_TTL_MS: u64 = 1500;
@@ -61,6 +59,7 @@ pub(super) const INPUT_SCROLL_SUPPRESS_MS: u64 = 160;
 pub(super) const TOAST_COPY_FEEDBACK_MS: u64 = 1200;
 pub(super) const WINDOW_RESIZE_INDICATOR_MS: u64 = 850;
 pub(super) const RESIZE_THROTTLE_MS: u64 = 16;
+pub(super) const INACTIVE_RESIZE_DEBOUNCE_MS: u64 = 120;
 pub(super) const CHILD_WORKING_DIR_CACHE_TTL: Duration =
     Duration::from_millis(CHILD_WORKING_DIR_CACHE_TTL_MS);
 pub(super) const BENCHMARK_EXIT_GRACE_DURATION: Duration = Duration::from_millis(250);

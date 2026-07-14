@@ -183,6 +183,7 @@ Supported forms:
 
 - `keybind = clear`
 - `keybind = <trigger>=<action>`
+- `keybind = <trigger>=plugin:<plugin-id>/<command-id>`
 - `keybind = <trigger>=unbind`
 
 Behavior:
@@ -191,6 +192,7 @@ Behavior:
 - Later lines win for the same trigger.
 - `clear` removes all defaults before later lines are applied.
 - `unbind` removes the current mapping for a trigger.
+- Plugin commands without inputs run immediately. Commands with inputs open their input form.
 - Invalid lines are ignored (with warnings).
 
 Related UI option:
@@ -295,7 +297,15 @@ keybind = secondary-p=toggle_command_palette
 keybind = secondary-t=new_tab
 ```
 
-### 5) Run a named task directly
+### 5) Run a plugin command
+
+```txt
+keybind = secondary-g=plugin:git-tools/status
+```
+
+Use the plugin and command IDs from the plugin manifest. Termy refreshes plugins before invoking the command.
+
+### 6) Run a named task directly
 
 ```txt
 task.build.command = cargo build

@@ -1,5 +1,6 @@
 use super::*;
 use alacritty_terminal::grid::Dimensions;
+use std::ops::Range;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SearchKeyAction {
@@ -201,8 +202,7 @@ impl TerminalView {
     }
 
     pub(super) fn perform_search(&mut self) {
-        let query = self.search_input.text().to_string();
-        self.search_state.set_query(&query);
+        self.search_state.set_query(self.search_input.text());
 
         if !self.search_state.has_valid_pattern() {
             self.search_state.clear_results_preserving_query();
@@ -222,10 +222,7 @@ impl TerminalView {
         let line_texts = collect_search_line_texts(terminal, start_line, end_line);
 
         let search_state = &mut self.search_state;
-        search_state.search(start_line, end_line, |line_idx| {
-            let offset = (line_idx - start_line) as usize;
-            line_texts.get(offset).and_then(|line| line.as_deref())
-        });
+        search_state.search(start_line, end_line, |line_idx| line_texts.line(line_idx));
 
         // Start from the bottommost (newest) match, which is now index 0.
         self.search_state.jump_to_first();
@@ -261,8 +258,7 @@ impl TerminalView {
     }
 
     pub(super) fn handle_search_input_changed(&mut self, cx: &mut Context<Self>) {
-        let query = self.search_input.text().to_string();
-        self.search_state.set_query(&query);
+        self.search_state.set_query(self.search_input.text());
         if !self.search_state.has_valid_pattern() {
             // Cancel pending debounced searches and drop stale highlights immediately.
             self.search_debounce_token = self.search_debounce_token.wrapping_add(1);
@@ -592,24 +588,75 @@ impl TerminalView {
     }
 }
 
+struct SearchLineSnapshot {
+    first_line: i32,
+    text: String,
+    ranges: Vec<Range<usize>>,
+}
+
+impl SearchLineSnapshot {
+    const MISSING_LINE: usize = usize::MAX;
+
+    fn new(first_line: i32, line_count: usize) -> Self {
+        Self {
+            first_line,
+            text: String::new(),
+            ranges: Vec::with_capacity(line_count),
+        }
+    }
+
+    fn line(&self, line_idx: i32) -> Option<&str> {
+        let offset = usize::try_from(line_idx.checked_sub(self.first_line)?).ok()?;
+        let range = self.ranges.get(offset)?;
+        if range.start == Self::MISSING_LINE {
+            return None;
+        }
+        self.text.get(range.clone())
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.ranges.len()
+    }
+
+    #[cfg(test)]
+    fn lines(&self) -> impl Iterator<Item = &str> {
+        self.ranges
+            .iter()
+            .filter(|range| range.start != Self::MISSING_LINE)
+            .filter_map(|range| self.text.get(range.clone()))
+    }
+}
+
 fn collect_search_line_texts(
     terminal: &Terminal,
     start_line: i32,
     end_line: i32,
-) -> Vec<Option<String>> {
-    let mut line_texts = Vec::with_capacity((end_line - start_line + 1).max(0) as usize);
+) -> SearchLineSnapshot {
+    let line_count = (end_line - start_line + 1).max(0) as usize;
+    let mut line_texts = SearchLineSnapshot::new(start_line, line_count);
     let _ = terminal.with_grid(|grid| {
+        line_texts
+            .text
+            .reserve(line_count.saturating_mul(grid.columns()));
         for line_idx in start_line..=end_line {
-            line_texts.push(extract_line_text(grid, line_idx));
+            let start = line_texts.text.len();
+            let range = if append_line_text(grid, line_idx, &mut line_texts.text) {
+                start..line_texts.text.len()
+            } else {
+                SearchLineSnapshot::MISSING_LINE..SearchLineSnapshot::MISSING_LINE
+            };
+            line_texts.ranges.push(range);
         }
     });
     line_texts
 }
 
-fn extract_line_text(
+fn append_line_text(
     grid: &alacritty_terminal::grid::Grid<alacritty_terminal::term::cell::Cell>,
     line_idx: i32,
-) -> Option<String> {
+    text: &mut String,
+) -> bool {
     use alacritty_terminal::index::{Column, Line};
 
     let line = Line(line_idx);
@@ -619,10 +666,9 @@ fn extract_line_text(
     if line_idx < -(total_lines as i32 - grid.screen_lines() as i32)
         || line_idx >= grid.screen_lines() as i32
     {
-        return None;
+        return false;
     }
 
-    let mut text = String::with_capacity(cols);
     for col in 0..cols {
         let cell = &grid[line][Column(col)];
         let c = cell.c;
@@ -633,7 +679,7 @@ fn extract_line_text(
         }
     }
 
-    Some(text)
+    true
 }
 
 #[cfg(test)]
@@ -681,12 +727,8 @@ mod tests {
         assert_eq!(search_counter_label(3, 12, false), Some("3/12".to_string()));
     }
 
-    fn filled_line_count(lines: &[Option<String>]) -> usize {
-        lines
-            .iter()
-            .filter_map(|line| line.as_deref())
-            .filter(|line| !line.trim().is_empty())
-            .count()
+    fn filled_line_count(lines: &SearchLineSnapshot) -> usize {
+        lines.lines().filter(|line| !line.trim().is_empty()).count()
     }
 
     #[test]
@@ -716,10 +758,7 @@ mod tests {
             .expect("native terminal should initialize for read adapter test");
         let native_lines = collect_search_line_texts(&native, 0, i32::from(size.rows) - 1);
         assert_eq!(native_lines.len(), usize::from(size.rows));
-        let native_has_non_empty_buffer = native_lines
-            .iter()
-            .filter_map(|line| line.as_deref())
-            .any(|line| !line.is_empty());
+        let native_has_non_empty_buffer = native_lines.lines().any(|line| !line.is_empty());
         assert!(
             native_has_non_empty_buffer,
             "native terminal read adapter should expose at least one non-empty line buffer"

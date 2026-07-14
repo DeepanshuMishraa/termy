@@ -79,8 +79,13 @@ impl SettingsWindow {
     fn persist_action_bindings(
         &mut self,
         bindings: &HashMap<CommandId, String>,
+        replaced_plugin_trigger: Option<&str>,
     ) -> Result<(), String> {
-        let lines = Self::serialize_structured_keybind_lines(bindings);
+        let mut lines = Self::serialize_structured_keybind_lines(bindings);
+        lines.extend(crate::keybindings::plugin_keybind_lines_for_settings(
+            &self.config,
+            replaced_plugin_trigger,
+        ));
         config::set_keybind_lines(&lines)?;
         self.config.keybind_lines = lines
             .into_iter()
@@ -108,7 +113,7 @@ impl SettingsWindow {
     fn clear_action_binding(&mut self, action: CommandId, cx: &mut Context<Self>) {
         let mut bindings = self.effective_action_bindings();
         bindings.remove(&action);
-        if let Err(error) = self.persist_action_bindings(&bindings) {
+        if let Err(error) = self.persist_action_bindings(&bindings, None) {
             termy_toast::error(error);
             return;
         }
@@ -121,7 +126,7 @@ impl SettingsWindow {
         let mut bindings = self.effective_action_bindings();
         Self::apply_assignment_with_conflict_resolution(&mut bindings, action, trigger);
 
-        if let Err(error) = self.persist_action_bindings(&bindings) {
+        if let Err(error) = self.persist_action_bindings(&bindings, Some(trigger)) {
             termy_toast::error(error);
             return;
         }

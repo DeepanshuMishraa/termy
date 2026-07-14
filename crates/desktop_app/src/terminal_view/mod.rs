@@ -25,7 +25,7 @@ use std::process::Stdio;
 use std::{
     cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
-    ops::Range,
+    ops::{Deref, Range},
     path::{Path, PathBuf},
     process::Command,
     sync::{
@@ -36,7 +36,7 @@ use std::{
 };
 use termy_auto_update::{AutoUpdater, UpdateState};
 use termy_config_core::{MAX_LINE_HEIGHT, MIN_LINE_HEIGHT};
-use termy_plugin_runtime::PluginRuntime;
+use termy_plugin_runtime::{PluginEvent, PluginRuntime};
 use termy_search::SearchState;
 use termy_terminal_ui::{
     CellRenderInfo, CommandLifecycle, PaneTerminal, ProgressState, TabTitleShellIntegration,
@@ -44,10 +44,10 @@ use termy_terminal_ui::{
     TerminalDamageSnapshot, TerminalDirtySpan, TerminalEvent, TerminalGrid,
     TerminalGridPaintCacheHandle, TerminalGridPaintDamage, TerminalGridRows, TerminalKeyEventKind,
     TerminalKeyboardMode, TerminalMouseMode, TerminalOptions, TerminalQueryColors,
-    TerminalReplyHost, TerminalRuntimeConfig, TerminalSize, TmuxLaunchTarget,
-    WindowsShell as RuntimeWindowsShell, WorkingDirFallback as RuntimeWorkingDirFallback,
-    find_link_in_line, hyperlink_at_viewport_cell, keystroke_to_input,
-    normalize_working_directory_candidate, resolve_launch_working_directory,
+    TerminalReplyHost, TerminalRuntimeConfig, TerminalSize, TerminalWakeupNotifier,
+    TmuxLaunchTarget, WindowsShell as RuntimeWindowsShell,
+    WorkingDirFallback as RuntimeWorkingDirFallback, find_link_in_line, hyperlink_at_viewport_cell,
+    keystroke_to_input, normalize_working_directory_candidate, resolve_launch_working_directory,
     resolve_working_directory_path,
 };
 use termy_toast::ToastManager;
@@ -88,7 +88,9 @@ use appearance::{
     pane_focus_strength_factor, resolve_background_appearance, resolve_chrome_stroke_color,
     scaled_background_alpha_for_opacity, scaled_chrome_alpha_for_opacity,
 };
-use command_palette::{CommandPaletteMode, CommandPaletteState, TmuxSessionIntent};
+use command_palette::{
+    CommandPaletteMode, CommandPaletteState, PluginLifecycleState, TmuxSessionIntent,
+};
 use constants::*;
 use inline_input::{InlineInputAlignment, InlineInputState};
 use interaction::{
@@ -110,6 +112,46 @@ pub(crate) use tab_strip::constants::*;
 use tab_strip::state::TabStripState;
 
 type TabId = u64;
+type NativeTerminalWakeupId = u64;
+
+static NEXT_NATIVE_TERMINAL_WAKEUP_ID: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Clone)]
+struct NativeTerminalWakeupRouter {
+    ready: Arc<Mutex<HashSet<NativeTerminalWakeupId>>>,
+    view_wakeup_tx: Sender<()>,
+}
+
+impl NativeTerminalWakeupRouter {
+    fn new(view_wakeup_tx: Sender<()>) -> Self {
+        Self {
+            ready: Arc::new(Mutex::new(HashSet::new())),
+            view_wakeup_tx,
+        }
+    }
+
+    fn notifier(&self, wakeup_id: NativeTerminalWakeupId) -> TerminalWakeupNotifier {
+        let router = self.clone();
+        TerminalWakeupNotifier::new(move || router.mark_ready(wakeup_id))
+    }
+
+    fn mark_ready(&self, wakeup_id: NativeTerminalWakeupId) {
+        self.ready
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(wakeup_id);
+        let _ = self.view_wakeup_tx.try_send(());
+    }
+
+    fn drain_ready_into(&self, target: &mut HashSet<NativeTerminalWakeupId>) {
+        target.clear();
+        let mut ready = self
+            .ready
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        target.extend(ready.drain());
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct CellPos {
@@ -128,7 +170,20 @@ struct TerminalResizeSignature {
     padding_x_bits: u32,
     padding_y_bits: u32,
     runtime_kind: RuntimeKind,
+    active_tab_id: Option<TabId>,
     pane_layout_fingerprint: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DeferredTerminalResize {
+    Idle,
+    Pending {
+        signature: TerminalResizeSignature,
+        deadline: Instant,
+    },
+    Ready {
+        signature: TerminalResizeSignature,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -357,7 +412,20 @@ enum PaneResizeResult {
 #[allow(clippy::large_enum_variant)]
 enum Terminal {
     Tmux(PaneTerminal),
-    Native(Mutex<NativeTerminal>),
+    Native(NativeTerminalInstance),
+}
+
+struct NativeTerminalInstance {
+    wakeup_id: NativeTerminalWakeupId,
+    terminal: Mutex<NativeTerminal>,
+}
+
+impl Deref for NativeTerminalInstance {
+    type Target = Mutex<NativeTerminal>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.terminal
+    }
 }
 
 #[derive(Default)]
@@ -410,19 +478,31 @@ impl Terminal {
     fn new_native(
         size: TerminalSize,
         configured_working_dir: Option<&str>,
-        event_wakeup_tx: Option<Sender<()>>,
+        wakeup_router: Option<&NativeTerminalWakeupRouter>,
         tab_title_shell_integration: Option<&TabTitleShellIntegration>,
         runtime_config: Option<&TerminalRuntimeConfig>,
         startup_command: Option<&str>,
     ) -> anyhow::Result<Self> {
-        Ok(Self::Native(Mutex::new(NativeTerminal::new(
-            size,
-            configured_working_dir,
-            event_wakeup_tx,
-            tab_title_shell_integration,
-            runtime_config,
-            startup_command,
-        )?)))
+        let wakeup_id = NEXT_NATIVE_TERMINAL_WAKEUP_ID.fetch_add(1, Ordering::Relaxed);
+        let wakeup_notifier = wakeup_router.map(|router| router.notifier(wakeup_id));
+        Ok(Self::Native(NativeTerminalInstance {
+            wakeup_id,
+            terminal: Mutex::new(NativeTerminal::new_with_wakeup_notifier(
+                size,
+                configured_working_dir,
+                wakeup_notifier,
+                tab_title_shell_integration,
+                runtime_config,
+                startup_command,
+            )?),
+        }))
+    }
+
+    fn wakeup_id(&self) -> Option<NativeTerminalWakeupId> {
+        match self {
+            Self::Tmux(_) => None,
+            Self::Native(terminal) => Some(terminal.wakeup_id),
+        }
     }
 
     fn feed_output(&self, bytes: &[u8]) {
@@ -977,6 +1057,8 @@ pub struct TerminalView {
     renaming_tab: Option<usize>,
     rename_input: InlineInputState,
     event_wakeup_tx: Sender<()>,
+    native_terminal_wakeup_router: NativeTerminalWakeupRouter,
+    native_terminal_wakeup_batch: HashSet<NativeTerminalWakeupId>,
     focus_handle: FocusHandle,
     theme_id: String,
     theme_mode: config::AppearanceMode,
@@ -1018,6 +1100,7 @@ pub struct TerminalView {
     native_buffer_persistence: bool,
     current_named_layout: Option<String>,
     native_persist_revision: Arc<AtomicU64>,
+    native_persist_write_gate: Arc<Mutex<()>>,
     /// Lazily opened SQLite-backed session store; `None` once opening failed
     /// (logged), so persistence degrades to a no-op instead of retry spam.
     workspace_store: std::cell::OnceCell<Option<Arc<crate::workspace_store::WorkspaceStore>>>,
@@ -1075,6 +1158,7 @@ pub struct TerminalView {
     toast_manager: ToastManager,
     overlay_view: Option<Entity<TerminalOverlayView>>,
     plugin_runtime: PluginRuntime,
+    plugin_lifecycle: PluginLifecycleState,
     plugin_refresh_in_flight: bool,
     plugin_last_error: Option<String>,
     command_palette: CommandPaletteState,
@@ -1086,6 +1170,7 @@ pub struct TerminalView {
     resize_throttle_task: Option<gpui::Task<()>>,
     last_resize_applied_at: Option<Instant>,
     last_terminal_resize_signature: Option<TerminalResizeSignature>,
+    deferred_inactive_resize: DeferredTerminalResize,
     benchmark_session: Option<BenchmarkSession>,
     benchmark_exit_scheduled: bool,
     show_debug_overlay: bool,
@@ -3244,6 +3329,8 @@ impl TerminalView {
         let focus_handle = cx.focus_handle();
         let blur_focus_handle = focus_handle.clone();
         let (event_wakeup_tx, event_wakeup_rx) = bounded(1);
+        let native_terminal_wakeup_router =
+            NativeTerminalWakeupRouter::new(event_wakeup_tx.clone());
         let config_change_rx = config::subscribe_config_changes();
         let background_opacity_preview_rx = config::subscribe_background_opacity_preview();
         #[cfg(test)]
@@ -3308,47 +3395,16 @@ impl TerminalView {
 
         #[cfg(not(test))]
         {
-            // Reload immediately when config is updated in-process (e.g. settings/theme actions).
+            // Reload when either an in-process update or the config file watcher reports a change.
             cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
                 loop {
-                    let wait_rx = config_change_rx.clone();
-                    if smol::unblock(move || wait_rx.recv()).await.is_err() {
+                    if config_change_rx.recv_async().await.is_err() {
                         break;
                     }
                     while config_change_rx.try_recv().is_ok() {}
                     let result = cx.update(|cx| {
                         this.update(cx, |view, cx| {
-                            view.reload_config(cx);
-                            cx.notify();
-                        })
-                    });
-                    if result.is_err() {
-                        break;
-                    }
-                }
-            })
-            .detach();
-        }
-
-        #[cfg(not(test))]
-        {
-            // Poll config file timestamp and hot-reload UI settings on change.
-            cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-                loop {
-                    smol::Timer::after(Duration::from_millis(CONFIG_WATCH_INTERVAL_MS)).await;
-                    let result = cx.update(|cx| {
-                        this.update(cx, |view, cx| {
-                            let config_changed = view.reload_config_if_changed(cx);
-                            let availability_changed = view.refresh_install_cli_availability();
-                            if availability_changed {
-                                view.refresh_command_palette_items_for_current_mode(cx);
-                                cx.set_menus(crate::menus::app_menus(
-                                    view.install_cli_available(),
-                                    view.runtime_uses_tmux(),
-                                    view.simple_mode,
-                                ));
-                            }
-                            if config_changed || availability_changed {
+                            if view.reload_config_if_changed(cx) {
                                 cx.notify();
                             }
                         })
@@ -3443,6 +3499,7 @@ impl TerminalView {
         let (runtime, initial_snapshot, native_terminal) = Self::runtime_startup_from_app_config(
             &config,
             &event_wakeup_tx,
+            &native_terminal_wakeup_router,
             configured_working_dir.as_deref(),
             &tab_shell_integration,
             &terminal_runtime,
@@ -3476,6 +3533,8 @@ impl TerminalView {
             renaming_tab: None,
             rename_input: InlineInputState::new(String::new()),
             event_wakeup_tx,
+            native_terminal_wakeup_router,
+            native_terminal_wakeup_batch: HashSet::new(),
             focus_handle,
             theme_id,
             theme_mode: config.theme_mode,
@@ -3517,6 +3576,7 @@ impl TerminalView {
             native_buffer_persistence: config.native_buffer_persistence,
             current_named_layout: None,
             native_persist_revision: Arc::new(AtomicU64::new(0)),
+            native_persist_write_gate: Arc::new(Mutex::new(())),
             workspace_store: std::cell::OnceCell::new(),
             tmux_show_active_pane_border: config.tmux_show_active_pane_border,
             config_path,
@@ -3570,6 +3630,7 @@ impl TerminalView {
             toast_manager: ToastManager::new(),
             overlay_view: None,
             plugin_runtime,
+            plugin_lifecycle: PluginLifecycleState::new(window_handle),
             plugin_refresh_in_flight: false,
             plugin_last_error: None,
             command_palette: CommandPaletteState::new(config.command_palette_show_keybinds),
@@ -3581,6 +3642,7 @@ impl TerminalView {
             resize_throttle_task: None,
             last_resize_applied_at: None,
             last_terminal_resize_signature: None,
+            deferred_inactive_resize: DeferredTerminalResize::Idle,
             benchmark_session: benchmark_config.map(BenchmarkSession::new),
             benchmark_exit_scheduled: false,
             show_debug_overlay: config.show_debug_overlay,
@@ -3688,7 +3750,17 @@ impl TerminalView {
             .detach();
         }
         cx.observe_window_activation(window, |view, window, cx| {
-            if !window.is_window_active() && view.release_all_forwarded_mouse_presses() {
+            if window.is_window_active() {
+                if view.refresh_install_cli_availability() {
+                    view.refresh_command_palette_items_for_current_mode(cx);
+                    cx.set_menus(crate::menus::app_menus(
+                        view.install_cli_available(),
+                        view.runtime_uses_tmux(),
+                        view.simple_mode,
+                    ));
+                    cx.notify();
+                }
+            } else if view.release_all_forwarded_mouse_presses() {
                 cx.notify();
             }
         })
@@ -3712,8 +3784,7 @@ impl TerminalView {
         {
             cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
                 loop {
-                    let wait_rx = background_opacity_preview_rx.clone();
-                    let Ok(mut opacity) = smol::unblock(move || wait_rx.recv()).await else {
+                    let Ok(mut opacity) = background_opacity_preview_rx.recv_async().await else {
                         break;
                     };
                     while let Ok(next_opacity) = background_opacity_preview_rx.try_recv() {
@@ -3832,7 +3903,7 @@ impl TerminalView {
             self.workspace_sidebar_collapsed = false;
             self.workspace_sidebar_peek_visible = false;
             // Stashed workspaces would be unreachable without the sidebar.
-            self.collapse_workspaces_into_active();
+            self.collapse_workspaces_into_active(cx);
         }
         self.tab_close_visibility = config.tab_close_visibility;
         self.tab_width_mode = config.tab_width_mode;
@@ -4134,8 +4205,15 @@ impl TerminalView {
         let should_redraw = if self.runtime_uses_tmux() {
             self.process_tmux_terminal_events(cx)
         } else {
-            self.process_native_terminal_events(cx)
+            let mut ready_terminal_ids = std::mem::take(&mut self.native_terminal_wakeup_batch);
+            self.native_terminal_wakeup_router
+                .drain_ready_into(&mut ready_terminal_ids);
+            let should_redraw = self.process_native_terminal_events(cx, &mut ready_terminal_ids);
+            ready_terminal_ids.clear();
+            self.native_terminal_wakeup_batch = ready_terminal_ids;
+            should_redraw
         };
+        self.sync_plugin_lifecycle_state(self.runtime_uses_tmux(), cx);
 
         if should_redraw {
             self.debug_overlay_stats.record_terminal_redraw();
@@ -4158,10 +4236,16 @@ impl TerminalView {
         should_redraw
     }
 
-    fn process_native_terminal_events(&mut self, cx: &mut Context<Self>) -> bool {
+    fn process_native_terminal_events(
+        &mut self,
+        cx: &mut Context<Self>,
+        ready_terminal_ids: &mut HashSet<NativeTerminalWakeupId>,
+    ) -> bool {
+        if ready_terminal_ids.is_empty() {
+            return false;
+        }
         let mut should_redraw = false;
         let mut should_quit = false;
-        let mut terminal_events_remain = false;
         let active_tab = self.active_tab;
         let mut clipboard_text = ClipboardTextCache::default();
         self.record_benchmark_terminal_event_drain_pass();
@@ -4169,22 +4253,36 @@ impl TerminalView {
         let mut pending_tab_closures: HashSet<TabId> = HashSet::new();
         let mut pending_pane_closures: Vec<(TabId, String)> = Vec::new();
         let mut pending_workspace_close = false;
+        let mut plugin_events = Vec::new();
+        let wakeup_router = self.native_terminal_wakeup_router.clone();
         let mut simulated_tab_count = self.tabs.len();
         // Built lazily on the first Exit event: this drain pass runs for every
         // PTY wakeup burst, and allocating the map per pass is wasted work.
         let mut simulated_pane_counts: Option<HashMap<TabId, usize>> = None;
 
-        for tab_index in 0..self.tabs.len() {
+        let tab_count = self.tabs.len();
+        let tab_indices = std::iter::once(active_tab)
+            .filter(|tab_index| *tab_index < tab_count)
+            .chain((0..tab_count).filter(|tab_index| *tab_index != active_tab));
+        'ready_tabs: for tab_index in tab_indices {
             let tab_id = self.tabs[tab_index].id;
-            // Most shared wakeups belong to one pane. Defer string clones until
-            // this tab actually yields work so inactive tabs stay allocation-
-            // free on the common drain path.
+            // Most ready batches belong to the active pane. Visit the active
+            // tab first and defer string clones until a terminal yields work.
             let mut active_pane_id = None;
 
             for pane_index in 0..self.tabs[tab_index].panes.len() {
+                if ready_terminal_ids.is_empty() {
+                    break 'ready_tabs;
+                }
                 let Some(terminal) = self.tabs[tab_index].panes[pane_index].maybe_terminal() else {
                     continue;
                 };
+                let Some(wakeup_id) = terminal.wakeup_id() else {
+                    continue;
+                };
+                if !ready_terminal_ids.remove(&wakeup_id) {
+                    continue;
+                }
                 let (events, has_more) = {
                     let mut reply_host = GpuiClipboardReplyHost::new(cx, &mut clipboard_text);
                     terminal.drain_events(&mut reply_host)
@@ -4198,7 +4296,7 @@ impl TerminalView {
                 let pane_id = self.tabs[tab_index].panes[pane_index].id.clone();
                 let pane_is_active = pane_id.as_str() == active_pane_id.as_str();
                 if has_more {
-                    terminal_events_remain = true;
+                    wakeup_router.mark_ready(wakeup_id);
                     if tab_index == active_tab {
                         should_redraw = true;
                     }
@@ -4275,9 +4373,23 @@ impl TerminalView {
                         }
                         TerminalEvent::ShellCommandFinished(code) => {
                             if self.shell_integration_enabled {
+                                let command = self.tabs[tab_index].current_command.clone();
+                                let duration_ms = self.tabs[tab_index]
+                                    .command_lifecycle
+                                    .elapsed()
+                                    .map(|duration| {
+                                        u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+                                    });
                                 self.tabs[tab_index]
                                     .command_lifecycle
                                     .command_finished(code);
+                                if tab_index == active_tab && pane_is_active {
+                                    plugin_events.push(PluginEvent::CommandFinished {
+                                        command,
+                                        exit_code: code,
+                                        duration_ms,
+                                    });
+                                }
                             }
                         }
                         // Progress indicator (OSC 9;4) — tracked per pane; the
@@ -4292,15 +4404,21 @@ impl TerminalView {
                         }
                         // Working directory (OSC 7)
                         TerminalEvent::WorkingDirectory(path) => {
-                            self.tabs[tab_index].last_prompt_cwd = Some(path);
+                            if pane_is_active {
+                                self.tabs[tab_index].last_prompt_cwd = Some(path);
+                            }
                         }
                     }
                 }
             }
         }
 
-        if self.drain_stashed_workspace_terminal_events(cx, &mut clipboard_text) {
-            terminal_events_remain = true;
+        if !ready_terminal_ids.is_empty() {
+            self.drain_stashed_workspace_terminal_events(
+                cx,
+                &mut clipboard_text,
+                ready_terminal_ids,
+            );
         }
 
         for (tab_id, pane_id) in pending_pane_closures.drain(..) {
@@ -4321,10 +4439,6 @@ impl TerminalView {
             should_redraw = true;
         }
 
-        if terminal_events_remain {
-            let _ = self.event_wakeup_tx.try_send(());
-        }
-
         if should_quit {
             // Shell `exit` in the last native pane should close the app immediately.
             self.sync_persisted_native_workspace();
@@ -4340,6 +4454,9 @@ impl TerminalView {
 
         if should_redraw {
             self.record_benchmark_terminal_redraw();
+        }
+        for event in plugin_events {
+            self.enqueue_plugin_event(event, cx);
         }
         should_redraw
     }
@@ -5116,6 +5233,23 @@ mod tests {
     }
 
     #[test]
+    fn native_terminal_wakeup_router_coalesces_ready_terminal_ids() {
+        let (view_wakeup_tx, view_wakeup_rx) = bounded(1);
+        let router = NativeTerminalWakeupRouter::new(view_wakeup_tx);
+
+        router.mark_ready(7);
+        router.mark_ready(7);
+        router.mark_ready(9);
+
+        assert_eq!(view_wakeup_rx.try_iter().count(), 1);
+        let mut ready = HashSet::new();
+        router.drain_ready_into(&mut ready);
+        assert_eq!(ready, HashSet::from([7, 9]));
+        router.drain_ready_into(&mut ready);
+        assert!(ready.is_empty());
+    }
+
+    #[test]
     fn create_native_tab_starts_with_one_full_size_pane() {
         let terminal = Terminal::new_tmux(
             TerminalSize::default(),
@@ -5139,6 +5273,7 @@ mod tests {
         assert_eq!(pane.height, 42);
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn inactive_tab_render_cache_eviction_preserves_the_active_tab() {
         let make_tab = |tab_id| {

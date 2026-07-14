@@ -44,6 +44,7 @@ url = { workspace = true }
 # File I/O
 tempfile = { workspace = true }
 fs4 = { version = "0.13.1", features = ["sync"] }
+notify = "8"
 ureq = { workspace = true }
 webbrowser = "1.0"
 sysinfo = "0.37"

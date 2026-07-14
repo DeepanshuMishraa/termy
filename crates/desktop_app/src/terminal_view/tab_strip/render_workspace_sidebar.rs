@@ -20,7 +20,7 @@ impl TerminalView {
         // when there is no horizontal tab strip to host them.
         let header = (self.tab_strip_orientation() == TabStripOrientation::Vertical)
             .then(|| self.render_workspace_sidebar_header(&palette, cx));
-        let rows = self.render_workspace_sidebar_rows(&palette, font_family, cx);
+        let rows = self.render_workspace_sidebar_rows(&palette, colors, font_family, cx);
         let sidebar_width = self.workspace_sidebar_width();
         let resize_active = self.workspace_sidebar_resize_drag_active();
         let mut resize_handle_bg = palette.tab_stroke_color;
@@ -209,6 +209,7 @@ impl TerminalView {
     fn render_workspace_sidebar_rows(
         &mut self,
         palette: &TabStripPalette,
+        colors: &TerminalColors,
         font_family: &SharedString,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -224,7 +225,8 @@ impl TerminalView {
         for index in 0..self.workspaces.len() {
             let is_active = index == self.active_workspace;
             let is_renaming = self.renaming_workspace == Some(index);
-            let name = self.workspaces[index].name.clone();
+            let name = self.workspace_display_name(index);
+            let status = self.workspace_status(index);
             let pinned = self.workspaces[index].pinned;
             let tab_count = if is_active {
                 self.tabs.len()
@@ -248,6 +250,22 @@ impl TerminalView {
             let mut pin_text = row_text;
             pin_text.a = if pinned { 0.95 } else { 0.45 };
             let pin_hover_bg = palette.hovered_tab_bg;
+            // Unpeel-style status dot: green while a process runs, yellow
+            // when a stashed workspace rang the bell or finished a command.
+            let status_dot_color = match status {
+                workspaces::WorkspaceStatus::Busy => Some(colors.ansi[2]),
+                workspaces::WorkspaceStatus::Attention => Some(colors.ansi[3]),
+                workspaces::WorkspaceStatus::Idle => None,
+            };
+            let status_dot = status_dot_color.map(|color| {
+                div()
+                    .flex_none()
+                    .w(px(6.0))
+                    .h(px(6.0))
+                    .mr(px(6.0))
+                    .rounded_full()
+                    .bg(color)
+            });
             let drop_marker = self.workspace_drop_marker_side(index).map(|side| {
                 let marker_y = match side {
                     TabDropMarkerSide::Leading => 0.0,
@@ -302,6 +320,7 @@ impl TerminalView {
                             }
                         }),
                     )
+                    .children(status_dot)
                     .child(
                         div()
                             .flex_1()

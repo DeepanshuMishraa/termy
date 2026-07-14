@@ -18,8 +18,9 @@ use termy_core::{
     TerminalKeyEventKind, TerminalMouseButton, TerminalMouseEventKind, TerminalMouseModifiers,
     TerminalMousePosition, TerminalOptions, TerminalQueryColors, TerminalReplyHost,
     TerminalRuntimeConfig, TerminalSize, TermyCell, TermyColor, TermyFrameUpdate, TermyKeystroke,
-    TermyModifiers, TermySearchMatch, TermySearchOptions, encode_mouse_report, keystroke_to_input,
-    load_config_from_contents, load_config_from_default_path, load_config_from_path,
+    TermyModifiers, TermySearchOptions, TermySharedSearchMatch, encode_mouse_report,
+    keystroke_to_input, load_config_from_contents, load_config_from_default_path,
+    load_config_from_path,
 };
 
 #[repr(C)]
@@ -543,12 +544,15 @@ fn ffi_event_from_event(event: TerminalEvent) -> TermyFfiEvent {
     }
 }
 
-fn ffi_search_match_from_match(search_match: TermySearchMatch) -> TermyFfiSearchMatch {
+fn ffi_search_match_from_match(search_match: TermySharedSearchMatch) -> TermyFfiSearchMatch {
     TermyFfiSearchMatch {
         row: search_match.row,
         start_col: search_match.start_col,
         end_col: search_match.end_col,
-        line: ffi_bytes_from_string(search_match.line),
+        // The core shares one line across matches. The final match can move the
+        // original allocation into the FFI batch; earlier matches clone only
+        // because the C ABI gives every result independent ownership.
+        line: ffi_bytes_from_string(std::sync::Arc::unwrap_or_clone(search_match.line)),
     }
 }
 
@@ -2657,7 +2661,15 @@ pub unsafe extern "C" fn termy_terminal_resize(
         }
 
         unsafe {
-            (*terminal).terminal.resize(size.into());
+            let terminal = &mut (*terminal).terminal;
+            let next_size = size.into();
+            if terminal.size() == next_size {
+                // Preserve the legacy C/Swift contract: embedders may resend
+                // the current dimensions solely to deliver SIGWINCH to a TUI.
+                terminal.nudge_resize();
+            } else {
+                terminal.resize(next_size);
+            }
         }
         TermyFfiStatus::Ok
     })
@@ -3153,7 +3165,7 @@ pub unsafe extern "C" fn termy_terminal_search_with_options(
         };
 
         let matches = unsafe {
-            (*terminal).terminal.search_with_options(
+            (*terminal).terminal.search_shared_with_options(
                 query,
                 TermySearchOptions {
                     case_sensitive: options.case_sensitive,

@@ -50,12 +50,15 @@ pub use render_metrics::{
 pub use runtime::{
     TabTitleShellIntegration, Terminal, TerminalCursorState, TerminalCursorStyle,
     TerminalDamageSnapshot, TerminalDirtySpan, TerminalEvent, TerminalOptions,
-    TerminalRuntimeConfig, TerminalSize, WindowsShell, WorkingDirFallback,
+    TerminalRuntimeConfig, TerminalSize, TerminalWakeupNotifier, WindowsShell, WorkingDirFallback,
     cursor_position_from_term, cursor_state_from_term, normalize_working_directory_candidate,
     resolve_launch_working_directory, resolve_working_directory_path, take_term_damage_snapshot,
     termmode_to_terminal_mouse_mode,
 };
-pub use search::{TermySearchMatch, TermySearchOptions, search_frame, search_frame_with_options};
+pub use search::{
+    TermySearchMatch, TermySearchOptions, TermySharedSearchMatch, search_frame,
+    search_frame_shared, search_frame_shared_with_options, search_frame_with_options,
+};
 pub use shell_integration::{CommandLifecycle, CommandPhase, ProgressState};
 pub use termy_config_core::{
     AppConfig, ConfigDiagnostic, ConfigDiagnosticKind, ConfigParseReport,

@@ -7,9 +7,25 @@ use super::*;
 pub(crate) struct WorkspaceEntry {
     pub(crate) id: u64,
     pub(crate) name: String,
+    /// `true` once the user renamed the workspace. While `false` the sidebar
+    /// shows an auto-title derived from the workspace's active tab instead of
+    /// `name`, which then only serves as the fallback label.
+    pub(crate) custom_named: bool,
     pub(crate) pinned: bool,
     pub(crate) tabs: Vec<TerminalTab>,
     pub(crate) active_tab: usize,
+    /// Something happened in this workspace while it was stashed (bell or a
+    /// command finished). Cleared when the workspace is activated; never set
+    /// on the active workspace. Not persisted.
+    pub(crate) attention: bool,
+}
+
+/// Sidebar status for one workspace, most urgent first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WorkspaceStatus {
+    Idle,
+    Busy,
+    Attention,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -29,10 +45,20 @@ impl WorkspaceEntry {
         Self {
             id,
             name: format!("Workspace {id}"),
+            custom_named: false,
             pinned: false,
             tabs: Vec::new(),
             active_tab: 0,
+            attention: false,
         }
+    }
+
+    /// Whether `name` looks like an auto-generated `Workspace {id}` label.
+    /// Used when restoring sessions persisted before the `custom_named` flag
+    /// existed, so old default names keep auto-titling.
+    pub(crate) fn is_default_workspace_name(name: &str) -> bool {
+        name.strip_prefix("Workspace ")
+            .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|byte| byte.is_ascii_digit()))
     }
 }
 
@@ -173,6 +199,53 @@ impl TerminalView {
         self.workspaces.len() > 1
     }
 
+    /// Sidebar status for the workspace at `index`. The active workspace only
+    /// reports Busy/Idle: the user is already looking at it, so its attention
+    /// flag stays cleared.
+    pub(crate) fn workspace_status(&self, index: usize) -> WorkspaceStatus {
+        let Some(entry) = self.workspaces.get(index) else {
+            return WorkspaceStatus::Idle;
+        };
+        let tabs = if index == self.active_workspace {
+            self.tabs.as_slice()
+        } else {
+            if entry.attention {
+                return WorkspaceStatus::Attention;
+            }
+            entry.tabs.as_slice()
+        };
+        if tabs.iter().any(Self::tab_is_busy) {
+            WorkspaceStatus::Busy
+        } else {
+            WorkspaceStatus::Idle
+        }
+    }
+
+    /// Sidebar label for the workspace at `index`. User-renamed workspaces
+    /// keep their name; otherwise the label follows the workspace's active
+    /// tab title, falling back to the default `Workspace {id}` name. Titles
+    /// on stashed tabs are frozen at stash time, so inactive workspaces show
+    /// the title from when they were last active.
+    pub(crate) fn workspace_display_name(&self, index: usize) -> String {
+        let Some(entry) = self.workspaces.get(index) else {
+            return String::new();
+        };
+        if entry.custom_named {
+            return entry.name.clone();
+        }
+        let active_tab_title = if index == self.active_workspace {
+            self.tabs.get(self.active_tab)
+        } else {
+            entry.tabs.get(entry.active_tab)
+        }
+        .map(|tab| tab.title.trim())
+        .filter(|title| !title.is_empty());
+        match active_tab_title {
+            Some(title) => Self::truncate_tab_title(title),
+            None => entry.name.clone(),
+        }
+    }
+
     pub(crate) fn begin_workspace_drag(&mut self, index: usize) {
         if index >= self.workspaces.len() || self.renaming_workspace.is_some() {
             return;
@@ -265,7 +338,7 @@ impl TerminalView {
         {
             self.active_workspace = next_active;
         }
-        self.schedule_persist_native_workspace();
+        self.schedule_persist_native_workspace(cx);
         cx.notify();
         true
     }
@@ -351,6 +424,7 @@ impl TerminalView {
         if let Some(entry) = self.workspaces.get_mut(index) {
             self.tabs = std::mem::take(&mut entry.tabs);
             self.active_tab = entry.active_tab.min(self.tabs.len().saturating_sub(1));
+            entry.attention = false;
         }
         self.active_workspace = index;
     }
@@ -384,7 +458,8 @@ impl TerminalView {
         self.clear_terminal_scrollbar_marker_cache();
         self.mark_tab_strip_layout_dirty();
         self.sync_tab_strip_for_active_tab();
-        self.schedule_persist_native_workspace();
+        self.sync_plugin_lifecycle_state(false, cx);
+        self.schedule_persist_native_workspace(cx);
         cx.notify();
     }
 
@@ -417,7 +492,7 @@ impl TerminalView {
         self.finish_workspace_drag();
         self.reorder_workspaces_for_pins();
         self.mark_tab_strip_layout_dirty();
-        self.schedule_persist_native_workspace();
+        self.schedule_persist_native_workspace(cx);
         cx.notify();
         true
     }
@@ -458,7 +533,7 @@ impl TerminalView {
         self.finish_workspace_drag();
         self.renaming_workspace = Some(index);
         self.workspace_rename_input
-            .set_text(self.workspaces[index].name.clone());
+            .set_text(self.workspace_display_name(index));
         self.reset_cursor_blink_phase();
         self.inline_input_selecting = false;
         cx.notify();
@@ -468,12 +543,16 @@ impl TerminalView {
         let Some(index) = self.renaming_workspace else {
             return;
         };
-        let trimmed = self.workspace_rename_input.text().trim();
-        if let Some(entry) = self.workspaces.get_mut(index)
-            && !trimmed.is_empty()
-        {
-            entry.name = Self::truncate_tab_title(trimmed);
-            self.schedule_persist_native_workspace();
+        let trimmed = self.workspace_rename_input.text().trim().to_string();
+        if let Some(entry) = self.workspaces.get_mut(index) {
+            if trimmed.is_empty() {
+                // Committing an empty name reverts to auto-titling.
+                entry.custom_named = false;
+            } else {
+                entry.name = Self::truncate_tab_title(&trimmed);
+                entry.custom_named = true;
+            }
+            self.schedule_persist_native_workspace(cx);
         }
 
         self.reset_workspace_rename_state();
@@ -540,7 +619,7 @@ impl TerminalView {
     /// Merge every stashed workspace's tabs into the visible strip and keep a
     /// single workspace. Runs when the sidebar setting is turned off so no
     /// tab becomes unreachable.
-    pub(crate) fn collapse_workspaces_into_active(&mut self) {
+    pub(crate) fn collapse_workspaces_into_active(&mut self, cx: &mut Context<Self>) {
         if !self.has_other_workspaces() {
             return;
         }
@@ -566,34 +645,52 @@ impl TerminalView {
         self.active_workspace = 0;
         self.mark_tab_strip_layout_dirty();
         self.sync_tab_strip_for_active_tab();
-        self.schedule_persist_native_workspace();
+        self.schedule_persist_native_workspace(cx);
     }
 
     /// Drain PTY events for tabs stashed in inactive workspaces so their
     /// processes never stall behind a full event channel. Only a minimal
-    /// subset is applied (progress, cwd, exit); titles refresh on the next
-    /// prompt after the workspace is reactivated. Returns whether more
-    /// events remain queued.
+    /// subset is applied (progress, cwd, exit, sidebar status); tab titles
+    /// refresh on the next prompt after the workspace is reactivated.
     pub(super) fn drain_stashed_workspace_terminal_events(
         &mut self,
         cx: &mut Context<Self>,
         clipboard_text: &mut ClipboardTextCache,
-    ) -> bool {
-        let mut events_remain = false;
+        ready_terminal_ids: &mut HashSet<NativeTerminalWakeupId>,
+    ) {
+        let mut status_changed = false;
         let mut exited_panes: Vec<(u64, TabId, String)> = Vec::new();
+        let explicit_prefix = self.tab_title.explicit_prefix.trim().to_string();
+        let shell_integration_enabled = self.shell_integration_enabled;
+        let wakeup_router = self.native_terminal_wakeup_router.clone();
 
         for entry in &mut self.workspaces {
+            let mut attention = false;
             for tab in &mut entry.tabs {
+                if ready_terminal_ids.is_empty() {
+                    break;
+                }
+                let active_pane_id = tab.active_pane_id.clone();
+                let mut running_update: Option<(bool, Option<String>)> = None;
                 for pane in &mut tab.panes {
+                    if ready_terminal_ids.is_empty() {
+                        break;
+                    }
                     let Some(terminal) = pane.maybe_terminal() else {
                         continue;
                     };
+                    let Some(wakeup_id) = terminal.wakeup_id() else {
+                        continue;
+                    };
+                    if !ready_terminal_ids.remove(&wakeup_id) {
+                        continue;
+                    }
                     let (events, has_more) = {
                         let mut reply_host = GpuiClipboardReplyHost::new(cx, clipboard_text);
                         terminal.drain_events(&mut reply_host)
                     };
                     if has_more {
-                        events_remain = true;
+                        wakeup_router.mark_ready(wakeup_id);
                     }
                     for event in events {
                         match event {
@@ -606,21 +703,92 @@ impl TerminalView {
                             TerminalEvent::WorkingDirectory(path) => {
                                 tab.last_prompt_cwd = Some(path);
                             }
+                            TerminalEvent::Bell => {
+                                attention = true;
+                            }
+                            TerminalEvent::ShellCommandFinished(_) => {
+                                if shell_integration_enabled {
+                                    attention = true;
+                                }
+                            }
+                            // Track only the running-process flag from title
+                            // events so the sidebar busy status stays fresh;
+                            // the title text itself refreshes on reactivation.
+                            TerminalEvent::Title(title) => {
+                                if pane.id == active_pane_id
+                                    && let Some(update) =
+                                        Self::stashed_title_running_update(&explicit_prefix, &title)
+                                {
+                                    running_update = Some(update);
+                                }
+                            }
                             _ => {}
                         }
                     }
                 }
+                if let Some((running_process, current_command)) = running_update {
+                    if tab.running_process != running_process {
+                        status_changed = true;
+                    }
+                    tab.running_process = running_process;
+                    tab.current_command = current_command;
+                }
+            }
+            if attention && !entry.attention {
+                entry.attention = true;
+                status_changed = true;
+            }
+            if ready_terminal_ids.is_empty() {
+                break;
             }
         }
 
         for (workspace_id, tab_id, pane_id) in exited_panes {
-            self.remove_stashed_pane(workspace_id, tab_id, pane_id.as_str());
+            self.remove_stashed_pane(workspace_id, tab_id, pane_id.as_str(), cx);
         }
 
-        events_remain
+        if status_changed
+            && (self.workspace_sidebar_visible() || self.workspace_sidebar_overlay_visible())
+        {
+            cx.notify();
+        }
     }
 
-    fn remove_stashed_pane(&mut self, workspace_id: u64, tab_id: TabId, pane_id: &str) {
+    /// Minimal parse of an explicit-title event from a stashed tab: returns
+    /// the `(running_process, current_command)` update it implies, if any.
+    /// Mirrors the prompt/command prefixes of `parse_explicit_title` without
+    /// touching title state.
+    fn stashed_title_running_update(
+        explicit_prefix: &str,
+        title: &str,
+    ) -> Option<(bool, Option<String>)> {
+        if explicit_prefix.is_empty() {
+            return None;
+        }
+        let payload = title.trim().strip_prefix(explicit_prefix)?.trim();
+        if let Some(command) = payload.strip_prefix("command:") {
+            let command = command.trim();
+            if command.is_empty() {
+                return None;
+            }
+            return Some((true, Some(command.to_string())));
+        }
+        if let Some(prompt) = payload.strip_prefix("prompt:") {
+            if prompt.trim().is_empty() {
+                return None;
+            }
+            return Some((false, None));
+        }
+        None
+    }
+
+    fn remove_stashed_pane(
+        &mut self,
+        workspace_id: u64,
+        tab_id: TabId,
+        pane_id: &str,
+        cx: &mut Context<Self>,
+    ) {
         let Some(workspace_index) = self
             .workspaces
             .iter()
@@ -663,7 +831,7 @@ impl TerminalView {
         }
         self.native_pane_layout_trees.remove(&tab_id);
         self.native_pane_zoom_snapshots.remove(&tab_id);
-        self.schedule_persist_native_workspace();
+        self.schedule_persist_native_workspace(cx);
     }
 
     /// All tabs held by inactive workspaces, in sidebar order.
@@ -707,6 +875,45 @@ mod tests {
         assert_eq!(
             TerminalView::clamp_workspace_sidebar_width(f32::NAN),
             termy_config_core::DEFAULT_SIDEBAR_WIDTH
+        );
+    }
+
+    #[test]
+    fn default_workspace_name_detection_matches_generated_names_only() {
+        assert!(WorkspaceEntry::is_default_workspace_name("Workspace 1"));
+        assert!(WorkspaceEntry::is_default_workspace_name("Workspace 42"));
+        assert!(!WorkspaceEntry::is_default_workspace_name("Workspace "));
+        assert!(!WorkspaceEntry::is_default_workspace_name("Workspace one"));
+        assert!(!WorkspaceEntry::is_default_workspace_name("My Workspace 1"));
+        assert!(!WorkspaceEntry::is_default_workspace_name("backend"));
+        assert!(!WorkspaceEntry::is_default_workspace_name(""));
+    }
+
+    #[test]
+    fn stashed_title_running_update_tracks_command_and_prompt_events() {
+        assert_eq!(
+            TerminalView::stashed_title_running_update("termy;", "termy; command: cargo build"),
+            Some((true, Some("cargo build".to_string())))
+        );
+        assert_eq!(
+            TerminalView::stashed_title_running_update("termy;", "termy; prompt: ~/dev"),
+            Some((false, None))
+        );
+        assert_eq!(
+            TerminalView::stashed_title_running_update("termy;", "termy; title: hello"),
+            None
+        );
+        assert_eq!(
+            TerminalView::stashed_title_running_update("termy;", "plain shell title"),
+            None
+        );
+        assert_eq!(
+            TerminalView::stashed_title_running_update("termy;", "termy; command:  "),
+            None
+        );
+        assert_eq!(
+            TerminalView::stashed_title_running_update("", "termy; command: cargo build"),
+            None
         );
     }
 

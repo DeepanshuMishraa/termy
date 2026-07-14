@@ -359,6 +359,7 @@ impl CommandPaletteState {
     }
 
     pub(super) fn begin_plugin_inputs(&mut self, session: PluginInputSession) {
+        self.open = true;
         self.plugin_input_session = None;
         self.mode = CommandPaletteMode::PluginInputs;
         self.reset_for_mode();

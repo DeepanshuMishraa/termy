@@ -82,6 +82,15 @@ type PluginCommand = {
     context: PluginContext;
   }) => unknown;
 };
+type PluginEventName =
+  | "terminal.ready"
+  | "tab.activated"
+  | "workingDirectory.changed"
+  | "command.finished";
+type PluginEventHandler = (request: {
+  event: Record<string, unknown>;
+  context: PluginContext;
+}) => unknown;
 type PluginSettingDefinition = {
   type: "toggle" | "text" | "select" | "secret";
   title: string;
@@ -93,6 +102,7 @@ type PluginSettingDefinition = {
 };
 type PluginDefinition = {
   commands: PluginCommand[];
+  events?: Partial<Record<PluginEventName, PluginEventHandler>>;
   settings?: Record<string, PluginSettingDefinition>;
 };
 
@@ -108,6 +118,7 @@ globalThis.definePlugin = (plugin) => plugin;
 let plugin: PluginDefinition | undefined;
 let pluginServices: PluginServices | undefined;
 let commandHandlers = new Map<string, PluginCommand["run"]>();
+let eventHandlers = new Map<PluginEventName, PluginEventHandler>();
 let queue = Promise.resolve();
 
 // Keep ordinary plugin output on Termy's diagnostic stream.
@@ -506,7 +517,11 @@ function normalizeInput(input: unknown, commandId: string, seen: Set<string>): u
 function normalizePlugin(
   candidate: unknown,
   source: PreparedPluginSource,
-): { commands: Record<string, unknown>[]; settings: Record<string, unknown>[] } {
+): {
+  commands: Record<string, unknown>[];
+  events: Record<string, unknown>[];
+  settings: Record<string, unknown>[];
+} {
   if (!candidate || typeof candidate !== "object") {
     throw new Error("Default export must be definePlugin({...})");
   }
@@ -575,9 +590,43 @@ function normalizePlugin(
       timeoutMs,
     };
   });
+  const events = normalizeEvents(definition.events, source);
   const settings = normalizeSettings(definition.settings);
   plugin = definition;
-  return { commands, settings };
+  return { commands, events, settings };
+}
+
+const PLUGIN_EVENT_NAMES = [
+  "terminal.ready",
+  "tab.activated",
+  "workingDirectory.changed",
+  "command.finished",
+] as const satisfies readonly PluginEventName[];
+
+function normalizeEvents(
+  value: unknown,
+  source: PreparedPluginSource,
+): Record<string, unknown>[] {
+  eventHandlers = new Map();
+  if (value === undefined) return [];
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Plugin events must be an object");
+  }
+  return Object.entries(value as Record<string, unknown>).map(([event, handler]) => {
+    if (!PLUGIN_EVENT_NAMES.includes(event as PluginEventName)) {
+      throw new Error(`Plugin event ${event} is not supported`);
+    }
+    if (typeof handler !== "function") {
+      throw new Error(`Plugin event ${event} must be a function`);
+    }
+    const eventName = event as PluginEventName;
+    eventHandlers.set(eventName, handler as PluginEventHandler);
+    return {
+      pluginId: source.id,
+      event: eventName,
+      timeoutMs: 10_000,
+    };
+  });
 }
 
 function normalizeSettings(value: unknown): Record<string, unknown>[] {
@@ -867,13 +916,27 @@ function createPluginContext(
     !Array.isArray(context.settings)
       ? (context.settings as Record<string, string | boolean>)
       : {};
+  const activeTab =
+    context.activeTab &&
+    typeof context.activeTab === "object" &&
+    !Array.isArray(context.activeTab)
+      ? Object.freeze({ ...(context.activeTab as Record<string, unknown>) })
+      : undefined;
+  const activePane =
+    context.activePane &&
+    typeof context.activePane === "object" &&
+    !Array.isArray(context.activePane)
+      ? Object.freeze({ ...(context.activePane as Record<string, unknown>) })
+      : undefined;
   const toast = (level: PluginToastLevel, message: unknown) => {
     assertText(message, "Toast message", 4_096);
     emittedActions.push({ type: "toast", level, message });
   };
 
-  return {
+  return Object.freeze({
     ...context,
+    ...(activeTab ? { activeTab } : {}),
+    ...(activePane ? { activePane } : {}),
     ...services,
     settings: Object.freeze({
       get: <T = string | boolean>(key: string): T | undefined => {
@@ -888,7 +951,7 @@ function createPluginContext(
       warning: (message: string) => toast("warning", message),
       error: (message: string) => toast("error", message),
     }),
-  };
+  });
 }
 
 async function handle(message: Record<string, unknown>): Promise<unknown> {
@@ -922,6 +985,20 @@ async function handle(message: Record<string, unknown>): Promise<unknown> {
     const emittedActions: unknown[] = [];
     const value = await run({
       inputs: (message.inputs || {}) as Record<string, unknown>,
+      context: createPluginContext(message.context, emittedActions, pluginServices),
+    });
+    return { actions: [...emittedActions, ...normalizeActions(value)] };
+  }
+  if (message.type === "event") {
+    if (!plugin) throw new Error("Plugin is not loaded");
+    if (!pluginServices) throw new Error("Plugin services are unavailable");
+    const event = Object.freeze({ ...(message.event as Record<string, unknown>) });
+    const eventName = String(event?.type || "") as PluginEventName;
+    const run = eventHandlers.get(eventName);
+    if (!run) throw new Error(`Plugin is not registered for ${eventName}`);
+    const emittedActions: unknown[] = [];
+    const value = await run({
+      event,
       context: createPluginContext(message.context, emittedActions, pluginServices),
     });
     return { actions: [...emittedActions, ...normalizeActions(value)] };

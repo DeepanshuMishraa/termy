@@ -8631,6 +8631,7 @@ dependencies = [
  "gpui_platform",
  "libsqlite3-sys",
  "log",
+ "notify",
  "objc",
  "p256",
  "rand_core 0.6.4",

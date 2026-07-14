@@ -142,6 +142,7 @@ progress_indicator_enabled = true
 # keybind = cmd-c=unbind
 # keybind = clear
 # keybind = secondary-alt-shift-left=resize_pane_left
+# keybind = secondary-g=plugin:git-tools/status
 
 # Tasks (repeatable)
 # Tasks use the pattern task.<name>.<field>
