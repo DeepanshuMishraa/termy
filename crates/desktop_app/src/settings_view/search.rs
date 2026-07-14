@@ -174,7 +174,7 @@ static SETTINGS_METADATA: LazyLock<Vec<SettingMetadata>> = LazyLock::new(|| {
         key: "plugins",
         section: SettingsSection::Plugins,
         title: "Plugins",
-        description: "Install and manage trusted local TypeScript plugins.",
+        description: "Install and manage trusted local plugins.",
         keywords: &["plugin", "extension", "bun", "typescript", "install"],
     });
     entries
@@ -210,7 +210,7 @@ impl SettingsWindow {
             SettingsSection::Terminal => "Shell, input, scrolling, and tmux",
             SettingsSection::Tabs => "Tabs, sidebar, browser, and title bar",
             SettingsSection::ThemeStore => "Find and install community themes",
-            SettingsSection::Plugins => "Install and manage TypeScript extensions",
+            SettingsSection::Plugins => "Install and manage plugins",
             SettingsSection::Advanced => "Startup, windows, updates, and app behavior",
             SettingsSection::Colors => "Override individual terminal colors",
             SettingsSection::Keybindings => "Assign keys to commands",

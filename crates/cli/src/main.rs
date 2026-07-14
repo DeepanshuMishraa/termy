@@ -27,7 +27,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Action {
-    /// Install and manage TypeScript plugins
+    /// Install and manage plugins
     Plugin {
         #[command(subcommand)]
         command: PluginCommand,
@@ -136,7 +136,7 @@ enum PluginCommand {
         yes: bool,
     },
 
-    /// Create a plain TypeScript plugin scaffold
+    /// Create a plugin scaffold
     Init {
         /// Directory to initialize
         #[arg(value_name = "PATH", default_value = ".")]

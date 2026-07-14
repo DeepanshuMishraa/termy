@@ -1,6 +1,6 @@
 # termy_plugin_runtime
 
-Persistent Bun runtime for trusted local TypeScript plugins.
+Persistent Bun runtime for trusted local plugins.
 
 ## Owner
 

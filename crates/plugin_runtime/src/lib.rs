@@ -1605,9 +1605,8 @@ fn write_protocol_frame(
 
 impl HostConnection {
     fn spawn(plugins_dir: &Path) -> Result<Self, String> {
-        let bun = resolve_bun_binary()?.ok_or_else(|| {
-            "TypeScript plugins require Bun; install Bun or set TERMY_BUN_PATH".to_string()
-        })?;
+        let bun = resolve_bun_binary()?
+            .ok_or_else(|| "Plugins require Bun; install Bun or set TERMY_BUN_PATH".to_string())?;
         let runtime_dir = plugins_dir.join(".termy-runtime");
         let host_path = runtime_dir.join("host.ts");
         let worker_path = runtime_dir.join("worker.ts");

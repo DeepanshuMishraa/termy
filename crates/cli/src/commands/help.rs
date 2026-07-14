@@ -6,7 +6,7 @@ pub fn run() {
     println!();
     println!("Available commands:");
     println!();
-    println!("  plugin            Install and manage TypeScript plugins");
+    println!("  plugin            Install and manage plugins");
     println!("  -tui              Interactive TUI for all CLI features");
     println!("  -version          Show version information");
     println!("  -help             Show this help message");

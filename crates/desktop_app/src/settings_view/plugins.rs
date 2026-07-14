@@ -921,7 +921,7 @@ impl SettingsWindow {
             .gap(px(CARD_GAP))
             .child(self.render_section_header(
                 "Plugins",
-                "Install and manage TypeScript extensions",
+                "Install and manage plugins",
                 SettingsSection::Plugins,
                 cx,
             ))
@@ -1142,7 +1142,7 @@ impl SettingsWindow {
                 div()
                     .text_xs()
                     .text_color(self.text_muted())
-                    .child("Install a local TypeScript plugin folder to get started."),
+                    .child("Install a local plugin folder to get started."),
             )
             .into_any_element()
     }

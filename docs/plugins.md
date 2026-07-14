@@ -1,4 +1,4 @@
-# TypeScript plugins
+# Plugins
 
 Termy plugins add commands to the command palette with a small `plugin.json` manifest and a plain TypeScript entrypoint. A plugin does not need a package or handwritten build step: put both files in its plugin directory and export one `definePlugin(...)` value from the TypeScript source.
 
