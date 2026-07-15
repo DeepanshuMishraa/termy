@@ -25,7 +25,14 @@ emit_chunk() {
   fi
 }
 
-exec 3< <(base64 <"${image}" | tr -d '\r\n' | fold -w 4096)
+exec 3< <(
+  {
+    base64 <"${image}" | tr -d '\r\n'
+    # `fold` does not terminate its final partial line, but Bash `read` requires
+    # that newline to report success instead of silently dropping the data.
+    printf '\n'
+  } | fold -w 4096
+)
 if ! IFS= read -r chunk <&3; then
   printf 'Image is empty: %s\n' "${image}" >&2
   exit 1

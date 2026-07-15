@@ -829,12 +829,21 @@ fn normalize_image(
     match command.u32_value('f').unwrap_or(32) {
         100 => {
             let decoder = png::Decoder::new(Cursor::new(data));
-            let reader = decoder
+            let mut reader = decoder
                 .read_info()
                 .map_err(|_| "EINVAL:invalid PNG image".to_string())?;
-            let info = reader.info();
-            validate_dimensions(info.width, info.height, 4)?;
-            Ok((data.to_vec(), info.width, info.height))
+            let (width, height) = (reader.info().width, reader.info().height);
+            validate_dimensions(width, height, 4)?;
+            let decoded_len = reader
+                .output_buffer_size()
+                .filter(|length| *length <= MAX_IMAGE_BYTES)
+                .ok_or_else(|| "EFBIG:decoded PNG exceeds storage limit".to_string())?;
+            let mut decoded = vec![0; decoded_len];
+            reader
+                .next_frame(&mut decoded)
+                .and_then(|_| reader.finish())
+                .map_err(|_| "EINVAL:invalid PNG image".to_string())?;
+            Ok((data.to_vec(), width, height))
         }
         format @ (24 | 32) => {
             let width = command.u32_value('s').unwrap_or(0);
@@ -1036,6 +1045,22 @@ mod tests {
         assert!(state.render_placements(0, 0, 24, 80).is_empty());
         assert!(state.apply(second, 0, 0, 0, size()).changed);
         assert_eq!(state.render_placements(0, 0, 24, 80).len(), 1);
+    }
+
+    #[test]
+    fn rejects_truncated_png_after_valid_header() {
+        let mut png = one_pixel_png();
+        png.truncate(png.len() - 16);
+        let mut state = KittyGraphicsState::default();
+
+        let result = state.apply(command("a=T,f=100,i=9,q=1", &png), 0, 0, 0, size());
+
+        assert!(!result.changed);
+        assert_eq!(
+            result.response.unwrap(),
+            b"\x1b_Gi=9;EINVAL:invalid PNG image\x1b\\"
+        );
+        assert!(state.render_placements(0, 0, 24, 80).is_empty());
     }
 
     #[test]
