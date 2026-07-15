@@ -379,6 +379,7 @@ fn bool_root_setting_value(config: &AppConfig, setting: RootSettingId) -> Option
         RootSettingId::SidebarWidth => None,
         RootSettingId::BrowserTabsEnabled => Some(config.browser_tabs_enabled),
         RootSettingId::ShowTermyInTitlebar => Some(config.show_termy_in_titlebar),
+        RootSettingId::MacosOptionAsAlt => Some(config.macos_option_as_alt),
         RootSettingId::CursorBlink => Some(config.cursor_blink),
         RootSettingId::BackgroundOpacityCells => Some(config.background_opacity_cells),
         RootSettingId::BackgroundBlur => Some(config.background_blur),

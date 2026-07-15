@@ -610,6 +610,13 @@ impl AppConfig {
                 RootSettingId::Colorterm => {
                     config.colorterm = parse_optional_string_value(value);
                 }
+                RootSettingId::MacosOptionAsAlt => {
+                    if let Some(parsed) =
+                        parse_bool_field(&mut diagnostics, line_number, key, value)
+                    {
+                        config.macos_option_as_alt = parsed;
+                    }
+                }
                 RootSettingId::WindowWidth => {
                     if let Some(parsed) =
                         parse_positive_f32_field(&mut diagnostics, line_number, key, value)

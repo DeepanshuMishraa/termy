@@ -5,6 +5,7 @@ pub fn keystroke_to_input(
     event_kind: TerminalKeyEventKind,
     keyboard_mode: TerminalKeyboardMode,
     prompt_shortcuts_enabled: bool,
+    macos_option_as_alt: bool,
 ) -> Option<Vec<u8>> {
     let keystroke = TermyKeystroke {
         modifiers: TermyModifiers {
@@ -17,10 +18,11 @@ pub fn keystroke_to_input(
         key: keystroke.key.clone(),
         key_char: keystroke.key_char.clone(),
     };
-    termy_core::keystroke_to_input(
+    termy_core::keystroke_to_input_with_options(
         &keystroke,
         event_kind,
         keyboard_mode,
         prompt_shortcuts_enabled,
+        macos_option_as_alt,
     )
 }

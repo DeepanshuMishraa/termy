@@ -25,7 +25,7 @@ pub use config::{
 pub use frame::{TermyCell, TermyColor, TermyFrame, TermyFrameUpdate};
 pub use keyboard::{
     Keystroke, Modifiers, TerminalKeyEventKind, TerminalKeyboardMode, TermyKeystroke,
-    TermyModifiers, keystroke_to_input,
+    TermyModifiers, keystroke_to_input, keystroke_to_input_with_options,
 };
 pub use links::{DetectedLink, classify_link_token, find_link_in_line, hyperlink_at_viewport_cell};
 #[cfg(unix)]

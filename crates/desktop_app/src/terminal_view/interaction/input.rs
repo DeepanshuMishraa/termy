@@ -293,6 +293,7 @@ impl TerminalView {
             event_kind,
             self.pane_keyboard_mode(pane_id),
             self.prompt_shortcuts_enabled_for_pane(pane_id),
+            self.macos_option_as_alt,
         ) else {
             return false;
         };
