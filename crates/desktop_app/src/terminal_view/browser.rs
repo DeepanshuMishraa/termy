@@ -431,6 +431,7 @@ impl TerminalView {
         // Native views paint above all gpui content, so hide the webview
         // whenever a gpui overlay needs the area.
         let overlay_open = self.is_command_palette_open()
+            || self.plugin_ui.is_some()
             || self.quit_prompt_in_flight
             || self.new_tab_menu_anchor.is_some();
         let active_tab = self.active_tab;

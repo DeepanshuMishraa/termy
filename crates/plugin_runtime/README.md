@@ -4,9 +4,9 @@ Persistent Bun runtime for trusted local plugins.
 
 ## Owner
 
-This crate owns plugin discovery, command and lifecycle-event dispatch, descriptor and action validation, the read-only invocation context contract, managed TypeScript declarations, the persistent Bun host, per-plugin Worker lifecycle, protocol limits, timeouts, and warm reload caching.
+This crate owns plugin discovery, command, lifecycle-event, and native-view dispatch, descriptor/action/document validation, the read-only invocation context contract, managed TypeScript and JSX declarations, the persistent Bun host, per-plugin Worker lifecycle, protocol limits, timeouts, and warm reload caching.
 
-It returns typed commands and actions to callers. Command-palette presentation, GPUI state, built-in command execution, terminal tabs, toasts, and settings remain owned by `crates/desktop_app/`.
+It returns typed commands, actions, and allowlisted UI document nodes to callers. Command-palette presentation, GPUI rendering/state, built-in command execution, terminal tabs, toasts, and settings remain owned by `crates/desktop_app/`.
 
 ## Validation
 

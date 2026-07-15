@@ -29,6 +29,271 @@ fn bun_is_available() -> bool {
     }
 }
 
+#[test]
+fn tsx_views_render_and_round_trip_actions() {
+    if !bun_is_available() {
+        return;
+    }
+    let temp = TempDir::new().expect("temp dir");
+    let config_dir = temp.path().join("config");
+    let plugins = config_dir.join("plugins");
+    fs::create_dir_all(&config_dir).expect("create config directory");
+    let config_path = config_dir.join("config.txt");
+    fs::write(&config_path, "").expect("write config");
+    let plugin_dir = write_plugin(&plugins, "todos", "Todos", "export default {};\n");
+    fs::write(
+        plugin_dir.join("plugin.json"),
+        r#"{"apiVersion":1,"id":"todos","name":"Todos","main":"plugin.tsx"}"#,
+    )
+    .expect("write TSX manifest");
+    fs::write(
+        plugin_dir.join("plugin.tsx"),
+        r#"
+/** @jsxRuntime classic */
+/** @jsx TermyUI.createElement */
+/** @jsxFrag TermyUI.Fragment */
+
+type Todo = { id: string; title: string; done: boolean };
+
+export default definePlugin({
+  commands: [{
+    id: "open",
+    title: "Todos: Open",
+    run() {
+      return { type: "view.open", view: "todos" };
+    },
+  }],
+  views: {
+    todos: {
+      title: "Todos",
+      async render({ context }) {
+        const todos = (await context.storage.get<Todo[]>("todos")) ?? [];
+        return (
+          <TermyUI.Column gap="medium">
+            <TermyUI.Text variant="heading">Todos</TermyUI.Text>
+            <TermyUI.Row gap="small" align="center">
+              <TermyUI.TextInput
+                id="title"
+                placeholder="Add a task…"
+                submit="add"
+              />
+              <TermyUI.Button id="add-button" action="add" variant="primary">
+                Add
+              </TermyUI.Button>
+            </TermyUI.Row>
+            <TermyUI.Divider />
+            {todos.length === 0 ? (
+              <TermyUI.Text tone="muted">No tasks yet</TermyUI.Text>
+            ) : todos.map((todo) => (
+              <TermyUI.Checkbox
+                id={`todo-${todo.id}`}
+                action="toggle"
+                payload={todo.id}
+                checked={todo.done}
+              >
+                {todo.title}
+              </TermyUI.Checkbox>
+            ))}
+          </TermyUI.Column>
+        );
+      },
+      async onAction({ action, values, context }) {
+        const todos = (await context.storage.get<Todo[]>("todos")) ?? [];
+        if (action.id === "add") {
+          const title = String(values.title ?? "").trim();
+          if (!title) return;
+          await context.storage.set("todos", [
+            ...todos,
+            { id: String(todos.length + 1), title, done: false },
+          ]);
+          context.toasts.success("Todo added");
+        }
+        if (action.id === "toggle" && action.payload) {
+          await context.storage.set("todos", todos.map((todo) =>
+            todo.id === action.payload ? { ...todo, done: !todo.done } : todo
+          ));
+        }
+      },
+    },
+    emoji: {
+      title: "Emoji",
+      render() {
+        return <TermyUI.TextInput id="emoji" value="😀" maxLength={1} />;
+      },
+    },
+    "invalid-children": {
+      title: "Invalid children",
+      render() {
+        return <TermyUI.TextInput id="invalid">Nope</TermyUI.TextInput>;
+      },
+    },
+  },
+} satisfies TermyPlugin);
+"#,
+    )
+    .expect("write TSX plugin");
+
+    let runtime = PluginRuntime::new(Some(&config_path));
+    let refresh = runtime.refresh_if_changed();
+    assert!(refresh.changed, "refresh errors: {:?}", refresh.errors);
+    assert!(
+        refresh.errors.is_empty(),
+        "refresh errors: {:?}",
+        refresh.errors
+    );
+    assert_eq!(runtime.views().len(), 3);
+    let revision = runtime
+        .command_with_revision("todos", "open")
+        .expect("command revision")
+        .1;
+    let actions = runtime
+        .invoke(
+            "todos",
+            "open",
+            &revision,
+            BTreeMap::new(),
+            test_plugin_context(),
+        )
+        .expect("open view action");
+    assert_eq!(
+        actions,
+        vec![PluginAction::ViewOpen {
+            view: "todos".to_string(),
+            plugin_id: "todos".to_string(),
+            revision: revision.clone(),
+        }]
+    );
+
+    let first = runtime
+        .render_view("todos", "todos", &revision, test_plugin_context())
+        .expect("render empty todo view");
+    assert_eq!(first.plugin_id, "todos");
+    assert_eq!(first.revision, revision);
+    assert!(first.actions.is_empty());
+    assert_eq!(first.nodes.len(), 1);
+    runtime
+        .render_view("todos", "emoji", &revision, test_plugin_context())
+        .expect("one non-BMP character must satisfy maxLength one");
+    let invalid_children = runtime
+        .render_view(
+            "todos",
+            "invalid-children",
+            &revision,
+            test_plugin_context(),
+        )
+        .expect_err("leaf components must reject children");
+    assert!(invalid_children.contains("does not support children"));
+
+    let updated = runtime
+        .invoke_view_action(
+            "todos",
+            "todos",
+            &revision,
+            PluginViewAction {
+                id: "add".to_string(),
+                control_id: "add-button".to_string(),
+                payload: None,
+                value: None,
+            },
+            BTreeMap::from([(
+                "title".to_string(),
+                PluginViewValue::Text("Ship JSX".to_string()),
+            )]),
+            test_plugin_context(),
+        )
+        .expect("add todo and rerender");
+    assert_eq!(
+        updated.actions,
+        vec![PluginAction::Toast {
+            level: PluginToastLevel::Success,
+            message: "Todo added".to_string(),
+        }]
+    );
+    let rendered = format!("{:?}", updated.nodes);
+    assert!(rendered.contains("Ship JSX"));
+    assert!(rendered.contains("todo-1"));
+}
+
+#[test]
+fn native_view_documents_reject_unknown_props_and_unsafe_shapes() {
+    let unknown = serde_json::from_value::<PluginUiNode>(serde_json::json!({
+        "type": "text",
+        "text": "hello",
+        "style": { "background": "red" }
+    }))
+    .expect_err("arbitrary native props must be rejected");
+    assert!(unknown.to_string().contains("unknown field"));
+
+    let duplicate_controls = vec![PluginUiNode::Column {
+        gap: PluginUiGap::Medium,
+        align: PluginUiAlignment::Start,
+        children: vec![
+            PluginUiNode::Button {
+                id: "save".to_string(),
+                action: "save".to_string(),
+                label: "Save".to_string(),
+                payload: None,
+                variant: PluginUiButtonVariant::Primary,
+                disabled: false,
+            },
+            PluginUiNode::Checkbox {
+                id: "save".to_string(),
+                action: "toggle".to_string(),
+                label: "Saved".to_string(),
+                payload: None,
+                checked: false,
+                disabled: false,
+            },
+        ],
+    }];
+    let error = validate_view_nodes(&duplicate_controls)
+        .expect_err("duplicate native control IDs must be rejected");
+    assert!(error.contains("duplicate control ID"));
+
+    let value_controls = (0..=MAX_VIEW_VALUES)
+        .map(|index| PluginUiNode::TextInput {
+            id: format!("value-{index}"),
+            label: None,
+            placeholder: None,
+            value: String::new(),
+            max_length: 32,
+            submit: None,
+            disabled: false,
+        })
+        .collect::<Vec<_>>();
+    let too_many_values = vec![
+        PluginUiNode::Column {
+            gap: PluginUiGap::Medium,
+            align: PluginUiAlignment::Start,
+            children: value_controls[..32].to_vec(),
+        },
+        PluginUiNode::Column {
+            gap: PluginUiGap::Medium,
+            align: PluginUiAlignment::Start,
+            children: value_controls[32..].to_vec(),
+        },
+    ];
+    let error = validate_view_nodes(&too_many_values)
+        .expect_err("documents must not render more values than actions can submit");
+    assert!(error.contains("value controls"));
+
+    let mut too_deep = PluginUiNode::Text {
+        text: "bottom".to_string(),
+        variant: PluginUiTextVariant::Body,
+        tone: PluginUiTone::Default,
+    };
+    for _ in 0..MAX_VIEW_DEPTH {
+        too_deep = PluginUiNode::Column {
+            gap: PluginUiGap::None,
+            align: PluginUiAlignment::Start,
+            children: vec![too_deep],
+        };
+    }
+    let error =
+        validate_view_nodes(&[too_deep]).expect_err("deep native documents must be rejected");
+    assert!(error.contains("maximum depth"));
+}
+
 fn test_plugin_context() -> PluginContext {
     PluginContext {
         working_directory: None,
@@ -429,8 +694,17 @@ fn managed_sdk_files_are_stable() {
         TYPE_DECLARATIONS
     );
     assert_eq!(
-        fs::read_to_string(plugins.join(".termy-runtime/host.ts")).expect("read host"),
+        fs::read_to_string(managed_runtime_dir(&plugins).join("host.ts")).expect("read host"),
         HOST_SOURCE
+    );
+    assert_eq!(
+        fs::read_to_string(managed_runtime_dir(&plugins).join("worker.ts")).expect("read worker"),
+        WORKER_SOURCE
+    );
+    assert!(
+        managed_runtime_dir(&plugins)
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().starts_with(".termy-runtime-"))
     );
 }
 

@@ -208,7 +208,10 @@ fn duration_millis(duration: Duration) -> u64 {
 }
 
 impl TerminalView {
-    fn plugin_context(&mut self, cx: &mut Context<Self>) -> PluginContext {
+    pub(in crate::terminal_view) fn plugin_context(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> PluginContext {
         let working_directory = self.preferred_working_dir_for_new_session(None, cx);
         let (selected_text, selected_text_truncated) = plugin_selected_text(self.selected_text());
         let active_tab = self.tabs.get(self.active_tab).map(|tab| PluginTabContext {
@@ -821,7 +824,7 @@ impl TerminalView {
         .detach();
     }
 
-    fn apply_plugin_actions(
+    pub(in crate::terminal_view) fn apply_plugin_actions(
         &mut self,
         actions: Vec<PluginAction>,
         window: &mut Window,
@@ -879,6 +882,13 @@ impl TerminalView {
                     PluginToastLevel::Warning => termy_toast::warning(message),
                     PluginToastLevel::Error => termy_toast::error(message),
                 },
+                PluginAction::ViewOpen {
+                    view,
+                    plugin_id,
+                    revision,
+                } => {
+                    self.open_plugin_ui(&plugin_id, &view, &revision, window, cx)?;
+                }
             }
         }
         Ok(())

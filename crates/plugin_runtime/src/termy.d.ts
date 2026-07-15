@@ -146,11 +146,115 @@ type TermyPluginContext<
   };
 };
 
+type TermyUiGap = "none" | "small" | "medium" | "large";
+type TermyUiAlignment = "start" | "center" | "end" | "stretch";
+type TermyUiTone = "default" | "muted" | "success" | "danger";
+type TermyUiTextVariant = "heading" | "body" | "caption" | "code";
+type TermyUiButtonVariant = "secondary" | "primary" | "danger";
+
+type TermyUiElement = { readonly __termyUiElement?: never };
+type TermyUiChild =
+  | TermyUiElement
+  | string
+  | number
+  | boolean
+  | null
+  | undefined
+  | TermyUiChild[];
+type TermyUiTextChild = string | number | TermyUiTextChild[];
+type TermyUiKey = { key?: string | number };
+type TermyUiContainerComponent<P> = (
+  props: P & TermyUiKey & { children?: TermyUiChild },
+) => TermyUiElement;
+type TermyUiTextComponent<P> = (
+  props: P & TermyUiKey & { children: TermyUiTextChild },
+) => TermyUiElement;
+type TermyUiLeafComponent<P> = (
+  props: P & TermyUiKey & { children?: never },
+) => TermyUiElement;
+
+declare const TermyUI: {
+  createElement(
+    component: ((props: any) => TermyUiElement) | symbol,
+    props: Record<string, unknown> | null,
+    ...children: TermyUiChild[]
+  ): TermyUiElement;
+  readonly Fragment: symbol;
+  readonly Column: TermyUiContainerComponent<{
+    gap?: TermyUiGap;
+    align?: TermyUiAlignment;
+  }>;
+  readonly Row: TermyUiContainerComponent<{
+    gap?: TermyUiGap;
+    align?: TermyUiAlignment;
+  }>;
+  readonly Text: TermyUiTextComponent<{
+    variant?: TermyUiTextVariant;
+    tone?: TermyUiTone;
+  }>;
+  readonly TextInput: TermyUiLeafComponent<{
+    id: string;
+    label?: string;
+    placeholder?: string;
+    value?: string;
+    maxLength?: number;
+    submit?: string;
+    disabled?: boolean;
+  }>;
+  readonly Button: TermyUiTextComponent<{
+    id: string;
+    action: string;
+    payload?: string;
+    variant?: TermyUiButtonVariant;
+    disabled?: boolean;
+  }>;
+  readonly Checkbox: TermyUiTextComponent<{
+    id: string;
+    action: string;
+    payload?: string;
+    checked?: boolean;
+    disabled?: boolean;
+  }>;
+  readonly Divider: TermyUiLeafComponent<Record<never, never>>;
+  readonly Spacer: TermyUiLeafComponent<{ size?: TermyUiGap }>;
+};
+
+declare namespace JSX {
+  type Element = TermyUiElement;
+  interface ElementChildrenAttribute {
+    children: {};
+  }
+}
+
+type TermyPluginViewValue = string | boolean;
+type TermyPluginViewAction = {
+  readonly id: string;
+  readonly controlId: string;
+  readonly payload?: string;
+  readonly value?: TermyPluginViewValue;
+};
+
+type TermyPluginView<
+  T extends Record<string, TermyPluginSetting> = Record<string, TermyPluginSetting>,
+> = {
+  title: string;
+  timeoutMs?: number;
+  render(request: {
+    context: TermyPluginContext<T>;
+  }): TermyUiChild | Promise<TermyUiChild>;
+  onAction?(request: {
+    action: TermyPluginViewAction;
+    values: Readonly<Record<string, TermyPluginViewValue>>;
+    context: TermyPluginContext<T>;
+  }): TermyPluginResult | Promise<TermyPluginResult>;
+};
+
 type TermyPluginAction =
   | { type: "terminal.run"; command: string; workingDirectory?: string }
   | { type: "termy.command"; command: string }
   | { type: "clipboard.write"; text: string }
   | { type: "url.open"; url: string }
+  | { type: "view.open"; view: string }
   | {
       type: "toast";
       level: "info" | "success" | "warning" | "error";
@@ -211,6 +315,7 @@ type TermyPlugin<
   settings?: T;
   commands: TermyPluginCommand<T>[];
   events?: TermyPluginEvents<T>;
+  views?: Record<string, TermyPluginView<T>>;
 };
 
 declare function definePlugin<const T extends Record<string, TermyPluginSetting>>(

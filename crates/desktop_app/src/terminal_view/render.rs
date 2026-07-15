@@ -2353,25 +2353,29 @@ impl TerminalView {
         } else {
             None
         };
+        let plugin_ui_overlay = self.plugin_ui.clone();
         let search_overlay = if self.search_open {
             Some(self.render_search_bar(cx))
         } else {
             None
         };
         let chrome_height = self.terminal_content_top_inset();
-        let terminal_overlay = (command_palette_overlay.is_some() || search_overlay.is_some())
-            .then(|| {
-                div()
-                    .id("terminal-scoped-overlay")
-                    .absolute()
-                    .top(px(chrome_height))
-                    .left_0()
-                    .right_0()
-                    .bottom_0()
-                    .children(command_palette_overlay)
-                    .children(search_overlay)
-                    .into_any_element()
-            });
+        let terminal_overlay = (command_palette_overlay.is_some()
+            || plugin_ui_overlay.is_some()
+            || search_overlay.is_some())
+        .then(|| {
+            div()
+                .id("terminal-scoped-overlay")
+                .absolute()
+                .top(px(chrome_height))
+                .left_0()
+                .right_0()
+                .bottom_0()
+                .children(command_palette_overlay)
+                .children(plugin_ui_overlay)
+                .children(search_overlay)
+                .into_any_element()
+        });
         let context_menu_overlay = self.render_terminal_context_menu_overlay(cx);
         let tab_context_menu_overlay = self.render_tab_context_menu_overlay(cx);
         let new_tab_menu_overlay = self.render_new_tab_menu_overlay(cx);
@@ -2563,9 +2567,11 @@ impl Render for TerminalView {
         self.track_window_resize_indicator(viewport, now);
         let pane_focus_config = self.pane_focus_config();
         let command_palette_open = self.is_command_palette_open();
+        let plugin_ui_open = self.plugin_ui.is_some();
         let palette_backdrop_transform =
-            command_palette_open.then(command_palette_backdrop_transform);
+            (command_palette_open || plugin_ui_open).then(command_palette_backdrop_transform);
         let terminal_cursor_active = !command_palette_open
+            && !plugin_ui_open
             && self.renaming_tab.is_none()
             && self.renaming_workspace.is_none()
             && !self.search_open;
@@ -2611,8 +2617,10 @@ impl Render for TerminalView {
             && let Some(content_bounds) = self.terminal_content_bounds(window)
         {
             let multi_pane = active_tab.panes.len() > 1;
-            let pane_focus_enabled =
-                multi_pane && pane_focus_config.is_some() && !command_palette_open;
+            let pane_focus_enabled = multi_pane
+                && pane_focus_config.is_some()
+                && !command_palette_open
+                && !plugin_ui_open;
             let pane_divider_layouts = if multi_pane {
                 self.native_pane_dividers(active_tab)
             } else {
@@ -3246,7 +3254,9 @@ impl Render for TerminalView {
             )
         });
         let overlay_view = self.ensure_overlay_view(cx);
-        let key_context = if self.has_active_inline_input() {
+        let key_context = if self.plugin_ui.is_some() {
+            "PluginUI"
+        } else if self.has_active_inline_input() {
             "Terminal InlineInput"
         } else {
             "Terminal"

@@ -341,6 +341,90 @@ async run({ context }) {
 
 Use `context.paths.dataDirectory` for larger persistent files and `context.paths.cacheDirectory` for disposable files with Bun or Node filesystem APIs. Both directories are outside the plugin source tree, so writing there does not trigger a rebuild. Storage is plain local JSON; declare a `secret` plugin setting for tokens and passwords so Termy uses the operating-system credential store.
 
+## Native JSX views
+
+Plugins can open small native tools written as TSX. JSX is only authoring sugar: Bun lowers it through the frozen `TermyUI` runtime, the plugin Worker converts it to a bounded document tree, Rust validates that tree again, and Termy renders the allowlisted nodes with GPUI. Plugins never receive GPUI objects and cannot supply HTML, CSS, callbacks, colors, fonts, asset paths, or arbitrary native properties.
+
+Set the manifest entrypoint to a `.tsx` file:
+
+```json
+{
+  "apiVersion": 1,
+  "id": "todos",
+  "name": "Todos",
+  "main": "plugin.tsx"
+}
+```
+
+Declare views beside `commands`, then open one with a `view.open` action:
+
+```tsx
+/** @jsxRuntime classic */
+/** @jsx TermyUI.createElement */
+/** @jsxFrag TermyUI.Fragment */
+
+export default definePlugin({
+  commands: [{
+    id: "open",
+    title: "Todos: Open",
+    run() {
+      return { type: "view.open", view: "todos" };
+    },
+  }],
+
+  views: {
+    todos: {
+      title: "Todos",
+
+      async render({ context }) {
+        const todos = await context.storage.get<Array<{
+          id: string;
+          title: string;
+          done: boolean;
+        }>>("todos") ?? [];
+
+        return (
+          <TermyUI.Column gap="medium">
+            <TermyUI.Row gap="small" align="center">
+              <TermyUI.TextInput
+                id="title"
+                placeholder="Add a task…"
+                submit="add"
+              />
+              <TermyUI.Button id="add-button" action="add" variant="primary">
+                Add
+              </TermyUI.Button>
+            </TermyUI.Row>
+            <TermyUI.Divider />
+            {todos.slice(0, 24).map((todo) => (
+              <TermyUI.Checkbox
+                id={`todo-${todo.id}`}
+                action="toggle"
+                payload={todo.id}
+                checked={todo.done}
+              >
+                {todo.title}
+              </TermyUI.Checkbox>
+            ))}
+          </TermyUI.Column>
+        );
+      },
+
+      async onAction({ action, values, context }) {
+        // Update storage from action.id, action.payload, action.value, and values.
+        // Termy calls render() again after this handler finishes.
+      },
+    },
+  },
+} satisfies TermyPlugin);
+```
+
+The v1 component set is `TermyUI.Column`, `Row`, `Text`, `TextInput`, `Button`, `Checkbox`, `Divider`, `Spacer`, and fragments. Layout uses fixed gap and alignment enums; text uses fixed variant and tone enums; buttons use `secondary`, `primary`, or `danger`. Every input and interactive control needs a unique lowercase stable `id`. Controls send a named `action`, optional string `payload`, their current value, and the current text/checkbox `values` map to `onAction`. No JavaScript callback crosses into the native renderer.
+
+Views are limited to 32 per plugin, 256 nodes, 16 levels of nesting, 64 children per node, 64 value-bearing controls, and 4,096 characters per text value. Termy serializes interactions per plugin, disables controls while one is running, rejects stale plugin revisions, and rerenders after successful actions. Escape, the close button, or clicking outside the panel closes a view.
+
+Paginate or window dynamic lists so a large saved collection stays inside the document and value-control limits. The complete [Todo example](../examples/plugins/todos/plugin.tsx) includes pagination.
+
 ## Lifecycle events
 
 Subscribe by adding an `events` object beside `commands`. Termy only dispatches events a plugin explicitly handles; an event-only plugin should use `commands: []`.
@@ -412,6 +496,8 @@ Plugin loading and command execution have timeouts. A thrown error or timeout is
 
 Plugins are trusted local code. Worker isolation, import validation, and timeouts improve reliability, but they are not a security sandbox: after loading, a plugin runs through Bun with your user account's access to files, network, and processes. Only install plugins whose source you trust.
 
-The v1 runtime supports command-palette commands, lifecycle events, and user-configured keybindings. It does not provide custom UI, build hooks, package imports, or automatic package installation. Bun is launched with dependency installation and environment-file loading disabled; local relative TypeScript imports are bundled from the plugin directory, while Bun and Node built-ins remain available at runtime.
+The v1 runtime supports command-palette commands, native JSX views, lifecycle events, and user-configured keybindings. It does not provide arbitrary native UI access, build hooks, package imports, or automatic package installation. Bun is launched with dependency installation and environment-file loading disabled; local relative TypeScript imports are bundled from the plugin directory, while Bun and Node built-ins remain available at runtime.
 
 See [`examples/plugins/git-tools/plugin.json`](../examples/plugins/git-tools/plugin.json) and [`plugin.ts`](../examples/plugins/git-tools/plugin.ts) for a safe command example that maps a select value to a fixed shell command.
+
+See [`examples/plugins/todos/plugin.json`](../examples/plugins/todos/plugin.json) and [`plugin.tsx`](../examples/plugins/todos/plugin.tsx) for a persistent native JSX view with add, toggle, and delete actions.

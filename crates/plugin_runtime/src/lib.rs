@@ -43,10 +43,15 @@ const MAX_PLUGIN_SETTINGS: usize = 64;
 const MAX_SETTING_VALUE_LENGTH: usize = 4_096;
 const MAX_SETTINGS_FILE_BYTES: u64 = 64 * 1024;
 const MAX_ACTIONS: usize = 32;
+const MAX_PLUGIN_VIEWS: usize = 32;
+const MAX_VIEW_NODES: usize = 256;
+const MAX_VIEW_DEPTH: usize = 16;
+const MAX_VIEW_CHILDREN: usize = 64;
+const MAX_VIEW_VALUES: usize = 64;
 pub const MAX_INSTALLED_PLUGINS: usize = 32;
 pub const MAX_PLUGIN_SOURCE_BYTES: u64 = 16 * 1024 * 1024;
 pub const MAX_PLUGIN_SOURCE_FILES: usize = 4_096;
-const BUNDLE_CACHE_FORMAT: &[u8] = b"termy-plugin-bundle-v1\0";
+const BUNDLE_CACHE_FORMAT: &[u8] = b"termy-plugin-bundle-v2\0";
 const DISABLED_MARKER: &str = ".termy-disabled";
 const SOURCE_METADATA_FILE: &str = ".termy-source.json";
 const SETTINGS_FILE: &str = "settings.json";
@@ -75,6 +80,7 @@ struct PluginCatalog {
     fingerprint: Option<[u8; 32]>,
     commands: Vec<PluginCommand>,
     events: Vec<RegisteredPluginEvent>,
+    views: Vec<PluginViewDescriptor>,
     settings: BTreeMap<String, Vec<PluginSetting>>,
     revisions: BTreeMap<String, String>,
 }
@@ -362,6 +368,14 @@ pub enum PluginAction {
         level: PluginToastLevel,
         message: String,
     },
+    #[serde(rename = "view.open")]
+    ViewOpen {
+        view: String,
+        #[serde(skip)]
+        plugin_id: String,
+        #[serde(skip)]
+        revision: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
@@ -371,6 +385,176 @@ pub enum PluginToastLevel {
     Success,
     Warning,
     Error,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginViewDescriptor {
+    pub plugin_id: String,
+    pub plugin_name: String,
+    pub id: String,
+    pub title: String,
+    #[serde(default = "default_invoke_timeout_ms")]
+    pub timeout_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PluginUiGap {
+    None,
+    Small,
+    #[default]
+    Medium,
+    Large,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PluginUiAlignment {
+    #[default]
+    Start,
+    Center,
+    End,
+    Stretch,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PluginUiTextVariant {
+    Heading,
+    #[default]
+    Body,
+    Caption,
+    Code,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PluginUiTone {
+    #[default]
+    Default,
+    Muted,
+    Success,
+    Danger,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PluginUiButtonVariant {
+    #[default]
+    Secondary,
+    Primary,
+    Danger,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+pub enum PluginUiNode {
+    Column {
+        #[serde(default)]
+        gap: PluginUiGap,
+        #[serde(default)]
+        align: PluginUiAlignment,
+        #[serde(default)]
+        children: Vec<PluginUiNode>,
+    },
+    Row {
+        #[serde(default)]
+        gap: PluginUiGap,
+        #[serde(default)]
+        align: PluginUiAlignment,
+        #[serde(default)]
+        children: Vec<PluginUiNode>,
+    },
+    Text {
+        text: String,
+        #[serde(default)]
+        variant: PluginUiTextVariant,
+        #[serde(default)]
+        tone: PluginUiTone,
+    },
+    TextInput {
+        id: String,
+        #[serde(default)]
+        label: Option<String>,
+        #[serde(default)]
+        placeholder: Option<String>,
+        #[serde(default)]
+        value: String,
+        #[serde(default = "default_text_max_length", rename = "maxLength")]
+        max_length: usize,
+        #[serde(default)]
+        submit: Option<String>,
+        #[serde(default)]
+        disabled: bool,
+    },
+    Button {
+        id: String,
+        action: String,
+        label: String,
+        #[serde(default)]
+        payload: Option<String>,
+        #[serde(default)]
+        variant: PluginUiButtonVariant,
+        #[serde(default)]
+        disabled: bool,
+    },
+    Checkbox {
+        id: String,
+        action: String,
+        label: String,
+        #[serde(default)]
+        payload: Option<String>,
+        #[serde(default)]
+        checked: bool,
+        #[serde(default)]
+        disabled: bool,
+    },
+    Divider,
+    Spacer {
+        #[serde(default)]
+        size: PluginUiGap,
+    },
+}
+
+impl PluginUiNode {
+    pub fn children(&self) -> &[PluginUiNode] {
+        match self {
+            Self::Column { children, .. } | Self::Row { children, .. } => children,
+            Self::Text { .. }
+            | Self::TextInput { .. }
+            | Self::Button { .. }
+            | Self::Checkbox { .. }
+            | Self::Divider
+            | Self::Spacer { .. } => &[],
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum PluginViewValue {
+    Text(String),
+    Toggle(bool),
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginViewAction {
+    pub id: String,
+    pub control_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payload: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<PluginViewValue>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PluginViewRender {
+    pub plugin_id: String,
+    pub revision: String,
+    pub nodes: Vec<PluginUiNode>,
+    pub actions: Vec<PluginAction>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -420,12 +604,38 @@ enum HostRequest<'a> {
         event: &'a PluginEvent,
         context: &'a PluginContext,
     },
+    #[serde(rename = "view.render")]
+    ViewRender {
+        id: u64,
+        #[serde(rename = "pluginId")]
+        plugin_id: &'a str,
+        #[serde(rename = "viewId")]
+        view_id: &'a str,
+        revision: &'a str,
+        context: &'a PluginContext,
+    },
+    #[serde(rename = "view.action")]
+    ViewAction {
+        id: u64,
+        #[serde(rename = "pluginId")]
+        plugin_id: &'a str,
+        #[serde(rename = "viewId")]
+        view_id: &'a str,
+        revision: &'a str,
+        action: &'a PluginViewAction,
+        values: &'a BTreeMap<String, PluginViewValue>,
+        context: &'a PluginContext,
+    },
 }
 
 impl HostRequest<'_> {
     fn id(&self) -> u64 {
         match self {
-            Self::Load { id, .. } | Self::Invoke { id, .. } | Self::Event { id, .. } => *id,
+            Self::Load { id, .. }
+            | Self::Invoke { id, .. }
+            | Self::Event { id, .. }
+            | Self::ViewRender { id, .. }
+            | Self::ViewAction { id, .. } => *id,
         }
     }
 }
@@ -454,11 +664,20 @@ struct HostLoadedPlugin {
     plugin_id: String,
     commands: Value,
     events: Value,
+    views: Value,
     settings: Value,
 }
 
 #[derive(Deserialize)]
 struct HostInvokeResult {
+    #[serde(default)]
+    actions: Vec<PluginAction>,
+}
+
+#[derive(Deserialize)]
+struct HostViewRenderResult {
+    #[serde(default)]
+    nodes: Vec<PluginUiNode>,
     #[serde(default)]
     actions: Vec<PluginAction>,
 }
@@ -797,6 +1016,15 @@ impl PluginRuntime {
             .clone()
     }
 
+    pub fn views(&self) -> Vec<PluginViewDescriptor> {
+        self.inner
+            .catalog
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .views
+            .clone()
+    }
+
     pub fn plugin_settings_snapshot(&self) -> PluginSettingsSnapshot {
         let definitions = self
             .inner
@@ -1069,6 +1297,25 @@ impl PluginRuntime {
         Some((command, revision))
     }
 
+    pub fn view_with_revision(
+        &self,
+        plugin_id: &str,
+        view_id: &str,
+    ) -> Option<(PluginViewDescriptor, String)> {
+        let catalog = self
+            .inner
+            .catalog
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let view = catalog
+            .views
+            .iter()
+            .find(|view| view.plugin_id == plugin_id && view.id == view_id)?
+            .clone();
+        let revision = catalog.revisions.get(plugin_id)?.clone();
+        Some((view, revision))
+    }
+
     pub fn refresh_if_changed(&self) -> PluginRefresh {
         match self.refresh_if_changed_inner() {
             Ok(refresh) => refresh,
@@ -1134,6 +1381,7 @@ impl PluginRuntime {
             catalog.fingerprint = Some(discovered.fingerprint);
             catalog.commands.clear();
             catalog.events.clear();
+            catalog.views.clear();
             catalog.settings.clear();
             catalog.revisions.clear();
             let bundles = plugins_dir.join(".termy-cache/bundles");
@@ -1201,6 +1449,7 @@ impl PluginRuntime {
         let mut seen_plugins = HashSet::new();
         let mut commands = Vec::new();
         let mut events = Vec::new();
+        let mut views = Vec::new();
         let mut settings = BTreeMap::new();
         let mut revisions = BTreeMap::new();
         for loaded in load_result.plugins {
@@ -1269,6 +1518,31 @@ impl PluginRuntime {
                 errors.push(format!("{}: {error}", loaded.plugin_id));
                 continue;
             }
+            let plugin_views =
+                match serde_json::from_value::<Vec<PluginViewDescriptor>>(loaded.views) {
+                    Ok(views) => views,
+                    Err(error) => {
+                        errors.push(format!(
+                            "{}: invalid view descriptor: {error}",
+                            loaded.plugin_id
+                        ));
+                        continue;
+                    }
+                };
+            if plugin_views
+                .iter()
+                .any(|view| view.plugin_id != loaded.plugin_id)
+            {
+                errors.push(format!(
+                    "{}: view descriptor used the wrong plugin ID",
+                    loaded.plugin_id
+                ));
+                continue;
+            }
+            if let Err(error) = validate_views(&plugin_views) {
+                errors.push(format!("{}: {error}", loaded.plugin_id));
+                continue;
+            }
             let plugin_settings =
                 match serde_json::from_value::<Vec<PluginSetting>>(loaded.settings) {
                     Ok(settings) => settings,
@@ -1285,6 +1559,7 @@ impl PluginRuntime {
                 continue;
             }
             commands.extend(plugin_commands);
+            views.extend(plugin_views);
             events.extend(
                 plugin_events
                     .into_iter()
@@ -1299,6 +1574,7 @@ impl PluginRuntime {
             revisions.insert(loaded.plugin_id, (*revision).to_string());
         }
         validate_commands(&commands)?;
+        validate_views(&views)?;
         let mut catalog = self
             .inner
             .catalog
@@ -1307,6 +1583,7 @@ impl PluginRuntime {
         catalog.fingerprint = errors.is_empty().then_some(discovered.fingerprint);
         catalog.commands = commands;
         catalog.events = events;
+        catalog.views = views;
         catalog.settings = settings;
         catalog.revisions = revisions;
         Ok(PluginRefresh {
@@ -1343,7 +1620,76 @@ impl PluginRuntime {
             inputs: &inputs,
             context: &context,
         };
-        self.request_actions(&connection, &request, timeout_ms)
+        self.request_actions(
+            &connection,
+            &request,
+            timeout_ms,
+            plugin_id,
+            expected_revision,
+        )
+    }
+
+    pub fn render_view(
+        &self,
+        plugin_id: &str,
+        view_id: &str,
+        expected_revision: &str,
+        mut context: PluginContext,
+    ) -> Result<PluginViewRender, String> {
+        let (view, current_revision) = self
+            .view_with_revision(plugin_id, view_id)
+            .ok_or_else(|| format!("Plugin view {plugin_id}.{view_id} is not available"))?;
+        if current_revision != expected_revision {
+            return Err("Plugin changed while its view was open; reopen the view".to_string());
+        }
+        context.settings = self.resolved_plugin_settings(plugin_id)?;
+        let timeout_ms = view.timeout_ms.clamp(100, MAX_INVOKE_TIMEOUT_MS);
+        let (request_id, connection) = self.next_host_request()?;
+        let request = HostRequest::ViewRender {
+            id: request_id,
+            plugin_id,
+            view_id,
+            revision: expected_revision,
+            context: &context,
+        };
+        let result =
+            self.request_host::<HostViewRenderResult>(&connection, &request, timeout_ms)?;
+        self.ensure_view_revision(plugin_id, view_id, expected_revision)?;
+        self.prepare_view_render(result, plugin_id, expected_revision)
+    }
+
+    pub fn invoke_view_action(
+        &self,
+        plugin_id: &str,
+        view_id: &str,
+        expected_revision: &str,
+        action: PluginViewAction,
+        values: BTreeMap<String, PluginViewValue>,
+        mut context: PluginContext,
+    ) -> Result<PluginViewRender, String> {
+        let (view, current_revision) = self
+            .view_with_revision(plugin_id, view_id)
+            .ok_or_else(|| format!("Plugin view {plugin_id}.{view_id} is not available"))?;
+        if current_revision != expected_revision {
+            return Err("Plugin changed while its view was open; reopen the view".to_string());
+        }
+        validate_view_action(&action, &values)?;
+        context.settings = self.resolved_plugin_settings(plugin_id)?;
+        let timeout_ms = view.timeout_ms.clamp(100, MAX_INVOKE_TIMEOUT_MS);
+        let (request_id, connection) = self.next_host_request()?;
+        let request = HostRequest::ViewAction {
+            id: request_id,
+            plugin_id,
+            view_id,
+            revision: expected_revision,
+            action: &action,
+            values: &values,
+            context: &context,
+        };
+        let result =
+            self.request_host::<HostViewRenderResult>(&connection, &request, timeout_ms)?;
+        self.ensure_view_revision(plugin_id, view_id, expected_revision)?;
+        self.prepare_view_render(result, plugin_id, expected_revision)
     }
 
     pub fn has_event_subscribers(&self, event: PluginEventKind) -> bool {
@@ -1420,7 +1766,13 @@ impl PluginRuntime {
             event,
             context: &context,
         };
-        self.request_actions(&connection, &request, subscription.timeout_ms)
+        self.request_actions(
+            &connection,
+            &request,
+            subscription.timeout_ms,
+            &subscription.plugin_id,
+            &subscription.revision,
+        )
     }
 
     fn next_host_request(&self) -> Result<(u64, Arc<HostConnection>), String> {
@@ -1441,13 +1793,26 @@ impl PluginRuntime {
         connection: &Arc<HostConnection>,
         request: &HostRequest<'_>,
         timeout_ms: u64,
+        plugin_id: &str,
+        revision: &str,
     ) -> Result<Vec<PluginAction>, String> {
+        let invoke_result =
+            self.request_host::<HostInvokeResult>(connection, request, timeout_ms)?;
+        self.prepare_actions(invoke_result.actions, plugin_id, revision)
+    }
+
+    fn request_host<T: DeserializeOwned>(
+        &self,
+        connection: &Arc<HostConnection>,
+        request: &HostRequest<'_>,
+        timeout_ms: u64,
+    ) -> Result<T, String> {
         let timeout = Duration::from_millis(
             timeout_ms
                 .saturating_add(MAX_INVOKE_QUEUE_WAIT_MS)
                 .saturating_add(1_000),
         );
-        let invoke_result = match connection.request::<HostInvokeResult>(request, timeout) {
+        let result = match connection.request::<T>(request, timeout) {
             Ok(result) => result,
             Err(error) => {
                 if matches!(error, HostRequestError::Transport(_)) {
@@ -1474,8 +1839,68 @@ impl PluginRuntime {
                 return Err(error.into_message());
             }
         };
-        validate_actions(&invoke_result.actions)?;
-        Ok(invoke_result.actions)
+        Ok(result)
+    }
+
+    fn prepare_view_render(
+        &self,
+        result: HostViewRenderResult,
+        plugin_id: &str,
+        revision: &str,
+    ) -> Result<PluginViewRender, String> {
+        validate_view_nodes(&result.nodes)?;
+        let actions = self.prepare_actions(result.actions, plugin_id, revision)?;
+        Ok(PluginViewRender {
+            plugin_id: plugin_id.to_string(),
+            revision: revision.to_string(),
+            nodes: result.nodes,
+            actions,
+        })
+    }
+
+    fn ensure_view_revision(
+        &self,
+        plugin_id: &str,
+        view_id: &str,
+        expected_revision: &str,
+    ) -> Result<(), String> {
+        let (_, current_revision) = self
+            .view_with_revision(plugin_id, view_id)
+            .ok_or_else(|| format!("Plugin view {plugin_id}.{view_id} is no longer available"))?;
+        if current_revision != expected_revision {
+            return Err(
+                "Plugin changed while its view request was running; reopen the view".to_string(),
+            );
+        }
+        Ok(())
+    }
+
+    fn prepare_actions(
+        &self,
+        mut actions: Vec<PluginAction>,
+        plugin_id: &str,
+        revision: &str,
+    ) -> Result<Vec<PluginAction>, String> {
+        validate_actions(&actions)?;
+        for action in &mut actions {
+            let PluginAction::ViewOpen {
+                view,
+                plugin_id: origin_plugin_id,
+                revision: origin_revision,
+            } = action
+            else {
+                continue;
+            };
+            let Some((_, current_revision)) = self.view_with_revision(plugin_id, view) else {
+                return Err(format!("Plugin returned unknown view `{view}`"));
+            };
+            if current_revision != revision {
+                return Err("Plugin changed while returning a view action; try again".to_string());
+            }
+            *origin_plugin_id = plugin_id.to_string();
+            *origin_revision = revision.to_string();
+        }
+        Ok(actions)
     }
 }
 
@@ -1607,7 +2032,7 @@ impl HostConnection {
     fn spawn(plugins_dir: &Path) -> Result<Self, String> {
         let bun = resolve_bun_binary()?
             .ok_or_else(|| "Plugins require Bun; install Bun or set TERMY_BUN_PATH".to_string())?;
-        let runtime_dir = plugins_dir.join(".termy-runtime");
+        let runtime_dir = managed_runtime_dir(plugins_dir);
         let host_path = runtime_dir.join("host.ts");
         let worker_path = runtime_dir.join("worker.ts");
         let listener = TcpListener::bind(("127.0.0.1", 0))
@@ -2434,7 +2859,7 @@ fn ensure_managed_files(plugins_dir: &Path) -> Result<(), String> {
         )
     })?;
     write_if_changed(&plugins_dir.join("termy.d.ts"), TYPE_DECLARATIONS)?;
-    let runtime_dir = plugins_dir.join(".termy-runtime");
+    let runtime_dir = managed_runtime_dir(plugins_dir);
     fs::create_dir_all(&runtime_dir).map_err(|error| {
         format!(
             "Failed to create plugin runtime directory {}: {error}",
@@ -2443,6 +2868,16 @@ fn ensure_managed_files(plugins_dir: &Path) -> Result<(), String> {
     })?;
     write_if_changed(&runtime_dir.join("host.ts"), HOST_SOURCE)?;
     write_if_changed(&runtime_dir.join("worker.ts"), WORKER_SOURCE)
+}
+
+fn managed_runtime_dir(plugins_dir: &Path) -> PathBuf {
+    let mut hasher = Sha256::new();
+    hasher.update(b"termy-plugin-managed-runtime-v1\0");
+    hasher.update(HOST_SOURCE.as_bytes());
+    hasher.update([0]);
+    hasher.update(WORKER_SOURCE.as_bytes());
+    let digest = hasher.finalize();
+    plugins_dir.join(format!(".termy-runtime-{}", hex_digest(&digest[..16])))
 }
 
 fn write_if_changed(path: &Path, contents: &str) -> Result<(), String> {
@@ -2643,6 +3078,39 @@ fn validate_event_subscriptions(
         if !(100..=MAX_INVOKE_TIMEOUT_MS).contains(&subscription.timeout_ms) {
             return Err(format!(
                 "Plugin event timeout must be between 100 and {MAX_INVOKE_TIMEOUT_MS} ms"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_views(views: &[PluginViewDescriptor]) -> Result<(), String> {
+    let mut ids = HashSet::new();
+    let mut counts = HashMap::<&str, usize>::new();
+    for view in views {
+        if !valid_id(&view.plugin_id) || !valid_id(&view.id) {
+            return Err(format!(
+                "Plugin view `{}.{}` has an invalid ID",
+                view.plugin_id, view.id
+            ));
+        }
+        let qualified_id = format!("{}.{}", view.plugin_id, view.id);
+        if !ids.insert(qualified_id.clone()) {
+            return Err(format!("Duplicate plugin view `{qualified_id}`"));
+        }
+        let count = counts.entry(&view.plugin_id).or_default();
+        *count += 1;
+        if *count > MAX_PLUGIN_VIEWS {
+            return Err(format!(
+                "Plugin `{}` has more than {MAX_PLUGIN_VIEWS} views",
+                view.plugin_id
+            ));
+        }
+        validate_text(&view.plugin_name, 200, "plugin name")?;
+        validate_text(&view.title, 300, "view title")?;
+        if !(100..=MAX_INVOKE_TIMEOUT_MS).contains(&view.timeout_ms) {
+            return Err(format!(
+                "Plugin view timeout must be between 100 and {MAX_INVOKE_TIMEOUT_MS} ms"
             ));
         }
     }
@@ -2952,7 +3420,191 @@ fn validate_actions(actions: &[PluginAction]) -> Result<(), String> {
             PluginAction::Toast { message, .. } => {
                 validate_text(message, 4_096, "toast message")?;
             }
+            PluginAction::ViewOpen { view, .. } => {
+                if !valid_id(view) {
+                    return Err(format!("Plugin returned invalid view ID `{view}`"));
+                }
+            }
         }
+    }
+    Ok(())
+}
+
+fn validate_view_action(
+    action: &PluginViewAction,
+    values: &BTreeMap<String, PluginViewValue>,
+) -> Result<(), String> {
+    if !valid_id(&action.id) {
+        return Err(format!(
+            "Plugin view action `{}` has an invalid ID",
+            action.id
+        ));
+    }
+    if !valid_id(&action.control_id) {
+        return Err(format!(
+            "Plugin view control `{}` has an invalid ID",
+            action.control_id
+        ));
+    }
+    if let Some(payload) = action.payload.as_deref() {
+        validate_text(payload, 1_024, "view action payload")?;
+    }
+    if let Some(PluginViewValue::Text(value)) = action.value.as_ref() {
+        validate_view_value_text(value, "view action value")?;
+    }
+    if values.len() > MAX_VIEW_VALUES {
+        return Err(format!(
+            "Plugin view submitted {} values; maximum is {MAX_VIEW_VALUES}",
+            values.len()
+        ));
+    }
+    for (id, value) in values {
+        if !valid_id(id) {
+            return Err(format!("Plugin view value `{id}` has an invalid ID"));
+        }
+        if let PluginViewValue::Text(value) = value {
+            validate_view_value_text(value, "view value")?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_view_value_text(value: &str, label: &str) -> Result<(), String> {
+    if value.chars().count() > 4_096 {
+        return Err(format!("Plugin {label} exceeds 4096 characters"));
+    }
+    Ok(())
+}
+
+fn validate_view_nodes(nodes: &[PluginUiNode]) -> Result<(), String> {
+    if nodes.len() > MAX_VIEW_CHILDREN {
+        return Err(format!(
+            "Plugin view has too many root nodes; maximum is {MAX_VIEW_CHILDREN}"
+        ));
+    }
+    let mut node_count = 0;
+    let mut value_count = 0;
+    let mut control_ids = HashSet::new();
+    for node in nodes {
+        validate_view_node(node, 1, &mut node_count, &mut value_count, &mut control_ids)?;
+    }
+    Ok(())
+}
+
+fn validate_view_node(
+    node: &PluginUiNode,
+    depth: usize,
+    node_count: &mut usize,
+    value_count: &mut usize,
+    control_ids: &mut HashSet<String>,
+) -> Result<(), String> {
+    if depth > MAX_VIEW_DEPTH {
+        return Err(format!(
+            "Plugin view exceeds the maximum depth of {MAX_VIEW_DEPTH}"
+        ));
+    }
+    *node_count += 1;
+    if *node_count > MAX_VIEW_NODES {
+        return Err(format!(
+            "Plugin view exceeds the maximum of {MAX_VIEW_NODES} nodes"
+        ));
+    }
+    if node.children().len() > MAX_VIEW_CHILDREN {
+        return Err(format!(
+            "Plugin view node has more than {MAX_VIEW_CHILDREN} children"
+        ));
+    }
+
+    match node {
+        PluginUiNode::Column { .. }
+        | PluginUiNode::Row { .. }
+        | PluginUiNode::Divider
+        | PluginUiNode::Spacer { .. } => {}
+        PluginUiNode::Text { text, .. } => validate_text(text, 4_096, "view text")?,
+        PluginUiNode::TextInput {
+            id,
+            label,
+            placeholder,
+            value,
+            max_length,
+            submit,
+            ..
+        } => {
+            validate_control_id(id, control_ids)?;
+            *value_count += 1;
+            if *value_count > MAX_VIEW_VALUES {
+                return Err(format!(
+                    "Plugin view has more than {MAX_VIEW_VALUES} value controls"
+                ));
+            }
+            if let Some(label) = label {
+                validate_text(label, 200, "view input label")?;
+            }
+            if let Some(placeholder) = placeholder {
+                validate_text(placeholder, 300, "view input placeholder")?;
+            }
+            if !(1..=4_096).contains(max_length) {
+                return Err(format!(
+                    "Plugin view input `{id}` maxLength must be between 1 and 4096"
+                ));
+            }
+            if value.chars().count() > *max_length {
+                return Err(format!("Plugin view input `{id}` value exceeds maxLength"));
+            }
+            if let Some(submit) = submit
+                && !valid_id(submit)
+            {
+                return Err(format!(
+                    "Plugin view input `{id}` has invalid submit action `{submit}`"
+                ));
+            }
+        }
+        PluginUiNode::Button {
+            id,
+            action,
+            label,
+            payload,
+            ..
+        }
+        | PluginUiNode::Checkbox {
+            id,
+            action,
+            label,
+            payload,
+            ..
+        } => {
+            validate_control_id(id, control_ids)?;
+            if matches!(node, PluginUiNode::Checkbox { .. }) {
+                *value_count += 1;
+                if *value_count > MAX_VIEW_VALUES {
+                    return Err(format!(
+                        "Plugin view has more than {MAX_VIEW_VALUES} value controls"
+                    ));
+                }
+            }
+            if !valid_id(action) {
+                return Err(format!(
+                    "Plugin view control `{id}` has invalid action `{action}`"
+                ));
+            }
+            validate_text(label, 300, "view control label")?;
+            if let Some(payload) = payload {
+                validate_text(payload, 1_024, "view control payload")?;
+            }
+        }
+    }
+
+    for child in node.children() {
+        validate_view_node(child, depth + 1, node_count, value_count, control_ids)?;
+    }
+    Ok(())
+}
+
+fn validate_control_id(id: &str, control_ids: &mut HashSet<String>) -> Result<(), String> {
+    if !valid_id(id) || !control_ids.insert(id.to_string()) {
+        return Err(format!(
+            "Plugin view has invalid or duplicate control ID `{id}`"
+        ));
     }
     Ok(())
 }

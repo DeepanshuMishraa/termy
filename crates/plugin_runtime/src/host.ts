@@ -23,10 +23,29 @@ type HostRequest =
       revision: string;
       event: Record<string, unknown>;
       context: Record<string, unknown>;
+    }
+  | {
+      id: number;
+      type: "view.render";
+      pluginId: string;
+      viewId: string;
+      revision: string;
+      context: Record<string, unknown>;
+    }
+  | {
+      id: number;
+      type: "view.action";
+      pluginId: string;
+      viewId: string;
+      revision: string;
+      action: Record<string, unknown>;
+      values: Record<string, unknown>;
+      context: Record<string, unknown>;
     };
 
 type InvocationCommand = { id: string; timeoutMs: number };
 type InvocationEvent = { event: string; timeoutMs: number };
+type InvocationView = { id: string; timeoutMs: number };
 type WorkerRecord = {
   worker: Worker;
   source: PluginSource;
@@ -43,9 +62,11 @@ type WorkerRecord = {
   >;
   commands: unknown[];
   events: unknown[];
+  views: unknown[];
   settings: unknown[];
   invocationCommands: InvocationCommand[];
   invocationEvents: InvocationEvent[];
+  invocationViews: InvocationView[];
 };
 type PluginLoadResult = {
   source: PluginSource;
@@ -53,6 +74,7 @@ type PluginLoadResult = {
   record?: WorkerRecord;
   commands?: unknown[];
   events?: unknown[];
+  views?: unknown[];
   settings?: unknown[];
   error?: string;
 };
@@ -153,9 +175,11 @@ function createRecord(source: PluginSource): WorkerRecord {
     pending: new Map(),
     commands: [],
     events: [],
+    views: [],
     settings: [],
     invocationCommands: [],
     invocationEvents: [],
+    invocationViews: [],
   };
   worker.onmessage = (event) => {
     const message = event.data as {
@@ -322,6 +346,26 @@ function invocationEvents(value: unknown): InvocationEvent[] {
   });
 }
 
+function invocationViews(value: unknown): InvocationView[] {
+  if (!value || typeof value !== "object") {
+    throw new Error("Plugin Worker returned an invalid load result");
+  }
+  const views = (value as { views?: unknown }).views;
+  if (!Array.isArray(views)) {
+    throw new Error("Plugin Worker returned an invalid view list");
+  }
+  return views.map((entry) => {
+    if (!entry || typeof entry !== "object") {
+      throw new Error("Plugin Worker returned an invalid view");
+    }
+    const view = entry as Record<string, unknown>;
+    if (typeof view.id !== "string" || typeof view.timeoutMs !== "number") {
+      throw new Error("Plugin Worker returned an invalid view descriptor");
+    }
+    return { id: view.id, timeoutMs: view.timeoutMs };
+  });
+}
+
 async function loadPlugin(source: PluginSource): Promise<PluginLoadResult> {
   try {
     await cleanupBuildArtifacts(source);
@@ -352,8 +396,10 @@ async function loadPlugin(source: PluginSource): Promise<PluginLoadResult> {
     );
     record.invocationCommands = invocationCommands(result);
     record.invocationEvents = invocationEvents(result);
+    record.invocationViews = invocationViews(result);
     record.commands = (result as { commands: unknown[] }).commands;
     record.events = (result as { events: unknown[] }).events;
+    record.views = (result as { views: unknown[] }).views;
     record.settings = (result as { settings: unknown[] }).settings;
     await cleanupBuildArtifacts(source);
     return {
@@ -362,6 +408,7 @@ async function loadPlugin(source: PluginSource): Promise<PluginLoadResult> {
       record,
       commands: record.commands,
       events: record.events,
+      views: record.views,
       settings: record.settings,
     };
   } catch (error) {
@@ -389,6 +436,7 @@ async function loadOrReusePlugin(source: PluginSource): Promise<PluginLoadResult
       record: existing,
       commands: existing.commands,
       events: existing.events,
+      views: existing.views,
       settings: existing.settings,
     };
   }
@@ -440,18 +488,26 @@ async function handleLoad(plugins: PluginSource[]): Promise<unknown> {
     pluginId: string;
     commands: unknown[];
     events: unknown[];
+    views: unknown[];
     settings: unknown[];
   }> = [];
   const nextRecords = new Map<string, WorkerRecord>();
   let commandCount = 0;
   for (const result of loaded) {
-    if (result.record && result.commands && result.events && result.settings) {
+    if (
+      result.record
+      && result.commands
+      && result.events
+      && result.views
+      && result.settings
+    ) {
       nextRecords.set(result.source.id, result.record);
       commandCount += result.commands.length;
       pluginsResult.push({
         pluginId: result.source.id,
         commands: result.commands,
         events: result.events,
+        views: result.views,
         settings: result.settings,
       });
     } else {
@@ -482,13 +538,17 @@ async function handle(request: HostRequest): Promise<unknown> {
   if (record.source.cacheKey !== request.revision) {
     throw new Error("Plugin changed while its input form was open; run the command again");
   }
-  const invocation =
-    request.type === "invoke"
-      ? record.invocationCommands.find((entry) => entry.id === request.commandId)
-      : record.invocationEvents.find((entry) => entry.event === request.event.type);
+  const invocation = request.type === "invoke"
+    ? record.invocationCommands.find((entry) => entry.id === request.commandId)
+    : request.type === "event"
+      ? record.invocationEvents.find((entry) => entry.event === request.event.type)
+      : record.invocationViews.find((entry) => entry.id === request.viewId);
   if (!invocation) {
-    const target =
-      request.type === "invoke" ? request.commandId : String(request.event.type || "");
+    const target = request.type === "invoke"
+      ? request.commandId
+      : request.type === "event"
+        ? String(request.event.type || "")
+        : request.viewId;
     throw new Error(`Plugin ${request.pluginId} is not registered for ${target}`);
   }
   const timeoutMs = Math.max(
@@ -505,11 +565,25 @@ async function handle(request: HostRequest): Promise<unknown> {
             inputs: request.inputs,
             context: request.context,
           }
-        : {
-            type: "event",
-            event: request.event,
-            context: request.context,
-          },
+        : request.type === "event"
+          ? {
+              type: "event",
+              event: request.event,
+              context: request.context,
+            }
+          : request.type === "view.render"
+            ? {
+                type: "view.render",
+                viewId: request.viewId,
+                context: request.context,
+              }
+            : {
+                type: "view.action",
+                viewId: request.viewId,
+                action: request.action,
+                values: request.values,
+                context: request.context,
+              },
       timeoutMs,
     );
   } catch (error) {

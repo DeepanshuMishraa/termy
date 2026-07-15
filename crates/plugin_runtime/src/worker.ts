@@ -100,25 +100,68 @@ type PluginSettingDefinition = {
   maxLength?: number;
   options?: Array<{ value: string; label: string }>;
 };
+type PluginViewValue = string | boolean;
+type PluginViewAction = {
+  id: string;
+  controlId: string;
+  payload?: string;
+  value?: PluginViewValue;
+};
+type PluginViewDefinition = {
+  title: string;
+  timeoutMs?: number;
+  render: (request: { context: PluginContext }) => unknown;
+  onAction?: (request: {
+    action: PluginViewAction;
+    values: Record<string, PluginViewValue>;
+    context: PluginContext;
+  }) => unknown;
+};
 type PluginDefinition = {
   commands: PluginCommand[];
   events?: Partial<Record<PluginEventName, PluginEventHandler>>;
+  views?: Record<string, PluginViewDefinition>;
   settings?: Record<string, PluginSettingDefinition>;
+};
+
+type TermyUiComponent = (props: Record<string, unknown>) => unknown;
+type TermyUiRuntime = {
+  createElement: (
+    component: TermyUiComponent | symbol,
+    props: Record<string, unknown> | null,
+    ...children: unknown[]
+  ) => unknown;
+  Fragment: symbol;
+  Column: TermyUiComponent;
+  Row: TermyUiComponent;
+  Text: TermyUiComponent;
+  TextInput: TermyUiComponent;
+  Button: TermyUiComponent;
+  Checkbox: TermyUiComponent;
+  Divider: TermyUiComponent;
+  Spacer: TermyUiComponent;
 };
 
 declare global {
   var definePlugin: <T extends PluginDefinition>(plugin: T) => T;
+  var TermyUI: TermyUiRuntime;
 }
 
 const MAX_PLUGIN_TREE_BYTES = 16 * 1024 * 1024;
 const MAX_PLUGIN_TREE_FILES = 4_096;
 const MAX_STORAGE_BYTES = 1024 * 1024;
 const MAX_STORAGE_ENTRIES = 512;
+const MAX_PLUGIN_VIEWS = 32;
+const MAX_VIEW_NODES = 256;
+const MAX_VIEW_DEPTH = 16;
+const MAX_VIEW_CHILDREN = 64;
+const MAX_VIEW_VALUES = 64;
 globalThis.definePlugin = (plugin) => plugin;
 let plugin: PluginDefinition | undefined;
 let pluginServices: PluginServices | undefined;
 let commandHandlers = new Map<string, PluginCommand["run"]>();
 let eventHandlers = new Map<PluginEventName, PluginEventHandler>();
+let viewHandlers = new Map<string, PluginViewDefinition>();
 let queue = Promise.resolve();
 
 // Keep ordinary plugin output on Termy's diagnostic stream.
@@ -151,6 +194,10 @@ function logValue(value: unknown): string {
   }
 }
 
+function textLength(value: string): number {
+  return Array.from(value).length;
+}
+
 for (const level of ["log", "info", "warn", "error"] as const) {
   console[level] = (...values: unknown[]) => {
     const pluginId = process.env.TERMY_PLUGIN_ID || "unknown";
@@ -170,7 +217,7 @@ function assertId(value: unknown, label: string): asserts value is string {
 }
 
 function assertText(value: unknown, label: string, max = 300): asserts value is string {
-  if (typeof value !== "string" || value.trim() === "" || value.length > max) {
+  if (typeof value !== "string" || value.trim() === "" || textLength(value) > max) {
     throw new Error(`${label} must be a non-empty string up to ${max} characters`);
   }
 }
@@ -183,7 +230,7 @@ function optionalText(value: unknown, label: string, max: number): string | unde
 
 function optionalString(value: unknown, label: string, max: number): string | undefined {
   if (value === undefined) return undefined;
-  if (typeof value !== "string" || value.length > max) {
+  if (typeof value !== "string" || textLength(value) > max) {
     throw new Error(`${label} must be a string up to ${max} characters`);
   }
   return value;
@@ -198,6 +245,309 @@ function normalizeKeywords(value: unknown, label: string): string[] {
     assertText(keyword, label, 200);
     return keyword;
   });
+}
+
+function flattenUiChildren(value: unknown, output: unknown[] = []): unknown[] {
+  if (Array.isArray(value)) {
+    for (const child of value) flattenUiChildren(child, output);
+  } else if (value !== undefined && value !== null && value !== false && value !== true) {
+    output.push(value);
+  }
+  return output;
+}
+
+function componentProps(
+  name: string,
+  value: Record<string, unknown>,
+  allowed: readonly string[],
+  allowsChildren = true,
+): Record<string, unknown> {
+  const allowedSet = new Set(["key", ...allowed]);
+  for (const key of Object.keys(value)) {
+    if (key === "children") {
+      if (allowsChildren || flattenUiChildren(value.children).length === 0) continue;
+      throw new Error(`${name} does not support children`);
+    }
+    if (!allowedSet.has(key)) throw new Error(`${name} does not support prop ${key}`);
+  }
+  return value;
+}
+
+function componentText(value: unknown, label: string): string {
+  const parts = flattenUiChildren(value).map((child) => {
+    if (typeof child !== "string" && typeof child !== "number") {
+      throw new Error(`${label} children must be text`);
+    }
+    return String(child);
+  });
+  const text = parts.join("");
+  assertText(text, label, 4_096);
+  return text;
+}
+
+function uiContainer(type: "column" | "row", props: Record<string, unknown>): unknown {
+  componentProps(type, props, ["gap", "align"]);
+  return {
+    type,
+    gap: props.gap ?? "medium",
+    align: props.align ?? "start",
+    children: flattenUiChildren(props.children),
+  };
+}
+
+const Fragment = Symbol("TermyUI.Fragment");
+const TermyUiRuntime: TermyUiRuntime = Object.freeze({
+  createElement(component, props, ...children) {
+    const nextProps = { ...(props || {}), children };
+    if (component === Fragment) return flattenUiChildren(children);
+    if (typeof component !== "function") {
+      throw new Error("Termy UI only supports TermyUI components");
+    }
+    return component(nextProps);
+  },
+  Fragment,
+  Column: (props) => uiContainer("column", props),
+  Row: (props) => uiContainer("row", props),
+  Text: (props) => {
+    componentProps("Text", props, ["variant", "tone"]);
+    return {
+      type: "text",
+      text: componentText(props.children, "Text"),
+      variant: props.variant ?? "body",
+      tone: props.tone ?? "default",
+    };
+  },
+  TextInput: (props) => {
+    componentProps("TextInput", props, [
+      "id",
+      "label",
+      "placeholder",
+      "value",
+      "maxLength",
+      "submit",
+      "disabled",
+    ], false);
+    return { type: "textInput", ...props, children: undefined, key: undefined };
+  },
+  Button: (props) => {
+    componentProps("Button", props, [
+      "id",
+      "action",
+      "payload",
+      "variant",
+      "disabled",
+    ]);
+    return {
+      type: "button",
+      ...props,
+      children: undefined,
+      key: undefined,
+      label: componentText(props.children, "Button"),
+    };
+  },
+  Checkbox: (props) => {
+    componentProps("Checkbox", props, [
+      "id",
+      "action",
+      "payload",
+      "checked",
+      "disabled",
+    ]);
+    return {
+      type: "checkbox",
+      ...props,
+      children: undefined,
+      key: undefined,
+      label: componentText(props.children, "Checkbox"),
+    };
+  },
+  Divider: (props) => {
+    componentProps("Divider", props, [], false);
+    return { type: "divider" };
+  },
+  Spacer: (props) => {
+    componentProps("Spacer", props, ["size"], false);
+    return { type: "spacer", size: props.size ?? "medium" };
+  },
+});
+globalThis.TermyUI = TermyUiRuntime;
+
+const UI_GAPS = ["none", "small", "medium", "large"] as const;
+const UI_ALIGNMENTS = ["start", "center", "end", "stretch"] as const;
+const UI_TEXT_VARIANTS = ["heading", "body", "caption", "code"] as const;
+const UI_TONES = ["default", "muted", "success", "danger"] as const;
+const UI_BUTTON_VARIANTS = ["secondary", "primary", "danger"] as const;
+
+function enumValue(
+  value: unknown,
+  allowed: readonly string[],
+  label: string,
+  fallback: string,
+): string {
+  const normalized = value ?? fallback;
+  if (typeof normalized !== "string" || !allowed.includes(normalized)) {
+    throw new Error(`${label} has an unsupported value`);
+  }
+  return normalized;
+}
+
+function booleanValue(value: unknown, label: string, fallback = false): boolean {
+  if (value === undefined) return fallback;
+  if (typeof value !== "boolean") throw new Error(`${label} must be a boolean`);
+  return value;
+}
+
+function normalizeViewDocument(value: unknown): Record<string, unknown>[] {
+  let count = 0;
+  let valueCount = 0;
+  const controlIds = new Set<string>();
+
+  const nodeKeys = (
+    node: Record<string, unknown>,
+    allowed: readonly string[],
+    label: string,
+  ): void => {
+    const allowedSet = new Set(["type", ...allowed]);
+    for (const key of Object.keys(node)) {
+      if (!allowedSet.has(key) && node[key] !== undefined) {
+        throw new Error(`${label} does not support prop ${key}`);
+      }
+    }
+  };
+
+  const normalizeChildren = (candidate: unknown, depth: number): Record<string, unknown>[] => {
+    const children = flattenUiChildren(candidate);
+    if (children.length > MAX_VIEW_CHILDREN) {
+      throw new Error(`Termy UI nodes may have at most ${MAX_VIEW_CHILDREN} children`);
+    }
+    return children.map((child) => normalizeNode(child, depth));
+  };
+
+  const controlId = (candidate: unknown, label: string): string => {
+    assertId(candidate, label);
+    if (controlIds.has(candidate)) throw new Error(`Duplicate Termy UI control ID ${candidate}`);
+    controlIds.add(candidate);
+    return candidate;
+  };
+
+  const normalizeNode = (candidate: unknown, depth: number): Record<string, unknown> => {
+    if (depth > MAX_VIEW_DEPTH) {
+      throw new Error(`Termy UI exceeds the maximum depth of ${MAX_VIEW_DEPTH}`);
+    }
+    count += 1;
+    if (count > MAX_VIEW_NODES) {
+      throw new Error(`Termy UI exceeds the maximum of ${MAX_VIEW_NODES} nodes`);
+    }
+    if (typeof candidate === "string" || typeof candidate === "number") {
+      const text = String(candidate);
+      assertText(text, "Termy UI text", 4_096);
+      return { type: "text", text, variant: "body", tone: "default" };
+    }
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+      throw new Error("Termy UI render returned an unsupported child");
+    }
+    const node = candidate as Record<string, unknown>;
+    if (node.type === "column" || node.type === "row") {
+      nodeKeys(node, ["gap", "align", "children"], String(node.type));
+      return {
+        type: node.type,
+        gap: enumValue(node.gap, UI_GAPS, `${node.type} gap`, "medium"),
+        align: enumValue(node.align, UI_ALIGNMENTS, `${node.type} alignment`, "start"),
+        children: normalizeChildren(node.children, depth + 1),
+      };
+    }
+    if (node.type === "text") {
+      nodeKeys(node, ["text", "variant", "tone"], "Text");
+      assertText(node.text, "Termy UI text", 4_096);
+      return {
+        type: "text",
+        text: node.text,
+        variant: enumValue(node.variant, UI_TEXT_VARIANTS, "Text variant", "body"),
+        tone: enumValue(node.tone, UI_TONES, "Text tone", "default"),
+      };
+    }
+    if (node.type === "textInput") {
+      nodeKeys(
+        node,
+        ["id", "label", "placeholder", "value", "maxLength", "submit", "disabled"],
+        "TextInput",
+      );
+      const id = controlId(node.id, "TextInput ID");
+      valueCount += 1;
+      if (valueCount > MAX_VIEW_VALUES) {
+        throw new Error(`Termy UI may contain at most ${MAX_VIEW_VALUES} value controls`);
+      }
+      const maxLength = node.maxLength === undefined ? 1_024 : Number(node.maxLength);
+      if (!Number.isInteger(maxLength) || maxLength < 1 || maxLength > 4_096) {
+        throw new Error(`TextInput ${id} maxLength must be between 1 and 4096`);
+      }
+      const value = optionalString(node.value, `TextInput ${id} value`, maxLength) ?? "";
+      if (node.submit !== undefined) assertId(node.submit, `TextInput ${id} submit action`);
+      return {
+        type: "textInput",
+        id,
+        label: optionalText(node.label, `TextInput ${id} label`, 200),
+        placeholder: optionalText(node.placeholder, `TextInput ${id} placeholder`, 300),
+        value,
+        maxLength,
+        submit: node.submit,
+        disabled: booleanValue(node.disabled, `TextInput ${id} disabled`),
+      };
+    }
+    if (node.type === "button" || node.type === "checkbox") {
+      nodeKeys(
+        node,
+        node.type === "button"
+          ? ["id", "action", "label", "payload", "variant", "disabled"]
+          : ["id", "action", "label", "payload", "checked", "disabled"],
+        String(node.type),
+      );
+      const id = controlId(node.id, `${node.type} ID`);
+      assertId(node.action, `${node.type} ${id} action`);
+      assertText(node.label, `${node.type} ${id} label`, 300);
+      const common = {
+        type: node.type,
+        id,
+        action: node.action,
+        label: node.label,
+        payload: optionalText(node.payload, `${node.type} ${id} payload`, 1_024),
+        disabled: booleanValue(node.disabled, `${node.type} ${id} disabled`),
+      };
+      if (node.type === "button") {
+        return {
+          ...common,
+          variant: enumValue(
+            node.variant,
+            UI_BUTTON_VARIANTS,
+            `Button ${id} variant`,
+            "secondary",
+          ),
+        };
+      }
+      valueCount += 1;
+      if (valueCount > MAX_VIEW_VALUES) {
+        throw new Error(`Termy UI may contain at most ${MAX_VIEW_VALUES} value controls`);
+      }
+      return {
+        ...common,
+        checked: booleanValue(node.checked, `Checkbox ${id} checked`),
+      };
+    }
+    if (node.type === "divider") {
+      nodeKeys(node, [], "Divider");
+      return { type: "divider" };
+    }
+    if (node.type === "spacer") {
+      nodeKeys(node, ["size"], "Spacer");
+      return {
+        type: "spacer",
+        size: enumValue(node.size, UI_GAPS, "Spacer size", "medium"),
+      };
+    }
+    throw new Error(`Unsupported Termy UI node ${String(node.type)}`);
+  };
+
+  return normalizeChildren(value, 1);
 }
 
 async function capturePlugin(source: PluginSource): Promise<CapturedFile[]> {
@@ -251,7 +601,7 @@ async function capturePlugin(source: PluginSource): Promise<CapturedFile[]> {
     ),
   );
   const hash = createHash("sha256");
-  hash.update("termy-plugin-bundle-v1\0");
+  hash.update("termy-plugin-bundle-v2\0");
   for (const file of files) {
     hash.update(file.relativePath);
     hash.update(new Uint8Array([0]));
@@ -350,6 +700,11 @@ async function bundlePlugin(
           format: "esm",
           minify: false,
           sourcemap: "inline",
+          jsx: {
+            runtime: "classic",
+            factory: "TermyUI.createElement",
+            fragment: "TermyUI.Fragment",
+          },
           plugins: [
             {
               name: "termy-plugin-import-boundary",
@@ -520,6 +875,7 @@ function normalizePlugin(
 ): {
   commands: Record<string, unknown>[];
   events: Record<string, unknown>[];
+  views: Record<string, unknown>[];
   settings: Record<string, unknown>[];
 } {
   if (!candidate || typeof candidate !== "object") {
@@ -591,9 +947,10 @@ function normalizePlugin(
     };
   });
   const events = normalizeEvents(definition.events, source);
+  const views = normalizeViews(definition.views, source);
   const settings = normalizeSettings(definition.settings);
   plugin = definition;
-  return { commands, events, settings };
+  return { commands, events, views, settings };
 }
 
 const PLUGIN_EVENT_NAMES = [
@@ -625,6 +982,49 @@ function normalizeEvents(
       pluginId: source.id,
       event: eventName,
       timeoutMs: 10_000,
+    };
+  });
+}
+
+function normalizeViews(
+  value: unknown,
+  source: PreparedPluginSource,
+): Record<string, unknown>[] {
+  viewHandlers = new Map();
+  if (value === undefined) return [];
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Plugin views must be an object");
+  }
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length > MAX_PLUGIN_VIEWS) {
+    throw new Error(`Plugin views must have at most ${MAX_PLUGIN_VIEWS} entries`);
+  }
+  return entries.map(([id, candidate]) => {
+    assertId(id, "View ID");
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+      throw new Error(`View ${id} must be an object`);
+    }
+    const view = candidate as PluginViewDefinition;
+    assertText(view.title, `View ${id} title`, 300);
+    if (typeof view.render !== "function") {
+      throw new Error(`View ${id} must define render()`);
+    }
+    if (view.onAction !== undefined && typeof view.onAction !== "function") {
+      throw new Error(`View ${id} onAction must be a function`);
+    }
+    if (
+      view.timeoutMs !== undefined &&
+      (!Number.isInteger(view.timeoutMs) || view.timeoutMs < 100 || view.timeoutMs > 30_000)
+    ) {
+      throw new Error(`View ${id} timeoutMs must be between 100 and 30000`);
+    }
+    viewHandlers.set(id, view);
+    return {
+      pluginId: source.id,
+      pluginName: source.name,
+      id,
+      title: view.title,
+      timeoutMs: view.timeoutMs ?? 10_000,
     };
   });
 }
@@ -687,7 +1087,7 @@ function normalizeSettings(value: unknown): Record<string, unknown>[] {
         throw new Error(`Setting ${id} defaultValue must be text`);
       }
       const defaultValue = String(setting.defaultValue ?? "");
-      if ([...defaultValue].length > maxLength) {
+      if (textLength(defaultValue) > maxLength) {
         throw new Error(`Setting ${id} defaultValue exceeds maxLength`);
       }
       return {
@@ -754,7 +1154,7 @@ function assertStorageKey(value: unknown): asserts value is string {
   if (
     typeof value !== "string" ||
     value.trim() === "" ||
-    value.length > 200 ||
+    textLength(value) > 200 ||
     value.includes("\0")
   ) {
     throw new Error("Plugin storage key must be a non-empty string up to 200 characters");
@@ -954,6 +1354,77 @@ function createPluginContext(
   });
 }
 
+function hasInteractiveViewNode(nodes: Record<string, unknown>[]): boolean {
+  return nodes.some((node) => {
+    if (node.type === "button" || node.type === "checkbox") return true;
+    if (node.type === "textInput" && node.submit !== undefined) return true;
+    return Array.isArray(node.children)
+      && hasInteractiveViewNode(node.children as Record<string, unknown>[]);
+  });
+}
+
+async function renderPluginView(
+  viewId: string,
+  context: PluginContext,
+  emittedActions: unknown[],
+): Promise<Record<string, unknown>[]> {
+  const view = viewHandlers.get(viewId);
+  if (!view) throw new Error(`View ${viewId} is not registered`);
+  const nodes = normalizeViewDocument(await view.render({ context }));
+  if (!view.onAction && hasInteractiveViewNode(nodes)) {
+    throw new Error(`View ${viewId} renders actions but does not define onAction()`);
+  }
+  return nodes;
+}
+
+function normalizeViewAction(value: unknown): PluginViewAction {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Plugin view action is invalid");
+  }
+  const action = value as Record<string, unknown>;
+  assertId(action.id, "Plugin view action ID");
+  assertId(action.controlId, "Plugin view control ID");
+  const payload = optionalText(action.payload, "Plugin view action payload", 1_024);
+  let normalizedValue: PluginViewValue | undefined;
+  if (action.value !== undefined) {
+    if (typeof action.value !== "string" && typeof action.value !== "boolean") {
+      throw new Error("Plugin view action value must be text or a boolean");
+    }
+    if (typeof action.value === "string" && textLength(action.value) > 4_096) {
+      throw new Error("Plugin view action value exceeds 4096 characters");
+    }
+    normalizedValue = action.value;
+  }
+  return {
+    id: action.id,
+    controlId: action.controlId,
+    ...(payload === undefined ? {} : { payload }),
+    ...(normalizedValue === undefined ? {} : { value: normalizedValue }),
+  };
+}
+
+function normalizeViewValues(value: unknown): Record<string, PluginViewValue> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Plugin view values are invalid");
+  }
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length > MAX_VIEW_VALUES) {
+    throw new Error("Plugin view submitted too many values");
+  }
+  const normalized: Record<string, PluginViewValue> = Object.create(null);
+  for (const [id, candidate] of entries) {
+    assertId(id, "Plugin view value ID");
+    if (typeof candidate !== "string" && typeof candidate !== "boolean") {
+      throw new Error(`Plugin view value ${id} must be text or a boolean`);
+    }
+    if (typeof candidate === "string" && textLength(candidate) > 4_096) {
+      throw new Error(`Plugin view value ${id} exceeds 4096 characters`);
+    }
+    normalized[id] = candidate;
+  }
+  return normalized;
+}
+
 async function handle(message: Record<string, unknown>): Promise<unknown> {
   if (message.type === "load") {
     const pluginSource = message.source as PluginSource;
@@ -1002,6 +1473,35 @@ async function handle(message: Record<string, unknown>): Promise<unknown> {
       context: createPluginContext(message.context, emittedActions, pluginServices),
     });
     return { actions: [...emittedActions, ...normalizeActions(value)] };
+  }
+  if (message.type === "view.render") {
+    if (!plugin) throw new Error("Plugin is not loaded");
+    if (!pluginServices) throw new Error("Plugin services are unavailable");
+    const viewId = String(message.viewId || "");
+    const emittedActions: unknown[] = [];
+    const context = createPluginContext(message.context, emittedActions, pluginServices);
+    const nodes = await renderPluginView(viewId, context, emittedActions);
+    return { nodes, actions: emittedActions };
+  }
+  if (message.type === "view.action") {
+    if (!plugin) throw new Error("Plugin is not loaded");
+    if (!pluginServices) throw new Error("Plugin services are unavailable");
+    const viewId = String(message.viewId || "");
+    const view = viewHandlers.get(viewId);
+    if (!view) throw new Error(`View ${viewId} is not registered`);
+    if (!view.onAction) throw new Error(`View ${viewId} does not handle actions`);
+    const emittedActions: unknown[] = [];
+    const context = createPluginContext(message.context, emittedActions, pluginServices);
+    const value = await view.onAction({
+      action: normalizeViewAction(message.action),
+      values: normalizeViewValues(message.values),
+      context,
+    });
+    const nodes = await renderPluginView(viewId, context, emittedActions);
+    return {
+      nodes,
+      actions: [...emittedActions, ...normalizeActions(value)],
+    };
   }
   throw new Error(`Unknown Worker request ${String(message.type)}`);
 }

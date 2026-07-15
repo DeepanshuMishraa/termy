@@ -34,6 +34,13 @@ impl TerminalView {
         self.has_active_inline_input()
     }
 
+    fn plugin_ui_blocks_terminal_action(
+        plugin_ui_open: bool,
+        respect_shortcut_suspend: bool,
+    ) -> bool {
+        plugin_ui_open && respect_shortcut_suspend
+    }
+
     /// Single source for runtime command gating so the palette, menus, and
     /// execution path all apply the same capability rules.
     pub(in super::super) fn command_capabilities(&self) -> CommandCapabilities {
@@ -66,6 +73,12 @@ impl TerminalView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if Self::plugin_ui_blocks_terminal_action(
+            self.plugin_ui.is_some(),
+            respect_shortcut_suspend,
+        ) {
+            return;
+        }
         self.maybe_suppress_tab_switch_hint_for_action(action, cx);
 
         #[cfg(target_os = "windows")]
@@ -858,6 +871,13 @@ mod tests {
                 CommandAction::OpenSearch
             )
         );
+    }
+
+    #[test]
+    fn plugin_ui_blocks_terminal_shortcuts_but_not_plugin_returned_actions() {
+        assert!(TerminalView::plugin_ui_blocks_terminal_action(true, true));
+        assert!(!TerminalView::plugin_ui_blocks_terminal_action(true, false));
+        assert!(!TerminalView::plugin_ui_blocks_terminal_action(false, true));
     }
 
     #[test]

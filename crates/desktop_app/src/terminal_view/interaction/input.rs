@@ -158,12 +158,14 @@ fn modifier_transition_events(
 
 fn overlay_owns_terminal_input_state(
     command_palette_open: bool,
+    plugin_ui_open: bool,
     search_open: bool,
     renaming_tab: Option<usize>,
     renaming_workspace: Option<usize>,
     browser_url_editing: bool,
 ) -> bool {
     command_palette_open
+        || plugin_ui_open
         || search_open
         || renaming_tab.is_some()
         || renaming_workspace.is_some()
@@ -217,6 +219,7 @@ impl TerminalView {
     fn overlay_owns_terminal_input(&self) -> bool {
         overlay_owns_terminal_input_state(
             self.is_command_palette_open(),
+            self.plugin_ui.is_some(),
             self.search_open,
             self.renaming_tab,
             self.renaming_workspace,

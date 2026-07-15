@@ -65,6 +65,7 @@ mod macos_file_drop;
 mod metrics;
 mod overlay_view;
 mod persistence;
+mod plugin_ui;
 mod render;
 mod render_cache;
 mod runtime;
@@ -104,6 +105,7 @@ use metrics::DebugOverlayStats;
 #[cfg(debug_assertions)]
 use metrics::{TerminalRenderMetricsCounters, TerminalRenderMetricsState};
 use overlay_view::TerminalOverlayView;
+use plugin_ui::PluginUiView;
 use render_cache::{
     TerminalPaneCellColorTransformKey, TerminalPaneRenderCache, TerminalPaneRenderCacheKey,
 };
@@ -1157,6 +1159,7 @@ pub struct TerminalView {
     toast_animation_scheduled: bool,
     toast_manager: ToastManager,
     overlay_view: Option<Entity<TerminalOverlayView>>,
+    plugin_ui: Option<Entity<PluginUiView>>,
     plugin_runtime: PluginRuntime,
     plugin_lifecycle: PluginLifecycleState,
     plugin_refresh_in_flight: bool,
@@ -2426,7 +2429,7 @@ impl TerminalView {
     }
 
     fn tab_switch_hints_blocked(&self) -> bool {
-        self.is_command_palette_open() || self.search_open
+        self.is_command_palette_open() || self.plugin_ui.is_some() || self.search_open
     }
 
     pub(crate) fn tab_switch_hint_progress(&self, now: Instant) -> f32 {
@@ -3629,6 +3632,7 @@ impl TerminalView {
             toast_animation_scheduled: false,
             toast_manager: ToastManager::new(),
             overlay_view: None,
+            plugin_ui: None,
             plugin_runtime,
             plugin_lifecycle: PluginLifecycleState::new(window_handle),
             plugin_refresh_in_flight: false,
