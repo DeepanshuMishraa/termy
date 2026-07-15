@@ -39,13 +39,13 @@ use termy_config_core::{MAX_LINE_HEIGHT, MIN_LINE_HEIGHT};
 use termy_plugin_runtime::{PluginEvent, PluginRuntime};
 use termy_search::SearchState;
 use termy_terminal_ui::{
-    CellRenderInfo, CommandLifecycle, PaneTerminal, ProgressState, TabTitleShellIntegration,
-    Terminal as NativeTerminal, TerminalClipboardTarget, TerminalCursorState, TerminalCursorStyle,
-    TerminalDamageSnapshot, TerminalDirtySpan, TerminalEvent, TerminalGrid,
-    TerminalGridPaintCacheHandle, TerminalGridPaintDamage, TerminalGridRows, TerminalKeyEventKind,
-    TerminalKeyboardMode, TerminalMouseMode, TerminalOptions, TerminalQueryColors,
-    TerminalReplyHost, TerminalRuntimeConfig, TerminalSize, TerminalWakeupNotifier,
-    TmuxLaunchTarget, WindowsShell as RuntimeWindowsShell,
+    CellRenderInfo, CommandLifecycle, KittyGraphicsRenderPlacement, PaneTerminal, ProgressState,
+    TabTitleShellIntegration, Terminal as NativeTerminal, TerminalClipboardTarget,
+    TerminalCursorState, TerminalCursorStyle, TerminalDamageSnapshot, TerminalDirtySpan,
+    TerminalEvent, TerminalGrid, TerminalGridPaintCacheHandle, TerminalGridPaintDamage,
+    TerminalGridRows, TerminalKeyEventKind, TerminalKeyboardMode, TerminalMouseMode,
+    TerminalOptions, TerminalQueryColors, TerminalReplyHost, TerminalRuntimeConfig, TerminalSize,
+    TerminalWakeupNotifier, TmuxLaunchTarget, WindowsShell as RuntimeWindowsShell,
     WorkingDirFallback as RuntimeWorkingDirFallback, find_link_in_line, hyperlink_at_viewport_cell,
     keystroke_to_input, normalize_working_directory_candidate, resolve_launch_working_directory,
     resolve_working_directory_path,
@@ -725,6 +725,16 @@ impl Terminal {
                 .map_or(TerminalDamageSnapshot::Full, |terminal| {
                     terminal.take_damage_snapshot()
                 }),
+        }
+    }
+
+    fn kitty_graphics_placements(&self) -> Vec<KittyGraphicsRenderPlacement> {
+        match self {
+            Self::Tmux(terminal) => terminal.kitty_graphics_placements(),
+            Self::Native(terminal) => terminal
+                .lock()
+                .map(|terminal| terminal.kitty_graphics_placements())
+                .unwrap_or_default(),
         }
     }
 

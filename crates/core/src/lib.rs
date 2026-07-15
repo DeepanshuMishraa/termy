@@ -2,6 +2,7 @@ mod cell_metrics;
 mod config;
 mod frame;
 mod keyboard;
+mod kitty_graphics;
 mod links;
 mod locale;
 mod monotonic_time;
@@ -26,6 +27,10 @@ pub use frame::{TermyCell, TermyColor, TermyFrame, TermyFrameUpdate};
 pub use keyboard::{
     Keystroke, Modifiers, TerminalKeyEventKind, TerminalKeyboardMode, TermyKeystroke,
     TermyModifiers, keystroke_to_input,
+};
+pub use kitty_graphics::{
+    KittyGraphicsApplyResult, KittyGraphicsCommand, KittyGraphicsInterceptor, KittyGraphicsItem,
+    KittyGraphicsRenderPlacement, KittyGraphicsState,
 };
 pub use links::{DetectedLink, classify_link_token, find_link_in_line, hyperlink_at_viewport_cell};
 #[cfg(unix)]

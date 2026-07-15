@@ -15,6 +15,16 @@ Important internal areas:
 
 Push reusable headless behavior into `termy_core` or a pure domain crate. Push GPUI-adjacent terminal adapter behavior into `termy_terminal_ui` only when it is reusable outside the desktop app shell.
 
+## Kitty graphics
+
+The terminal surface renders static images sent through the Kitty graphics
+protocol. The shared terminal core handles APC parsing, direct and file-backed
+transfers, chunking, PNG/RGB/RGBA data, zlib compression, placements, deletion,
+quiet-mode replies, source rectangles, cursor movement, and storage limits. The
+desktop renderer handles clipping, cell/pixel sizing, z-index ordering, and GPU
+image caching. Animations, shared-memory transfers, Unicode placeholders, and
+relative placements are not currently supported.
+
 ## Validation
 
 ```sh

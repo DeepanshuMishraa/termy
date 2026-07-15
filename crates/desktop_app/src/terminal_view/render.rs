@@ -5,12 +5,89 @@ use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::vte::ansi::{Color as AnsiColor, NamedColor};
 use gpui::prelude::FluentBuilder;
-use gpui::{ElementInputHandler, canvas};
+use gpui::{ElementInputHandler, ObjectFit, StyledImage, canvas};
 use std::sync::Arc;
 use std::time::Instant;
 #[cfg(debug_assertions)]
 use termy_terminal_ui::terminal_ui_render_metrics_snapshot;
 use termy_terminal_ui::{add_span_damage_compute_us, terminal_ui_render_metrics_enabled};
+
+fn kitty_graphics_layers(
+    mut placements: Vec<KittyGraphicsRenderPlacement>,
+    cell_size: Size<Pixels>,
+    image_cache: &mut HashMap<(u32, u64), Arc<gpui::Image>>,
+) -> (Vec<AnyElement>, Vec<AnyElement>) {
+    placements.sort_by_key(|placement| {
+        (
+            placement.z_index,
+            placement.image_id,
+            placement.placement_id,
+        )
+    });
+    let mut below_text = Vec::new();
+    let mut above_text = Vec::new();
+    let cell_width: f32 = cell_size.width.into();
+    let cell_height: f32 = cell_size.height.into();
+    let active_images: HashSet<(u32, u64)> = placements
+        .iter()
+        .map(|placement| (placement.image_id, placement.image_generation))
+        .collect();
+    image_cache.retain(|key, _| active_images.contains(key));
+
+    for placement in placements {
+        let target_width = placement
+            .display_cols
+            .map_or(placement.source_width as f32, |cols| {
+                cols as f32 * cell_width
+            });
+        let target_height = placement
+            .display_rows
+            .map_or(placement.source_height as f32, |rows| {
+                rows as f32 * cell_height
+            });
+        if target_width <= 0.0 || target_height <= 0.0 {
+            continue;
+        }
+
+        let scale_x = target_width / placement.source_width.max(1) as f32;
+        let scale_y = target_height / placement.source_height.max(1) as f32;
+        let image = image_cache
+            .entry((placement.image_id, placement.image_generation))
+            .or_insert_with(|| {
+                Arc::new(gpui::Image::from_bytes(
+                    gpui::ImageFormat::Png,
+                    placement.png.as_ref().to_vec(),
+                ))
+            })
+            .clone();
+        let image_element = gpui::img(image)
+            .absolute()
+            .left(px(-(placement.source_x as f32 * scale_x)))
+            .top(px(-(placement.source_y as f32 * scale_y)))
+            .w(px(placement.image_width as f32 * scale_x))
+            .h(px(placement.image_height as f32 * scale_y))
+            .object_fit(ObjectFit::Fill);
+        let layer = div()
+            .absolute()
+            .left(px(
+                placement.col as f32 * cell_width + placement.x_offset as f32
+            ))
+            .top(px(
+                placement.viewport_row as f32 * cell_height + placement.y_offset as f32
+            ))
+            .w(px(target_width))
+            .h(px(target_height))
+            .overflow_hidden()
+            .child(image_element)
+            .into_any_element();
+        if placement.z_index < 0 {
+            below_text.push(layer);
+        } else {
+            above_text.push(layer);
+        }
+    }
+    (below_text, above_text)
+}
 
 fn blend_rgb_only(base: gpui::Rgba, target: gpui::Rgba, factor: f32) -> gpui::Rgba {
     let factor = factor.clamp(0.0, 1.0);
@@ -2789,12 +2866,14 @@ impl Render for TerminalView {
                     None => (None, false, configured_cursor_style),
                 };
 
+                let pane_cell_size = self
+                    .cached_cell_size_for_font_size(pane_font_size)
+                    .unwrap_or(layout_cell_size);
                 let terminal_grid = self.build_terminal_grid_from_cache(
                     pane_cells,
                     paint_cache,
                     paint_damage,
-                    self.cached_cell_size_for_font_size(pane_font_size)
-                        .unwrap_or(layout_cell_size),
+                    pane_cell_size,
                     cols,
                     rows,
                     &colors,
@@ -2806,6 +2885,14 @@ impl Render for TerminalView {
                     cursor_paint_visible,
                     terminal_surface_bg,
                 );
+                let (kitty_below_text, kitty_above_text) = {
+                    let mut pane_render_cache = pane.render_cache.borrow_mut();
+                    kitty_graphics_layers(
+                        terminal.kitty_graphics_placements(),
+                        pane_cell_size,
+                        &mut pane_render_cache.kitty_images,
+                    )
+                };
 
                 let Some(pane_layout) = self.terminal_pane_layout(active_tab, pane, content_bounds)
                 else {
@@ -2830,9 +2917,12 @@ impl Render for TerminalView {
                         .top(px(pane_top))
                         .w(px(pane_width))
                         .h(px(pane_height))
+                        .overflow_hidden()
                         .cursor_text()
                         .when(link_hovered, |el| el.cursor_pointer())
+                        .children(kitty_below_text)
                         .child(terminal_grid)
+                        .children(kitty_above_text)
                         .children(pane_progress_loader)
                         .into_any_element(),
                 );

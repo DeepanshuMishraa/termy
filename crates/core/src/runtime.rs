@@ -1,5 +1,8 @@
 use crate::frame::{TermyFrame, TermyFrameUpdate, snapshot_from_term, snapshot_update_from_term};
 use crate::keyboard::TerminalKeyboardMode;
+use crate::kitty_graphics::{
+    KittyGraphicsInterceptor, KittyGraphicsItem, KittyGraphicsRenderPlacement, KittyGraphicsState,
+};
 #[cfg(unix)]
 use crate::locale::{Utf8LocaleOverridePlan, preferred_utf8_locale, utf8_locale_override_plan};
 use crate::mouse_protocol::TerminalMouseMode;
@@ -1138,6 +1141,7 @@ struct NativeEventLoopState {
     writing: Option<Writing>,
     parser: ansi::Processor,
     osc_interceptor: OscInterceptor,
+    kitty_graphics_interceptor: KittyGraphicsInterceptor,
 }
 
 impl NativeEventLoopState {
@@ -1170,6 +1174,8 @@ struct NativeEventLoop {
     rx: PeekableReceiver<EventLoopMsg>,
     tx: StdSender<EventLoopMsg>,
     terminal: Arc<FairMutex<Term<JsonEventListener>>>,
+    kitty_graphics: Arc<FairMutex<KittyGraphicsState>>,
+    terminal_size: Arc<FairMutex<TerminalSize>>,
     event_proxy: JsonEventListener,
     drain_on_exit: bool,
 }
@@ -1177,6 +1183,8 @@ struct NativeEventLoop {
 impl NativeEventLoop {
     fn new(
         terminal: Arc<FairMutex<Term<JsonEventListener>>>,
+        kitty_graphics: Arc<FairMutex<KittyGraphicsState>>,
+        terminal_size: Arc<FairMutex<TerminalSize>>,
         event_proxy: JsonEventListener,
         pty: tty::Pty,
         drain_on_exit: bool,
@@ -1188,6 +1196,8 @@ impl NativeEventLoop {
             rx: PeekableReceiver::new(rx),
             tx,
             terminal,
+            kitty_graphics,
+            terminal_size,
             event_proxy,
             drain_on_exit,
         })
@@ -1221,7 +1231,9 @@ impl NativeEventLoop {
 
     fn pty_read(&mut self, state: &mut NativeEventLoopState, buf: &mut [u8]) -> io::Result<()> {
         let mut parsed = 0usize;
+        let mut processed = 0usize;
         let mut unprocessed = 0usize;
+        let mut graphics_changed = false;
 
         let _terminal_lease = Some(self.terminal.lease());
         let mut terminal = None;
@@ -1261,20 +1273,45 @@ impl NativeEventLoop {
             };
 
             let (filtered, osc_events) = state.osc_interceptor.process(&buf[..unprocessed]);
+            processed = processed.saturating_add(filtered.len());
             self.handle_osc_events(osc_events);
 
-            if !filtered.is_empty() {
-                parsed += filtered.len();
-                state.parser.advance(&mut **terminal, &filtered);
+            for item in state.kitty_graphics_interceptor.process(&filtered) {
+                match item {
+                    KittyGraphicsItem::Text(text) => {
+                        parsed = parsed.saturating_add(text.len());
+                        state.parser.advance(&mut **terminal, &text);
+                    }
+                    KittyGraphicsItem::Command(command) => {
+                        let cursor = terminal.grid().cursor.point;
+                        let history_size = terminal.grid().history_size();
+                        let size = *self.terminal_size.lock();
+                        let result = self.kitty_graphics.lock().apply(
+                            command,
+                            cursor.column.0,
+                            cursor.line.0.max(0) as usize,
+                            history_size,
+                            size,
+                        );
+                        graphics_changed |= result.changed;
+                        if let Some(response) = result.response {
+                            state.write_list.push_back(Cow::Owned(response));
+                        }
+                        if let Some((cols, rows)) = result.cursor_advance {
+                            let movement = format!("\x1b[{cols}C\x1b[{rows}B");
+                            state.parser.advance(&mut **terminal, movement.as_bytes());
+                        }
+                    }
+                }
             }
 
             unprocessed = 0;
-            if parsed >= NATIVE_EVENT_LOOP_MAX_LOCKED_READ {
+            if processed >= NATIVE_EVENT_LOOP_MAX_LOCKED_READ {
                 break;
             }
         }
 
-        if state.parser.sync_bytes_count() < parsed && parsed > 0 {
+        if graphics_changed || (state.parser.sync_bytes_count() < parsed && parsed > 0) {
             self.event_proxy.send_event(AlacEvent::Wakeup);
         }
 
@@ -1482,6 +1519,9 @@ pub struct Terminal {
     listener: JsonEventListener,
     /// Parser used for buffer rehydration without writing to the PTY.
     parser: FairMutex<ansi::Processor>,
+    kitty_graphics_interceptor: FairMutex<KittyGraphicsInterceptor>,
+    kitty_graphics: Arc<FairMutex<KittyGraphicsState>>,
+    graphics_size: Arc<FairMutex<TerminalSize>>,
     /// Channel to send input to the PTY. `None` for display-only terminals
     /// (e.g. tmux control-mode panes) that are fed via `feed_output` and have
     /// no backing shell.
@@ -1560,6 +1600,8 @@ impl Terminal {
         let listener = JsonEventListener::new_with_wakeup_notifier(events_tx, wakeup_notifier);
         let term = Term::new(term_config, &size, listener.clone());
         let term = Arc::new(FairMutex::new(term));
+        let kitty_graphics = Arc::new(FairMutex::new(KittyGraphicsState::default()));
+        let graphics_size = Arc::new(FairMutex::new(size));
 
         let window_id = 0;
         let pty = tty::new(&pty_options, size.into(), window_id)?;
@@ -1570,6 +1612,8 @@ impl Terminal {
 
         let event_loop = NativeEventLoop::new(
             term.clone(),
+            kitty_graphics.clone(),
+            graphics_size.clone(),
             listener.clone(),
             pty,
             pty_options.drain_on_exit,
@@ -1581,6 +1625,9 @@ impl Terminal {
             term,
             listener,
             parser: FairMutex::new(ansi::Processor::new()),
+            kitty_graphics_interceptor: FairMutex::new(KittyGraphicsInterceptor::default()),
+            kitty_graphics,
+            graphics_size,
             pty_tx: Some(pty_tx),
             events_rx,
             size,
@@ -1602,11 +1649,15 @@ impl Terminal {
         let listener = JsonEventListener::new(events_tx, None);
         let term = Term::new(term_config, &size, listener.clone());
         let term = Arc::new(FairMutex::new(term));
+        let kitty_graphics = Arc::new(FairMutex::new(KittyGraphicsState::default()));
 
         Self {
             term,
             listener,
             parser: FairMutex::new(ansi::Processor::new()),
+            kitty_graphics_interceptor: FairMutex::new(KittyGraphicsInterceptor::default()),
+            kitty_graphics,
+            graphics_size: Arc::new(FairMutex::new(size)),
             pty_tx: None,
             events_rx,
             size,
@@ -1623,9 +1674,7 @@ impl Terminal {
         if bytes.is_empty() {
             return;
         }
-        let mut parser = self.parser.lock();
-        let mut term = self.term.lock();
-        parser.advance(&mut *term, bytes);
+        self.feed_output_to_parser(bytes);
     }
 
     pub fn child_pid(&self) -> Option<u32> {
@@ -1659,10 +1708,33 @@ impl Terminal {
         }
 
         self.listener.set_replay_suppressed(true);
+        self.feed_output_to_parser(bytes);
+        self.listener.set_replay_suppressed(false);
+    }
+
+    fn feed_output_to_parser(&self, bytes: &[u8]) {
+        let mut interceptor = self.kitty_graphics_interceptor.lock();
         let mut parser = self.parser.lock();
         let mut term = self.term.lock();
-        parser.advance(&mut *term, bytes);
-        self.listener.set_replay_suppressed(false);
+        for item in interceptor.process(bytes) {
+            match item {
+                KittyGraphicsItem::Text(text) => parser.advance(&mut *term, &text),
+                KittyGraphicsItem::Command(command) => {
+                    let cursor = term.grid().cursor.point;
+                    let result = self.kitty_graphics.lock().apply(
+                        command,
+                        cursor.column.0,
+                        cursor.line.0.max(0) as usize,
+                        term.grid().history_size(),
+                        self.size,
+                    );
+                    if let Some((cols, rows)) = result.cursor_advance {
+                        let movement = format!("\x1b[{cols}C\x1b[{rows}B");
+                        parser.advance(&mut *term, movement.as_bytes());
+                    }
+                }
+            }
+        }
     }
 
     /// Write a string to the PTY
@@ -1679,6 +1751,7 @@ impl Terminal {
             return;
         }
         self.size = new_size;
+        *self.graphics_size.lock() = new_size;
         if let Some(pty_tx) = &self.pty_tx {
             let _ = pty_tx.send(EventLoopMsg::Resize(new_size.into()));
         }
@@ -1703,6 +1776,18 @@ impl Terminal {
     /// Get the current terminal size
     pub fn size(&self) -> TerminalSize {
         self.size
+    }
+
+    /// Snapshot visible Kitty graphics placements for a renderer.
+    pub fn kitty_graphics_placements(&self) -> Vec<KittyGraphicsRenderPlacement> {
+        let term = self.term.lock();
+        let grid = term.grid();
+        self.kitty_graphics.lock().render_placements(
+            grid.history_size(),
+            grid.display_offset(),
+            grid.screen_lines(),
+            grid.columns(),
+        )
     }
 
     /// Drain pending Alacritty events, writing reply bytes back to the PTY when required.
@@ -2074,6 +2159,22 @@ mod tests {
         .clamped();
         assert_eq!(huge.cols, MAX_TERMINAL_COLS);
         assert_eq!(huge.rows, MAX_TERMINAL_ROWS);
+    }
+
+    #[test]
+    fn display_terminal_intercepts_and_places_kitty_graphics() {
+        let terminal = Terminal::new_display(test_terminal_size(), None);
+        terminal.feed_output(b"\x1b_Ga=T,f=32,s=1,v=1,i=77,c=2,r=3;AQID/w==\x1b\\");
+
+        let placements = terminal.kitty_graphics_placements();
+        assert_eq!(placements.len(), 1);
+        assert_eq!(placements[0].image_id, 77);
+        assert_eq!(placements[0].display_cols, Some(2));
+        assert_eq!(placements[0].display_rows, Some(3));
+        assert!(placements[0].png.starts_with(b"\x89PNG"));
+
+        let cursor = terminal.cursor_position();
+        assert_eq!(cursor, (2, 3));
     }
 
     #[test]

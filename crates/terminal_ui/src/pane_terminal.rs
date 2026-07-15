@@ -6,6 +6,9 @@ use alacritty_terminal::{
     vte::ansi,
 };
 use std::sync::Arc;
+use termy_core::{
+    KittyGraphicsInterceptor, KittyGraphicsItem, KittyGraphicsRenderPlacement, KittyGraphicsState,
+};
 
 use crate::keyboard::TerminalKeyboardMode;
 use crate::mouse_protocol::TerminalMouseMode;
@@ -24,6 +27,8 @@ struct PaneTerminalInner {
 pub struct PaneTerminal {
     inner: FairMutex<PaneTerminalInner>,
     parser: FairMutex<ansi::Processor>,
+    kitty_graphics_interceptor: FairMutex<KittyGraphicsInterceptor>,
+    kitty_graphics: FairMutex<KittyGraphicsState>,
 }
 
 impl PaneTerminal {
@@ -44,6 +49,8 @@ impl PaneTerminal {
         Self {
             inner: FairMutex::new(PaneTerminalInner { term, size }),
             parser: FairMutex::new(ansi::Processor::new()),
+            kitty_graphics_interceptor: FairMutex::new(KittyGraphicsInterceptor::default()),
+            kitty_graphics: FairMutex::new(KittyGraphicsState::default()),
         }
     }
 
@@ -57,10 +64,29 @@ impl PaneTerminal {
             return;
         }
 
+        let mut interceptor = self.kitty_graphics_interceptor.lock();
         let mut parser = self.parser.lock();
         let term = self.cloned_term_arc();
         let mut term = term.lock();
-        parser.advance(&mut *term, bytes);
+        for item in interceptor.process(bytes) {
+            match item {
+                KittyGraphicsItem::Text(text) => parser.advance(&mut *term, &text),
+                KittyGraphicsItem::Command(command) => {
+                    let cursor = term.grid().cursor.point;
+                    let result = self.kitty_graphics.lock().apply(
+                        command,
+                        cursor.column.0,
+                        cursor.line.0.max(0) as usize,
+                        term.grid().history_size(),
+                        self.size(),
+                    );
+                    if let Some((cols, rows)) = result.cursor_advance {
+                        let movement = format!("\x1b[{cols}C\x1b[{rows}B");
+                        parser.advance(&mut *term, movement.as_bytes());
+                    }
+                }
+            }
+        }
     }
 
     pub fn resize(&self, new_size: TerminalSize) {
@@ -172,6 +198,18 @@ impl PaneTerminal {
     pub fn alternate_screen_mode(&self) -> bool {
         let term = self.cloned_term_arc();
         term.lock().mode().contains(TermMode::ALT_SCREEN)
+    }
+
+    pub fn kitty_graphics_placements(&self) -> Vec<KittyGraphicsRenderPlacement> {
+        let term = self.cloned_term_arc();
+        let term = term.lock();
+        let grid = term.grid();
+        self.kitty_graphics.lock().render_placements(
+            grid.history_size(),
+            grid.display_offset(),
+            grid.screen_lines(),
+            grid.columns(),
+        )
     }
 }
 
@@ -365,5 +403,26 @@ mod tests {
         let motion_mode = terminal.mouse_mode();
         assert!(motion_mode.enabled);
         assert!(motion_mode.report_motion);
+    }
+
+    #[test]
+    fn feed_output_intercepts_kitty_graphics_for_tmux_panes() {
+        let terminal = PaneTerminal::new(
+            TerminalSize {
+                cols: 20,
+                rows: 10,
+                cell_width: 10.0,
+                cell_height: 20.0,
+            },
+            test_term_options(2000),
+        );
+
+        terminal.feed_output(b"\x1b_Ga=T,f=32,s=1,v=1,i=91,c=2,r=2;AQID/w==\x1b\\");
+
+        let placements = terminal.kitty_graphics_placements();
+        assert_eq!(placements.len(), 1);
+        assert_eq!(placements[0].image_id, 91);
+        assert_eq!(placements[0].display_cols, Some(2));
+        assert_eq!(terminal.cursor_position(), (2, 2));
     }
 }

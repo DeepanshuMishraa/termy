@@ -41,6 +41,7 @@ pub use runtime::{
     resolve_working_directory_path,
 };
 pub use shell_integration::{CommandLifecycle, CommandPhase, ProgressState};
+pub use termy_core::KittyGraphicsRenderPlacement;
 pub use termy_core::monotonic_now_ns;
 pub use tmux::{
     TmuxClient, TmuxLaunchTarget, TmuxNotification, TmuxPaneState, TmuxRuntimeConfig,
