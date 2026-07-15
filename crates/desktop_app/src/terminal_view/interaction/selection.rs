@@ -16,6 +16,123 @@ enum TerminalSelectionCharClass {
     Other,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(in crate::terminal_view) struct KittyGraphicsPlacementBounds {
+    pub(in crate::terminal_view) left: f32,
+    pub(in crate::terminal_view) top: f32,
+    pub(in crate::terminal_view) width: f32,
+    pub(in crate::terminal_view) height: f32,
+}
+
+impl KittyGraphicsPlacementBounds {
+    fn contains(self, x: f32, y: f32) -> bool {
+        x >= self.left && x < self.left + self.width && y >= self.top && y < self.top + self.height
+    }
+}
+
+pub(in crate::terminal_view) fn kitty_graphics_placement_bounds(
+    placement: &KittyGraphicsRenderPlacement,
+    cell_width: f32,
+    cell_height: f32,
+) -> KittyGraphicsPlacementBounds {
+    let width = placement
+        .display_cols
+        .map_or(placement.source_width as f32, |cols| {
+            cols as f32 * cell_width
+        });
+    let height = placement
+        .display_rows
+        .map_or(placement.source_height as f32, |rows| {
+            rows as f32 * cell_height
+        });
+    KittyGraphicsPlacementBounds {
+        left: placement.col as f32 * cell_width + placement.x_offset as f32,
+        top: placement.viewport_row as f32 * cell_height + placement.y_offset as f32,
+        width,
+        height,
+    }
+}
+
+pub(in crate::terminal_view) fn kitty_graphics_placement_intersects_selection(
+    placement: &KittyGraphicsRenderPlacement,
+    display_offset: usize,
+    selection_range: Option<(SelectionPos, SelectionPos)>,
+) -> bool {
+    let Some((mut start, mut end)) = selection_range else {
+        return false;
+    };
+    if (end.line, end.col) < (start.line, start.col) {
+        std::mem::swap(&mut start, &mut end);
+    }
+    if placement.occupied_cols == 0 || placement.occupied_rows == 0 {
+        return false;
+    }
+
+    let image_start_line = i64::from(placement.viewport_row)
+        .saturating_sub(i64::try_from(display_offset).unwrap_or(i64::MAX));
+    let image_end_line = image_start_line
+        .saturating_add(i64::from(placement.occupied_rows))
+        .saturating_sub(1);
+    let image_left = placement.col;
+    let image_right = image_left
+        .saturating_add(placement.occupied_cols as usize)
+        .saturating_sub(1);
+    let start_line = i64::from(start.line);
+    let end_line = i64::from(end.line);
+
+    if start_line == end_line {
+        return image_start_line <= start_line
+            && image_end_line >= start_line
+            && image_left <= end.col
+            && image_right >= start.col;
+    }
+
+    if image_start_line <= start_line && image_end_line >= start_line && image_right >= start.col {
+        return true;
+    }
+    if image_start_line <= end_line && image_end_line >= end_line && image_left <= end.col {
+        return true;
+    }
+
+    let interior_start = start_line.saturating_add(1);
+    let interior_end = end_line.saturating_sub(1);
+    interior_start <= interior_end
+        && image_start_line <= interior_end
+        && image_end_line >= interior_start
+}
+
+fn topmost_kitty_graphics_placement_at_point(
+    placements: &[KittyGraphicsRenderPlacement],
+    x: f32,
+    y: f32,
+    cell_width: f32,
+    cell_height: f32,
+    allow_negative_z: bool,
+) -> Option<&KittyGraphicsRenderPlacement> {
+    placements
+        .iter()
+        .filter(|placement| allow_negative_z || placement.z_index >= 0)
+        .filter(|placement| {
+            kitty_graphics_placement_bounds(placement, cell_width, cell_height).contains(x, y)
+        })
+        .max_by_key(|placement| {
+            (
+                placement.z_index,
+                placement.image_id,
+                placement.placement_id,
+                placement.placement_serial,
+            )
+        })
+}
+
+fn cell_has_visible_foreground_text(line: &[Option<char>], col: usize) -> bool {
+    match line.get(col).copied().flatten() {
+        Some(c) => !c.is_whitespace(),
+        None if col > 0 => line[col - 1].is_some_and(|c| !c.is_whitespace()),
+        None => false,
+    }
+}
+
 fn is_hidden_or_spacer(flags: Flags) -> bool {
     flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER | Flags::HIDDEN)
 }
@@ -367,6 +484,65 @@ impl TerminalView {
         )
     }
 
+    fn kitty_image_at_position_with_negative_z(
+        &self,
+        position: gpui::Point<Pixels>,
+        allow_negative_z_over_foreground: bool,
+    ) -> Option<KittyImageSelection> {
+        let (pane_id, cell) = self.position_to_pane_cell(position, false)?;
+        let tab = self.tabs.get(self.active_tab)?;
+        let pane = tab.panes.iter().find(|pane| pane.id == pane_id)?;
+        let terminal = pane.maybe_terminal()?;
+        let size = terminal.size();
+        let cell_width = size.cell_width;
+        let cell_height = size.cell_height;
+        if cell_width <= f32::EPSILON || cell_height <= f32::EPSILON {
+            return None;
+        }
+
+        let (padding_x, padding_y) = self.effective_terminal_padding();
+        let layout_cell_size = self.layout_cell_size();
+        let layout_cell_width: f32 = layout_cell_size.width.into();
+        let layout_cell_height: f32 = layout_cell_size.height.into();
+        let (pane_padding_x, pane_padding_y) = self.native_split_content_padding();
+        let (x, y) = self.terminal_content_position(position);
+        let local_x = x - padding_x - f32::from(pane.left) * layout_cell_width - pane_padding_x;
+        let local_y = y - padding_y - f32::from(pane.top) * layout_cell_height - pane_padding_y;
+
+        let foreground_wins = !allow_negative_z_over_foreground
+            && self.pane_cell_has_foreground_semantics(pane_id.as_str(), cell);
+        let placements = terminal.kitty_graphics_placements();
+        let placement = topmost_kitty_graphics_placement_at_point(
+            &placements,
+            local_x,
+            local_y,
+            cell_width,
+            cell_height,
+            !foreground_wins,
+        )?
+        .clone();
+        Some(KittyImageSelection { pane_id, placement })
+    }
+
+    /// Hit-test every visible placement, including graphics behind text. Context menus use
+    /// this path so a negative-z image can still offer Copy Image where text overlaps it.
+    pub(in super::super) fn kitty_image_at_position(
+        &self,
+        position: gpui::Point<Pixels>,
+    ) -> Option<KittyImageSelection> {
+        self.kitty_image_at_position_with_negative_z(position, true)
+    }
+
+    /// Left-clicks preserve foreground terminal semantics: text and links rendered above a
+    /// negative-z image win the hit, while positive-z images and visible image-only cells remain
+    /// selectable.
+    pub(in super::super) fn kitty_image_at_position_for_left_click(
+        &self,
+        position: gpui::Point<Pixels>,
+    ) -> Option<KittyImageSelection> {
+        self.kitty_image_at_position_with_negative_z(position, false)
+    }
+
     pub(in super::super) fn position_to_cell_in_pane(
         &self,
         pane_id: &str,
@@ -458,6 +634,21 @@ impl TerminalView {
 
         let line = row_text_from_terminal(terminal, cell.row, cols);
         line_clickable_end_col(&line).is_some_and(|end_col| cell.col <= end_col)
+    }
+
+    fn pane_cell_has_foreground_semantics(&self, pane_id: &str, cell: CellPos) -> bool {
+        let Some(terminal) = self.pane_terminal_by_id(pane_id) else {
+            return false;
+        };
+        if terminal.hyperlink_at(cell.row, cell.col).is_some() {
+            return true;
+        }
+        let cols = usize::from(terminal.size().cols);
+        if cell.col >= cols {
+            return false;
+        }
+        let line = row_text_from_terminal(terminal, cell.row, cols);
+        cell_has_visible_foreground_text(&line, cell.col)
     }
 
     pub(in super::super) fn selection_pos_for_cell(&self, cell: CellPos) -> Option<SelectionPos> {
@@ -737,7 +928,250 @@ fn is_safe_url_for_system_opener(url: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use termy_terminal_ui::TerminalSize;
+
+    fn kitty_placement(
+        placement_serial: u64,
+        viewport_row: i32,
+        col: usize,
+        occupied_cols: u32,
+        occupied_rows: u32,
+        z_index: i32,
+    ) -> KittyGraphicsRenderPlacement {
+        KittyGraphicsRenderPlacement {
+            placement_serial,
+            image_id: 7,
+            placement_id: 3,
+            png: Arc::from([placement_serial as u8]),
+            image_width: 20,
+            image_height: 40,
+            image_generation: 11,
+            viewport_row,
+            col,
+            source_x: 0,
+            source_y: 0,
+            source_width: 20,
+            source_height: 40,
+            display_cols: Some(2),
+            display_rows: Some(2),
+            occupied_cols,
+            occupied_rows,
+            x_offset: 3,
+            y_offset: 4,
+            z_index,
+        }
+    }
+
+    #[test]
+    fn kitty_placement_bounds_and_hit_testing_match_render_geometry() {
+        let mut earlier = kitty_placement(1, 2, 1, 2, 2, 4);
+        let later = kitty_placement(2, 2, 1, 2, 2, 4);
+        earlier.png = Arc::from([99]);
+        let placements = vec![earlier, later];
+
+        let bounds = kitty_graphics_placement_bounds(&placements[0], 10.0, 20.0);
+        assert_eq!(
+            bounds,
+            KittyGraphicsPlacementBounds {
+                left: 13.0,
+                top: 44.0,
+                width: 20.0,
+                height: 40.0,
+            }
+        );
+        assert_eq!(
+            topmost_kitty_graphics_placement_at_point(&placements, 13.0, 44.0, 10.0, 20.0, true,)
+                .map(|placement| placement.placement_serial),
+            Some(2)
+        );
+        assert!(
+            topmost_kitty_graphics_placement_at_point(&placements, 33.0, 44.0, 10.0, 20.0, true,)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn kitty_hit_testing_prefers_the_highest_z_index_before_identity_order() {
+        let mut high_identity_below = kitty_placement(1, 0, 0, 2, 2, -1);
+        high_identity_below.image_id = 99;
+        let above = kitty_placement(2, 0, 0, 2, 2, 1);
+
+        assert_eq!(
+            topmost_kitty_graphics_placement_at_point(
+                &[high_identity_below, above],
+                4.0,
+                5.0,
+                10.0,
+                20.0,
+                true,
+            )
+            .map(|placement| placement.placement_serial),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn foreground_semantics_only_suppress_negative_z_left_click_hits() {
+        let below = kitty_placement(1, 0, 0, 2, 2, -1);
+        let above = kitty_placement(2, 0, 0, 2, 2, 1);
+
+        assert!(
+            topmost_kitty_graphics_placement_at_point(
+                std::slice::from_ref(&below),
+                4.0,
+                5.0,
+                10.0,
+                20.0,
+                false,
+            )
+            .is_none()
+        );
+        assert_eq!(
+            topmost_kitty_graphics_placement_at_point(
+                std::slice::from_ref(&below),
+                4.0,
+                5.0,
+                10.0,
+                20.0,
+                true,
+            )
+            .map(|placement| placement.placement_serial),
+            Some(1),
+            "right-click policy must retain negative-z image hits"
+        );
+        assert_eq!(
+            topmost_kitty_graphics_placement_at_point(
+                &[below, above],
+                4.0,
+                5.0,
+                10.0,
+                20.0,
+                false,
+            )
+            .map(|placement| placement.placement_serial),
+            Some(2),
+            "positive-z images still sit above foreground text"
+        );
+    }
+
+    #[test]
+    fn visible_foreground_text_includes_wide_character_spacers_but_not_blank_cells() {
+        let line = vec![Some(' '), Some('桌'), None, Some(' ')];
+
+        assert!(!cell_has_visible_foreground_text(&line, 0));
+        assert!(cell_has_visible_foreground_text(&line, 1));
+        assert!(cell_has_visible_foreground_text(&line, 2));
+        assert!(!cell_has_visible_foreground_text(&line, 3));
+    }
+
+    #[test]
+    fn kitty_placement_selection_intersection_handles_history_and_linear_ranges() {
+        let placement = kitty_placement(1, 3, 4, 3, 3, 0);
+
+        assert!(kitty_graphics_placement_intersects_selection(
+            &placement,
+            5,
+            Some((
+                SelectionPos { col: 5, line: -2 },
+                SelectionPos { col: 5, line: -2 },
+            )),
+        ));
+        assert!(!kitty_graphics_placement_intersects_selection(
+            &placement,
+            5,
+            Some((
+                SelectionPos { col: 0, line: -2 },
+                SelectionPos { col: 3, line: -2 },
+            )),
+        ));
+        assert!(kitty_graphics_placement_intersects_selection(
+            &placement,
+            5,
+            Some((
+                SelectionPos { col: 70, line: -3 },
+                SelectionPos { col: 0, line: -1 },
+            )),
+        ));
+        assert!(kitty_graphics_placement_intersects_selection(
+            &placement,
+            5,
+            Some((
+                SelectionPos { col: 6, line: 0 },
+                SelectionPos { col: 5, line: -2 },
+            )),
+        ));
+        assert!(!kitty_graphics_placement_intersects_selection(
+            &placement,
+            5,
+            Some((
+                SelectionPos { col: 7, line: 1 },
+                SelectionPos { col: 9, line: 2 },
+            )),
+        ));
+    }
+
+    #[test]
+    fn kitty_image_selection_equality_ignores_png_bytes() {
+        let mut first = kitty_placement(9, 0, 0, 1, 1, 0);
+        let mut second = first.clone();
+        first.png = Arc::from([1, 2, 3]);
+        second.png = Arc::from([9, 8, 7]);
+
+        assert_eq!(
+            KittyImageSelection {
+                pane_id: "%1".into(),
+                placement: first,
+            },
+            KittyImageSelection {
+                pane_id: "%1".into(),
+                placement: second,
+            }
+        );
+    }
+
+    #[test]
+    fn kitty_image_selection_resolves_only_an_exact_active_placement() {
+        let selected_placement = kitty_placement(9, 0, 0, 1, 1, 0);
+        let selection = KittyImageSelection {
+            pane_id: "%1".into(),
+            placement: selected_placement.clone(),
+        };
+        let mut current = selected_placement;
+        current.png = Arc::from([99, 98, 97]);
+
+        assert!(
+            selection
+                .current_placement(Some("%1"), std::slice::from_ref(&current))
+                .is_some(),
+            "copying resolves the current placement instead of trusting cached PNG bytes"
+        );
+        assert!(
+            selection
+                .current_placement(Some("%2"), std::slice::from_ref(&current))
+                .is_none(),
+            "a selection cannot follow focus to another pane"
+        );
+        assert!(
+            selection.current_placement(Some("%1"), &[]).is_none(),
+            "RIS, deletion, and screen switches invalidate placements missing from the active set"
+        );
+
+        let identity_mutations: [fn(&mut KittyGraphicsRenderPlacement); 3] = [
+            |placement: &mut KittyGraphicsRenderPlacement| placement.placement_serial += 1,
+            |placement: &mut KittyGraphicsRenderPlacement| placement.image_id += 1,
+            |placement: &mut KittyGraphicsRenderPlacement| placement.image_generation += 1,
+        ];
+        for mutate_identity in identity_mutations {
+            let mut replacement = current.clone();
+            mutate_identity(&mut replacement);
+            assert!(
+                selection
+                    .current_placement(Some("%1"), std::slice::from_ref(&replacement))
+                    .is_none()
+            );
+        }
+    }
 
     #[test]
     fn viewport_row_maps_scrollback_lines_into_viewport() {

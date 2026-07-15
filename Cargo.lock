@@ -8616,7 +8616,7 @@ dependencies = [
 
 [[package]]
 name = "termy"
-version = "0.2.20"
+version = "0.2.21"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -8701,7 +8701,7 @@ dependencies = [
 
 [[package]]
 name = "termy_cli"
-version = "0.2.20"
+version = "0.2.21"
 dependencies = [
  "clap",
  "core-foundation 0.10.0",
@@ -8751,9 +8751,12 @@ version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
+ "base64",
  "dirs 6.0.0",
+ "flate2",
  "flume",
  "fontdb",
+ "png 0.18.0",
  "polling",
  "rustix-openpty",
  "tempfile",
@@ -8761,6 +8764,7 @@ dependencies = [
  "termy_search",
  "termy_themes",
  "ttf-parser",
+ "unicode-width 0.2.0",
  "winreg",
 ]
 

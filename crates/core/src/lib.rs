@@ -2,6 +2,7 @@ mod cell_metrics;
 mod config;
 mod frame;
 mod keyboard;
+mod kitty_graphics;
 mod links;
 mod locale;
 mod monotonic_time;
@@ -27,6 +28,10 @@ pub use keyboard::{
     Keystroke, Modifiers, TerminalKeyEventKind, TerminalKeyboardMode, TermyKeystroke,
     TermyModifiers, keystroke_to_input,
 };
+pub use kitty_graphics::{
+    KittyGraphicsApplyResult, KittyGraphicsCommand, KittyGraphicsInterceptor, KittyGraphicsItem,
+    KittyGraphicsRenderPlacement, KittyGraphicsScreen, KittyGraphicsState,
+};
 pub use links::{DetectedLink, classify_link_token, find_link_in_line, hyperlink_at_viewport_cell};
 #[cfg(unix)]
 pub use locale::{
@@ -48,9 +53,10 @@ pub use render_metrics::{
     terminal_ui_render_metrics_snapshot,
 };
 pub use runtime::{
-    TabTitleShellIntegration, Terminal, TerminalCursorState, TerminalCursorStyle,
-    TerminalDamageSnapshot, TerminalDirtySpan, TerminalEvent, TerminalOptions,
-    TerminalRuntimeConfig, TerminalSize, TerminalWakeupNotifier, WindowsShell, WorkingDirFallback,
+    KittyGraphicsCursorTracker, KittyGraphicsTextEffects, TabTitleShellIntegration, Terminal,
+    TerminalCursorState, TerminalCursorStyle, TerminalDamageSnapshot, TerminalDirtySpan,
+    TerminalEvent, TerminalOptions, TerminalRuntimeConfig, TerminalSize, TerminalWakeupNotifier,
+    WindowsShell, WorkingDirFallback, advance_kitty_graphics_cursor, advance_kitty_graphics_text,
     cursor_position_from_term, cursor_state_from_term, normalize_working_directory_candidate,
     resolve_launch_working_directory, resolve_working_directory_path, take_term_damage_snapshot,
     termmode_to_terminal_mouse_mode,

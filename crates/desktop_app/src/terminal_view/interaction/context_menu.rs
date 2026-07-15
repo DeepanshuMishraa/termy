@@ -6,6 +6,8 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 pub(in crate::terminal_view) struct TerminalContextMenuState {
     pub(in crate::terminal_view) anchor_position: gpui::Point<Pixels>,
     pub(in crate::terminal_view) buffer_position: Option<SelectionPos>,
+    pub(in crate::terminal_view) image: Option<KittyImageSelection>,
+    pub(in crate::terminal_view) selected_text: Option<String>,
     pub(in crate::terminal_view) can_copy: bool,
     pub(in crate::terminal_view) can_paste: bool,
 }
@@ -38,14 +40,13 @@ impl TerminalView {
         format!("line={},col={}", position.line, position.col)
     }
 
-    fn terminal_context_menu_capabilities(&self, cx: &mut Context<Self>) -> (bool, bool) {
-        let has_selection = self.selected_text().is_some();
-        let can_copy = has_selection;
+    fn terminal_context_menu_capabilities(&self, cx: &mut Context<Self>) -> (Option<String>, bool) {
+        let selected_text = self.selected_text();
         let can_paste = cx
             .read_from_clipboard()
             .and_then(|item| item.text())
             .is_some();
-        (can_copy, can_paste)
+        (selected_text, can_paste)
     }
 
     #[cfg(any(test, target_os = "macos"))]
@@ -56,7 +57,8 @@ impl TerminalView {
             termy_native_sdk::ContextMenuAction::Copy => Some(CommandAction::Copy),
             termy_native_sdk::ContextMenuAction::Paste => Some(CommandAction::Paste),
             termy_native_sdk::ContextMenuAction::OpenSearch => Some(CommandAction::OpenSearch),
-            termy_native_sdk::ContextMenuAction::CopyBufferPosition => None,
+            termy_native_sdk::ContextMenuAction::CopyImage
+            | termy_native_sdk::ContextMenuAction::CopyBufferPosition => None,
         }
     }
 
@@ -107,8 +109,18 @@ impl TerminalView {
         if !matches!(action, CommandAction::Copy | CommandAction::Paste) {
             return;
         }
+        let selected_text = self
+            .terminal_context_menu
+            .as_ref()
+            .and_then(|state| state.selected_text.clone());
         let _ = self.close_terminal_context_menu(cx);
-        let _ = self.execute_input_command_action(action, cx);
+        if action == CommandAction::Copy {
+            if let Some(selected_text) = selected_text {
+                cx.write_to_clipboard(ClipboardItem::new_string(selected_text));
+            }
+        } else {
+            let _ = self.execute_input_command_action(action, cx);
+        }
     }
 
     #[cfg(target_os = "macos")]
@@ -127,9 +139,40 @@ impl TerminalView {
             return;
         }
 
-        if action == termy_native_sdk::ContextMenuAction::CopyBufferPosition {
-            self.execute_terminal_context_menu_copy_buffer_position(cx);
+        match action {
+            termy_native_sdk::ContextMenuAction::CopyImage => {
+                self.execute_terminal_context_menu_copy_image(cx);
+            }
+            termy_native_sdk::ContextMenuAction::CopyBufferPosition => {
+                self.execute_terminal_context_menu_copy_buffer_position(cx);
+            }
+            _ => {}
         }
+    }
+
+    pub(in super::super) fn execute_terminal_context_menu_copy_image(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) {
+        let _ = self.clear_stale_kitty_image_state();
+        let selection = self
+            .terminal_context_menu
+            .as_ref()
+            .and_then(|state| state.image.as_ref())
+            .cloned();
+        let Some(png) = selection
+            .as_ref()
+            .and_then(|selection| self.current_kitty_image_placement(selection))
+            .map(|placement| placement.png)
+        else {
+            let _ = self.close_terminal_context_menu(cx);
+            return;
+        };
+
+        let _ = self.close_terminal_context_menu(cx);
+        cx.write_to_clipboard(super::input::kitty_png_clipboard_item(png.as_ref()));
+        termy_toast::success("Copied image");
+        self.notify_overlay(cx);
     }
 
     #[cfg(target_os = "macos")]
@@ -188,6 +231,7 @@ impl TerminalView {
         &mut self,
         buffer_position_label: Option<String>,
         can_copy: bool,
+        can_copy_image: bool,
         can_paste: bool,
         anchor: Option<termy_native_sdk::NativeContextMenuAnchor>,
         cx: &mut Context<Self>,
@@ -197,6 +241,7 @@ impl TerminalView {
                 termy_native_sdk::show_copy_paste_context_menu(
                     buffer_position_label,
                     can_copy,
+                    can_copy_image,
                     can_paste,
                     anchor,
                 )
@@ -274,11 +319,17 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) {
         let _ = self.close_tab_context_menu(cx);
-        let (can_copy, can_paste) = self.terminal_context_menu_capabilities(cx);
+        let (selected_text, can_paste) = self.terminal_context_menu_capabilities(cx);
+        let can_copy = selected_text.is_some();
         let buffer_position = self.terminal_context_menu_buffer_position(position);
+        let image = self.kitty_image_at_position(position);
+        #[cfg(target_os = "macos")]
+        let can_copy_image = image.is_some();
         let state = TerminalContextMenuState {
             anchor_position: position,
             buffer_position,
+            image,
+            selected_text,
             can_copy,
             can_paste,
         };
@@ -301,6 +352,7 @@ impl TerminalView {
             self.schedule_native_terminal_context_menu(
                 buffer_position_label,
                 can_copy,
+                can_copy_image,
                 can_paste,
                 native_anchor,
                 cx,
@@ -386,6 +438,12 @@ mod tests {
                 termy_native_sdk::ContextMenuAction::OpenSearch
             ),
             Some(CommandAction::OpenSearch)
+        );
+        assert_eq!(
+            TerminalView::command_action_for_context_menu_action(
+                termy_native_sdk::ContextMenuAction::CopyImage
+            ),
+            None
         );
         assert_eq!(
             TerminalView::command_action_for_context_menu_action(

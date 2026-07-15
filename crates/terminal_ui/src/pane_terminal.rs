@@ -6,11 +6,16 @@ use alacritty_terminal::{
     vte::ansi,
 };
 use std::sync::Arc;
+use termy_core::{
+    KittyGraphicsInterceptor, KittyGraphicsItem, KittyGraphicsRenderPlacement, KittyGraphicsScreen,
+    KittyGraphicsState,
+};
 
 use crate::keyboard::TerminalKeyboardMode;
 use crate::mouse_protocol::TerminalMouseMode;
 use crate::runtime::{
-    TerminalCursorState, TerminalDamageSnapshot, TerminalOptions, TerminalSize,
+    KittyGraphicsCursorTracker, TerminalCursorState, TerminalDamageSnapshot, TerminalOptions,
+    TerminalSize, advance_kitty_graphics_cursor, advance_kitty_graphics_text,
     cursor_position_from_term, cursor_state_from_term, take_term_damage_snapshot,
     termmode_to_terminal_mouse_mode,
 };
@@ -24,6 +29,9 @@ struct PaneTerminalInner {
 pub struct PaneTerminal {
     inner: FairMutex<PaneTerminalInner>,
     parser: FairMutex<ansi::Processor>,
+    kitty_graphics_interceptor: FairMutex<KittyGraphicsInterceptor>,
+    kitty_graphics_cursor_tracker: FairMutex<KittyGraphicsCursorTracker>,
+    kitty_graphics: FairMutex<KittyGraphicsState>,
 }
 
 impl PaneTerminal {
@@ -44,6 +52,9 @@ impl PaneTerminal {
         Self {
             inner: FairMutex::new(PaneTerminalInner { term, size }),
             parser: FairMutex::new(ansi::Processor::new()),
+            kitty_graphics_interceptor: FairMutex::new(KittyGraphicsInterceptor::default()),
+            kitty_graphics_cursor_tracker: FairMutex::new(KittyGraphicsCursorTracker::default()),
+            kitty_graphics: FairMutex::new(KittyGraphicsState::default()),
         }
     }
 
@@ -57,10 +68,59 @@ impl PaneTerminal {
             return;
         }
 
+        let mut interceptor = self.kitty_graphics_interceptor.lock();
+        let mut cursor_tracker = self.kitty_graphics_cursor_tracker.lock();
         let mut parser = self.parser.lock();
         let term = self.cloned_term_arc();
         let mut term = term.lock();
-        parser.advance(&mut *term, bytes);
+        for item in interceptor.process(bytes) {
+            match item {
+                KittyGraphicsItem::Text(text) => {
+                    let track_scrolls = self.kitty_graphics.lock().has_placements();
+                    let effects = advance_kitty_graphics_text(
+                        &mut cursor_tracker,
+                        &mut parser,
+                        &mut term,
+                        &text,
+                        track_scrolls,
+                    );
+                    if !effects.is_empty() {
+                        effects.apply_to(&mut self.kitty_graphics.lock());
+                    }
+                }
+                KittyGraphicsItem::Command(command) => {
+                    let cursor = term.grid().cursor.point;
+                    let full_screen_scroll_region =
+                        cursor_tracker.region_covers_full_screen(term.grid().screen_lines());
+                    let screen = KittyGraphicsScreen::from_alternate_screen(
+                        term.mode().contains(TermMode::ALT_SCREEN),
+                    );
+                    let result = self.kitty_graphics.lock().apply_on_screen(
+                        command,
+                        cursor.column.0,
+                        cursor.line.0.max(0) as usize,
+                        term.grid().history_size(),
+                        self.size(),
+                        screen,
+                    );
+                    if result.cursor_advance_screen == Some(screen)
+                        && let Some((cols, rows)) = result.cursor_advance
+                    {
+                        let untracked_scroll = advance_kitty_graphics_cursor(
+                            &mut *term,
+                            cols,
+                            rows,
+                            full_screen_scroll_region,
+                        );
+                        if untracked_scroll > 0 {
+                            self.kitty_graphics
+                                .lock()
+                                .scroll_up_without_history_on_screen(untracked_scroll, screen);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     pub fn resize(&self, new_size: TerminalSize) {
@@ -73,6 +133,9 @@ impl PaneTerminal {
         // a partially-applied resize.
         inner.size = new_size;
         term.resize(new_size);
+        self.kitty_graphics_cursor_tracker
+            .lock()
+            .reset_scroll_region();
     }
 
     pub fn size(&self) -> TerminalSize {
@@ -172,6 +235,21 @@ impl PaneTerminal {
     pub fn alternate_screen_mode(&self) -> bool {
         let term = self.cloned_term_arc();
         term.lock().mode().contains(TermMode::ALT_SCREEN)
+    }
+
+    pub fn kitty_graphics_placements(&self) -> Vec<KittyGraphicsRenderPlacement> {
+        let term = self.cloned_term_arc();
+        let term = term.lock();
+        let grid = term.grid();
+        let screen =
+            KittyGraphicsScreen::from_alternate_screen(term.mode().contains(TermMode::ALT_SCREEN));
+        self.kitty_graphics.lock().render_placements_on_screen(
+            grid.history_size(),
+            grid.display_offset(),
+            grid.screen_lines(),
+            grid.columns(),
+            screen,
+        )
     }
 }
 
@@ -365,5 +443,135 @@ mod tests {
         let motion_mode = terminal.mouse_mode();
         assert!(motion_mode.enabled);
         assert!(motion_mode.report_motion);
+    }
+
+    #[test]
+    fn feed_output_intercepts_kitty_graphics_for_tmux_panes() {
+        let terminal = PaneTerminal::new(
+            TerminalSize {
+                cols: 20,
+                rows: 10,
+                cell_width: 10.0,
+                cell_height: 20.0,
+            },
+            test_term_options(2000),
+        );
+
+        terminal.feed_output(b"\x1b_Ga=T,f=32,s=1,v=1,i=91,c=2,r=2;AQID/w==\x1b\\");
+
+        let placements = terminal.kitty_graphics_placements();
+        assert_eq!(placements.len(), 1);
+        assert_eq!(placements[0].image_id, 91);
+        assert_eq!(placements[0].display_cols, Some(2));
+        assert_eq!(terminal.cursor_position(), (2, 2));
+    }
+
+    #[test]
+    fn clear_screen_removes_kitty_graphics_from_tmux_panes() {
+        let terminal = PaneTerminal::new(
+            TerminalSize {
+                cols: 20,
+                rows: 10,
+                cell_width: 10.0,
+                cell_height: 20.0,
+            },
+            test_term_options(2000),
+        );
+        terminal.feed_output(b"\x1b_Ga=T,f=32,s=1,v=1,i=96,c=2,r=2,C=1;AQID/w==\x1b\\");
+        assert_eq!(terminal.kitty_graphics_placements().len(), 1);
+
+        terminal.feed_output(b"\x1b[H\x1b[2J");
+
+        assert!(terminal.kitty_graphics_placements().is_empty());
+    }
+
+    #[test]
+    fn kitty_cursor_advance_scrolls_tmux_pane_at_bottom() {
+        let terminal = PaneTerminal::new(
+            TerminalSize {
+                cols: 20,
+                rows: 4,
+                cell_width: 10.0,
+                cell_height: 20.0,
+            },
+            test_term_options(2000),
+        );
+
+        terminal.feed_output(b"\x1b[4;1H\x1b_Ga=T,f=32,s=1,v=1,i=92,c=2,r=3;AQID/w==\x1b\\");
+
+        assert_eq!(terminal.scroll_state(), (0, 3));
+        assert_eq!(terminal.cursor_position(), (2, 3));
+        let placements = terminal.kitty_graphics_placements();
+        assert_eq!(placements.len(), 1);
+        assert_eq!(placements[0].viewport_row, 0);
+    }
+
+    #[test]
+    fn kitty_cursor_advance_tracks_tmux_alternate_screen_scroll() {
+        let terminal = PaneTerminal::new(
+            TerminalSize {
+                cols: 20,
+                rows: 4,
+                cell_width: 10.0,
+                cell_height: 20.0,
+            },
+            test_term_options(2000),
+        );
+
+        terminal
+            .feed_output(b"\x1b[?1049h\x1b[4;1H\x1b_Ga=T,f=32,s=1,v=1,i=93,c=2,r=3;AQID/w==\x1b\\");
+
+        assert!(terminal.alternate_screen_mode());
+        assert_eq!(terminal.scroll_state(), (0, 0));
+        assert_eq!(terminal.cursor_position(), (2, 3));
+        let placements = terminal.kitty_graphics_placements();
+        assert_eq!(placements.len(), 1);
+        assert_eq!(placements[0].viewport_row, 0);
+    }
+
+    #[test]
+    fn ordinary_newlines_shift_tmux_alternate_screen_kitty_placement() {
+        let terminal = PaneTerminal::new(
+            TerminalSize {
+                cols: 20,
+                rows: 4,
+                cell_width: 10.0,
+                cell_height: 20.0,
+            },
+            test_term_options(2000),
+        );
+        terminal.feed_output(
+            b"\x1b[?1049h\x1b[2;1H\x1b_Ga=T,f=32,s=1,v=1,i=95,c=2,r=1,C=1;AQID/w==\x1b\\",
+        );
+
+        terminal.feed_output(b"\x1b[4;1H\n");
+
+        let placements = terminal.kitty_graphics_placements();
+        assert_eq!(placements.len(), 1);
+        assert_eq!(placements[0].viewport_row, 0);
+    }
+
+    #[test]
+    fn kitty_cursor_advance_does_not_scroll_tmux_partial_region() {
+        let terminal = PaneTerminal::new(
+            TerminalSize {
+                cols: 20,
+                rows: 4,
+                cell_width: 10.0,
+                cell_height: 20.0,
+            },
+            test_term_options(2000),
+        );
+
+        terminal.feed_output(
+            b"\x1b[2;3r\x1b[3;1H\x1b_Ga=T,f=32,s=1,v=1,i=94,c=2,r=3;AQID/w==\x1b\\\x1b[r",
+        );
+
+        assert_eq!(terminal.scroll_state(), (0, 0));
+        assert_eq!(terminal.cursor_position(), (0, 0));
+        let placements = terminal.kitty_graphics_placements();
+        assert_eq!(placements.len(), 1);
+        assert_eq!(placements[0].image_id, 94);
+        assert_eq!(placements[0].viewport_row, 2);
     }
 }

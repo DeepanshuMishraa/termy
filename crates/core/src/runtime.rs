@@ -1,5 +1,9 @@
 use crate::frame::{TermyFrame, TermyFrameUpdate, snapshot_from_term, snapshot_update_from_term};
 use crate::keyboard::TerminalKeyboardMode;
+use crate::kitty_graphics::{
+    KittyGraphicsInterceptor, KittyGraphicsItem, KittyGraphicsRenderPlacement, KittyGraphicsScreen,
+    KittyGraphicsState,
+};
 #[cfg(unix)]
 use crate::locale::{Utf8LocaleOverridePlan, preferred_utf8_locale, utf8_locale_override_plan};
 use crate::mouse_protocol::TerminalMouseMode;
@@ -19,7 +23,10 @@ use alacritty_terminal::{
     term::{Config as TermConfig, LineDamageBounds, Term, TermDamage, TermMode, cell::Flags},
     thread,
     tty::{self, EventedPty, EventedReadWrite, Options as PtyOptions, Shell},
-    vte::ansi::{self, CursorShape, CursorStyle as AlacrittyCursorStyle},
+    vte::ansi::{
+        self, CursorShape, CursorStyle as AlacrittyCursorStyle, Handler, NamedPrivateMode,
+        PrivateMode,
+    },
 };
 use flume::{Receiver, Sender, unbounded};
 use polling::{Event as PollingEvent, Events, PollMode, Poller};
@@ -39,6 +46,7 @@ use std::{
     },
     time::Instant,
 };
+use unicode_width::UnicodeWidthChar;
 
 #[derive(Debug, Clone)]
 pub struct TabTitleShellIntegration {
@@ -227,6 +235,485 @@ pub fn cursor_position_from_term<T: EventListener>(term: &Term<T>) -> (usize, us
     let cursor = term.renderable_content().cursor;
     let row = usize::try_from(cursor.point.line.0).ok().unwrap_or(0);
     (cursor.point.column.0, row)
+}
+
+#[derive(Clone, Copy, Debug)]
+struct KittyGraphicsScrollRegion {
+    top: usize,
+    bottom: Option<usize>,
+}
+
+impl Default for KittyGraphicsScrollRegion {
+    fn default() -> Self {
+        Self {
+            top: 1,
+            bottom: None,
+        }
+    }
+}
+
+impl KittyGraphicsScrollRegion {
+    fn bounds(self, screen_lines: usize) -> (usize, usize) {
+        let top = self.top.saturating_sub(1).min(screen_lines);
+        let bottom = self.bottom.unwrap_or(screen_lines).min(screen_lines);
+        (top, bottom)
+    }
+
+    fn covers_full_screen(self, screen_lines: usize) -> bool {
+        self.bounds(screen_lines) == (0, screen_lines)
+    }
+
+    fn set(&mut self, top: usize, bottom: Option<usize>, screen_lines: usize) {
+        // Match Alacritty: resolve an omitted bottom before validating, then
+        // clamp the accepted region to the screen during use.
+        if top >= bottom.unwrap_or(screen_lines) {
+            return;
+        }
+        self.top = top;
+        self.bottom = bottom;
+    }
+
+    fn reset(&mut self) {
+        self.top = 1;
+        self.bottom = None;
+    }
+}
+
+/// Tracks DECSTBM alongside the real terminal parser so Kitty commands can
+/// choose a scroll-safe cursor policy without reaching into Alacritty internals.
+#[derive(Default)]
+pub struct KittyGraphicsCursorTracker {
+    region: KittyGraphicsScrollRegion,
+}
+
+impl KittyGraphicsCursorTracker {
+    pub fn region_covers_full_screen(&self, screen_lines: usize) -> bool {
+        self.region.covers_full_screen(screen_lines)
+    }
+
+    pub fn reset_scroll_region(&mut self) {
+        self.region.reset();
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum KittyGraphicsTextEffect {
+    EnteredAlternateScreen,
+    TerminalReset,
+    PreservePrimaryAcrossPartialHistoryGrowth(usize),
+    ScrollUpWithoutHistory {
+        screen: KittyGraphicsScreen,
+        lines: usize,
+    },
+    ClearViewport {
+        screen: KittyGraphicsScreen,
+        history_size: usize,
+        rows: usize,
+        cols: usize,
+    },
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct KittyGraphicsTextEffects {
+    effects: Vec<KittyGraphicsTextEffect>,
+}
+
+impl KittyGraphicsTextEffects {
+    pub fn is_empty(&self) -> bool {
+        self.effects.is_empty()
+    }
+
+    pub fn apply_to(self, graphics: &mut KittyGraphicsState) -> bool {
+        let mut changed = false;
+        for effect in self.effects {
+            changed |= match effect {
+                KittyGraphicsTextEffect::EnteredAlternateScreen => {
+                    graphics.clear_visible_on_screen(KittyGraphicsScreen::Alternate)
+                }
+                KittyGraphicsTextEffect::TerminalReset => {
+                    let primary = graphics.clear_visible_on_screen(KittyGraphicsScreen::Primary);
+                    let alternate =
+                        graphics.clear_visible_on_screen(KittyGraphicsScreen::Alternate);
+                    primary || alternate
+                }
+                KittyGraphicsTextEffect::PreservePrimaryAcrossPartialHistoryGrowth(lines) => {
+                    graphics.preserve_primary_placements_across_partial_history_growth(lines)
+                }
+                KittyGraphicsTextEffect::ScrollUpWithoutHistory { screen, lines } => {
+                    graphics.scroll_up_without_history_on_screen(lines, screen)
+                }
+                KittyGraphicsTextEffect::ClearViewport {
+                    screen,
+                    history_size,
+                    rows,
+                    cols,
+                } => graphics.clear_viewport_on_screen(screen, history_size, rows, cols),
+            };
+        }
+        changed
+    }
+
+    fn push(&mut self, effect: KittyGraphicsTextEffect) {
+        self.effects.push(effect);
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct KittyGraphicsScrollObservation {
+    screen: KittyGraphicsScreen,
+    full_screen_region: bool,
+    physical_lines: usize,
+    history_before: usize,
+}
+
+struct KittyGraphicsTrackingHandler<'a, T> {
+    term: &'a mut Term<T>,
+    tracker: &'a mut KittyGraphicsCursorTracker,
+    effects: &'a mut KittyGraphicsTextEffects,
+    track_scrolls: bool,
+}
+
+impl<T: EventListener> KittyGraphicsTrackingHandler<'_, T> {
+    fn linefeed_scroll_lines(&self) -> usize {
+        let screen_lines = self.term.grid().screen_lines();
+        let (_, bottom) = self.tracker.region.bounds(screen_lines);
+        let cursor_line = self.term.grid().cursor.point.line.0.max(0) as usize;
+        usize::from(screen_lines > 0 && cursor_line.saturating_add(1) == bottom)
+    }
+
+    fn input_scroll_lines(&self, c: char) -> usize {
+        let Some(width) = c.width() else {
+            return 0;
+        };
+        if width == 0 || !self.term.mode().contains(TermMode::LINE_WRAP) {
+            return 0;
+        }
+
+        let cursor = &self.term.grid().cursor;
+        let needs_wrap = cursor.input_needs_wrap
+            || (width == 2
+                && cursor.point.column.0.saturating_add(1) >= self.term.grid().columns());
+        if needs_wrap {
+            self.linefeed_scroll_lines()
+        } else {
+            0
+        }
+    }
+
+    fn explicit_scroll_up_lines(&self, lines: usize) -> usize {
+        let screen_lines = self.term.grid().screen_lines();
+        let (top, bottom) = self.tracker.region.bounds(screen_lines);
+        lines.min(bottom.saturating_sub(top))
+    }
+
+    fn observe_scroll(&self, physical_lines: usize) -> Option<KittyGraphicsScrollObservation> {
+        if !self.track_scrolls || physical_lines == 0 {
+            return None;
+        }
+        let screen_lines = self.term.grid().screen_lines();
+        Some(KittyGraphicsScrollObservation {
+            screen: KittyGraphicsScreen::from_alternate_screen(
+                self.term.mode().contains(TermMode::ALT_SCREEN),
+            ),
+            full_screen_region: self.tracker.region.covers_full_screen(screen_lines),
+            physical_lines,
+            history_before: self.term.grid().history_size(),
+        })
+    }
+
+    fn finish_scroll(&mut self, observation: Option<KittyGraphicsScrollObservation>) {
+        let Some(observation) = observation else {
+            return;
+        };
+        let history_growth = self
+            .term
+            .grid()
+            .history_size()
+            .saturating_sub(observation.history_before);
+        match (observation.screen, observation.full_screen_region) {
+            (KittyGraphicsScreen::Primary, true) => {
+                let lines = observation.physical_lines.saturating_sub(history_growth);
+                if lines > 0 {
+                    self.effects
+                        .push(KittyGraphicsTextEffect::ScrollUpWithoutHistory {
+                            screen: KittyGraphicsScreen::Primary,
+                            lines,
+                        });
+                }
+            }
+            (KittyGraphicsScreen::Primary, false) => {
+                if history_growth > 0 {
+                    self.effects.push(
+                        KittyGraphicsTextEffect::PreservePrimaryAcrossPartialHistoryGrowth(
+                            history_growth,
+                        ),
+                    );
+                }
+            }
+            (KittyGraphicsScreen::Alternate, true) => {
+                self.effects
+                    .push(KittyGraphicsTextEffect::ScrollUpWithoutHistory {
+                        screen: KittyGraphicsScreen::Alternate,
+                        lines: observation.physical_lines,
+                    });
+            }
+            (KittyGraphicsScreen::Alternate, false) => (),
+        }
+    }
+}
+
+macro_rules! forward_kitty_graphics_handler_methods {
+    ($(fn $name:ident($($arg:ident: $ty:ty),*);)*) => {
+        $(
+            fn $name(&mut self $(, $arg: $ty)*) {
+                Handler::$name(&mut *self.term $(, $arg)*);
+            }
+        )*
+    };
+}
+
+impl<T: EventListener> Handler for KittyGraphicsTrackingHandler<'_, T> {
+    fn input(&mut self, c: char) {
+        let physical_lines = if self.track_scrolls {
+            self.input_scroll_lines(c)
+        } else {
+            0
+        };
+        let observation = self.observe_scroll(physical_lines);
+        Handler::input(&mut *self.term, c);
+        self.finish_scroll(observation);
+    }
+
+    fn put_tab(&mut self, count: u16) {
+        let physical_lines = if self.track_scrolls
+            && self.term.grid().cursor.input_needs_wrap
+            && self.term.mode().contains(TermMode::LINE_WRAP)
+        {
+            self.linefeed_scroll_lines()
+        } else {
+            0
+        };
+        let observation = self.observe_scroll(physical_lines);
+        Handler::put_tab(&mut *self.term, count);
+        self.finish_scroll(observation);
+    }
+
+    fn linefeed(&mut self) {
+        let physical_lines = if self.track_scrolls {
+            self.linefeed_scroll_lines()
+        } else {
+            0
+        };
+        let observation = self.observe_scroll(physical_lines);
+        Handler::linefeed(&mut *self.term);
+        self.finish_scroll(observation);
+    }
+
+    fn newline(&mut self) {
+        let physical_lines = if self.track_scrolls {
+            self.linefeed_scroll_lines()
+        } else {
+            0
+        };
+        let observation = self.observe_scroll(physical_lines);
+        Handler::newline(&mut *self.term);
+        self.finish_scroll(observation);
+    }
+
+    fn scroll_up(&mut self, lines: usize) {
+        let physical_lines = if self.track_scrolls {
+            self.explicit_scroll_up_lines(lines)
+        } else {
+            0
+        };
+        let observation = self.observe_scroll(physical_lines);
+        Handler::scroll_up(&mut *self.term, lines);
+        self.finish_scroll(observation);
+    }
+
+    fn reset_state(&mut self) {
+        self.tracker.reset_scroll_region();
+        self.effects.push(KittyGraphicsTextEffect::TerminalReset);
+        Handler::reset_state(&mut *self.term);
+    }
+
+    fn set_private_mode(&mut self, mode: PrivateMode) {
+        if mode == NamedPrivateMode::ColumnMode.into() {
+            self.tracker.reset_scroll_region();
+        }
+        if mode == NamedPrivateMode::SwapScreenAndSetRestoreCursor.into()
+            && !self.term.mode().contains(TermMode::ALT_SCREEN)
+        {
+            self.effects
+                .push(KittyGraphicsTextEffect::EnteredAlternateScreen);
+        }
+        Handler::set_private_mode(&mut *self.term, mode);
+    }
+
+    fn unset_private_mode(&mut self, mode: PrivateMode) {
+        if mode == NamedPrivateMode::ColumnMode.into() {
+            self.tracker.reset_scroll_region();
+        }
+        Handler::unset_private_mode(&mut *self.term, mode);
+    }
+
+    fn set_scrolling_region(&mut self, top: usize, bottom: Option<usize>) {
+        self.tracker
+            .region
+            .set(top, bottom, self.term.grid().screen_lines());
+        Handler::set_scrolling_region(&mut *self.term, top, bottom);
+    }
+
+    fn clear_screen(&mut self, mode: ansi::ClearMode) {
+        let clear_viewport = if self.track_scrolls && matches!(mode, ansi::ClearMode::All) {
+            Some(KittyGraphicsTextEffect::ClearViewport {
+                screen: KittyGraphicsScreen::from_alternate_screen(
+                    self.term.mode().contains(TermMode::ALT_SCREEN),
+                ),
+                history_size: self.term.grid().history_size(),
+                rows: self.term.grid().screen_lines(),
+                cols: self.term.grid().columns(),
+            })
+        } else {
+            None
+        };
+
+        Handler::clear_screen(&mut *self.term, mode);
+        if let Some(clear_viewport) = clear_viewport {
+            self.effects.push(clear_viewport);
+        }
+    }
+
+    forward_kitty_graphics_handler_methods! {
+        fn set_title(title: Option<String>);
+        fn set_cursor_style(style: Option<ansi::CursorStyle>);
+        fn set_cursor_shape(shape: ansi::CursorShape);
+        fn goto(line: i32, col: usize);
+        fn goto_line(line: i32);
+        fn goto_col(col: usize);
+        fn insert_blank(count: usize);
+        fn move_up(rows: usize);
+        fn move_down(rows: usize);
+        fn identify_terminal(intermediate: Option<char>);
+        fn device_status(status: usize);
+        fn move_forward(cols: usize);
+        fn move_backward(cols: usize);
+        fn move_down_and_cr(rows: usize);
+        fn move_up_and_cr(rows: usize);
+        fn backspace();
+        fn carriage_return();
+        fn bell();
+        fn substitute();
+        fn set_horizontal_tabstop();
+        fn scroll_down(rows: usize);
+        fn insert_blank_lines(lines: usize);
+        fn delete_lines(lines: usize);
+        fn erase_chars(count: usize);
+        fn delete_chars(count: usize);
+        fn move_backward_tabs(count: u16);
+        fn move_forward_tabs(count: u16);
+        fn save_cursor_position();
+        fn restore_cursor_position();
+        fn clear_line(mode: ansi::LineClearMode);
+        fn clear_tabs(mode: ansi::TabulationClearMode);
+        fn set_tabs(interval: u16);
+        fn reverse_index();
+        fn terminal_attribute(attr: ansi::Attr);
+        fn set_mode(mode: ansi::Mode);
+        fn unset_mode(mode: ansi::Mode);
+        fn report_mode(mode: ansi::Mode);
+        fn report_private_mode(mode: ansi::PrivateMode);
+        fn set_keypad_application_mode();
+        fn unset_keypad_application_mode();
+        fn set_active_charset(index: ansi::CharsetIndex);
+        fn configure_charset(index: ansi::CharsetIndex, charset: ansi::StandardCharset);
+        fn set_color(index: usize, color: ansi::Rgb);
+        fn dynamic_color_sequence(prefix: String, index: usize, terminator: &str);
+        fn reset_color(index: usize);
+        fn clipboard_store(clipboard: u8, data: &[u8]);
+        fn clipboard_load(clipboard: u8, terminator: &str);
+        fn decaln();
+        fn push_title();
+        fn pop_title();
+        fn text_area_size_pixels();
+        fn text_area_size_chars();
+        fn set_hyperlink(hyperlink: Option<ansi::Hyperlink>);
+        fn set_mouse_cursor_icon(icon: ansi::cursor_icon::CursorIcon);
+        fn report_keyboard_mode();
+        fn push_keyboard_mode(mode: ansi::KeyboardModes);
+        fn pop_keyboard_modes(to_pop: u16);
+        fn set_keyboard_mode(mode: ansi::KeyboardModes, behavior: ansi::KeyboardModesApplyBehavior);
+        fn set_modify_other_keys(mode: ansi::ModifyOtherKeys);
+        fn report_modify_other_keys();
+        fn set_scp(char_path: ansi::ScpCharPath, update_mode: ansi::ScpUpdateMode);
+    }
+}
+
+/// Parse ordinary terminal text while observing full-screen row rotation that
+/// is not represented by scrollback growth.
+///
+/// A forwarding handler observes the live terminal at the exact callback that
+/// mutates it, including callbacks replayed by synchronized updates.
+pub fn advance_kitty_graphics_text<T: EventListener>(
+    tracker: &mut KittyGraphicsCursorTracker,
+    parser: &mut ansi::Processor,
+    term: &mut Term<T>,
+    bytes: &[u8],
+    track_scrolls: bool,
+) -> KittyGraphicsTextEffects {
+    let mut effects = KittyGraphicsTextEffects::default();
+    {
+        let mut handler = KittyGraphicsTrackingHandler {
+            term,
+            tracker,
+            effects: &mut effects,
+            track_scrolls,
+        };
+        parser.advance(&mut handler, bytes);
+    }
+    effects
+}
+
+/// Apply Kitty's default post-placement cursor movement.
+///
+/// Moving down through the terminal handler keeps the placement attached to
+/// scrollback when it reaches the bottom row. A regular CSI cursor-down would
+/// clamp at the bottom instead, leaving most of a tall image off-screen.
+///
+/// Returns the number of scrolled lines that were not represented by history
+/// growth, so graphics anchors can follow alternate-screen, zero-history, and
+/// full-history row rotation.
+pub fn advance_kitty_graphics_cursor<T: EventListener>(
+    term: &mut Term<T>,
+    cols: u32,
+    rows: u32,
+    full_screen_scroll_region: bool,
+) -> usize {
+    let cols = usize::try_from(cols)
+        .unwrap_or(usize::MAX)
+        .min(term.grid().columns());
+    Handler::move_forward(term, cols);
+
+    // Cursor positioning outside the screen is implementation-defined by the
+    // protocol. Bound the work so a hostile `r=u32::MAX` cannot force billions
+    // of linefeed operations.
+    let rows = usize::try_from(rows)
+        .unwrap_or(usize::MAX)
+        .min(term.grid().screen_lines());
+    if !full_screen_scroll_region {
+        Handler::move_down(term, rows);
+        return 0;
+    }
+
+    let history_before = term.grid().history_size();
+    let mut scrolled_lines = 0usize;
+    for _ in 0..rows {
+        let line_before = term.grid().cursor.point.line;
+        Handler::linefeed(term);
+        scrolled_lines += usize::from(term.grid().cursor.point.line == line_before);
+    }
+    let history_growth = term.grid().history_size().saturating_sub(history_before);
+    scrolled_lines.saturating_sub(history_growth)
 }
 
 pub fn termmode_to_terminal_mouse_mode(mode: TermMode) -> TerminalMouseMode {
@@ -1062,6 +1549,7 @@ enum EventLoopMsg {
     Input(Cow<'static, [u8]>),
     Shutdown,
     Resize(WindowSize),
+    NudgeResize(WindowSize),
 }
 
 #[derive(Clone)]
@@ -1138,6 +1626,8 @@ struct NativeEventLoopState {
     writing: Option<Writing>,
     parser: ansi::Processor,
     osc_interceptor: OscInterceptor,
+    kitty_graphics_interceptor: KittyGraphicsInterceptor,
+    kitty_graphics_cursor_tracker: KittyGraphicsCursorTracker,
 }
 
 impl NativeEventLoopState {
@@ -1170,6 +1660,8 @@ struct NativeEventLoop {
     rx: PeekableReceiver<EventLoopMsg>,
     tx: StdSender<EventLoopMsg>,
     terminal: Arc<FairMutex<Term<JsonEventListener>>>,
+    kitty_graphics: Arc<FairMutex<KittyGraphicsState>>,
+    terminal_size: Arc<FairMutex<TerminalSize>>,
     event_proxy: JsonEventListener,
     drain_on_exit: bool,
 }
@@ -1177,6 +1669,8 @@ struct NativeEventLoop {
 impl NativeEventLoop {
     fn new(
         terminal: Arc<FairMutex<Term<JsonEventListener>>>,
+        kitty_graphics: Arc<FairMutex<KittyGraphicsState>>,
+        terminal_size: Arc<FairMutex<TerminalSize>>,
         event_proxy: JsonEventListener,
         pty: tty::Pty,
         drain_on_exit: bool,
@@ -1188,6 +1682,8 @@ impl NativeEventLoop {
             rx: PeekableReceiver::new(rx),
             tx,
             terminal,
+            kitty_graphics,
+            terminal_size,
             event_proxy,
             drain_on_exit,
         })
@@ -1204,7 +1700,11 @@ impl NativeEventLoop {
         while let Some(msg) = self.rx.recv() {
             match msg {
                 EventLoopMsg::Input(input) => state.write_list.push_back(input),
-                EventLoopMsg::Resize(window_size) => self.pty.on_resize(window_size),
+                EventLoopMsg::Resize(window_size) => {
+                    state.kitty_graphics_cursor_tracker.reset_scroll_region();
+                    self.pty.on_resize(window_size);
+                }
+                EventLoopMsg::NudgeResize(window_size) => self.pty.on_resize(window_size),
                 EventLoopMsg::Shutdown => return false,
             }
         }
@@ -1221,7 +1721,9 @@ impl NativeEventLoop {
 
     fn pty_read(&mut self, state: &mut NativeEventLoopState, buf: &mut [u8]) -> io::Result<()> {
         let mut parsed = 0usize;
+        let mut processed = 0usize;
         let mut unprocessed = 0usize;
+        let mut graphics_changed = false;
 
         let _terminal_lease = Some(self.terminal.lease());
         let mut terminal = None;
@@ -1261,20 +1763,75 @@ impl NativeEventLoop {
             };
 
             let (filtered, osc_events) = state.osc_interceptor.process(&buf[..unprocessed]);
+            processed = processed.saturating_add(filtered.len());
             self.handle_osc_events(osc_events);
 
-            if !filtered.is_empty() {
-                parsed += filtered.len();
-                state.parser.advance(&mut **terminal, &filtered);
+            for item in state.kitty_graphics_interceptor.process(&filtered) {
+                match item {
+                    KittyGraphicsItem::Text(text) => {
+                        parsed = parsed.saturating_add(text.len());
+                        let track_scrolls = self.kitty_graphics.lock().has_placements();
+                        let effects = advance_kitty_graphics_text(
+                            &mut state.kitty_graphics_cursor_tracker,
+                            &mut state.parser,
+                            &mut **terminal,
+                            &text,
+                            track_scrolls,
+                        );
+                        if !effects.is_empty() {
+                            graphics_changed |= effects.apply_to(&mut self.kitty_graphics.lock());
+                        }
+                    }
+                    KittyGraphicsItem::Command(command) => {
+                        let cursor = terminal.grid().cursor.point;
+                        let history_size = terminal.grid().history_size();
+                        let screen_lines = terminal.grid().screen_lines();
+                        let full_screen_scroll_region = state
+                            .kitty_graphics_cursor_tracker
+                            .region_covers_full_screen(screen_lines);
+                        let screen = KittyGraphicsScreen::from_alternate_screen(
+                            terminal.mode().contains(TermMode::ALT_SCREEN),
+                        );
+                        let size = *self.terminal_size.lock();
+                        let result = self.kitty_graphics.lock().apply_on_screen(
+                            command,
+                            cursor.column.0,
+                            cursor.line.0.max(0) as usize,
+                            history_size,
+                            size,
+                            screen,
+                        );
+                        graphics_changed |= result.changed;
+                        if let Some(response) = result.response {
+                            state.write_list.push_back(Cow::Owned(response));
+                        }
+                        if result.cursor_advance_screen == Some(screen)
+                            && let Some((cols, rows)) = result.cursor_advance
+                        {
+                            let untracked_scroll = advance_kitty_graphics_cursor(
+                                &mut **terminal,
+                                cols,
+                                rows,
+                                full_screen_scroll_region,
+                            );
+                            if untracked_scroll > 0 {
+                                graphics_changed |= self
+                                    .kitty_graphics
+                                    .lock()
+                                    .scroll_up_without_history_on_screen(untracked_scroll, screen);
+                            }
+                        }
+                    }
+                }
             }
 
             unprocessed = 0;
-            if parsed >= NATIVE_EVENT_LOOP_MAX_LOCKED_READ {
+            if processed >= NATIVE_EVENT_LOOP_MAX_LOCKED_READ {
                 break;
             }
         }
 
-        if state.parser.sync_bytes_count() < parsed && parsed > 0 {
+        if graphics_changed || (state.parser.sync_bytes_count() < parsed && parsed > 0) {
             self.event_proxy.send_event(AlacEvent::Wakeup);
         }
 
@@ -1482,6 +2039,10 @@ pub struct Terminal {
     listener: JsonEventListener,
     /// Parser used for buffer rehydration without writing to the PTY.
     parser: FairMutex<ansi::Processor>,
+    kitty_graphics_interceptor: FairMutex<KittyGraphicsInterceptor>,
+    kitty_graphics_cursor_tracker: FairMutex<KittyGraphicsCursorTracker>,
+    kitty_graphics: Arc<FairMutex<KittyGraphicsState>>,
+    graphics_size: Arc<FairMutex<TerminalSize>>,
     /// Channel to send input to the PTY. `None` for display-only terminals
     /// (e.g. tmux control-mode panes) that are fed via `feed_output` and have
     /// no backing shell.
@@ -1560,6 +2121,8 @@ impl Terminal {
         let listener = JsonEventListener::new_with_wakeup_notifier(events_tx, wakeup_notifier);
         let term = Term::new(term_config, &size, listener.clone());
         let term = Arc::new(FairMutex::new(term));
+        let kitty_graphics = Arc::new(FairMutex::new(KittyGraphicsState::default()));
+        let graphics_size = Arc::new(FairMutex::new(size));
 
         let window_id = 0;
         let pty = tty::new(&pty_options, size.into(), window_id)?;
@@ -1570,6 +2133,8 @@ impl Terminal {
 
         let event_loop = NativeEventLoop::new(
             term.clone(),
+            kitty_graphics.clone(),
+            graphics_size.clone(),
             listener.clone(),
             pty,
             pty_options.drain_on_exit,
@@ -1581,6 +2146,10 @@ impl Terminal {
             term,
             listener,
             parser: FairMutex::new(ansi::Processor::new()),
+            kitty_graphics_interceptor: FairMutex::new(KittyGraphicsInterceptor::default()),
+            kitty_graphics_cursor_tracker: FairMutex::new(KittyGraphicsCursorTracker::default()),
+            kitty_graphics,
+            graphics_size,
             pty_tx: Some(pty_tx),
             events_rx,
             size,
@@ -1602,11 +2171,16 @@ impl Terminal {
         let listener = JsonEventListener::new(events_tx, None);
         let term = Term::new(term_config, &size, listener.clone());
         let term = Arc::new(FairMutex::new(term));
+        let kitty_graphics = Arc::new(FairMutex::new(KittyGraphicsState::default()));
 
         Self {
             term,
             listener,
             parser: FairMutex::new(ansi::Processor::new()),
+            kitty_graphics_interceptor: FairMutex::new(KittyGraphicsInterceptor::default()),
+            kitty_graphics_cursor_tracker: FairMutex::new(KittyGraphicsCursorTracker::default()),
+            kitty_graphics,
+            graphics_size: Arc::new(FairMutex::new(size)),
             pty_tx: None,
             events_rx,
             size,
@@ -1623,9 +2197,7 @@ impl Terminal {
         if bytes.is_empty() {
             return;
         }
-        let mut parser = self.parser.lock();
-        let mut term = self.term.lock();
-        parser.advance(&mut *term, bytes);
+        self.feed_output_to_parser(bytes);
     }
 
     pub fn child_pid(&self) -> Option<u32> {
@@ -1659,10 +2231,63 @@ impl Terminal {
         }
 
         self.listener.set_replay_suppressed(true);
+        self.feed_output_to_parser(bytes);
+        self.listener.set_replay_suppressed(false);
+    }
+
+    fn feed_output_to_parser(&self, bytes: &[u8]) {
+        let mut interceptor = self.kitty_graphics_interceptor.lock();
+        let mut cursor_tracker = self.kitty_graphics_cursor_tracker.lock();
         let mut parser = self.parser.lock();
         let mut term = self.term.lock();
-        parser.advance(&mut *term, bytes);
-        self.listener.set_replay_suppressed(false);
+        for item in interceptor.process(bytes) {
+            match item {
+                KittyGraphicsItem::Text(text) => {
+                    let track_scrolls = self.kitty_graphics.lock().has_placements();
+                    let effects = advance_kitty_graphics_text(
+                        &mut cursor_tracker,
+                        &mut parser,
+                        &mut term,
+                        &text,
+                        track_scrolls,
+                    );
+                    if !effects.is_empty() {
+                        effects.apply_to(&mut self.kitty_graphics.lock());
+                    }
+                }
+                KittyGraphicsItem::Command(command) => {
+                    let cursor = term.grid().cursor.point;
+                    let full_screen_scroll_region =
+                        cursor_tracker.region_covers_full_screen(term.grid().screen_lines());
+                    let screen = KittyGraphicsScreen::from_alternate_screen(
+                        term.mode().contains(TermMode::ALT_SCREEN),
+                    );
+                    let result = self.kitty_graphics.lock().apply_on_screen(
+                        command,
+                        cursor.column.0,
+                        cursor.line.0.max(0) as usize,
+                        term.grid().history_size(),
+                        self.size,
+                        screen,
+                    );
+                    if result.cursor_advance_screen == Some(screen)
+                        && let Some((cols, rows)) = result.cursor_advance
+                    {
+                        let untracked_scroll = advance_kitty_graphics_cursor(
+                            &mut *term,
+                            cols,
+                            rows,
+                            full_screen_scroll_region,
+                        );
+                        if untracked_scroll > 0 {
+                            self.kitty_graphics
+                                .lock()
+                                .scroll_up_without_history_on_screen(untracked_scroll, screen);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Write a string to the PTY
@@ -1679,11 +2304,15 @@ impl Terminal {
             return;
         }
         self.size = new_size;
+        *self.graphics_size.lock() = new_size;
         if let Some(pty_tx) = &self.pty_tx {
             let _ = pty_tx.send(EventLoopMsg::Resize(new_size.into()));
         }
         let mut term = self.term.lock();
         term.resize(new_size);
+        self.kitty_graphics_cursor_tracker
+            .lock()
+            .reset_scroll_region();
         // Keep content bottom-anchored like Ghostty/Kitty: reflow can strand
         // the prompt mid-screen above blank rows while the start of the
         // output sits in scrollback — pull it back in.
@@ -1696,13 +2325,28 @@ impl Terminal {
     /// transition even though the actual dimensions have not changed.
     pub fn nudge_resize(&self) {
         if let Some(pty_tx) = &self.pty_tx {
-            let _ = pty_tx.send(EventLoopMsg::Resize(self.size.into()));
+            let _ = pty_tx.send(EventLoopMsg::NudgeResize(self.size.into()));
         }
     }
 
     /// Get the current terminal size
     pub fn size(&self) -> TerminalSize {
         self.size
+    }
+
+    /// Snapshot visible Kitty graphics placements for a renderer.
+    pub fn kitty_graphics_placements(&self) -> Vec<KittyGraphicsRenderPlacement> {
+        let term = self.term.lock();
+        let grid = term.grid();
+        let screen =
+            KittyGraphicsScreen::from_alternate_screen(term.mode().contains(TermMode::ALT_SCREEN));
+        self.kitty_graphics.lock().render_placements_on_screen(
+            grid.history_size(),
+            grid.display_offset(),
+            grid.screen_lines(),
+            grid.columns(),
+            screen,
+        )
     }
 
     /// Drain pending Alacritty events, writing reply bytes back to the PTY when required.
@@ -2037,14 +2681,16 @@ mod tests {
     use super::quote_shell_program_if_needed;
     use super::{
         DEFAULT_TERM, EVENT_QUEUE_HARD_CAP, EVENT_QUEUE_SOFT_CAP, GHOSTTY_COMPAT_TERM_PROGRAM,
-        GHOSTTY_COMPAT_TERM_PROGRAM_VERSION, JsonEventListener, MAX_SCROLLBACK_HISTORY,
-        MAX_TERMINAL_COLS, MAX_TERMINAL_ROWS, RuntimeEvent, TERMY_TERM_PROGRAM, Terminal,
-        TerminalCursorState, TerminalCursorStyle, TerminalDamageSnapshot, TerminalEvent,
-        TerminalOptions, TerminalRuntimeConfig, TerminalSize, TerminalWakeupNotifier, WindowsShell,
-        WorkingDirFallback, apply_term_config, cursor_position_from_term, cursor_state_from_term,
-        default_shell_launch, drain_runtime_events, normalize_working_directory_candidate,
-        pty_env_overrides, resolve_launch_working_directory, resolve_shell_path,
-        search_term_buffer, should_drop_event, take_term_damage_snapshot, terminal_event_from_osc,
+        GHOSTTY_COMPAT_TERM_PROGRAM_VERSION, JsonEventListener, KittyGraphicsCursorTracker,
+        MAX_SCROLLBACK_HISTORY, MAX_TERMINAL_COLS, MAX_TERMINAL_ROWS, RuntimeEvent,
+        TERMY_TERM_PROGRAM, Terminal, TerminalCursorState, TerminalCursorStyle,
+        TerminalDamageSnapshot, TerminalEvent, TerminalOptions, TerminalRuntimeConfig,
+        TerminalSize, TerminalWakeupNotifier, WindowsShell, WorkingDirFallback,
+        advance_kitty_graphics_cursor, advance_kitty_graphics_text, apply_term_config,
+        cursor_position_from_term, cursor_state_from_term, default_shell_launch,
+        drain_runtime_events, normalize_working_directory_candidate, pty_env_overrides,
+        resolve_launch_working_directory, resolve_shell_path, search_term_buffer,
+        should_drop_event, take_term_damage_snapshot, terminal_event_from_osc,
         termmode_to_terminal_mouse_mode, user_home_dir,
     };
     use crate::keyboard::{
@@ -2074,6 +2720,330 @@ mod tests {
         .clamped();
         assert_eq!(huge.cols, MAX_TERMINAL_COLS);
         assert_eq!(huge.rows, MAX_TERMINAL_ROWS);
+    }
+
+    #[test]
+    fn display_terminal_intercepts_and_places_kitty_graphics() {
+        let terminal = Terminal::new_display(test_terminal_size(), None);
+        terminal.feed_output(b"\x1b_Ga=T,f=32,s=1,v=1,i=77,c=2,r=3;AQID/w==\x1b\\");
+
+        let placements = terminal.kitty_graphics_placements();
+        assert_eq!(placements.len(), 1);
+        assert_eq!(placements[0].image_id, 77);
+        assert_eq!(placements[0].display_cols, Some(2));
+        assert_eq!(placements[0].display_rows, Some(3));
+        assert!(placements[0].png.starts_with(b"\x89PNG"));
+
+        let cursor = terminal.cursor_position();
+        assert_eq!(cursor, (2, 3));
+    }
+
+    #[test]
+    fn display_terminal_scrolls_for_kitty_cursor_advance_at_bottom() {
+        let terminal = Terminal::new_display(test_terminal_size(), None);
+        terminal.feed_output(b"\x1b[4;1H\x1b_Ga=T,f=32,s=1,v=1,i=78,c=2,r=3;AQID/w==\x1b\\");
+
+        assert_eq!(terminal.scroll_state(), (0, 3));
+        assert_eq!(terminal.cursor_position(), (2, 3));
+        let placements = terminal.kitty_graphics_placements();
+        assert_eq!(placements.len(), 1);
+        assert_eq!(placements[0].viewport_row, 0);
+    }
+
+    #[test]
+    fn kitty_cursor_advance_tracks_zero_history_screen_scroll() {
+        let runtime_config = TerminalRuntimeConfig {
+            scrollback_history: 0,
+            ..TerminalRuntimeConfig::default()
+        };
+        let terminal = Terminal::new_display(test_terminal_size(), Some(&runtime_config));
+        terminal.feed_output(b"\x1b[4;1H\x1b_Ga=T,f=32,s=1,v=1,i=79,c=2,r=3;AQID/w==\x1b\\");
+
+        assert_eq!(terminal.scroll_state(), (0, 0));
+        assert_eq!(terminal.cursor_position(), (2, 3));
+        let placements = terminal.kitty_graphics_placements();
+        assert_eq!(placements.len(), 1);
+        assert_eq!(placements[0].viewport_row, 0);
+    }
+
+    #[test]
+    fn kitty_cursor_advance_tracks_full_history_screen_scroll() {
+        let runtime_config = TerminalRuntimeConfig {
+            scrollback_history: 2,
+            ..TerminalRuntimeConfig::default()
+        };
+        let terminal = Terminal::new_display(test_terminal_size(), Some(&runtime_config));
+        terminal.feed_output(b"\x1b[4;1H\n\n");
+        assert_eq!(terminal.scroll_state(), (0, 2));
+
+        terminal.feed_output(b"\x1b_Ga=T,f=32,s=1,v=1,i=81,c=2,r=3;AQID/w==\x1b\\");
+
+        assert_eq!(terminal.scroll_state(), (0, 2));
+        assert_eq!(terminal.cursor_position(), (2, 3));
+        let placements = terminal.kitty_graphics_placements();
+        assert_eq!(placements.len(), 1);
+        assert_eq!(placements[0].viewport_row, 0);
+    }
+
+    #[test]
+    fn kitty_cursor_advance_tracks_alternate_screen_scroll() {
+        let terminal = Terminal::new_display(test_terminal_size(), None);
+        terminal
+            .feed_output(b"\x1b[?1049h\x1b[4;1H\x1b_Ga=T,f=32,s=1,v=1,i=80,c=2,r=3;AQID/w==\x1b\\");
+
+        assert!(terminal.alternate_screen_mode());
+        assert_eq!(terminal.scroll_state(), (0, 0));
+        assert_eq!(terminal.cursor_position(), (2, 3));
+        let placements = terminal.kitty_graphics_placements();
+        assert_eq!(placements.len(), 1);
+        assert_eq!(placements[0].viewport_row, 0);
+    }
+
+    #[test]
+    fn ordinary_newlines_shift_and_remove_alternate_screen_kitty_placement() {
+        let terminal = Terminal::new_display(test_terminal_size(), None);
+        terminal.feed_output(
+            b"\x1b[?1049h\x1b[2;1H\x1b_Ga=T,f=32,s=1,v=1,i=86,c=2,r=1,C=1;AQID/w==\x1b\\",
+        );
+        assert_eq!(terminal.kitty_graphics_placements()[0].viewport_row, 1);
+
+        terminal.feed_output(b"\x1b[4;1H\n");
+        assert_eq!(terminal.kitty_graphics_placements()[0].viewport_row, 0);
+
+        terminal.feed_output(b"\n");
+        assert!(terminal.kitty_graphics_placements().is_empty());
+    }
+
+    #[test]
+    fn synchronized_newlines_shift_alternate_screen_kitty_placement() {
+        let terminal = Terminal::new_display(test_terminal_size(), None);
+        terminal.feed_output(
+            b"\x1b[?1049h\x1b[2;1H\x1b_Ga=T,f=32,s=1,v=1,i=96,c=2,r=1,C=1;AQID/w==\x1b\\",
+        );
+
+        terminal.feed_output(b"\x1b[?2026h\x1b[3;1H\n\n\x1b[?2026l");
+
+        let placements = terminal.kitty_graphics_placements();
+        assert_eq!(placements.len(), 1);
+        assert_eq!(placements[0].viewport_row, 0);
+    }
+
+    #[test]
+    fn ordinary_newlines_shift_and_remove_zero_history_kitty_placement() {
+        let runtime_config = TerminalRuntimeConfig {
+            scrollback_history: 0,
+            ..TerminalRuntimeConfig::default()
+        };
+        let terminal = Terminal::new_display(test_terminal_size(), Some(&runtime_config));
+        terminal.feed_output(b"\x1b[2;1H\x1b_Ga=T,f=32,s=1,v=1,i=87,c=2,r=1,C=1;AQID/w==\x1b\\");
+        assert_eq!(terminal.kitty_graphics_placements()[0].viewport_row, 1);
+
+        terminal.feed_output(b"\x1b[4;1H\n");
+        assert_eq!(terminal.scroll_state(), (0, 0));
+        assert_eq!(terminal.kitty_graphics_placements()[0].viewport_row, 0);
+
+        terminal.feed_output(b"\n");
+        assert!(terminal.kitty_graphics_placements().is_empty());
+    }
+
+    #[test]
+    fn ordinary_wrapped_text_shifts_and_removes_zero_history_kitty_placement() {
+        let runtime_config = TerminalRuntimeConfig {
+            scrollback_history: 0,
+            ..TerminalRuntimeConfig::default()
+        };
+        let terminal = Terminal::new_display(test_terminal_size(), Some(&runtime_config));
+        terminal.feed_output(b"\x1b[2;1H\x1b_Ga=T,f=32,s=1,v=1,i=97,c=2,r=1,C=1;AQID/w==\x1b\\");
+
+        terminal.feed_output(b"\x1b[4;32Hab");
+        assert_eq!(terminal.kitty_graphics_placements()[0].viewport_row, 0);
+
+        terminal.feed_output("\x1b[4;32H界".as_bytes());
+        assert!(terminal.kitty_graphics_placements().is_empty());
+    }
+
+    #[test]
+    fn ordinary_newlines_shift_and_remove_full_history_kitty_placement() {
+        let runtime_config = TerminalRuntimeConfig {
+            scrollback_history: 1,
+            ..TerminalRuntimeConfig::default()
+        };
+        let terminal = Terminal::new_display(test_terminal_size(), Some(&runtime_config));
+        terminal.feed_output(b"\x1b[4;1H\n");
+        assert_eq!(terminal.scroll_state(), (0, 1));
+        terminal.feed_output(b"\x1b[2;1H\x1b_Ga=T,f=32,s=1,v=1,i=88,c=2,r=1,C=1;AQID/w==\x1b\\");
+        assert_eq!(terminal.kitty_graphics_placements()[0].viewport_row, 1);
+
+        terminal.feed_output(b"\x1b[4;1H\n");
+        assert_eq!(terminal.scroll_state(), (0, 1));
+        assert_eq!(terminal.kitty_graphics_placements()[0].viewport_row, 0);
+
+        terminal.feed_output(b"\n");
+        assert!(terminal.kitty_graphics_placements().is_empty());
+    }
+
+    #[test]
+    fn ordinary_partial_region_scroll_does_not_shift_kitty_placement() {
+        let runtime_config = TerminalRuntimeConfig {
+            scrollback_history: 0,
+            ..TerminalRuntimeConfig::default()
+        };
+        let terminal = Terminal::new_display(test_terminal_size(), Some(&runtime_config));
+        terminal.feed_output(b"\x1b[1;1H\x1b_Ga=T,f=32,s=1,v=1,i=89,c=2,r=1,C=1;AQID/w==\x1b\\");
+
+        terminal.feed_output(b"\x1b[2;3r\x1b[3;1H\n");
+
+        let placements = terminal.kitty_graphics_placements();
+        assert_eq!(placements.len(), 1);
+        assert_eq!(placements[0].viewport_row, 0);
+    }
+
+    #[test]
+    fn top_anchored_partial_region_scroll_keeps_footer_kitty_placement_fixed() {
+        let terminal = Terminal::new_display(test_terminal_size(), None);
+        terminal.feed_output(b"\x1b[4;1H\x1b_Ga=T,f=32,s=1,v=1,i=90,c=2,r=1,C=1;AQID/w==\x1b\\");
+        assert_eq!(terminal.kitty_graphics_placements()[0].viewport_row, 3);
+
+        terminal.feed_output(b"\x1b[1;3r\x1b[3;1H\n");
+
+        assert_eq!(terminal.scroll_state(), (0, 1));
+        let placements = terminal.kitty_graphics_placements();
+        assert_eq!(placements.len(), 1);
+        assert_eq!(placements[0].viewport_row, 3);
+    }
+
+    #[test]
+    fn deccolm_resets_tracked_scroll_region() {
+        let size = test_terminal_size();
+        let mut term: Term<VoidListener> = Term::new(TermConfig::default(), &size, VoidListener);
+        let mut parser = ansi::Processor::new();
+        let mut tracker = KittyGraphicsCursorTracker::default();
+        advance_kitty_graphics_text(&mut tracker, &mut parser, &mut term, b"\x1b[2;3r", false);
+        assert!(!tracker.region_covers_full_screen(4));
+
+        advance_kitty_graphics_text(&mut tracker, &mut parser, &mut term, b"\x1b[?3h", false);
+        assert!(tracker.region_covers_full_screen(4));
+
+        advance_kitty_graphics_text(
+            &mut tracker,
+            &mut parser,
+            &mut term,
+            b"\x1b[2;3r\x1b[?3l",
+            false,
+        );
+        assert!(tracker.region_covers_full_screen(4));
+    }
+
+    #[test]
+    fn invalid_omitted_bottom_decstbm_preserves_tracked_region() {
+        let size = test_terminal_size();
+        let mut term: Term<VoidListener> = Term::new(TermConfig::default(), &size, VoidListener);
+        let mut parser = ansi::Processor::new();
+        let mut tracker = KittyGraphicsCursorTracker::default();
+        advance_kitty_graphics_text(&mut tracker, &mut parser, &mut term, b"\x1b[2;3r", false);
+        assert!(!tracker.region_covers_full_screen(4));
+
+        advance_kitty_graphics_text(&mut tracker, &mut parser, &mut term, b"\x1b[99r", false);
+
+        assert!(!tracker.region_covers_full_screen(4));
+    }
+
+    #[test]
+    fn kitty_cursor_advance_does_not_scroll_partial_decstbm_region() {
+        let terminal = Terminal::new_display(test_terminal_size(), None);
+        terminal.feed_output(
+            b"\x1b[2;3r\x1b[3;1H\x1b_Ga=T,f=32,s=1,v=1,i=82,c=2,r=3;AQID/w==\x1b\\\x1b[r",
+        );
+
+        assert_eq!(terminal.scroll_state(), (0, 0));
+        assert_eq!(terminal.cursor_position(), (0, 0));
+        let placements = terminal.kitty_graphics_placements();
+        assert_eq!(placements.len(), 1);
+        assert_eq!(placements[0].image_id, 82);
+        assert_eq!(placements[0].viewport_row, 2);
+    }
+
+    #[test]
+    fn primary_kitty_placement_survives_alternate_screen_scroll() {
+        let terminal = Terminal::new_display(test_terminal_size(), None);
+        terminal.feed_output(b"\x1b[2;1H\x1b_Ga=T,f=32,s=1,v=1,i=83,c=2,r=2,C=1;AQID/w==\x1b\\");
+        let primary = terminal.kitty_graphics_placements();
+        assert_eq!(primary.len(), 1);
+        assert_eq!(primary[0].image_id, 83);
+        assert_eq!(primary[0].viewport_row, 1);
+
+        terminal
+            .feed_output(b"\x1b[?1049h\x1b[4;1H\x1b_Ga=T,f=32,s=1,v=1,i=84,c=2,r=3;AQID/w==\x1b\\");
+        let alternate = terminal.kitty_graphics_placements();
+        assert_eq!(alternate.len(), 1);
+        assert_eq!(alternate[0].image_id, 84);
+        assert_eq!(alternate[0].viewport_row, 0);
+
+        terminal.feed_output(b"\x1b[?1049l");
+        let restored_primary = terminal.kitty_graphics_placements();
+        assert_eq!(restored_primary.len(), 1);
+        assert_eq!(restored_primary[0].image_id, 83);
+        assert_eq!(restored_primary[0].viewport_row, 1);
+
+        terminal.feed_output(b"\x1b[?1049h");
+        assert!(terminal.kitty_graphics_placements().is_empty());
+    }
+
+    #[test]
+    fn terminal_reset_clears_kitty_graphics() {
+        let terminal = Terminal::new_display(test_terminal_size(), None);
+        terminal.feed_output(b"\x1b_Ga=T,f=32,s=1,v=1,i=85,c=2,r=2,C=1;AQID/w==\x1b\\");
+        assert_eq!(terminal.kitty_graphics_placements().len(), 1);
+
+        terminal.feed_output(b"\x1bc");
+
+        assert!(!terminal.alternate_screen_mode());
+        assert!(terminal.kitty_graphics_placements().is_empty());
+    }
+
+    #[test]
+    fn clear_screen_erases_only_the_active_viewport_graphics() {
+        let terminal = Terminal::new_display(test_terminal_size(), None);
+        terminal.feed_output(b"\x1b[2;1H\x1b_Ga=T,f=32,s=1,v=1,i=98,c=2,r=1,C=1;AQID/w==\x1b\\");
+
+        terminal.feed_output(b"\x1b[J\x1b[1J\x1b[3J");
+        assert_eq!(
+            terminal.kitty_graphics_placements().len(),
+            1,
+            "non-ED2 erase commands must not affect graphics"
+        );
+
+        terminal.feed_output(
+            b"\x1b[?1049h\x1b[2;1H\x1b_Ga=T,f=32,s=1,v=1,i=99,c=2,r=1,C=1;AQID/w==\x1b\\",
+        );
+        assert_eq!(terminal.kitty_graphics_placements().len(), 1);
+        terminal.feed_output(b"\x1b[2J");
+        assert!(terminal.kitty_graphics_placements().is_empty());
+
+        terminal.feed_output(b"\x1b[?1049l");
+        assert_eq!(
+            terminal.kitty_graphics_placements().len(),
+            1,
+            "clearing the alternate viewport must preserve primary graphics"
+        );
+
+        terminal.feed_output(b"\x1b[H\x1b[2J");
+        assert!(terminal.kitty_graphics_placements().is_empty());
+    }
+
+    #[test]
+    fn kitty_cursor_advance_caps_linefeeds_to_screen_height() {
+        let size = test_terminal_size();
+        let mut term: Term<VoidListener> = Term::new(TermConfig::default(), &size, VoidListener);
+        let mut parser: ansi::Processor = ansi::Processor::new();
+        parser.advance(&mut term, b"\x1b[4;1H");
+
+        let untracked_scroll = advance_kitty_graphics_cursor(&mut term, u32::MAX, u32::MAX, true);
+
+        assert_eq!(untracked_scroll, 0);
+        assert_eq!(term.grid().history_size(), size.rows as usize);
+        assert_eq!(term.grid().cursor.point.column.0, size.cols as usize - 1);
+        assert_eq!(term.grid().cursor.point.line.0, i32::from(size.rows) - 1);
     }
 
     #[test]
