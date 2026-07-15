@@ -12,6 +12,11 @@ subprocesses, network requests, and local relative TypeScript imports.
   protect your account from a malicious plugin. Read the source before installing.
 </Callout>
 
+Manifest capabilities gate Termy-owned APIs, not operating-system access. A plugin
+needs `storage` for `context.storage` and `context.paths`, and `native-ui` for views
+and `view.open`, but those declarations do not restrict Bun, Node built-ins,
+subprocesses, files, or the network.
+
 ## Imports and source validation
 
 V1 supports local relative imports that remain inside the plugin directory, plus

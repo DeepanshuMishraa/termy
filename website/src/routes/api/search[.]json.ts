@@ -7,10 +7,13 @@ const server = createFromSource(source, {
   language: 'english',
 });
 
-export const Route = createFileRoute('/api/search')({
+// Serve the exported search index; it is prerendered at build time (see
+// `pages` in vite.config.ts) and queried client-side, so the running server
+// never holds the Orama index in memory.
+export const Route = createFileRoute('/api/search.json')({
   server: {
     handlers: {
-      GET: async ({ request }) => server.GET(request),
+      GET: async () => server.staticGET(),
     },
   },
 });

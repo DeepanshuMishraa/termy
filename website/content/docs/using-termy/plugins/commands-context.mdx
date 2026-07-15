@@ -118,7 +118,7 @@ an action array, `{ actions: [...] }`, or nothing. Handlers may be async.
 | `termy.command` | Invoke a built-in Termy command. |
 | `clipboard.write` | Copy text to the system clipboard. |
 | `url.open` | Open an `http` or `https` URL. |
-| `view.open` | Open a native view declared by the same plugin. |
+| `view.open` | Open a native view declared by the same plugin. Requires `native-ui` in `plugin.json`. |
 | `toast` | Show an info, success, warning, or error notification. |
 
 Never interpolate free-form text directly into `terminal.run`. Map select values to

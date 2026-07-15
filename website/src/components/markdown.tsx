@@ -12,7 +12,8 @@ import {
   useDeferredValue,
 } from 'react';
 import { Fragment, jsx, jsxs } from 'react/jsx-runtime';
-import { DynamicCodeBlock } from 'fumadocs-ui/components/dynamic-codeblock';
+import { DynamicCodeBlock } from 'fumadocs-ui/components/dynamic-codeblock.core';
+import { createShikiFactory } from 'fumadocs-core/highlight/shiki';
 import defaultMdxComponents from 'fumadocs-ui/mdx';
 import { visit } from 'unist-util-visit';
 import type { ElementContent, Root, RootContent } from 'hast';
@@ -76,6 +77,42 @@ function createProcessor(): Processor {
   };
 }
 
+// The default `fumadocs-ui/components/dynamic-codeblock` export bundles every
+// Shiki grammar and theme (~9 MB). Release notes only ever use a handful of
+// languages, so build a highlighter limited to those; unknown languages fall
+// back to plain text.
+const shikiFactory = createShikiFactory({
+  async init() {
+    const [{ createBundledHighlighter }, { createJavaScriptRegexEngine }] =
+      await Promise.all([
+        import('shiki/core'),
+        import('shiki/engine/javascript'),
+      ]);
+    const createHighlighter = createBundledHighlighter({
+      langs: {
+        bash: () => import('@shikijs/langs/bash'),
+        sh: () => import('@shikijs/langs/sh'),
+        shell: () => import('@shikijs/langs/shell'),
+        zsh: () => import('@shikijs/langs/zsh'),
+        console: () => import('@shikijs/langs/console'),
+        json: () => import('@shikijs/langs/json'),
+        toml: () => import('@shikijs/langs/toml'),
+        yaml: () => import('@shikijs/langs/yaml'),
+        rust: () => import('@shikijs/langs/rust'),
+        diff: () => import('@shikijs/langs/diff'),
+        ts: () => import('@shikijs/langs/ts'),
+        md: () => import('@shikijs/langs/md'),
+      },
+      themes: {
+        'github-light': () => import('@shikijs/themes/github-light'),
+        'github-dark': () => import('@shikijs/themes/github-dark'),
+      },
+      engine: () => createJavaScriptRegexEngine(),
+    });
+    return createHighlighter({ langs: [], themes: [] });
+  },
+});
+
 function Pre(props: ComponentProps<'pre'>) {
   const code = Children.only(props.children) as ReactElement;
   const codeProps = code.props as ComponentProps<'code'>;
@@ -90,7 +127,14 @@ function Pre(props: ComponentProps<'pre'>) {
 
   if (lang === 'mdx') lang = 'md';
 
-  return <DynamicCodeBlock lang={lang} code={content.trimEnd()} />;
+  return (
+    <DynamicCodeBlock
+      lang={lang}
+      code={content.trimEnd()}
+      highlighter={() => shikiFactory.getOrInit()}
+      options={{ themes: { light: 'github-light', dark: 'github-dark' } }}
+    />
+  );
 }
 
 const processor = createProcessor();
@@ -105,11 +149,19 @@ export function Markdown({ text }: { text: string }) {
   );
 }
 
+// Module-level cache shared across requests during SSR — keep it bounded so
+// the server process doesn't accumulate a React tree per unique release body.
+const CACHE_LIMIT = 32;
 const cache = new Map<string, Promise<ReactNode>>();
 
 function Renderer({ text }: { text: string }) {
   const result = cache.get(text) ?? processor.process(text);
+  cache.delete(text);
   cache.set(text, result);
+  if (cache.size > CACHE_LIMIT) {
+    const oldest = cache.keys().next().value;
+    if (oldest !== undefined) cache.delete(oldest);
+  }
 
   return use(result);
 }

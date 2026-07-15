@@ -22,4 +22,4 @@ COPY --from=builder --chown=bun:bun /app/.output ./.output
 USER bun
 EXPOSE 8080
 
-CMD ["bun", "run", "./.output/server/index.mjs"]
+CMD ["bun", "--smol", "run", "./.output/server/index.mjs"]

@@ -26,16 +26,32 @@ my-plugin/plugin.ts
 
 ```json title="plugin.json"
 {
+  "$schema": "https://termy.sh/schemas/plugin.schema.json",
   "apiVersion": 1,
   "id": "hello",
   "name": "Hello",
-  "version": "1.0.0"
+  "version": "1.0.0",
+  "capabilities": []
 }
 ```
 
 `version` is optional metadata shown in Settings. Set `main` to a relative `.ts` or
 `.tsx` path when the entrypoint is not `plugin.ts`; it must stay inside the plugin
 directory and cannot be a symlink.
+
+`$schema` gives compatible editors validation and autocomplete from Termy's public
+[plugin manifest schema](/schemas/plugin.schema.json). `termy plugin init` adds it
+automatically.
+
+`capabilities` declares the Termy host APIs a plugin uses. Supported values are
+`storage` for `context.storage` and `context.paths`, and `native-ui` for views and
+`view.open`. Omitting the field means no capabilities; unknown and duplicate values
+are rejected.
+
+<Callout type="info">
+  Capabilities gate Termy APIs. They are not operating-system permissions: plugins
+  are still trusted Bun code with normal file, network, and process access.
+</Callout>
 
 The entrypoint exports a plugin definition without repeating manifest metadata:
 

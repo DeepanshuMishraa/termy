@@ -17,7 +17,7 @@ import { Route as ReleasesIndexRouteImport } from './routes/releases/index'
 import { Route as ReleasesSlugRouteImport } from './routes/releases/$slug'
 import { Route as DocsChar123Char125DotmdRouteImport } from './routes/docs/{$}[.]md'
 import { Route as DocsSplatRouteImport } from './routes/docs/$'
-import { Route as ApiSearchRouteImport } from './routes/api/search'
+import { Route as ApiSearchDotjsonRouteImport } from './routes/api/search[.]json'
 
 const LlmsDottxtRoute = LlmsDottxtRouteImport.update({
   id: '/llms.txt',
@@ -59,9 +59,9 @@ const DocsSplatRoute = DocsSplatRouteImport.update({
   path: '/docs/$',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ApiSearchRoute = ApiSearchRouteImport.update({
-  id: '/api/search',
-  path: '/api/search',
+const ApiSearchDotjsonRoute = ApiSearchDotjsonRouteImport.update({
+  id: '/api/search.json',
+  path: '/api/search.json',
   getParentRoute: () => rootRouteImport,
 } as any)
 
@@ -70,7 +70,7 @@ export interface FileRoutesByFullPath {
   '/download': typeof DownloadRoute
   '/llms-full.txt': typeof LlmsFullDottxtRoute
   '/llms.txt': typeof LlmsDottxtRoute
-  '/api/search': typeof ApiSearchRoute
+  '/api/search.json': typeof ApiSearchDotjsonRoute
   '/docs/$': typeof DocsSplatRoute
   '/docs/{$}.md': typeof DocsChar123Char125DotmdRoute
   '/releases/$slug': typeof ReleasesSlugRoute
@@ -81,7 +81,7 @@ export interface FileRoutesByTo {
   '/download': typeof DownloadRoute
   '/llms-full.txt': typeof LlmsFullDottxtRoute
   '/llms.txt': typeof LlmsDottxtRoute
-  '/api/search': typeof ApiSearchRoute
+  '/api/search.json': typeof ApiSearchDotjsonRoute
   '/docs/$': typeof DocsSplatRoute
   '/docs/{$}.md': typeof DocsChar123Char125DotmdRoute
   '/releases/$slug': typeof ReleasesSlugRoute
@@ -93,7 +93,7 @@ export interface FileRoutesById {
   '/download': typeof DownloadRoute
   '/llms-full.txt': typeof LlmsFullDottxtRoute
   '/llms.txt': typeof LlmsDottxtRoute
-  '/api/search': typeof ApiSearchRoute
+  '/api/search.json': typeof ApiSearchDotjsonRoute
   '/docs/$': typeof DocsSplatRoute
   '/docs/{$}.md': typeof DocsChar123Char125DotmdRoute
   '/releases/$slug': typeof ReleasesSlugRoute
@@ -106,7 +106,7 @@ export interface FileRouteTypes {
     | '/download'
     | '/llms-full.txt'
     | '/llms.txt'
-    | '/api/search'
+    | '/api/search.json'
     | '/docs/$'
     | '/docs/{$}.md'
     | '/releases/$slug'
@@ -117,7 +117,7 @@ export interface FileRouteTypes {
     | '/download'
     | '/llms-full.txt'
     | '/llms.txt'
-    | '/api/search'
+    | '/api/search.json'
     | '/docs/$'
     | '/docs/{$}.md'
     | '/releases/$slug'
@@ -128,7 +128,7 @@ export interface FileRouteTypes {
     | '/download'
     | '/llms-full.txt'
     | '/llms.txt'
-    | '/api/search'
+    | '/api/search.json'
     | '/docs/$'
     | '/docs/{$}.md'
     | '/releases/$slug'
@@ -140,7 +140,7 @@ export interface RootRouteChildren {
   DownloadRoute: typeof DownloadRoute
   LlmsFullDottxtRoute: typeof LlmsFullDottxtRoute
   LlmsDottxtRoute: typeof LlmsDottxtRoute
-  ApiSearchRoute: typeof ApiSearchRoute
+  ApiSearchDotjsonRoute: typeof ApiSearchDotjsonRoute
   DocsSplatRoute: typeof DocsSplatRoute
   DocsChar123Char125DotmdRoute: typeof DocsChar123Char125DotmdRoute
   ReleasesSlugRoute: typeof ReleasesSlugRoute
@@ -205,11 +205,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DocsSplatRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/api/search': {
-      id: '/api/search'
-      path: '/api/search'
-      fullPath: '/api/search'
-      preLoaderRoute: typeof ApiSearchRouteImport
+    '/api/search.json': {
+      id: '/api/search.json'
+      path: '/api/search.json'
+      fullPath: '/api/search.json'
+      preLoaderRoute: typeof ApiSearchDotjsonRouteImport
       parentRoute: typeof rootRouteImport
     }
   }
@@ -220,7 +220,7 @@ const rootRouteChildren: RootRouteChildren = {
   DownloadRoute: DownloadRoute,
   LlmsFullDottxtRoute: LlmsFullDottxtRoute,
   LlmsDottxtRoute: LlmsDottxtRoute,
-  ApiSearchRoute: ApiSearchRoute,
+  ApiSearchDotjsonRoute: ApiSearchDotjsonRoute,
   DocsSplatRoute: DocsSplatRoute,
   DocsChar123Char125DotmdRoute: DocsChar123Char125DotmdRoute,
   ReleasesSlugRoute: ReleasesSlugRoute,

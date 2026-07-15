@@ -7,16 +7,20 @@ Plugins can open small native tools from `.tsx` entrypoints. JSX is compiled int
 strictly validated Termy document and rendered with GPUI; it is not HTML or React,
 and plugins never receive native renderer access.
 
+Declare `native-ui` in `plugin.json`; add `storage` too when the view persists data.
+
 ## Open a view
 
 Point the manifest at a `.tsx` entrypoint:
 
 ```json title="plugin.json"
 {
+  "$schema": "https://termy.sh/schemas/plugin.schema.json",
   "apiVersion": 1,
   "id": "todos",
   "name": "Todos",
-  "main": "plugin.tsx"
+  "main": "plugin.tsx",
+  "capabilities": ["storage", "native-ui"]
 }
 ```
 

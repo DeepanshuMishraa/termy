@@ -21,6 +21,14 @@ export default defineConfig({
       prerender: {
         enabled: true,
       },
+      // Prerender the static search index and LLM text dumps so they are
+      // served as static files instead of loading the docs source into the
+      // server process at runtime.
+      pages: [
+        { path: '/api/search.json' },
+        { path: '/llms.txt' },
+        { path: '/llms-full.txt' },
+      ],
     }),
     react(),
     nitro({

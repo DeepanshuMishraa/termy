@@ -39,7 +39,19 @@ concurrently under the normal execution timeout.
 
 ## Store JSON values
 
-Use the asynchronous storage API for small persistent values:
+Declare the storage capability in `plugin.json`:
+
+```json title="plugin.json"
+{
+  "$schema": "https://termy.sh/schemas/plugin.schema.json",
+  "apiVersion": 1,
+  "id": "todos",
+  "name": "Todos",
+  "capabilities": ["storage"]
+}
+```
+
+Then use the asynchronous storage API for small persistent values:
 
 ```ts
 const todos = await context.storage.get<Todo[]>("todos") ?? [];
