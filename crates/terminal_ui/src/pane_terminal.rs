@@ -467,6 +467,25 @@ mod tests {
     }
 
     #[test]
+    fn clear_screen_removes_kitty_graphics_from_tmux_panes() {
+        let terminal = PaneTerminal::new(
+            TerminalSize {
+                cols: 20,
+                rows: 10,
+                cell_width: 10.0,
+                cell_height: 20.0,
+            },
+            test_term_options(2000),
+        );
+        terminal.feed_output(b"\x1b_Ga=T,f=32,s=1,v=1,i=96,c=2,r=2,C=1;AQID/w==\x1b\\");
+        assert_eq!(terminal.kitty_graphics_placements().len(), 1);
+
+        terminal.feed_output(b"\x1b[H\x1b[2J");
+
+        assert!(terminal.kitty_graphics_placements().is_empty());
+    }
+
+    #[test]
     fn kitty_cursor_advance_scrolls_tmux_pane_at_bottom() {
         let terminal = PaneTerminal::new(
             TerminalSize {

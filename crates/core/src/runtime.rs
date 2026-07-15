@@ -296,40 +296,65 @@ impl KittyGraphicsCursorTracker {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum KittyGraphicsTextEffect {
+    EnteredAlternateScreen,
+    TerminalReset,
+    PreservePrimaryAcrossPartialHistoryGrowth(usize),
+    ScrollUpWithoutHistory {
+        screen: KittyGraphicsScreen,
+        lines: usize,
+    },
+    ClearViewport {
+        screen: KittyGraphicsScreen,
+        history_size: usize,
+        rows: usize,
+        cols: usize,
+    },
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct KittyGraphicsTextEffects {
-    entered_alternate_screen: bool,
-    terminal_reset: bool,
-    primary_partial_history_growth: usize,
-    primary_untracked_scroll: usize,
-    alternate_untracked_scroll: usize,
+    effects: Vec<KittyGraphicsTextEffect>,
 }
 
 impl KittyGraphicsTextEffects {
-    pub fn is_empty(self) -> bool {
-        self == Self::default()
+    pub fn is_empty(&self) -> bool {
+        self.effects.is_empty()
     }
 
     pub fn apply_to(self, graphics: &mut KittyGraphicsState) -> bool {
         let mut changed = false;
-        if self.terminal_reset {
-            changed |= graphics.clear_visible_on_screen(KittyGraphicsScreen::Primary);
-            changed |= graphics.clear_visible_on_screen(KittyGraphicsScreen::Alternate);
-        } else if self.entered_alternate_screen {
-            changed |= graphics.clear_visible_on_screen(KittyGraphicsScreen::Alternate);
+        for effect in self.effects {
+            changed |= match effect {
+                KittyGraphicsTextEffect::EnteredAlternateScreen => {
+                    graphics.clear_visible_on_screen(KittyGraphicsScreen::Alternate)
+                }
+                KittyGraphicsTextEffect::TerminalReset => {
+                    let primary = graphics.clear_visible_on_screen(KittyGraphicsScreen::Primary);
+                    let alternate =
+                        graphics.clear_visible_on_screen(KittyGraphicsScreen::Alternate);
+                    primary || alternate
+                }
+                KittyGraphicsTextEffect::PreservePrimaryAcrossPartialHistoryGrowth(lines) => {
+                    graphics.preserve_primary_placements_across_partial_history_growth(lines)
+                }
+                KittyGraphicsTextEffect::ScrollUpWithoutHistory { screen, lines } => {
+                    graphics.scroll_up_without_history_on_screen(lines, screen)
+                }
+                KittyGraphicsTextEffect::ClearViewport {
+                    screen,
+                    history_size,
+                    rows,
+                    cols,
+                } => graphics.clear_viewport_on_screen(screen, history_size, rows, cols),
+            };
         }
-        changed |= graphics.preserve_primary_placements_across_partial_history_growth(
-            self.primary_partial_history_growth,
-        );
-        changed |= graphics.scroll_up_without_history_on_screen(
-            self.primary_untracked_scroll,
-            KittyGraphicsScreen::Primary,
-        );
-        changed |= graphics.scroll_up_without_history_on_screen(
-            self.alternate_untracked_scroll,
-            KittyGraphicsScreen::Alternate,
-        );
         changed
+    }
+
+    fn push(&mut self, effect: KittyGraphicsTextEffect) {
+        self.effects.push(effect);
     }
 }
 
@@ -407,22 +432,30 @@ impl<T: EventListener> KittyGraphicsTrackingHandler<'_, T> {
             .saturating_sub(observation.history_before);
         match (observation.screen, observation.full_screen_region) {
             (KittyGraphicsScreen::Primary, true) => {
-                self.effects.primary_untracked_scroll = self
-                    .effects
-                    .primary_untracked_scroll
-                    .saturating_add(observation.physical_lines.saturating_sub(history_growth));
+                let lines = observation.physical_lines.saturating_sub(history_growth);
+                if lines > 0 {
+                    self.effects
+                        .push(KittyGraphicsTextEffect::ScrollUpWithoutHistory {
+                            screen: KittyGraphicsScreen::Primary,
+                            lines,
+                        });
+                }
             }
             (KittyGraphicsScreen::Primary, false) => {
-                self.effects.primary_partial_history_growth = self
-                    .effects
-                    .primary_partial_history_growth
-                    .saturating_add(history_growth);
+                if history_growth > 0 {
+                    self.effects.push(
+                        KittyGraphicsTextEffect::PreservePrimaryAcrossPartialHistoryGrowth(
+                            history_growth,
+                        ),
+                    );
+                }
             }
             (KittyGraphicsScreen::Alternate, true) => {
-                self.effects.alternate_untracked_scroll = self
-                    .effects
-                    .alternate_untracked_scroll
-                    .saturating_add(observation.physical_lines);
+                self.effects
+                    .push(KittyGraphicsTextEffect::ScrollUpWithoutHistory {
+                        screen: KittyGraphicsScreen::Alternate,
+                        lines: observation.physical_lines,
+                    });
             }
             (KittyGraphicsScreen::Alternate, false) => (),
         }
@@ -500,7 +533,7 @@ impl<T: EventListener> Handler for KittyGraphicsTrackingHandler<'_, T> {
 
     fn reset_state(&mut self) {
         self.tracker.reset_scroll_region();
-        self.effects.terminal_reset = true;
+        self.effects.push(KittyGraphicsTextEffect::TerminalReset);
         Handler::reset_state(&mut *self.term);
     }
 
@@ -511,7 +544,8 @@ impl<T: EventListener> Handler for KittyGraphicsTrackingHandler<'_, T> {
         if mode == NamedPrivateMode::SwapScreenAndSetRestoreCursor.into()
             && !self.term.mode().contains(TermMode::ALT_SCREEN)
         {
-            self.effects.entered_alternate_screen = true;
+            self.effects
+                .push(KittyGraphicsTextEffect::EnteredAlternateScreen);
         }
         Handler::set_private_mode(&mut *self.term, mode);
     }
@@ -528,6 +562,26 @@ impl<T: EventListener> Handler for KittyGraphicsTrackingHandler<'_, T> {
             .region
             .set(top, bottom, self.term.grid().screen_lines());
         Handler::set_scrolling_region(&mut *self.term, top, bottom);
+    }
+
+    fn clear_screen(&mut self, mode: ansi::ClearMode) {
+        let clear_viewport = if self.track_scrolls && matches!(mode, ansi::ClearMode::All) {
+            Some(KittyGraphicsTextEffect::ClearViewport {
+                screen: KittyGraphicsScreen::from_alternate_screen(
+                    self.term.mode().contains(TermMode::ALT_SCREEN),
+                ),
+                history_size: self.term.grid().history_size(),
+                rows: self.term.grid().screen_lines(),
+                cols: self.term.grid().columns(),
+            })
+        } else {
+            None
+        };
+
+        Handler::clear_screen(&mut *self.term, mode);
+        if let Some(clear_viewport) = clear_viewport {
+            self.effects.push(clear_viewport);
+        }
     }
 
     forward_kitty_graphics_handler_methods! {
@@ -561,7 +615,6 @@ impl<T: EventListener> Handler for KittyGraphicsTrackingHandler<'_, T> {
         fn save_cursor_position();
         fn restore_cursor_position();
         fn clear_line(mode: ansi::LineClearMode);
-        fn clear_screen(mode: ansi::ClearMode);
         fn clear_tabs(mode: ansi::TabulationClearMode);
         fn set_tabs(interval: u16);
         fn reverse_index();
@@ -2945,6 +2998,36 @@ mod tests {
         terminal.feed_output(b"\x1bc");
 
         assert!(!terminal.alternate_screen_mode());
+        assert!(terminal.kitty_graphics_placements().is_empty());
+    }
+
+    #[test]
+    fn clear_screen_erases_only_the_active_viewport_graphics() {
+        let terminal = Terminal::new_display(test_terminal_size(), None);
+        terminal.feed_output(b"\x1b[2;1H\x1b_Ga=T,f=32,s=1,v=1,i=98,c=2,r=1,C=1;AQID/w==\x1b\\");
+
+        terminal.feed_output(b"\x1b[J\x1b[1J\x1b[3J");
+        assert_eq!(
+            terminal.kitty_graphics_placements().len(),
+            1,
+            "non-ED2 erase commands must not affect graphics"
+        );
+
+        terminal.feed_output(
+            b"\x1b[?1049h\x1b[2;1H\x1b_Ga=T,f=32,s=1,v=1,i=99,c=2,r=1,C=1;AQID/w==\x1b\\",
+        );
+        assert_eq!(terminal.kitty_graphics_placements().len(), 1);
+        terminal.feed_output(b"\x1b[2J");
+        assert!(terminal.kitty_graphics_placements().is_empty());
+
+        terminal.feed_output(b"\x1b[?1049l");
+        assert_eq!(
+            terminal.kitty_graphics_placements().len(),
+            1,
+            "clearing the alternate viewport must preserve primary graphics"
+        );
+
+        terminal.feed_output(b"\x1b[H\x1b[2J");
         assert!(terminal.kitty_graphics_placements().is_empty());
     }
 

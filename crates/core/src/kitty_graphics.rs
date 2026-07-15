@@ -524,6 +524,36 @@ impl KittyGraphicsState {
         before != self.placements.len()
     }
 
+    pub(crate) fn clear_viewport_on_screen(
+        &mut self,
+        screen: KittyGraphicsScreen,
+        history_size: usize,
+        rows: usize,
+        cols: usize,
+    ) -> bool {
+        if rows == 0 || cols == 0 {
+            return false;
+        }
+
+        let viewport_start = i64::try_from(history_size).unwrap_or(i64::MAX);
+        let viewport_end = viewport_start.saturating_add(i64::try_from(rows).unwrap_or(i64::MAX));
+        let before = self.placements.len();
+        self.placements.retain(|placement| {
+            if placement.screen != screen {
+                return true;
+            }
+
+            let placement_end = placement
+                .anchor_line
+                .saturating_add(i64::from(placement.occupied_rows));
+            let vertically_visible =
+                placement.anchor_line < viewport_end && placement_end > viewport_start;
+            let horizontally_visible = placement.col < cols && placement.occupied_cols > 0;
+            !(vertically_visible && horizontally_visible)
+        });
+        before != self.placements.len()
+    }
+
     /// Move placements with a screen scroll that was not recorded in history.
     ///
     /// Normal primary-screen scrolling is represented by a growing history
@@ -1241,6 +1271,49 @@ mod tests {
         assert_eq!(placements.len(), 2);
         assert_eq!(placements[0].placement_serial, 1);
         assert_eq!(placements[1].placement_serial, 2);
+    }
+
+    #[test]
+    fn clearing_a_viewport_preserves_scrollback_and_other_screens() {
+        let png = one_pixel_png();
+        let mut state = KittyGraphicsState::default();
+        state.apply(
+            command("a=T,f=100,i=3,c=2,r=2,C=1,q=1", &png),
+            0,
+            0,
+            0,
+            size(),
+        );
+        state.apply(command("a=p,i=3,c=2,r=2,C=1,q=1", &[]), 0, 1, 10, size());
+        state.apply_on_screen(
+            command("a=p,i=3,c=2,r=2,C=1,q=1", &[]),
+            0,
+            0,
+            0,
+            size(),
+            KittyGraphicsScreen::Alternate,
+        );
+
+        assert!(state.clear_viewport_on_screen(KittyGraphicsScreen::Primary, 10, 24, 80,));
+        assert!(
+            state
+                .render_placements_on_screen(10, 0, 24, 80, KittyGraphicsScreen::Primary)
+                .is_empty()
+        );
+        assert_eq!(
+            state
+                .render_placements_on_screen(10, 10, 24, 80, KittyGraphicsScreen::Primary)
+                .len(),
+            1,
+            "placements already in scrollback must survive ED2"
+        );
+        assert_eq!(
+            state
+                .render_placements_on_screen(0, 0, 24, 80, KittyGraphicsScreen::Alternate)
+                .len(),
+            1,
+            "clearing the primary viewport must not affect the alternate screen"
+        );
     }
 
     #[test]
