@@ -48,6 +48,7 @@ const MAX_VIEW_NODES: usize = 256;
 const MAX_VIEW_DEPTH: usize = 16;
 const MAX_VIEW_CHILDREN: usize = 64;
 const MAX_VIEW_VALUES: usize = 64;
+const PLUGIN_CAPABILITIES: [&str; 2] = ["storage", "native-ui"];
 pub const MAX_INSTALLED_PLUGINS: usize = 32;
 pub const MAX_PLUGIN_SOURCE_BYTES: u64 = 16 * 1024 * 1024;
 pub const MAX_PLUGIN_SOURCE_FILES: usize = 4_096;
@@ -575,6 +576,8 @@ struct PluginManifestFile {
     version: Option<String>,
     #[serde(default)]
     main: Option<String>,
+    #[serde(default)]
+    capabilities: Vec<String>,
 }
 
 type PluginFiles = Vec<(String, Vec<u8>)>;
@@ -2641,6 +2644,7 @@ fn validated_plugin_manifest(
     if let Some(version) = manifest.version.as_deref() {
         validate_text(version, 100, "version")?;
     }
+    validate_plugin_capabilities(&manifest.capabilities)?;
     let main = manifest.main.as_deref().unwrap_or("plugin.ts");
     validate_text(main, 1_024, "entrypoint")?;
     let entrypoint = normalized_relative_plugin_path(main)
@@ -2662,6 +2666,24 @@ fn validated_plugin_manifest(
         }
     }
     Ok((manifest, entrypoint))
+}
+
+/// Validates capability names from a plugin manifest.
+pub fn validate_plugin_capabilities(capabilities: &[String]) -> Result<(), String> {
+    let mut seen = HashSet::new();
+    for capability in capabilities {
+        if !PLUGIN_CAPABILITIES.contains(&capability.as_str()) {
+            return Err(format!(
+                "plugin.json capability `{capability}` is not supported"
+            ));
+        }
+        if !seen.insert(capability) {
+            return Err(format!(
+                "plugin.json capability `{capability}` is duplicated"
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn plugin_is_enabled(root: &Path, id: &str) -> Result<bool, String> {

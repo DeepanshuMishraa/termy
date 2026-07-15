@@ -13,7 +13,7 @@ use serde::Deserialize;
 use tempfile::TempDir;
 use termy_plugin_runtime::{
     MAX_PLUGIN_SOURCE_BYTES, MAX_PLUGIN_SOURCE_FILES, PluginRuntime, PluginSourceMetadata,
-    valid_plugin_id,
+    valid_plugin_id, validate_plugin_capabilities,
 };
 
 use crate::PluginCommand;
@@ -316,10 +316,12 @@ fn init(
     }
 
     let mut manifest = serde_json::to_vec_pretty(&serde_json::json!({
+        "$schema": "https://termy.sh/schemas/plugin.schema.json",
         "apiVersion": 1,
         "id": &id,
         "name": &name,
-        "version": "0.1.0"
+        "version": "0.1.0",
+        "capabilities": []
     }))
     .map_err(|error| format!("failed to create plugin.json: {error}"))?;
     manifest.push(b'\n');
@@ -1098,6 +1100,8 @@ struct CandidateManifest {
     name: String,
     #[serde(default)]
     main: Option<String>,
+    #[serde(default)]
+    capabilities: Vec<String>,
 }
 
 fn parse_candidate(
@@ -1116,6 +1120,7 @@ fn parse_candidate(
     if manifest.name.trim().is_empty() || manifest.name.chars().count() > 200 {
         return Err("plugin name must contain 1 to 200 characters".to_string());
     }
+    validate_plugin_capabilities(&manifest.capabilities)?;
     let main = normalize_repo_path(manifest.main.as_deref().unwrap_or("plugin.ts"), false)
         .map_err(|_| "plugin.json main must stay inside the plugin directory".to_string())?;
     let main_path = joined_repo_path(directory, &main);
@@ -1311,12 +1316,43 @@ mod tests {
         ];
         let candidate = parse_candidate(
             "plugins/git",
-            br#"{"apiVersion":1,"id":"git-tools","name":"Git Tools"}"#,
+            br#"{"apiVersion":1,"id":"git-tools","name":"Git Tools","capabilities":["storage","native-ui"]}"#,
             &entries,
         )
         .expect("candidate");
         assert_eq!(candidate.id, "git-tools");
         assert_eq!(candidate.main, "plugin.ts");
+    }
+
+    #[test]
+    fn rejects_invalid_manifest_capabilities_before_download() {
+        let entries = vec![
+            blob("plugins/git/plugin.json", 100),
+            blob("plugins/git/plugin.ts", 20),
+        ];
+        let error = parse_candidate(
+            "plugins/git",
+            br#"{"apiVersion":1,"id":"git-tools","name":"Git Tools","capabilities":["root-access"]}"#,
+            &entries,
+        )
+        .expect_err("unknown capability");
+        assert!(error.contains("capability `root-access` is not supported"));
+
+        let error = parse_candidate(
+            "plugins/git",
+            br#"{"apiVersion":1,"id":"git-tools","name":"Git Tools","capabilities":["storage","storage"]}"#,
+            &entries,
+        )
+        .expect_err("duplicate capability");
+        assert!(error.contains("capability `storage` is duplicated"));
+
+        let error = parse_candidate(
+            "plugins/git",
+            br#"{"apiVersion":1,"id":"git-tools","name":"Git Tools","capabilities":"storage"}"#,
+            &entries,
+        )
+        .expect_err("capabilities must be an array");
+        assert!(error.contains("invalid plugin.json"));
     }
 
     #[test]

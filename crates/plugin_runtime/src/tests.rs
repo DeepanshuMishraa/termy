@@ -10,6 +10,7 @@ fn write_plugin(plugins: &Path, id: &str, name: &str, source: &str) -> PathBuf {
             "apiVersion": 1,
             "id": id,
             "name": name,
+            "capabilities": [],
         }))
         .expect("encode manifest"),
     )
@@ -43,7 +44,7 @@ fn tsx_views_render_and_round_trip_actions() {
     let plugin_dir = write_plugin(&plugins, "todos", "Todos", "export default {};\n");
     fs::write(
         plugin_dir.join("plugin.json"),
-        r#"{"apiVersion":1,"id":"todos","name":"Todos","main":"plugin.tsx"}"#,
+        r#"{"apiVersion":1,"id":"todos","name":"Todos","main":"plugin.tsx","capabilities":["storage","native-ui"]}"#,
     )
     .expect("write TSX manifest");
     fs::write(
@@ -215,6 +216,113 @@ export default definePlugin({
 }
 
 #[test]
+fn runtime_enforces_declared_capabilities() {
+    if !bun_is_available() {
+        return;
+    }
+    let temp = TempDir::new().expect("temp dir");
+    let config_path = temp.path().join("config.txt");
+    fs::write(&config_path, "").expect("write config");
+    let plugins = temp.path().join("plugins");
+
+    write_plugin(
+        &plugins,
+        "undeclared",
+        "Undeclared",
+        r#"
+export default definePlugin({
+  commands: [
+    {
+      id: "storage",
+      title: "Use storage",
+      async run({ context }) {
+        await context.storage.get("value");
+      },
+    },
+    {
+      id: "paths",
+      title: "Use paths",
+      run({ context }) {
+        return { type: "toast", level: "info", message: context.paths.dataDirectory };
+      },
+    },
+    {
+      id: "open",
+      title: "Open view",
+      run() {
+        return { type: "view.open", view: "missing" };
+      },
+    },
+  ],
+});
+"#,
+    );
+    write_plugin(
+        &plugins,
+        "undeclared-view",
+        "Undeclared View",
+        r#"
+export default definePlugin({
+  commands: [],
+  views: {
+    panel: { title: "Panel", render() { return "Hello"; } },
+  },
+});
+"#,
+    );
+
+    let runtime = PluginRuntime::new(Some(&config_path));
+    let refresh = runtime.refresh_if_changed();
+    assert!(refresh.changed);
+    assert!(
+        refresh.errors.iter().any(|error| error
+            .contains("Declaring plugin views requires capability `native-ui` in plugin.json")),
+        "refresh errors: {:?}",
+        refresh.errors
+    );
+
+    let revision = runtime
+        .command_with_revision("undeclared", "storage")
+        .expect("command-only plugin should still load")
+        .1;
+    let error = runtime
+        .invoke(
+            "undeclared",
+            "storage",
+            &revision,
+            BTreeMap::new(),
+            test_plugin_context(),
+        )
+        .expect_err("storage API must require its capability");
+    assert!(error.contains("Plugin storage requires capability `storage` in plugin.json"));
+
+    let error = runtime
+        .invoke(
+            "undeclared",
+            "paths",
+            &revision,
+            BTreeMap::new(),
+            test_plugin_context(),
+        )
+        .expect_err("storage paths must require their capability");
+    assert!(error.contains("Plugin storage requires capability `storage` in plugin.json"));
+
+    let error = runtime
+        .invoke(
+            "undeclared",
+            "open",
+            &revision,
+            BTreeMap::new(),
+            test_plugin_context(),
+        )
+        .expect_err("opening native UI must require its capability");
+    assert!(error.contains("Opening plugin views requires capability `native-ui` in plugin.json"));
+
+    assert!(!plugins.join(".termy-data/undeclared").exists());
+    assert!(!plugins.join(".termy-cache/data/undeclared").exists());
+}
+
+#[test]
 fn native_view_documents_reject_unknown_props_and_unsafe_shapes() {
     let unknown = serde_json::from_value::<PluginUiNode>(serde_json::json!({
         "type": "text",
@@ -363,6 +471,78 @@ fn discovery_requires_a_manifest_and_ignores_loose_typescript() {
     let discovered = discover_plugins(&plugins).expect("discover plugins");
     assert_eq!(discovered.sources.len(), 1);
     assert_eq!(discovered.sources[0].id, "hello");
+}
+
+#[test]
+fn manifest_capabilities_are_explicit_and_validated() {
+    let temp = TempDir::new().expect("temp dir");
+    let plugins = temp.path().join("plugins");
+    let plugin = write_plugin(
+        &plugins,
+        "capabilities",
+        "Capabilities",
+        "export default definePlugin({ commands: [] });",
+    );
+    let manifest = plugin.join("plugin.json");
+
+    fs::write(
+        &manifest,
+        r#"{"apiVersion":1,"id":"capabilities","name":"Capabilities"}"#,
+    )
+    .expect("write manifest without capabilities");
+    validated_plugin_manifest(&plugin, "capabilities")
+        .expect("missing capabilities should mean an empty list");
+
+    fs::write(
+        &manifest,
+        r#"{"apiVersion":1,"id":"capabilities","name":"Capabilities","capabilities":["storage","native-ui"]}"#,
+    )
+    .expect("write supported capabilities");
+    validated_plugin_manifest(&plugin, "capabilities")
+        .expect("supported capabilities should be accepted");
+
+    fs::write(
+        &manifest,
+        r#"{"apiVersion":1,"id":"capabilities","name":"Capabilities","capabilities":["root-access"]}"#,
+    )
+    .expect("write unsupported capability");
+    let error = validated_plugin_manifest(&plugin, "capabilities")
+        .expect_err("unknown capabilities must be rejected");
+    assert!(error.contains("capability `root-access` is not supported"));
+
+    fs::write(
+        &manifest,
+        r#"{"apiVersion":1,"id":"capabilities","name":"Capabilities","capabilities":["storage","storage"]}"#,
+    )
+    .expect("write duplicate capability");
+    let error = validated_plugin_manifest(&plugin, "capabilities")
+        .expect_err("duplicate capabilities must be rejected");
+    assert!(error.contains("capability `storage` is duplicated"));
+
+    fs::write(
+        &manifest,
+        r#"{"apiVersion":1,"id":"capabilities","name":"Capabilities","capabilities":"storage"}"#,
+    )
+    .expect("write non-array capabilities");
+    let error = validated_plugin_manifest(&plugin, "capabilities")
+        .expect_err("capabilities must be an array");
+    assert!(error.contains("Invalid plugin.json"));
+}
+
+#[test]
+fn plugin_manifest_schema_tracks_runtime_capabilities() {
+    let schema: Value = serde_json::from_str(include_str!(
+        "../../../website/public/schemas/plugin.schema.json"
+    ))
+    .expect("plugin manifest schema must be valid JSON");
+    let schema_capabilities = schema["properties"]["capabilities"]["items"]["enum"]
+        .as_array()
+        .expect("schema capability enum");
+    let runtime_capabilities = PLUGIN_CAPABILITIES
+        .iter()
+        .map(|capability| Value::String((*capability).to_string()))
+        .collect::<Vec<_>>();
+    assert_eq!(schema_capabilities, &runtime_capabilities);
 }
 
 #[test]
@@ -1037,6 +1217,11 @@ export default definePlugin({
 });
 "#,
     );
+    fs::write(
+        plugin_dir.join("plugin.json"),
+        r#"{"apiVersion":1,"id":"hello","name":"Hello","capabilities":["storage"]}"#,
+    )
+    .expect("declare storage capability");
     fs::write(
         plugin_dir.join("helper.ts"),
         r#"export const greeting = (name: unknown) => `Hello ${String(name)}`;"#,

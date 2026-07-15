@@ -26,6 +26,15 @@ fn init_add_and_dev_sync_a_managed_local_copy() {
         String::from_utf8_lossy(&initialized.stderr)
     );
     assert!(String::from_utf8_lossy(&initialized.stdout).contains("termy plugin dev"));
+    let manifest: serde_json::Value = serde_json::from_slice(
+        &fs::read(source.join("plugin.json")).expect("read initialized manifest"),
+    )
+    .expect("parse initialized manifest");
+    assert_eq!(
+        manifest["$schema"],
+        "https://termy.sh/schemas/plugin.schema.json"
+    );
+    assert_eq!(manifest["capabilities"], serde_json::json!([]));
 
     let installed = Command::new(cli)
         .env("XDG_CONFIG_HOME", &config_home)

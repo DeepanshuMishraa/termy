@@ -76,22 +76,31 @@ Every plugin directory contains a `plugin.json` manifest:
 
 ```json
 {
+  "$schema": "https://termy.sh/schemas/plugin.schema.json",
   "apiVersion": 1,
   "id": "hello",
   "name": "Hello",
-  "version": "1.0.0"
+  "version": "1.0.0",
+  "capabilities": []
 }
 ```
 
 | Field | Required | Description |
 | --- | --- | --- |
+| `$schema` | no | Public [JSON Schema](https://termy.sh/schemas/plugin.schema.json) for editor validation and completion. |
 | `apiVersion` | yes | Plugin API version; v1 requires `1`. |
 | `id` | yes | Stable plugin ID. It should match the directory name. |
 | `name` | yes | Human-readable plugin name shown by Termy. |
 | `version` | no | Version shown in Settings when the plugin is managed there. |
 | `main` | no | TypeScript entrypoint relative to the plugin directory. Defaults to `plugin.ts`. |
+| `capabilities` | no | Termy host APIs the plugin opts into. Supports `storage` and `native-ui`; omitted means `[]`. |
 
 Use lowercase letters, numbers, and hyphens for IDs so saved references remain stable when a display name changes. `main` must resolve to a regular file inside the plugin directory; out-of-root paths and symlinks are rejected.
+
+`storage` enables `context.storage` and `context.paths`. `native-ui` enables
+declared views and `view.open`. Unknown or duplicate values are rejected. These
+declarations gate Termy APIs; they do not sandbox the trusted Bun process or its
+normal file, network, and process access.
 
 ## Minimal plugin
 
@@ -99,9 +108,11 @@ Use lowercase letters, numbers, and hyphens for IDs so saved references remain s
 
 ```json
 {
+  "$schema": "https://termy.sh/schemas/plugin.schema.json",
   "apiVersion": 1,
   "id": "hello",
-  "name": "Hello"
+  "name": "Hello",
+  "capabilities": []
 }
 ```
 
@@ -123,7 +134,9 @@ export default definePlugin({
 } satisfies TermyPlugin);
 ```
 
-The manifest owns API and identity metadata. `definePlugin` owns runtime behavior and contains commands plus optional user settings; do not duplicate `apiVersion`, `id`, `name`, `version`, or `main` in `plugin.ts`.
+The manifest owns API and identity metadata. `definePlugin` owns runtime behavior
+and contains commands plus optional user settings; do not duplicate `$schema`,
+`apiVersion`, `id`, `name`, `version`, `main`, or `capabilities` in `plugin.ts`.
 
 ## Command fields
 
@@ -329,7 +342,11 @@ run({ context }) {
 }
 ```
 
-`context.storage` persists small JSON values outside the content-hashed plugin source. Storage is isolated by plugin, limited to 512 keys and 1 MiB, survives reloads and updates, and is deleted when the plugin is uninstalled:
+Declare `"storage"` in `plugin.json` before using `context.storage` or
+`context.paths`. `context.storage` persists small JSON values outside the
+content-hashed plugin source. Storage is isolated by plugin, limited to 512 keys
+and 1 MiB, survives reloads and updates, and is deleted when the plugin is
+uninstalled:
 
 ```ts
 async run({ context }) {
@@ -349,10 +366,12 @@ Set the manifest entrypoint to a `.tsx` file:
 
 ```json
 {
+  "$schema": "https://termy.sh/schemas/plugin.schema.json",
   "apiVersion": 1,
   "id": "todos",
   "name": "Todos",
-  "main": "plugin.tsx"
+  "main": "plugin.tsx",
+  "capabilities": ["storage", "native-ui"]
 }
 ```
 

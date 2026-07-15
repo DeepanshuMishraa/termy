@@ -139,7 +139,9 @@ type TermyPluginContext<
   readonly appVersion: string;
   readonly settings: TermyPluginSettings<T>;
   readonly toasts: TermyPluginToasts;
+  /** Requires `"storage"` in plugin.json capabilities. */
   readonly storage: TermyPluginStorage;
+  /** Requires `"storage"` in plugin.json capabilities. */
   readonly paths: {
     readonly dataDirectory: string;
     readonly cacheDirectory: string;
@@ -254,6 +256,7 @@ type TermyPluginAction =
   | { type: "termy.command"; command: string }
   | { type: "clipboard.write"; text: string }
   | { type: "url.open"; url: string }
+  /** Requires `"native-ui"` in plugin.json capabilities. */
   | { type: "view.open"; view: string }
   | {
       type: "toast";
@@ -315,6 +318,7 @@ type TermyPlugin<
   settings?: T;
   commands: TermyPluginCommand<T>[];
   events?: TermyPluginEvents<T>;
+  /** Requires `"native-ui"` in plugin.json capabilities. */
   views?: Record<string, TermyPluginView<T>>;
 };
 

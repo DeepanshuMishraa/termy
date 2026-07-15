@@ -24,10 +24,13 @@ type PluginSource = {
   root: string;
   cacheKey: string;
 };
+const PLUGIN_CAPABILITIES = ["storage", "native-ui"] as const;
+type PluginCapability = (typeof PLUGIN_CAPABILITIES)[number];
 type PreparedPluginSource = PluginSource & {
   name: string;
   version?: string;
   path: string;
+  capabilities: PluginCapability[];
 };
 type PluginManifest = {
   apiVersion: number;
@@ -35,6 +38,7 @@ type PluginManifest = {
   name: string;
   version?: string;
   main?: string;
+  capabilities?: unknown;
 };
 type CapturedFile = { relativePath: string; contents: Uint8Array };
 type PluginToastLevel = "info" | "success" | "warning" | "error";
@@ -162,6 +166,7 @@ let pluginServices: PluginServices | undefined;
 let commandHandlers = new Map<string, PluginCommand["run"]>();
 let eventHandlers = new Map<PluginEventName, PluginEventHandler>();
 let viewHandlers = new Map<string, PluginViewDefinition>();
+let pluginCapabilities = new Set<PluginCapability>();
 let queue = Promise.resolve();
 
 // Keep ordinary plugin output on Termy's diagnostic stream.
@@ -191,6 +196,14 @@ function logValue(value: unknown): string {
     return JSON.stringify(value);
   } catch {
     return String(value);
+  }
+}
+
+function requireCapability(capability: PluginCapability, feature: string): void {
+  if (!pluginCapabilities.has(capability)) {
+    throw new Error(
+      `${feature} requires capability \`${capability}\` in plugin.json`,
+    );
   }
 }
 
@@ -618,6 +631,7 @@ async function capturePlugin(source: PluginSource): Promise<CapturedFile[]> {
 function parseManifest(source: PluginSource, files: CapturedFile[]): {
   manifest: PluginManifest;
   entrypoint: string;
+  capabilities: PluginCapability[];
 } {
   const manifestFile = files.find((file) => file.relativePath === "plugin.json");
   if (!manifestFile) throw new Error("plugin.json is missing");
@@ -639,6 +653,7 @@ function parseManifest(source: PluginSource, files: CapturedFile[]): {
   if (manifest.version !== undefined) {
     assertText(manifest.version, "plugin.json version", 100);
   }
+  const capabilities = normalizeCapabilities(manifest.capabilities);
   const main = manifest.main === undefined
     ? "plugin.ts"
     : optionalText(manifest.main, "plugin.json main", 1_024)!;
@@ -658,7 +673,31 @@ function parseManifest(source: PluginSource, files: CapturedFile[]): {
   if (!files.some((file) => file.relativePath === entrypoint)) {
     throw new Error(`Plugin entrypoint does not exist: ${main}`);
   }
-  return { manifest, entrypoint };
+  return { manifest, entrypoint, capabilities };
+}
+
+function normalizeCapabilities(value: unknown): PluginCapability[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    throw new Error("plugin.json capabilities must be an array");
+  }
+  const capabilities: PluginCapability[] = [];
+  const seen = new Set<PluginCapability>();
+  for (const candidate of value) {
+    if (typeof candidate !== "string") {
+      throw new Error("plugin.json capabilities must contain only strings");
+    }
+    if (!PLUGIN_CAPABILITIES.includes(candidate as PluginCapability)) {
+      throw new Error(`plugin.json capability \`${candidate}\` is not supported`);
+    }
+    const capability = candidate as PluginCapability;
+    if (seen.has(capability)) {
+      throw new Error(`plugin.json capability \`${capability}\` is duplicated`);
+    }
+    seen.add(capability);
+    capabilities.push(capability);
+  }
+  return capabilities;
 }
 
 function pathIsInside(root: string, candidate: string): boolean {
@@ -780,13 +819,14 @@ async function preparePlugin(
   assertId(source.id, "Plugin path ID");
   assertText(source.cacheKey, "Plugin cache key", 128);
   const files = await capturePlugin(source);
-  const { manifest, entrypoint } = parseManifest(source, files);
+  const { manifest, entrypoint, capabilities } = parseManifest(source, files);
   const path = await bundlePlugin(source, files, entrypoint, bundleCacheRoot);
   return {
     ...source,
     name: manifest.name,
     version: manifest.version,
     path,
+    capabilities,
   };
 }
 
@@ -992,6 +1032,7 @@ function normalizeViews(
 ): Record<string, unknown>[] {
   viewHandlers = new Map();
   if (value === undefined) return [];
+  requireCapability("native-ui", "Declaring plugin views");
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("Plugin views must be an object");
   }
@@ -1138,16 +1179,26 @@ function normalizeSettings(value: unknown): Record<string, unknown>[] {
 }
 
 function normalizeActions(value: unknown): unknown[] {
-  if (value === undefined || value === null) return [];
-  if (Array.isArray(value)) return value;
-  if (
+  let actions: unknown[];
+  if (value === undefined || value === null) actions = [];
+  else if (Array.isArray(value)) actions = value;
+  else if (
     typeof value === "object" &&
-    value !== null &&
     Array.isArray((value as { actions?: unknown }).actions)
   ) {
-    return (value as { actions: unknown[] }).actions;
+    actions = (value as { actions: unknown[] }).actions;
+  } else actions = [value];
+
+  if (
+    actions.some((action) =>
+      action !== null &&
+      typeof action === "object" &&
+      (action as { type?: unknown }).type === "view.open"
+    )
+  ) {
+    requireCapability("native-ui", "Opening plugin views");
   }
-  return [value];
+  return actions;
 }
 
 function assertStorageKey(value: unknown): asserts value is string {
@@ -1281,12 +1332,48 @@ function createPluginStorage(storageDirectory: string): PluginStorage {
 }
 
 async function createPluginServices(
-  source: PluginSource,
+  source: PreparedPluginSource,
   dataRoot: string,
   cacheRoot: string,
 ): Promise<PluginServices> {
   if (!isAbsolute(dataRoot) || !isAbsolute(cacheRoot)) {
     throw new Error("Plugin storage paths must be absolute");
+  }
+  if (!source.capabilities.includes("storage")) {
+    const unavailable = (): Error =>
+      new Error("Plugin storage requires capability `storage` in plugin.json");
+    const paths = {} as PluginPaths;
+    Object.defineProperties(paths, {
+      dataDirectory: {
+        enumerable: true,
+        get: () => {
+          throw unavailable();
+        },
+      },
+      cacheDirectory: {
+        enumerable: true,
+        get: () => {
+          throw unavailable();
+        },
+      },
+    });
+    return Object.freeze({
+      storage: Object.freeze({
+        get: async () => {
+          throw unavailable();
+        },
+        set: async () => {
+          throw unavailable();
+        },
+        delete: async () => {
+          throw unavailable();
+        },
+        clear: async () => {
+          throw unavailable();
+        },
+      }),
+      paths: Object.freeze(paths),
+    });
   }
   const storageDirectory = join(dataRoot, source.id);
   const dataDirectory = join(storageDirectory, "files");
@@ -1432,8 +1519,9 @@ async function handle(message: Record<string, unknown>): Promise<unknown> {
       pluginSource,
       String(message.bundleCacheRoot || ""),
     );
+    pluginCapabilities = new Set(source.capabilities);
     pluginServices = await createPluginServices(
-      pluginSource,
+      source,
       String(message.pluginDataRoot || ""),
       String(message.pluginCacheRoot || ""),
     );
