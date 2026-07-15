@@ -17,7 +17,9 @@ emit_chunk() {
   local more="$1"
   local chunk="$2"
   if ((first_chunk)); then
-    printf '\033_Ga=T,f=100,t=d,i=424242,p=1,c=40,r=20,C=0,q=2,m=%d;%s\033\\' \
+    # Leave image and placement IDs anonymous so each invocation creates a
+    # distinct placement instead of replacing the previous demo image.
+    printf '\033_Ga=T,f=100,t=d,c=40,r=20,C=0,q=2,m=%d;%s\033\\' \
       "${more}" "${chunk}"
     first_chunk=0
   else

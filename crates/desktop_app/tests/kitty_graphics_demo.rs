@@ -14,6 +14,14 @@ fn demo_script_transmits_the_complete_bundled_image() {
 
     let output = Command::new("bash").arg(script).output().unwrap();
     assert!(output.status.success());
+    assert!(
+        find(&output.stdout, b",i=").is_none(),
+        "the repeatable demo must not replace a fixed image id"
+    );
+    assert!(
+        find(&output.stdout, b",p=").is_none(),
+        "the repeatable demo must not replace a fixed placement id"
+    );
 
     let (payload_len, command_count, final_chunk_count) = inspect_stream(&output.stdout);
     let expected_payload_len = image.len().div_ceil(3) * 4;

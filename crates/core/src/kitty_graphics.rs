@@ -213,6 +213,8 @@ struct StoredImage {
 
 #[derive(Clone, Debug)]
 struct Placement {
+    placement_serial: u64,
+    screen: KittyGraphicsScreen,
     image_id: u32,
     placement_id: u32,
     anchor_line: i64,
@@ -234,10 +236,33 @@ struct Placement {
 struct PendingUpload {
     command: KittyGraphicsCommand,
     decoded: Vec<u8>,
+    screen: KittyGraphicsScreen,
+    cursor_col: usize,
+    cursor_row: usize,
+    history_size: usize,
+    size: TerminalSize,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum KittyGraphicsScreen {
+    #[default]
+    Primary,
+    Alternate,
+}
+
+impl KittyGraphicsScreen {
+    pub fn from_alternate_screen(alternate_screen: bool) -> Self {
+        if alternate_screen {
+            Self::Alternate
+        } else {
+            Self::Primary
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct KittyGraphicsRenderPlacement {
+    pub placement_serial: u64,
     pub image_id: u32,
     pub placement_id: u32,
     pub png: Arc<[u8]>,
@@ -252,6 +277,8 @@ pub struct KittyGraphicsRenderPlacement {
     pub source_height: u32,
     pub display_cols: Option<u32>,
     pub display_rows: Option<u32>,
+    pub occupied_cols: u32,
+    pub occupied_rows: u32,
     pub x_offset: u32,
     pub y_offset: u32,
     pub z_index: i32,
@@ -261,6 +288,7 @@ pub struct KittyGraphicsRenderPlacement {
 pub struct KittyGraphicsApplyResult {
     pub response: Option<Vec<u8>>,
     pub cursor_advance: Option<(u32, u32)>,
+    pub cursor_advance_screen: Option<KittyGraphicsScreen>,
     pub changed: bool,
 }
 
@@ -273,6 +301,7 @@ pub struct KittyGraphicsState {
     next_anonymous_id: u32,
     stored_bytes: usize,
     next_generation: u64,
+    next_placement_serial: u64,
 }
 
 impl KittyGraphicsState {
@@ -283,6 +312,25 @@ impl KittyGraphicsState {
         cursor_row: usize,
         history_size: usize,
         size: TerminalSize,
+    ) -> KittyGraphicsApplyResult {
+        self.apply_on_screen(
+            command,
+            cursor_col,
+            cursor_row,
+            history_size,
+            size,
+            KittyGraphicsScreen::Primary,
+        )
+    }
+
+    pub fn apply_on_screen(
+        &mut self,
+        command: KittyGraphicsCommand,
+        cursor_col: usize,
+        cursor_row: usize,
+        history_size: usize,
+        size: TerminalSize,
+        screen: KittyGraphicsScreen,
     ) -> KittyGraphicsApplyResult {
         if command.oversized {
             let response_command = self
@@ -297,10 +345,10 @@ impl KittyGraphicsState {
 
         let action = command.char_value('a').unwrap_or('t');
         if action == 'd' {
-            return self.delete(&command, cursor_col, cursor_row, history_size);
+            return self.delete(&command, cursor_col, cursor_row, history_size, screen);
         }
         if action == 'p' {
-            return self.put(&command, cursor_col, cursor_row, history_size, size);
+            return self.put(command, cursor_col, cursor_row, history_size, size, screen);
         }
         if !matches!(action, 't' | 'T' | 'q') {
             return self.failure(&command, "EINVAL:unsupported graphics action");
@@ -349,18 +397,35 @@ impl KittyGraphicsState {
             return self.finish_upload(
                 first,
                 pending.decoded,
-                cursor_col,
-                cursor_row,
-                history_size,
-                size,
+                pending.cursor_col,
+                pending.cursor_row,
+                pending.history_size,
+                pending.size,
+                pending.screen,
             );
         }
 
         if more {
-            self.pending = Some(PendingUpload { command, decoded });
+            self.pending = Some(PendingUpload {
+                command,
+                decoded,
+                screen,
+                cursor_col,
+                cursor_row,
+                history_size,
+                size,
+            });
             return KittyGraphicsApplyResult::default();
         }
-        self.finish_upload(command, decoded, cursor_col, cursor_row, history_size, size)
+        self.finish_upload(
+            command,
+            decoded,
+            cursor_col,
+            cursor_row,
+            history_size,
+            size,
+            screen,
+        )
     }
 
     pub fn render_placements(
@@ -370,11 +435,29 @@ impl KittyGraphicsState {
         rows: usize,
         cols: usize,
     ) -> Vec<KittyGraphicsRenderPlacement> {
+        self.render_placements_on_screen(
+            history_size,
+            display_offset,
+            rows,
+            cols,
+            KittyGraphicsScreen::Primary,
+        )
+    }
+
+    pub fn render_placements_on_screen(
+        &self,
+        history_size: usize,
+        display_offset: usize,
+        rows: usize,
+        cols: usize,
+        screen: KittyGraphicsScreen,
+    ) -> Vec<KittyGraphicsRenderPlacement> {
         let history_size = i64::try_from(history_size).unwrap_or(i64::MAX);
         let display_offset = i64::try_from(display_offset).unwrap_or(i64::MAX);
         let rows_i64 = i64::try_from(rows).unwrap_or(i64::MAX);
         self.placements
             .iter()
+            .filter(|placement| placement.screen == screen)
             .filter_map(|placement| {
                 let image = self.images.get(&placement.image_id)?;
                 let viewport_row = placement
@@ -390,6 +473,7 @@ impl KittyGraphicsState {
                     return None;
                 }
                 Some(KittyGraphicsRenderPlacement {
+                    placement_serial: placement.placement_serial,
                     image_id: placement.image_id,
                     placement_id: placement.placement_id,
                     png: image.png.clone(),
@@ -408,6 +492,8 @@ impl KittyGraphicsState {
                     source_height: placement.source_height,
                     display_cols: placement.display_cols,
                     display_rows: placement.display_rows,
+                    occupied_cols: placement.occupied_cols,
+                    occupied_rows: placement.occupied_rows,
                     x_offset: placement.x_offset,
                     y_offset: placement.y_offset,
                     z_index: placement.z_index,
@@ -417,10 +503,94 @@ impl KittyGraphicsState {
     }
 
     pub fn clear_visible(&mut self) -> bool {
-        let changed = !self.placements.is_empty();
-        self.placements.clear();
-        self.pending = None;
-        changed
+        self.clear_visible_on_screen(KittyGraphicsScreen::Primary)
+    }
+
+    pub fn has_placements(&self) -> bool {
+        !self.placements.is_empty()
+    }
+
+    pub fn clear_visible_on_screen(&mut self, screen: KittyGraphicsScreen) -> bool {
+        let before = self.placements.len();
+        self.placements
+            .retain(|placement| placement.screen != screen);
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.screen == screen)
+        {
+            self.pending = None;
+        }
+        before != self.placements.len()
+    }
+
+    /// Move placements with a screen scroll that was not recorded in history.
+    ///
+    /// Normal primary-screen scrolling is represented by a growing history
+    /// size and is handled by [`Self::render_placements`]. Alternate-screen,
+    /// zero-history, and full-history grids rotate rows without growing that
+    /// value, so their placements need the equivalent anchor adjustment here.
+    pub fn scroll_up_without_history(&mut self, lines: usize) -> bool {
+        self.scroll_up_without_history_on_screen(lines, KittyGraphicsScreen::Primary)
+    }
+
+    pub fn scroll_up_without_history_on_screen(
+        &mut self,
+        lines: usize,
+        screen: KittyGraphicsScreen,
+    ) -> bool {
+        if lines == 0
+            || !self
+                .placements
+                .iter()
+                .any(|placement| placement.screen == screen)
+        {
+            return false;
+        }
+
+        let lines = i64::try_from(lines).unwrap_or(i64::MAX);
+        for placement in self
+            .placements
+            .iter_mut()
+            .filter(|placement| placement.screen == screen)
+        {
+            placement.anchor_line = placement.anchor_line.saturating_sub(lines);
+        }
+        self.placements.retain(|placement| {
+            placement.screen != screen
+                || placement
+                    .anchor_line
+                    .saturating_add(i64::from(placement.occupied_rows))
+                    > 0
+        });
+        true
+    }
+
+    pub(crate) fn preserve_primary_placements_across_partial_history_growth(
+        &mut self,
+        lines: usize,
+    ) -> bool {
+        if lines == 0
+            || !self
+                .placements
+                .iter()
+                .any(|placement| placement.screen == KittyGraphicsScreen::Primary)
+        {
+            return false;
+        }
+
+        let lines = i64::try_from(lines).unwrap_or(i64::MAX);
+        for placement in self
+            .placements
+            .iter_mut()
+            .filter(|placement| placement.screen == KittyGraphicsScreen::Primary)
+        {
+            // Alacritty grows history when a partial DECSTBM region starts at
+            // the top. Kitty placements are not region-aware, so cancel that
+            // global history offset rather than moving fixed footer images.
+            placement.anchor_line = placement.anchor_line.saturating_add(lines);
+        }
+        true
     }
 
     fn finish_upload(
@@ -431,6 +601,7 @@ impl KittyGraphicsState {
         cursor_row: usize,
         history_size: usize,
         size: TerminalSize,
+        screen: KittyGraphicsScreen,
     ) -> KittyGraphicsApplyResult {
         let data = match self.resolve_transmission_data(&command, decoded) {
             Ok(data) => data,
@@ -450,7 +621,7 @@ impl KittyGraphicsState {
         };
 
         if command.char_value('a').unwrap_or('t') == 'q' {
-            return self.success(&command, false, None);
+            return self.success(&command, false, None, screen);
         }
 
         let requested_id = command.u32_value('i').unwrap_or(0);
@@ -488,6 +659,7 @@ impl KittyGraphicsState {
                 cursor_row,
                 history_size,
                 size,
+                screen,
             ) {
                 Ok(advance) => advance,
                 Err(error) => {
@@ -498,31 +670,33 @@ impl KittyGraphicsState {
         } else {
             None
         };
-        self.success(&command, true, cursor_advance)
+        self.success(&command, true, cursor_advance, screen)
     }
 
     fn put(
         &mut self,
-        command: &KittyGraphicsCommand,
+        command: KittyGraphicsCommand,
         cursor_col: usize,
         cursor_row: usize,
         history_size: usize,
         size: TerminalSize,
+        screen: KittyGraphicsScreen,
     ) -> KittyGraphicsApplyResult {
         let image_id = command.u32_value('i').unwrap_or(0);
         if image_id == 0 || !self.images.contains_key(&image_id) {
-            return self.failure(command, "ENOENT:image id not found");
+            return self.failure(&command, "ENOENT:image id not found");
         }
         match self.add_placement(
             image_id,
-            command,
+            &command,
             cursor_col,
             cursor_row,
             history_size,
             size,
+            screen,
         ) {
-            Ok(advance) => self.success(command, true, advance),
-            Err(error) => self.failure(command, &error),
+            Ok(advance) => self.success(&command, true, advance, screen),
+            Err(error) => self.failure(&command, &error),
         }
     }
 
@@ -534,6 +708,7 @@ impl KittyGraphicsState {
         cursor_row: usize,
         history_size: usize,
         size: TerminalSize,
+        screen: KittyGraphicsScreen,
     ) -> Result<Option<(u32, u32)>, String> {
         if command.u32_value('U').unwrap_or(0) == 1 {
             return Err("EINVAL:Unicode placeholder placements are not supported".into());
@@ -587,10 +762,15 @@ impl KittyGraphicsState {
         let placement_id = command.u32_value('p').unwrap_or(0);
         if placement_id != 0 {
             self.placements.retain(|placement| {
-                placement.image_id != image_id || placement.placement_id != placement_id
+                placement.screen != screen
+                    || placement.image_id != image_id
+                    || placement.placement_id != placement_id
             });
         }
+        self.next_placement_serial = self.next_placement_serial.wrapping_add(1).max(1);
         self.placements.push(Placement {
+            placement_serial: self.next_placement_serial,
+            screen,
             image_id,
             placement_id,
             anchor_line: i64::try_from(history_size)
@@ -618,6 +798,7 @@ impl KittyGraphicsState {
         cursor_col: usize,
         cursor_row: usize,
         history_size: usize,
+        screen: KittyGraphicsScreen,
     ) -> KittyGraphicsApplyResult {
         self.pending = None;
         let selector = command.char_value('d').unwrap_or('a');
@@ -625,12 +806,15 @@ impl KittyGraphicsState {
         let selector = selector.to_ascii_lowercase();
         let before = self.placements.len();
         match selector {
-            'a' => self.placements.clear(),
+            'a' => self
+                .placements
+                .retain(|placement| placement.screen != screen),
             'i' => {
                 let image_id = command.u32_value('i').unwrap_or(0);
                 let placement_id = command.u32_value('p').unwrap_or(0);
                 self.placements.retain(|placement| {
-                    placement.image_id != image_id
+                    placement.screen != screen
+                        || placement.image_id != image_id
                         || (placement_id != 0 && placement.placement_id != placement_id)
                 });
                 if free_data && !self.placements.iter().any(|p| p.image_id == image_id) {
@@ -642,7 +826,7 @@ impl KittyGraphicsState {
                     .unwrap_or(i64::MAX)
                     .saturating_add(i64::try_from(cursor_row).unwrap_or(i64::MAX));
                 self.placements
-                    .retain(|p| !placement_contains(p, line, cursor_col));
+                    .retain(|p| p.screen != screen || !placement_contains(p, line, cursor_col));
             }
             'p' | 'q' => {
                 let col = command.u32_value('x').unwrap_or(1).saturating_sub(1) as usize;
@@ -650,33 +834,39 @@ impl KittyGraphicsState {
                     + i64::try_from(history_size).unwrap_or(i64::MAX);
                 let z = command.i32_value('z');
                 self.placements.retain(|p| {
-                    !placement_contains(p, row, col)
+                    p.screen != screen
+                        || !placement_contains(p, row, col)
                         || (selector == 'q' && z.is_some_and(|z| p.z_index != z))
                 });
             }
             'x' => {
                 let col = command.u32_value('x').unwrap_or(1).saturating_sub(1) as usize;
                 self.placements.retain(|p| {
-                    col < p.col || col >= p.col.saturating_add(p.occupied_cols as usize)
+                    p.screen != screen
+                        || col < p.col
+                        || col >= p.col.saturating_add(p.occupied_cols as usize)
                 });
             }
             'y' => {
                 let row = command.u32_value('y').unwrap_or(1).saturating_sub(1) as i64
                     + i64::try_from(history_size).unwrap_or(i64::MAX);
                 self.placements.retain(|p| {
-                    row < p.anchor_line || row >= p.anchor_line + i64::from(p.occupied_rows)
+                    p.screen != screen
+                        || row < p.anchor_line
+                        || row >= p.anchor_line + i64::from(p.occupied_rows)
                 });
             }
             'z' => {
                 let z = command.i32_value('z').unwrap_or(0);
-                self.placements.retain(|p| p.z_index != z);
+                self.placements
+                    .retain(|p| p.screen != screen || p.z_index != z);
             }
             _ => return self.failure(command, "EINVAL:unsupported delete selector"),
         }
         if free_data {
             self.drop_unplaced_images();
         }
-        self.success(command, before != self.placements.len(), None)
+        self.success(command, before != self.placements.len(), None, screen)
     }
 
     fn resolve_transmission_data(
@@ -780,10 +970,12 @@ impl KittyGraphicsState {
         command: &KittyGraphicsCommand,
         changed: bool,
         cursor_advance: Option<(u32, u32)>,
+        screen: KittyGraphicsScreen,
     ) -> KittyGraphicsApplyResult {
         KittyGraphicsApplyResult {
             response: response(command, true, "OK"),
             cursor_advance,
+            cursor_advance_screen: cursor_advance.map(|_| screen),
             changed,
         }
     }
@@ -1029,9 +1221,26 @@ mod tests {
         assert_eq!(result.response.unwrap(), b"\x1b_Gi=42;OK\x1b\\");
         let placements = state.render_placements(10, 0, 24, 80);
         assert_eq!(placements.len(), 1);
+        assert_eq!(placements[0].placement_serial, 1);
         assert_eq!(placements[0].viewport_row, 5);
         assert_eq!(placements[0].col, 4);
+        assert_eq!(placements[0].occupied_cols, 2);
+        assert_eq!(placements[0].occupied_rows, 3);
         assert!(placements[0].png.starts_with(b"\x89PNG"));
+    }
+
+    #[test]
+    fn each_placement_gets_a_stable_monotonic_serial() {
+        let png = one_pixel_png();
+        let mut state = KittyGraphicsState::default();
+        state.apply(command("a=t,f=100,i=3,q=1", &png), 0, 0, 0, size());
+        state.apply(command("a=p,i=3,q=1", &[]), 0, 0, 0, size());
+        state.apply(command("a=p,i=3,q=1", &[]), 2, 0, 0, size());
+
+        let placements = state.render_placements(0, 0, 24, 80);
+        assert_eq!(placements.len(), 2);
+        assert_eq!(placements[0].placement_serial, 1);
+        assert_eq!(placements[1].placement_serial, 2);
     }
 
     #[test]
@@ -1045,6 +1254,38 @@ mod tests {
         assert!(state.render_placements(0, 0, 24, 80).is_empty());
         assert!(state.apply(second, 0, 0, 0, size()).changed);
         assert_eq!(state.render_placements(0, 0, 24, 80).len(), 1);
+    }
+
+    #[test]
+    fn chunked_upload_keeps_its_origin_screen_and_cursor() {
+        let png = one_pixel_png();
+        let split = png.len() / 2;
+        let first = command("a=T,f=100,i=88,c=2,r=3,m=1", &png[..split]);
+        let second = command("m=0", &png[split..]);
+        let mut state = KittyGraphicsState::default();
+
+        let first_result =
+            state.apply_on_screen(first, 4, 5, 10, size(), KittyGraphicsScreen::Primary);
+        assert!(!first_result.changed);
+        assert!(!state.clear_visible_on_screen(KittyGraphicsScreen::Alternate));
+
+        let result = state.apply_on_screen(second, 0, 0, 0, size(), KittyGraphicsScreen::Alternate);
+
+        assert!(result.changed);
+        assert_eq!(result.cursor_advance, Some((2, 3)));
+        assert_eq!(
+            result.cursor_advance_screen,
+            Some(KittyGraphicsScreen::Primary)
+        );
+        let primary =
+            state.render_placements_on_screen(10, 0, 24, 80, KittyGraphicsScreen::Primary);
+        assert_eq!(primary.len(), 1);
+        assert_eq!(primary[0].viewport_row, 5);
+        assert!(
+            state
+                .render_placements_on_screen(0, 0, 24, 80, KittyGraphicsScreen::Alternate,)
+                .is_empty()
+        );
     }
 
     #[test]

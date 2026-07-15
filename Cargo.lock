@@ -8764,6 +8764,7 @@ dependencies = [
  "termy_search",
  "termy_themes",
  "ttf-parser",
+ "unicode-width 0.2.0",
  "winreg",
 ]
 

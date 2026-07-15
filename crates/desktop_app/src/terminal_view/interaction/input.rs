@@ -61,6 +61,10 @@ fn image_extension(format: gpui::ImageFormat) -> &'static str {
     }
 }
 
+pub(in crate::terminal_view) fn kitty_png_clipboard_item(png: &[u8]) -> ClipboardItem {
+    gpui::Image::from_bytes(gpui::ImageFormat::Png, png.to_vec()).into()
+}
+
 fn clipboard_image_cache_dir() -> PathBuf {
     env::temp_dir().join("termy-clipboard-images")
 }
@@ -639,6 +643,19 @@ impl TerminalView {
                 if self.forward_edit_action_to_active_browser(BrowserEditAction::Copy) {
                     return true;
                 }
+                if self.clear_stale_kitty_image_state() {
+                    cx.notify();
+                }
+                if let Some(image) = self
+                    .kitty_image_selection
+                    .as_ref()
+                    .and_then(|selection| self.current_kitty_image_placement(selection))
+                {
+                    cx.write_to_clipboard(kitty_png_clipboard_item(image.png.as_ref()));
+                    termy_toast::success("Copied image");
+                    self.notify_overlay(cx);
+                    return true;
+                }
                 if let Some(selected) = self.selected_text() {
                     cx.write_to_clipboard(ClipboardItem::new_string(selected));
                 } else {
@@ -850,10 +867,10 @@ impl TerminalView {
 mod tests {
     use super::{
         PendingKeyRelease, PendingKeyReleaseAction, clipboard_item_to_terminal_paste_input,
-        dropped_paths_to_terminal_paste_input, image_extension, modifier_transition_events,
-        shell_quote_paths, should_defer_key_down_to_ime, should_prepare_terminal_input_write,
-        take_deferred_ime_key_release, take_pending_key_release_action,
-        terminal_modifier_transition_events,
+        dropped_paths_to_terminal_paste_input, image_extension, kitty_png_clipboard_item,
+        modifier_transition_events, shell_quote_paths, should_defer_key_down_to_ime,
+        should_prepare_terminal_input_write, take_deferred_ime_key_release,
+        take_pending_key_release_action, terminal_modifier_transition_events,
     };
     use gpui::{Keystroke, Modifiers};
     use std::{
@@ -963,6 +980,19 @@ mod tests {
         assert!(text.starts_with('\''));
         assert!(text.ends_with(".png'"));
         assert!(text.contains("termy-clipboard-images"));
+    }
+
+    #[test]
+    fn kitty_png_clipboard_item_preserves_png_bytes_and_format() {
+        let png = [137, 80, 78, 71, 13, 10, 26, 10];
+        let item = kitty_png_clipboard_item(&png);
+
+        assert_eq!(item.entries().len(), 1);
+        let gpui::ClipboardEntry::Image(image) = &item.entries()[0] else {
+            panic!("Kitty clipboard item should contain an image");
+        };
+        assert_eq!(image.format(), gpui::ImageFormat::Png);
+        assert_eq!(image.bytes(), png);
     }
 
     #[test]

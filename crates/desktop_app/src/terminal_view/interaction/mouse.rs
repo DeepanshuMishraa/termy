@@ -25,7 +25,27 @@ enum GlobalTabDragPointerAction {
     Commit,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SelectionReleaseAction {
+    KeepImage,
+    MoveCursor,
+    FinishTextSelection,
+}
+
 impl TerminalView {
+    fn selection_release_action(
+        selection_moved: bool,
+        image_selected: bool,
+    ) -> SelectionReleaseAction {
+        if selection_moved {
+            SelectionReleaseAction::FinishTextSelection
+        } else if image_selected {
+            SelectionReleaseAction::KeepImage
+        } else {
+            SelectionReleaseAction::MoveCursor
+        }
+    }
+
     fn global_tab_drag_pointer_action(
         tab_drag_active: bool,
         pointer_dragging: bool,
@@ -708,6 +728,7 @@ impl TerminalView {
             self.selection_head = Some(next);
             if self.selection_anchor != self.selection_head {
                 self.selection_moved = true;
+                self.kitty_image_selection = None;
             }
             true
         } else {
@@ -764,12 +785,22 @@ impl TerminalView {
         }
 
         self.selection_dragging = false;
-        if !self.selection_moved {
-            self.clear_selection();
-            self.maybe_move_cursor_to_click_target(cx);
-        } else {
-            self.pending_cursor_move_click = None;
-            self.copy_selection_to_clipboard_if_enabled(cx);
+        match Self::selection_release_action(
+            self.selection_moved,
+            self.kitty_image_selection.is_some(),
+        ) {
+            SelectionReleaseAction::KeepImage => {
+                self.clear_text_selection();
+                self.pending_cursor_move_click = None;
+            }
+            SelectionReleaseAction::MoveCursor => {
+                self.clear_text_selection();
+                self.maybe_move_cursor_to_click_target(cx);
+            }
+            SelectionReleaseAction::FinishTextSelection => {
+                self.pending_cursor_move_click = None;
+                self.copy_selection_to_clipboard_if_enabled(cx);
+            }
         }
         self.clear_hovered_link();
         cx.notify();
@@ -957,6 +988,11 @@ impl TerminalView {
             {
                 let _ = self.focus_pane_target(pane_id.as_str(), cx);
             }
+            let image_selection = self.kitty_image_at_position(event.position);
+            if self.kitty_image_selection != image_selection {
+                self.kitty_image_selection = image_selection;
+                cx.notify();
+            }
             self.open_terminal_context_menu_for_window(event.position, window, cx);
             cx.stop_propagation();
             return;
@@ -1001,14 +1037,20 @@ impl TerminalView {
             }
         }
 
-        if Self::is_link_modifier(event.modifiers)
+        let image_selection = self.kitty_image_at_position_for_left_click(event.position);
+        let has_image_selection = image_selection.is_some();
+        let image_selection_changed = self.kitty_image_selection != image_selection;
+        self.kitty_image_selection = image_selection;
+
+        if !has_image_selection
+            && Self::is_link_modifier(event.modifiers)
             && let Some(cell) = self.position_to_cell(event.position, false)
             && let Some(link) = self.link_at_cell(cell)
         {
             if !Self::open_link(&link.target) {
                 termy_toast::error("Failed to open link");
             }
-            if self.clear_hovered_link() {
+            if self.clear_hovered_link() || image_selection_changed {
                 cx.notify();
             }
             return;
@@ -1021,14 +1063,14 @@ impl TerminalView {
             return;
         };
 
-        if event.click_count >= 3 && self.select_line_at_row(cell.row) {
+        if !has_image_selection && event.click_count >= 3 && self.select_line_at_row(cell.row) {
             self.copy_selection_to_clipboard_if_enabled(cx);
             self.clear_hovered_link();
             cx.notify();
             return;
         }
 
-        if event.click_count == 2 && self.select_token_at_cell(cell) {
+        if !has_image_selection && event.click_count == 2 && self.select_token_at_cell(cell) {
             self.copy_selection_to_clipboard_if_enabled(cx);
             self.clear_hovered_link();
             cx.notify();
@@ -1042,7 +1084,11 @@ impl TerminalView {
             return;
         };
 
-        self.pending_cursor_move_click = self.pending_cursor_move_click_for_mouse_down(event);
+        self.pending_cursor_move_click = if has_image_selection {
+            None
+        } else {
+            self.pending_cursor_move_click_for_mouse_down(event)
+        };
         if self.pending_cursor_move_click.is_some() {
             if self.clear_hovered_link() {
                 cx.notify();
@@ -1252,6 +1298,22 @@ mod tests {
         assert_eq!(
             TerminalView::global_tab_drag_pointer_action(false, true),
             GlobalTabDragPointerAction::None
+        );
+    }
+
+    #[test]
+    fn image_click_is_kept_but_drag_falls_back_to_text_selection() {
+        assert_eq!(
+            TerminalView::selection_release_action(false, true),
+            SelectionReleaseAction::KeepImage
+        );
+        assert_eq!(
+            TerminalView::selection_release_action(true, true),
+            SelectionReleaseAction::FinishTextSelection
+        );
+        assert_eq!(
+            TerminalView::selection_release_action(false, false),
+            SelectionReleaseAction::MoveCursor
         );
     }
 

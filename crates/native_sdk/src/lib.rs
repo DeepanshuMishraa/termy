@@ -45,6 +45,7 @@ impl Drop for MenuGuard {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ContextMenuAction {
     Copy,
+    CopyImage,
     Paste,
     OpenSearch,
     CopyBufferPosition,
@@ -69,12 +70,24 @@ const CONTEXT_MENU_COPY_ID: i32 = 1;
 const CONTEXT_MENU_PASTE_ID: i32 = 2;
 const CONTEXT_MENU_OPEN_SEARCH_ID: i32 = 3;
 const CONTEXT_MENU_COPY_BUFFER_POSITION_ID: i32 = 4;
+const CONTEXT_MENU_COPY_IMAGE_ID: i32 = 5;
 const TAB_CONTEXT_MENU_PIN_ID: i32 = 101;
 const TAB_CONTEXT_MENU_UNPIN_ID: i32 = 102;
 const TAB_CONTEXT_MENU_RENAME_ID: i32 = 103;
 const TAB_CONTEXT_MENU_CLOSE_ID: i32 = 104;
 #[cfg(target_os = "macos")]
 static CONTEXT_MENU_SELECTION: AtomicI32 = AtomicI32::new(0);
+
+fn context_menu_action_for_id(action_id: i32) -> Option<ContextMenuAction> {
+    match action_id {
+        CONTEXT_MENU_COPY_ID => Some(ContextMenuAction::Copy),
+        CONTEXT_MENU_COPY_IMAGE_ID => Some(ContextMenuAction::CopyImage),
+        CONTEXT_MENU_PASTE_ID => Some(ContextMenuAction::Paste),
+        CONTEXT_MENU_OPEN_SEARCH_ID => Some(ContextMenuAction::OpenSearch),
+        CONTEXT_MENU_COPY_BUFFER_POSITION_ID => Some(ContextMenuAction::CopyBufferPosition),
+        _ => None,
+    }
+}
 
 #[cfg(target_os = "macos")]
 define_class!(
@@ -349,6 +362,7 @@ pub fn show_alert(title: &str, message: &str) {
 pub fn show_copy_paste_context_menu(
     buffer_position_label: Option<String>,
     can_copy: bool,
+    can_copy_image: bool,
     can_paste: bool,
     anchor: Option<NativeContextMenuAnchor>,
 ) -> Option<ContextMenuAction> {
@@ -358,6 +372,7 @@ pub fn show_copy_paste_context_menu(
             mtm: MainThreadMarker,
             buffer_position_label: Option<String>,
             can_copy: bool,
+            can_copy_image: bool,
             can_paste: bool,
             anchor: Option<NativeContextMenuAnchor>,
         ) -> Option<ContextMenuAction> {
@@ -379,6 +394,14 @@ pub fn show_copy_paste_context_menu(
                 CONTEXT_MENU_COPY_ID,
                 can_copy,
             );
+            let copy_image_item = can_copy_image.then(|| {
+                TermyContextMenuItem::new_with_action_id(
+                    mtm,
+                    "Copy Image",
+                    CONTEXT_MENU_COPY_IMAGE_ID,
+                    true,
+                )
+            });
             let paste_item = TermyContextMenuItem::new_with_action_id(
                 mtm,
                 "Paste",
@@ -399,6 +422,9 @@ pub fn show_copy_paste_context_menu(
             );
 
             menu.addItem(&copy_item);
+            if let Some(copy_image_item) = copy_image_item.as_ref() {
+                menu.addItem(copy_image_item);
+            }
             menu.addItem(&paste_item);
             menu.addItem(&open_search_item);
             menu.addItem(&copy_buffer_position_item);
@@ -406,13 +432,7 @@ pub fn show_copy_paste_context_menu(
             CONTEXT_MENU_SELECTION.store(0, Ordering::Relaxed);
             let _ = pop_up_menu_at_anchor(&menu, anchor);
 
-            match CONTEXT_MENU_SELECTION.swap(0, Ordering::Relaxed) {
-                CONTEXT_MENU_COPY_ID => Some(ContextMenuAction::Copy),
-                CONTEXT_MENU_PASTE_ID => Some(ContextMenuAction::Paste),
-                CONTEXT_MENU_OPEN_SEARCH_ID => Some(ContextMenuAction::OpenSearch),
-                CONTEXT_MENU_COPY_BUFFER_POSITION_ID => Some(ContextMenuAction::CopyBufferPosition),
-                _ => None,
-            }
+            context_menu_action_for_id(CONTEXT_MENU_SELECTION.swap(0, Ordering::Relaxed))
         }
 
         if let Some(mtm) = MainThreadMarker::new() {
@@ -420,6 +440,7 @@ pub fn show_copy_paste_context_menu(
                 mtm,
                 buffer_position_label,
                 can_copy,
+                can_copy_image,
                 can_paste,
                 anchor,
             )
@@ -429,6 +450,7 @@ pub fn show_copy_paste_context_menu(
                     mtm,
                     buffer_position_label,
                     can_copy,
+                    can_copy_image,
                     can_paste,
                     anchor,
                 )
@@ -457,6 +479,7 @@ pub fn show_copy_paste_context_menu(
         }
 
         let copy_title = wide_string("Copy");
+        let copy_image_title = wide_string("Copy Image");
         let paste_title = wide_string("Paste");
         let open_search_title = wide_string("Open Search");
         let copy_buffer_position_title = wide_string("Copy Buffer Position");
@@ -484,6 +507,15 @@ pub fn show_copy_paste_context_menu(
                 windows::core::PCWSTR(copy_title.as_ptr()),
             )
             .ok()?;
+            if can_copy_image {
+                AppendMenuW(
+                    menu,
+                    MF_STRING,
+                    CONTEXT_MENU_COPY_IMAGE_ID as usize,
+                    windows::core::PCWSTR(copy_image_title.as_ptr()),
+                )
+                .ok()?;
+            }
             AppendMenuW(
                 menu,
                 paste_flags,
@@ -525,13 +557,7 @@ pub fn show_copy_paste_context_menu(
             .0
         };
 
-        return match result {
-            CONTEXT_MENU_COPY_ID => Some(ContextMenuAction::Copy),
-            CONTEXT_MENU_PASTE_ID => Some(ContextMenuAction::Paste),
-            CONTEXT_MENU_OPEN_SEARCH_ID => Some(ContextMenuAction::OpenSearch),
-            CONTEXT_MENU_COPY_BUFFER_POSITION_ID => Some(ContextMenuAction::CopyBufferPosition),
-            _ => None,
-        };
+        return context_menu_action_for_id(result);
     }
 
     #[cfg(any(
@@ -539,7 +565,13 @@ pub fn show_copy_paste_context_menu(
         not(any(target_os = "macos", target_os = "windows"))
     ))]
     {
-        let _ = (buffer_position_label, can_copy, can_paste, anchor);
+        let _ = (
+            buffer_position_label,
+            can_copy,
+            can_copy_image,
+            can_paste,
+            anchor,
+        );
         None
     }
 }
@@ -756,5 +788,35 @@ pub fn confirm(title: &str, message: &str) -> bool {
     {
         eprintln!("[native_sdk] confirm: {title}: {message}");
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn context_menu_ids_dispatch_to_their_actions() {
+        assert_eq!(
+            context_menu_action_for_id(CONTEXT_MENU_COPY_ID),
+            Some(ContextMenuAction::Copy)
+        );
+        assert_eq!(
+            context_menu_action_for_id(CONTEXT_MENU_COPY_IMAGE_ID),
+            Some(ContextMenuAction::CopyImage)
+        );
+        assert_eq!(
+            context_menu_action_for_id(CONTEXT_MENU_PASTE_ID),
+            Some(ContextMenuAction::Paste)
+        );
+        assert_eq!(
+            context_menu_action_for_id(CONTEXT_MENU_OPEN_SEARCH_ID),
+            Some(ContextMenuAction::OpenSearch)
+        );
+        assert_eq!(
+            context_menu_action_for_id(CONTEXT_MENU_COPY_BUFFER_POSITION_ID),
+            Some(ContextMenuAction::CopyBufferPosition)
+        );
+        assert_eq!(context_menu_action_for_id(0), None);
     }
 }

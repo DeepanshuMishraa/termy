@@ -12,16 +12,27 @@ use std::time::Instant;
 use termy_terminal_ui::terminal_ui_render_metrics_snapshot;
 use termy_terminal_ui::{add_span_damage_compute_us, terminal_ui_render_metrics_enabled};
 
+#[derive(Clone, Copy)]
+struct KittyGraphicsSelectionPaint<'a> {
+    pane_id: &'a str,
+    display_offset: usize,
+    selection_range: Option<(SelectionPos, SelectionPos)>,
+    explicit: Option<&'a KittyImageSelection>,
+    color: gpui::Rgba,
+}
+
 fn kitty_graphics_layers(
     mut placements: Vec<KittyGraphicsRenderPlacement>,
     cell_size: Size<Pixels>,
     image_cache: &mut HashMap<(u32, u64), Arc<gpui::Image>>,
+    selection: KittyGraphicsSelectionPaint<'_>,
 ) -> (Vec<AnyElement>, Vec<AnyElement>) {
     placements.sort_by_key(|placement| {
         (
             placement.z_index,
             placement.image_id,
             placement.placement_id,
+            placement.placement_serial,
         )
     });
     let mut below_text = Vec::new();
@@ -35,22 +46,13 @@ fn kitty_graphics_layers(
     image_cache.retain(|key, _| active_images.contains(key));
 
     for placement in placements {
-        let target_width = placement
-            .display_cols
-            .map_or(placement.source_width as f32, |cols| {
-                cols as f32 * cell_width
-            });
-        let target_height = placement
-            .display_rows
-            .map_or(placement.source_height as f32, |rows| {
-                rows as f32 * cell_height
-            });
-        if target_width <= 0.0 || target_height <= 0.0 {
+        let bounds = kitty_graphics_placement_bounds(&placement, cell_width, cell_height);
+        if bounds.width <= 0.0 || bounds.height <= 0.0 {
             continue;
         }
 
-        let scale_x = target_width / placement.source_width.max(1) as f32;
-        let scale_y = target_height / placement.source_height.max(1) as f32;
+        let scale_x = bounds.width / placement.source_width.max(1) as f32;
+        let scale_y = bounds.height / placement.source_height.max(1) as f32;
         let image = image_cache
             .entry((placement.image_id, placement.image_generation))
             .or_insert_with(|| {
@@ -67,18 +69,39 @@ fn kitty_graphics_layers(
             .w(px(placement.image_width as f32 * scale_x))
             .h(px(placement.image_height as f32 * scale_y))
             .object_fit(ObjectFit::Fill);
+        let selected = selection
+            .explicit
+            .is_some_and(|selected| selected.matches(selection.pane_id, &placement))
+            || kitty_graphics_placement_intersects_selection(
+                &placement,
+                selection.display_offset,
+                selection.selection_range,
+            );
+        let mut selection_tint = selection.color;
+        selection_tint.a = 0.22;
+        let mut selection_border = selection.color;
+        selection_border.a = 0.92;
         let layer = div()
             .absolute()
-            .left(px(
-                placement.col as f32 * cell_width + placement.x_offset as f32
-            ))
-            .top(px(
-                placement.viewport_row as f32 * cell_height + placement.y_offset as f32
-            ))
-            .w(px(target_width))
-            .h(px(target_height))
+            .left(px(bounds.left))
+            .top(px(bounds.top))
+            .w(px(bounds.width))
+            .h(px(bounds.height))
             .overflow_hidden()
             .child(image_element)
+            .when(selected, |layer| {
+                layer.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .right_0()
+                        .bottom_0()
+                        .bg(selection_tint)
+                        .border_1()
+                        .border_color(selection_border),
+                )
+            })
             .into_any_element();
         if placement.z_index < 0 {
             below_text.push(layer);
@@ -1951,11 +1974,11 @@ impl TerminalView {
             let menu_width = 220.0;
             let row_height = 30.0;
             let row_count =
-                5.0 + if state.buffer_position.is_some() {
+                3.0 + if state.buffer_position.is_some() {
                     1.0
                 } else {
                     0.0
-                } + 1.0;
+                } + if state.image.is_some() { 1.0 } else { 0.0 };
             let menu_height = row_height * row_count + 8.0;
             let (menu_x, menu_y) =
                 self.clamped_context_menu_origin(state.anchor_position, menu_width, menu_height);
@@ -2022,6 +2045,27 @@ impl TerminalView {
                         }),
                     )
                     .child("Open Search")
+                    .into_any_element()
+            };
+            let copy_image_item = || {
+                div()
+                    .id("terminal-context-menu-copy-image")
+                    .h(px(row_height))
+                    .px(px(10.0))
+                    .flex()
+                    .items_center()
+                    .text_size(px(13.0))
+                    .text_color(text_active)
+                    .cursor_pointer()
+                    .hover(|style| style.bg(hover_bg))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |view, _event: &MouseDownEvent, _window, cx| {
+                            view.execute_terminal_context_menu_copy_image(cx);
+                            cx.stop_propagation();
+                        }),
+                    )
+                    .child("Copy Image")
                     .into_any_element()
             };
 
@@ -2094,6 +2138,9 @@ impl TerminalView {
                                 state.can_copy,
                                 CommandAction::Copy,
                             ))
+                            .when(state.image.is_some(), |panel| {
+                                panel.child(copy_image_item())
+                            })
                             .child(command_item(
                                 "terminal-context-menu-paste",
                                 "Paste",
@@ -2891,6 +2938,13 @@ impl Render for TerminalView {
                         terminal.kitty_graphics_placements(),
                         pane_cell_size,
                         &mut pane_render_cache.kitty_images,
+                        KittyGraphicsSelectionPaint {
+                            pane_id: pane.id.as_str(),
+                            display_offset: pane_display_offset,
+                            selection_range: pane_cache_key.selection_range,
+                            explicit: self.kitty_image_selection.as_ref(),
+                            color: colors.cursor,
+                        },
                     )
                 };
 

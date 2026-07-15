@@ -97,7 +97,8 @@ use inline_input::{InlineInputAlignment, InlineInputState};
 use interaction::{
     HoveredLink, MouseReportTargetCell, MouseReportingState, PaneDropRegion, PaneMoveDragState,
     PendingCursorMoveClick, PendingCursorMovePreview, PendingKeyRelease, TabContextMenuState,
-    TerminalContextMenuState,
+    TerminalContextMenuState, kitty_graphics_placement_bounds,
+    kitty_graphics_placement_intersects_selection,
 };
 #[cfg(target_os = "macos")]
 pub(crate) use macos_file_drop::{NativeDropResult, install_native_file_drop};
@@ -193,6 +194,52 @@ struct SelectionPos {
     col: usize,
     line: i32,
 }
+
+#[derive(Clone)]
+pub(in crate::terminal_view) struct KittyImageSelection {
+    pub(in crate::terminal_view) pane_id: String,
+    pub(in crate::terminal_view) placement: KittyGraphicsRenderPlacement,
+}
+
+impl KittyImageSelection {
+    fn matches(&self, pane_id: &str, placement: &KittyGraphicsRenderPlacement) -> bool {
+        self.pane_id == pane_id
+            && self.placement.placement_serial == placement.placement_serial
+            && self.placement.image_id == placement.image_id
+            && self.placement.image_generation == placement.image_generation
+    }
+
+    fn current_placement<'a>(
+        &self,
+        active_pane_id: Option<&str>,
+        placements: &'a [KittyGraphicsRenderPlacement],
+    ) -> Option<&'a KittyGraphicsRenderPlacement> {
+        let active_pane_id = active_pane_id?;
+        placements
+            .iter()
+            .find(|placement| self.matches(active_pane_id, placement))
+    }
+}
+
+impl std::fmt::Debug for KittyImageSelection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KittyImageSelection")
+            .field("pane_id", &self.pane_id)
+            .field("placement_serial", &self.placement.placement_serial)
+            .field("image_id", &self.placement.image_id)
+            .field("placement_id", &self.placement.placement_id)
+            .field("image_generation", &self.placement.image_generation)
+            .finish()
+    }
+}
+
+impl PartialEq for KittyImageSelection {
+    fn eq(&self, other: &Self) -> bool {
+        self.matches(other.pane_id.as_str(), &other.placement)
+    }
+}
+
+impl Eq for KittyImageSelection {}
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct TerminalViewportGeometry {
@@ -728,14 +775,18 @@ impl Terminal {
         }
     }
 
-    fn kitty_graphics_placements(&self) -> Vec<KittyGraphicsRenderPlacement> {
+    fn try_kitty_graphics_placements(&self) -> Option<Vec<KittyGraphicsRenderPlacement>> {
         match self {
-            Self::Tmux(terminal) => terminal.kitty_graphics_placements(),
+            Self::Tmux(terminal) => Some(terminal.kitty_graphics_placements()),
             Self::Native(terminal) => terminal
                 .lock()
-                .map(|terminal| terminal.kitty_graphics_placements())
-                .unwrap_or_default(),
+                .ok()
+                .map(|terminal| terminal.kitty_graphics_placements()),
         }
+    }
+
+    fn kitty_graphics_placements(&self) -> Vec<KittyGraphicsRenderPlacement> {
+        self.try_kitty_graphics_placements().unwrap_or_default()
     }
 
     /// The OSC 8 hyperlink under the given viewport cell, if any.
@@ -1152,6 +1203,7 @@ pub struct TerminalView {
     selection_head: Option<SelectionPos>,
     selection_dragging: bool,
     selection_moved: bool,
+    kitty_image_selection: Option<KittyImageSelection>,
     /// Tracks the active terminal's display_offset as observed from the UI thread.
     /// Updated after every user-initiated scroll and after each content-scroll adjustment,
     /// so that process_terminal_events can detect only content-driven offset changes.
@@ -3630,6 +3682,7 @@ impl TerminalView {
             selection_head: None,
             selection_dragging: false,
             selection_moved: false,
+            kitty_image_selection: None,
             content_scroll_baseline: 0,
             pending_cursor_move_click: None,
             pending_cursor_move_preview: None,
@@ -4216,7 +4269,7 @@ impl TerminalView {
     fn process_terminal_events(&mut self, cx: &mut Context<Self>) -> bool {
         self.debug_overlay_stats.record_terminal_event_drain_pass();
 
-        let should_redraw = if self.runtime_uses_tmux() {
+        let mut should_redraw = if self.runtime_uses_tmux() {
             self.process_tmux_terminal_events(cx)
         } else {
             let mut ready_terminal_ids = std::mem::take(&mut self.native_terminal_wakeup_batch);
@@ -4228,6 +4281,10 @@ impl TerminalView {
             should_redraw
         };
         self.sync_plugin_lifecycle_state(self.runtime_uses_tmux(), cx);
+
+        if self.clear_stale_kitty_image_state() {
+            should_redraw = true;
+        }
 
         if should_redraw {
             self.debug_overlay_stats.record_terminal_redraw();
@@ -4513,12 +4570,89 @@ impl TerminalView {
         false
     }
 
-    fn clear_selection(&mut self) -> bool {
+    fn clear_text_selection(&mut self) -> bool {
         let anchor_changed = self.selection_anchor.take().is_some();
         let head_changed = self.selection_head.take().is_some();
         let dragging_changed = std::mem::replace(&mut self.selection_dragging, false);
         let moved_changed = std::mem::replace(&mut self.selection_moved, false);
         anchor_changed || head_changed || dragging_changed || moved_changed
+    }
+
+    fn clear_selection(&mut self) -> bool {
+        let text_changed = self.clear_text_selection();
+        let image_changed = self.kitty_image_selection.take().is_some();
+        text_changed || image_changed
+    }
+
+    fn current_kitty_image_placement(
+        &self,
+        selection: &KittyImageSelection,
+    ) -> Option<KittyGraphicsRenderPlacement> {
+        let active_pane_id = self.active_pane_id()?;
+        let placements = self.active_terminal()?.try_kitty_graphics_placements()?;
+        selection
+            .current_placement(Some(active_pane_id), &placements)
+            .cloned()
+    }
+
+    fn clear_kitty_image_state(&mut self) -> bool {
+        let selection_changed = self.kitty_image_selection.take().is_some();
+        let context_changed = self
+            .terminal_context_menu
+            .as_mut()
+            .is_some_and(|state| state.image.take().is_some());
+        selection_changed || context_changed
+    }
+
+    fn clear_stale_kitty_image_state(&mut self) -> bool {
+        let has_image_state = self.kitty_image_selection.is_some()
+            || self
+                .terminal_context_menu
+                .as_ref()
+                .is_some_and(|state| state.image.is_some());
+        if !has_image_state {
+            return false;
+        }
+
+        let Some(active_pane_id) = self.active_pane_id().map(str::to_owned) else {
+            return self.clear_kitty_image_state();
+        };
+        let Some(active_terminal) = self.active_terminal() else {
+            return self.clear_kitty_image_state();
+        };
+        // A contended native terminal lock does not prove that a placement is stale. Copy
+        // validation still fails closed while the lock is unavailable, but pruning waits for
+        // the next event drain instead of dropping a valid selection spuriously.
+        let Some(placements) = active_terminal.try_kitty_graphics_placements() else {
+            return false;
+        };
+
+        let selection_is_stale = self
+            .kitty_image_selection
+            .as_ref()
+            .is_some_and(|selection| {
+                selection
+                    .current_placement(Some(active_pane_id.as_str()), &placements)
+                    .is_none()
+            });
+        let context_image_is_stale = self
+            .terminal_context_menu
+            .as_ref()
+            .and_then(|state| state.image.as_ref())
+            .is_some_and(|selection| {
+                selection
+                    .current_placement(Some(active_pane_id.as_str()), &placements)
+                    .is_none()
+            });
+
+        if selection_is_stale {
+            self.kitty_image_selection = None;
+        }
+        if context_image_is_stale && let Some(state) = self.terminal_context_menu.as_mut() {
+            state.image = None;
+        }
+
+        selection_is_stale || context_image_is_stale
     }
 
     fn clear_hovered_link(&mut self) -> bool {
