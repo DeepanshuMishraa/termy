@@ -91,7 +91,12 @@ pub(crate) fn spawn_tmux_control_mode(
     normalize_tmux_command_env(&mut command);
     append_socket_args(&mut command, socket_target);
     // New tmux sessions must not inherit the app process cwd (for example `/` from Finder).
-    command.args(new_session_args(session_name, attach_existing, working_dir));
+    command.args(new_session_args(
+        ControlModeFlag::Pty,
+        session_name,
+        attach_existing,
+        working_dir,
+    ));
     let child = command
         // tmux windows/panes are authoritative in tmux runtime mode; disable
         // direct shell OSC integration hooks to avoid prompt-width drift artifacts.
@@ -141,7 +146,12 @@ pub(crate) fn spawn_tmux_control_mode_via_prefix(
 )> {
     let mut command = tmux_base_command(&config.command_prefix, config.binary.as_str());
     append_socket_args(&mut command, socket_target);
-    command.args(new_session_args(session_name, attach_existing, None));
+    command.args(new_session_args(
+        ControlModeFlag::Pipe,
+        session_name,
+        attach_existing,
+        None,
+    ));
     let mut child = command
         .env("TERMY_SHELL_INTEGRATION", "0")
         .env_remove("TERMY_TAB_TITLE_PREFIX")
@@ -190,12 +200,32 @@ fn is_safe_tmux_working_dir_arg(value: &str) -> bool {
         .any(|byte| byte.is_ascii_control() || byte == b'#')
 }
 
+/// How the control-mode client's stdio is wired, which decides the tmux
+/// control flag: `-CC` requires a real tty on stdin (tmux calls `tcgetattr`
+/// and exits with "tcgetattr failed" otherwise), while `-C` is the plain
+/// control mode designed for piped stdio and speaks the same protocol.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ControlModeFlag {
+    Pty,
+    Pipe,
+}
+
+impl ControlModeFlag {
+    fn as_arg(self) -> &'static str {
+        match self {
+            ControlModeFlag::Pty => "-CC",
+            ControlModeFlag::Pipe => "-C",
+        }
+    }
+}
+
 fn new_session_args<'a>(
+    control_mode: ControlModeFlag,
     session_name: &'a str,
     attach_existing: bool,
     working_dir: Option<&'a str>,
 ) -> Vec<&'a str> {
-    let mut args = vec!["-CC", "new-session"];
+    let mut args = vec![control_mode.as_arg(), "new-session"];
     if attach_existing {
         args.push("-A");
     }
@@ -419,7 +449,7 @@ mod tests {
     #[test]
     fn new_session_args_include_working_directory_when_provided() {
         assert_eq!(
-            new_session_args("work", true, Some("/tmp/project")),
+            new_session_args(ControlModeFlag::Pty, "work", true, Some("/tmp/project")),
             vec![
                 "-CC",
                 "new-session",
@@ -433,9 +463,19 @@ mod tests {
     }
 
     #[test]
+    fn new_session_args_use_plain_control_mode_for_piped_stdio() {
+        // The command-prefix path (`wsl.exe -e`, `ssh host`) has no tty on
+        // stdin; `-CC` would make tmux exit with "tcgetattr failed".
+        assert_eq!(
+            new_session_args(ControlModeFlag::Pipe, "work", true, None),
+            vec!["-C", "new-session", "-A", "-s", "work"]
+        );
+    }
+
+    #[test]
     fn new_session_args_omit_working_directory_when_missing() {
         assert_eq!(
-            new_session_args("work", false, Some("  ")),
+            new_session_args(ControlModeFlag::Pty, "work", false, Some("  ")),
             vec!["-CC", "new-session", "-s", "work"]
         );
     }
@@ -443,11 +483,16 @@ mod tests {
     #[test]
     fn new_session_args_omit_unsafe_working_directories() {
         assert_eq!(
-            new_session_args("work", false, Some("/tmp/project\nrun-shell")),
+            new_session_args(
+                ControlModeFlag::Pty,
+                "work",
+                false,
+                Some("/tmp/project\nrun-shell")
+            ),
             vec!["-CC", "new-session", "-s", "work"]
         );
         assert_eq!(
-            new_session_args("work", false, Some("/tmp/#(run-shell)")),
+            new_session_args(ControlModeFlag::Pty, "work", false, Some("/tmp/#(run-shell)")),
             vec!["-CC", "new-session", "-s", "work"]
         );
     }
