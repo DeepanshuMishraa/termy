@@ -22,12 +22,17 @@ void termy_header_contract(void) {
   TermyFfiSize size = termy_size_default();
   TermyFfiTerminal *terminal = 0;
   TermyFfiFrame frame = {0};
+  TermyFfiKittyGraphicsBatch graphics = {0};
+  uint64_t graphics_revision = 0;
   const uint8_t bytes[] = {'o', 'k'};
 
   TermyFfiStatus status = termy_display_terminal_new(size, &terminal);
   (void)status;
   (void)termy_terminal_feed_output(terminal, bytes, sizeof(bytes));
   (void)termy_terminal_snapshot(terminal, &frame);
+  (void)termy_terminal_kitty_graphics_revision(terminal, &graphics_revision);
+  (void)termy_terminal_kitty_graphics_placements(terminal, &graphics);
+  (void)termy_kitty_graphics_batch_free(&graphics);
   (void)termy_frame_free(&frame);
   (void)termy_terminal_free(terminal);
 }

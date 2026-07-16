@@ -14,6 +14,8 @@ final class TerminalViewModel: ObservableObject {
     @Published private(set) var hasVisibleContent = false
     @Published private(set) var frameMetadata = TerminalFrameMetadata.empty
     @Published private(set) var canCopySelection = false
+    @Published private(set) var kittyGraphicsPlacements: [TerminalKittyGraphicsPlacement] = []
+    @Published private(set) var selectedKittyGraphics: TerminalKittyGraphicsIdentity?
     @Published private(set) var currentWorkingDirectory: String?
     @Published private(set) var searchMatches: [TerminalSearchMatch] = []
     @Published private(set) var activeSearchMatchIndex = 0
@@ -108,6 +110,8 @@ final class TerminalViewModel: ObservableObject {
     private var activeSearchOptions = TerminalSearchOptions()
     private var lastSearchRefreshAt: Date?
     private var lastAutoCopiedSelectionText: String?
+    private var contextKittyGraphics: TerminalKittyGraphicsIdentity?
+    private var lastKittyGraphicsQuerySignature: TerminalKittyGraphicsQuerySignature?
     private var pendingWakeupPoll = false
     private var renderedFrameCount = 0
     private var skippedPresentCount = 0
@@ -400,6 +404,12 @@ final class TerminalViewModel: ObservableObject {
         isExited = true
         progress = .clear
         startupRefreshUntil = nil
+        kittyGraphicsPlacements = []
+        selectedKittyGraphics = nil
+        contextKittyGraphics = nil
+        lastKittyGraphicsQuerySignature = nil
+        hasVisibleContent = frameStore.hasVisibleContent
+        canCopySelection = frame.hasSelectedText(for: selection)
     }
 
     /// Re-read appearance settings from the config file and apply them to this
@@ -608,8 +618,13 @@ final class TerminalViewModel: ObservableObject {
     }
 
     func updateSelection(_ selection: TerminalSelection?) {
+        let clearedImageSelection = selectedKittyGraphics != nil
+        selectedKittyGraphics = nil
         self.selection = selection
         canCopySelection = frame.hasSelectedText(for: selection)
+        if clearedImageSelection {
+            invalidateKittyGraphicsSelection()
+        }
         guard renderConfig.copyOnSelect,
               let text = frame.selectedText(for: selection),
               !text.isEmpty
@@ -702,12 +717,54 @@ final class TerminalViewModel: ObservableObject {
     }
 
     func copySelection() -> Bool {
+        if let selectedKittyGraphics,
+           copyKittyGraphics(selectedKittyGraphics) {
+            return true
+        }
         guard let text = frame.selectedText(for: selection), !text.isEmpty else {
             return false
         }
 
         copy(text)
         return true
+    }
+
+    func selectKittyGraphics(at point: CGPoint) -> Bool {
+        let positivePlacement = topmostKittyGraphics(at: point, matching: { $0.zIndex >= 0 })
+        let placement = positivePlacement
+            ?? topmostKittyGraphics(at: point, matching: { _ in true })
+        guard let placement else {
+            return false
+        }
+        if placement.zIndex < 0, foregroundTerminalSemantics(at: point) {
+            return false
+        }
+
+        selection = nil
+        lastAutoCopiedSelectionText = nil
+        selectedKittyGraphics = placement.identity
+        canCopySelection = true
+        invalidateKittyGraphicsSelection()
+        return true
+    }
+
+    @discardableResult
+    func updateContextKittyGraphics(at point: CGPoint?) -> Bool {
+        guard let point,
+              let placement = topmostKittyGraphics(at: point, matching: { _ in true })
+        else {
+            contextKittyGraphics = nil
+            return false
+        }
+        contextKittyGraphics = placement.identity
+        return true
+    }
+
+    func copyContextKittyGraphics() -> Bool {
+        guard let contextKittyGraphics else {
+            return false
+        }
+        return copyKittyGraphics(contextKittyGraphics)
     }
 
     func search(
@@ -840,11 +897,12 @@ final class TerminalViewModel: ObservableObject {
             if let update {
                 nativeRenderMetricsRecorder.recordFrameUpdate(update, applyResult: applyResult)
             }
+            let kittyGraphicsChanged = try refreshKittyGraphicsIfNeeded()
             if Self.hasCadenceActivity(
                 events: events,
                 patchedCellCount: applyResult.patchedCellCount,
                 forceFull: forceFull,
-                changed: applyResult.changed
+                changed: applyResult.changed || kittyGraphicsChanged
             ) {
                 noteActivity()
             } else {
@@ -860,7 +918,7 @@ final class TerminalViewModel: ObservableObject {
                 cursorBlinkVisible = cursorBlinkPhase.isVisible
             }
 
-            guard forceFull || applyResult.changed else {
+            guard forceFull || applyResult.changed || kittyGraphicsChanged else {
                 presentCursorBlink(toggled: blinkToggled)
                 updateDebugMetrics(renderedFrame: false)
                 return
@@ -890,7 +948,9 @@ final class TerminalViewModel: ObservableObject {
             // so the grid view repaints the cursor row alongside the frame's
             // own dirty rows. The plan cache below keeps the narrower
             // `effectiveDamage`: a blink changes no cell content.
-            if blinkToggled, let cursor = frame.cursor {
+            if kittyGraphicsChanged {
+                renderDamage = .full
+            } else if blinkToggled, let cursor = frame.cursor {
                 renderDamage = effectiveDamage.union(
                     TerminalDirtySpan(row: cursor.row, leftCol: cursor.col, rightCol: cursor.col)
                 )
@@ -925,9 +985,95 @@ final class TerminalViewModel: ObservableObject {
 
     private func publishFrameState() {
         frame = frameStore.frame
-        hasVisibleContent = frameStore.hasVisibleContent
+        hasVisibleContent = frameStore.hasVisibleContent || !kittyGraphicsPlacements.isEmpty
         frameMetadata = TerminalFrameMetadata(frame: frame)
-        canCopySelection = frame.hasSelectedText(for: selection)
+        canCopySelection = selectedKittyGraphics != nil || frame.hasSelectedText(for: selection)
+    }
+
+    private func refreshKittyGraphicsIfNeeded() throws -> Bool {
+        guard let terminal else {
+            return false
+        }
+        let revision = try terminal.kittyGraphicsRevision()
+        let currentFrame = frameStore.frame
+        let signature = TerminalKittyGraphicsQuerySignature(
+            revision: revision,
+            cols: currentFrame.cols,
+            rows: currentFrame.rows,
+            displayOffset: currentFrame.displayOffset,
+            historySize: currentFrame.historySize
+        )
+        guard signature != lastKittyGraphicsQuerySignature else {
+            return false
+        }
+
+        let snapshot = try terminal.kittyGraphicsPlacements()
+        let placementsChanged = snapshot.placements != kittyGraphicsPlacements
+        kittyGraphicsPlacements = snapshot.placements
+        lastKittyGraphicsQuerySignature = TerminalKittyGraphicsQuerySignature(
+            revision: snapshot.revision,
+            cols: currentFrame.cols,
+            rows: currentFrame.rows,
+            displayOffset: currentFrame.displayOffset,
+            historySize: currentFrame.historySize
+        )
+
+        var selectionChanged = false
+        if let selectedKittyGraphics,
+           !snapshot.placements.contains(where: { $0.identity == selectedKittyGraphics }) {
+            self.selectedKittyGraphics = nil
+            selectionChanged = true
+        }
+        if let contextKittyGraphics,
+           !snapshot.placements.contains(where: { $0.identity == contextKittyGraphics }) {
+            self.contextKittyGraphics = nil
+        }
+        return placementsChanged || selectionChanged
+    }
+
+    private func topmostKittyGraphics(
+        at point: CGPoint,
+        matching predicate: (TerminalKittyGraphicsPlacement) -> Bool
+    ) -> TerminalKittyGraphicsPlacement? {
+        kittyGraphicsPlacements.reversed().first {
+            predicate($0) && $0.bounds(renderConfig: renderConfig).contains(point)
+        }
+    }
+
+    private func foregroundTerminalSemantics(at point: CGPoint) -> Bool {
+        let cellWidth = max(1, renderConfig.cellWidth)
+        let cellHeight = max(1, renderConfig.cellHeight)
+        let col = Int(floor((point.x - renderConfig.paddingX) / cellWidth))
+        let row = Int(floor((point.y - renderConfig.paddingY) / cellHeight))
+        let position = TerminalGridPosition(col: col, row: row)
+        guard col >= 0, col < frame.cols, row >= 0, row < frame.rows else {
+            return false
+        }
+        if let cell = frame.cell(row: row, col: col),
+           cell.renderText,
+           cell.character != " " {
+            return true
+        }
+        return link(at: position) != nil
+    }
+
+    private func copyKittyGraphics(_ identity: TerminalKittyGraphicsIdentity) -> Bool {
+        guard let placement = kittyGraphicsPlacements.first(where: { $0.identity == identity }),
+              !placement.png.isEmpty
+        else {
+            return false
+        }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        return pasteboard.setData(
+            placement.png,
+            forType: NSPasteboard.PasteboardType("public.png")
+        )
+    }
+
+    private func invalidateKittyGraphicsSelection() {
+        renderDamage = .full
+        renderRevision &+= 1
     }
 
     private func shouldForceStartupRefresh() -> Bool {

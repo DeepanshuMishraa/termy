@@ -29,9 +29,12 @@ struct TerminalKeyboardInputView: NSViewRepresentable {
     var onSelectWord: (TerminalGridPosition) -> Void
     var onSelectLine: (TerminalGridPosition) -> Void
     var onSelectAll: () -> Void
+    var onSelectKittyGraphics: (CGPoint) -> Bool
+    var onContextKittyGraphics: (CGPoint?) -> Bool
     var onHoverProbe: (TerminalGridPosition?) -> Bool
     var onOpenLink: (TerminalGridPosition) -> Bool
     var onCopy: () -> Bool
+    var onCopyKittyGraphics: () -> Bool
     var onPaste: (String) -> Void
     var onMarkedTextChanged: (String) -> Void = { _ in }
 
@@ -80,9 +83,12 @@ final class KeyboardCaptureView: NSView {
     var onSelectWord: (TerminalGridPosition) -> Void = { _ in }
     var onSelectLine: (TerminalGridPosition) -> Void = { _ in }
     var onSelectAll: () -> Void = {}
+    var onSelectKittyGraphics: (CGPoint) -> Bool = { _ in false }
+    var onContextKittyGraphics: (CGPoint?) -> Bool = { _ in false }
     var onHoverProbe: (TerminalGridPosition?) -> Bool = { _ in false }
     var onOpenLink: (TerminalGridPosition) -> Bool = { _ in false }
     var onCopy: () -> Bool = { false }
+    var onCopyKittyGraphics: () -> Bool = { false }
     var onPaste: (String) -> Void = { _ in }
     var onMarkedTextChanged: (String) -> Void = { _ in }
 
@@ -221,6 +227,11 @@ final class KeyboardCaptureView: NSView {
 
         activeMouseButton = nil
         guard button == .left else {
+            return
+        }
+
+        if onSelectKittyGraphics(terminalPoint(for: event)) {
+            selectionAnchor = nil
             return
         }
 
@@ -619,8 +630,13 @@ final class KeyboardCaptureView: NSView {
     }
 
     private func showTerminalContextMenu(for event: NSEvent) {
+        let canCopyImage = onContextKittyGraphics(terminalPoint(for: event))
+        defer {
+            _ = onContextKittyGraphics(nil)
+        }
         let menu = TerminalSurfaceContextMenu.make(
             canCopy: canCopy,
+            canCopyImage: canCopyImage,
             canPaste: NSPasteboard.general.string(forType: .string) != nil,
             target: self
         )
@@ -629,6 +645,10 @@ final class KeyboardCaptureView: NSView {
 
     @objc func copyFromTerminalContextMenu(_ sender: Any?) {
         _ = onCopy()
+    }
+
+    @objc func copyImageFromTerminalContextMenu(_ sender: Any?) {
+        _ = onCopyKittyGraphics()
     }
 
     @objc func pasteFromTerminalContextMenu(_ sender: Any?) {
@@ -783,6 +803,11 @@ final class KeyboardCaptureView: NSView {
         return TerminalGridPosition(col: col, row: row)
     }
 
+    private func terminalPoint(for event: NSEvent) -> CGPoint {
+        let point = convert(event.locationInWindow, from: nil)
+        return CGPoint(x: point.x, y: bounds.height - point.y)
+    }
+
     nonisolated static func dragSelection(
         anchor: TerminalGridPosition,
         active: TerminalGridPosition
@@ -935,9 +960,12 @@ private extension KeyboardCaptureView {
         onSelectWord = configuration.onSelectWord
         onSelectLine = configuration.onSelectLine
         onSelectAll = configuration.onSelectAll
+        onSelectKittyGraphics = configuration.onSelectKittyGraphics
+        onContextKittyGraphics = configuration.onContextKittyGraphics
         onHoverProbe = configuration.onHoverProbe
         onOpenLink = configuration.onOpenLink
         onCopy = configuration.onCopy
+        onCopyKittyGraphics = configuration.onCopyKittyGraphics
         onPaste = configuration.onPaste
         onMarkedTextChanged = configuration.onMarkedTextChanged
     }

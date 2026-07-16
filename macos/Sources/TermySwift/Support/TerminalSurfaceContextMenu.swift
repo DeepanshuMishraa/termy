@@ -1,7 +1,12 @@
 import AppKit
 
 enum TerminalSurfaceContextMenu {
-    static func make(canCopy: Bool, canPaste: Bool, target: KeyboardCaptureView) -> NSMenu {
+    static func make(
+        canCopy: Bool,
+        canCopyImage: Bool = false,
+        canPaste: Bool,
+        target: KeyboardCaptureView
+    ) -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
 
@@ -12,6 +17,14 @@ enum TerminalSurfaceContextMenu {
             target: target,
             isEnabled: canCopy
         ))
+        if canCopyImage {
+            menu.addItem(item(
+                title: "Copy Image",
+                action: #selector(KeyboardCaptureView.copyImageFromTerminalContextMenu(_:)),
+                keyEquivalent: "",
+                target: target
+            ))
+        }
         menu.addItem(item(
             title: "Paste",
             action: #selector(KeyboardCaptureView.pasteFromTerminalContextMenu(_:)),

@@ -224,6 +224,37 @@ final class TerminalKeyboardInputViewTests: XCTestCase {
         XCTAssertEqual(selections.compactMap { $0 }, [selection, selection])
     }
 
+    func testLeftClickSelectsKittyGraphicsBeforeStartingTextSelection() {
+        let harness = AppKitEventHarness()
+        harness.inputView.cols = 80
+        harness.inputView.rows = 24
+        var selectedPoint: CGPoint?
+        var selections: [TerminalSelection?] = []
+        harness.inputView.onMouseInput = { _ in false }
+        harness.inputView.onSelectKittyGraphics = {
+            selectedPoint = $0
+            return true
+        }
+        harness.inputView.onSelectionChanged = { selections.append($0) }
+
+        let clickPoint = harness.point(col: 3, row: 2)
+        harness.sendMouse(type: .leftMouseDown, at: clickPoint)
+        harness.sendMouse(type: .leftMouseUp, at: clickPoint)
+
+        let config = harness.inputView.renderConfig
+        XCTAssertEqual(
+            selectedPoint?.x ?? -1,
+            config.paddingX + 3.5 * config.cellWidth,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            selectedPoint?.y ?? -1,
+            config.paddingY + 2.5 * config.cellHeight,
+            accuracy: 0.001
+        )
+        XCTAssertTrue(selections.isEmpty)
+    }
+
     func testDragSelectionIgnoresSameCellJitter() {
         let position = TerminalGridPosition(col: 12, row: 4)
 

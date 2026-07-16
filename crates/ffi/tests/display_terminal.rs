@@ -3,8 +3,11 @@
 //! through the normal snapshot/render FFI.
 
 use termy_ffi::{
-    TermyFfiFrame, TermyFfiStatus, TermyFfiTerminal, termy_display_terminal_new, termy_frame_free,
-    termy_size_default, termy_terminal_feed_output, termy_terminal_free, termy_terminal_snapshot,
+    TermyFfiFrame, TermyFfiKittyGraphicsBatch, TermyFfiStatus, TermyFfiTerminal,
+    termy_display_terminal_new, termy_frame_free, termy_kitty_graphics_batch_free,
+    termy_size_default, termy_terminal_feed_output, termy_terminal_free,
+    termy_terminal_kitty_graphics_placements, termy_terminal_kitty_graphics_revision,
+    termy_terminal_snapshot,
 };
 
 #[test]
@@ -59,6 +62,50 @@ fn display_terminal_write_is_noop_without_pty() {
         TermyFfiStatus::Ok
     );
     unsafe { termy_terminal_free(terminal) };
+}
+
+#[test]
+fn display_terminal_exposes_kitty_graphics_placements() {
+    let size = termy_size_default();
+    let mut terminal: *mut TermyFfiTerminal = std::ptr::null_mut();
+    assert_eq!(
+        unsafe { termy_display_terminal_new(size, &mut terminal) },
+        TermyFfiStatus::Ok
+    );
+
+    let command = b"\x1b_Ga=T,f=32,s=1,v=1,i=77,c=2,r=3;AQID/w==\x1b\\";
+    assert_eq!(
+        unsafe { termy_terminal_feed_output(terminal, command.as_ptr(), command.len()) },
+        TermyFfiStatus::Ok
+    );
+
+    let mut revision = 0;
+    assert_eq!(
+        unsafe { termy_terminal_kitty_graphics_revision(terminal, &mut revision) },
+        TermyFfiStatus::Ok
+    );
+    assert!(revision > 0);
+
+    let mut batch = TermyFfiKittyGraphicsBatch::default();
+    assert_eq!(
+        unsafe { termy_terminal_kitty_graphics_placements(terminal, &mut batch) },
+        TermyFfiStatus::Ok
+    );
+    assert_eq!(batch.revision, revision);
+    let placements =
+        unsafe { std::slice::from_raw_parts(batch.placements_ptr, batch.placements_len) };
+    assert_eq!(placements.len(), 1);
+    assert_eq!(placements[0].image_id, 77);
+    assert!(placements[0].has_display_cols);
+    assert_eq!(placements[0].display_cols, 2);
+    let png = unsafe { std::slice::from_raw_parts(placements[0].png.ptr, placements[0].png.len) };
+    assert!(png.starts_with(b"\x89PNG"));
+
+    assert_eq!(
+        unsafe { termy_kitty_graphics_batch_free(&mut batch) },
+        TermyFfiStatus::Ok
+    );
+    assert_eq!(unsafe { termy_terminal_free(terminal) }, TermyFfiStatus::Ok);
 }
 
 #[test]

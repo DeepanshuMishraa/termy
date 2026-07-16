@@ -34,6 +34,8 @@ struct TerminalSurfaceView: View {
                     renderPlan: terminal.renderPlan,
                     renderDamage: terminal.renderDamage,
                     selection: terminal.selection,
+                    kittyGraphicsPlacements: terminal.kittyGraphicsPlacements,
+                    selectedKittyGraphics: terminal.selectedKittyGraphics,
                     renderConfig: terminal.renderConfig,
                     searchMatches: terminal.searchMatches,
                     activeSearchMatch: terminal.searchMatches[safe: terminal.activeSearchMatchIndex],
@@ -105,6 +107,12 @@ struct TerminalSurfaceView: View {
                     onSelectAll: {
                         terminal.selectAll()
                     },
+                    onSelectKittyGraphics: { point in
+                        terminal.selectKittyGraphics(at: point)
+                    },
+                    onContextKittyGraphics: { point in
+                        terminal.updateContextKittyGraphics(at: point)
+                    },
                     onHoverProbe: { position in
                         terminal.updateHoveredLink(at: position)
                     },
@@ -113,6 +121,9 @@ struct TerminalSurfaceView: View {
                     },
                     onCopy: {
                         terminal.copySelection()
+                    },
+                    onCopyKittyGraphics: {
+                        terminal.copyContextKittyGraphics()
                     },
                     onPaste: { text in
                         pasteOverride?(text) ?? terminal.paste(text)
