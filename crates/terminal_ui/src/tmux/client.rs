@@ -158,6 +158,19 @@ impl TmuxClient {
         ))
     }
 
+    /// Create a `TmuxClient` from existing control-mode I/O streams instead of
+    /// spawning a local tmux process.
+    ///
+    /// `stdin`/`stdout` must be connected to a tmux control-mode client
+    /// (`tmux -CC`) that is already running — for example over an SSH channel,
+    /// in an embedded host, or an in-memory pair for tests. The streams are
+    /// wired directly into the existing control worker threads; no local
+    /// process is spawned or waited on.
+    ///
+    /// `tmux_binary` and `socket_target` are still used for out-of-band tmux
+    /// commands issued outside the control channel. Because there is no local
+    /// child process, shutdown is always downgraded to detach-only regardless
+    /// of the requested mode.
     pub fn from_streams<W, R>(
         stdin: W,
         stdout: R,
