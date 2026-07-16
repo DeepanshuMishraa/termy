@@ -300,7 +300,6 @@ impl SettingsWindow {
 
         let section = section.child(self.render_terminal_shell_group(cx));
 
-        #[cfg(not(target_os = "windows"))]
         let section = section.child(self.render_terminal_tmux_group(cx));
 
         section
@@ -416,10 +415,12 @@ impl SettingsWindow {
     #[cfg(not(target_os = "windows"))]
     pub(super) fn render_terminal_tmux_group(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let binary_meta = Self::setting_metadata_or_fallback("tmux_binary");
+        let command_prefix_meta = Self::setting_metadata_or_fallback("tmux_command_prefix");
         let tmux_enabled = self.config.tmux_enabled;
         let tmux_persistence = self.config.tmux_persistence;
         let tmux_show_active_pane_border = self.config.tmux_show_active_pane_border;
         let binary = self.config.tmux_binary.clone();
+        let command_prefix = self.config.tmux_command_prefix.clone().unwrap_or_default();
 
         let mut rows = vec![self.render_root_bool_setting_row(
             "tmux_enabled",
@@ -453,6 +454,14 @@ impl SettingsWindow {
                 binary_meta.title,
                 binary_meta.description,
                 binary,
+                cx,
+            ));
+            rows.push(self.render_editable_row(
+                "tmux_command_prefix",
+                EditableField::TmuxCommandPrefix,
+                command_prefix_meta.title,
+                command_prefix_meta.description,
+                command_prefix,
                 cx,
             ));
         }

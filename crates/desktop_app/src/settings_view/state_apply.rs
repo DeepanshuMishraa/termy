@@ -25,6 +25,7 @@ impl SettingsWindow {
             | EditableField::Term
             | EditableField::Colorterm
             | EditableField::TmuxBinary
+            | EditableField::TmuxCommandPrefix
             | EditableField::ScrollbackHistory
             | EditableField::InactiveTabScrollback
             | EditableField::ScrollMultiplier
@@ -269,6 +270,21 @@ impl SettingsWindow {
                 }
                 self.config.tmux_binary = value.to_string();
                 config::set_root_setting(termy_config_core::RootSettingId::TmuxBinary, value)
+            }
+            EditableField::TmuxCommandPrefix => {
+                if value.is_empty() {
+                    self.config.tmux_command_prefix = None;
+                    config::set_root_setting(
+                        termy_config_core::RootSettingId::TmuxCommandPrefix,
+                        "none",
+                    )
+                } else {
+                    self.config.tmux_command_prefix = Some(value.to_string());
+                    config::set_root_setting(
+                        termy_config_core::RootSettingId::TmuxCommandPrefix,
+                        value,
+                    )
+                }
             }
             EditableField::ScrollbackHistory => {
                 let parsed = value

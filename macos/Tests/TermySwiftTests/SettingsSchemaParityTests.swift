@@ -14,6 +14,7 @@ final class SettingsSchemaParityTests: XCTestCase {
             "tmux_enabled",
             "tmux_persistence",
             "tmux_binary",
+            "tmux_command_prefix",
             "tmux_show_active_pane_border",
             "simple_mode",
             "native_tab_persistence",

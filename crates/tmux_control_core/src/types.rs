@@ -1,6 +1,11 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TmuxRuntimeConfig {
     pub binary: String,
+    /// Argv prefix used to reach the tmux binary, e.g. `["wsl.exe", "-e"]` or
+    /// `["ssh", "myhost"]`. When non-empty, the control client and out-of-band
+    /// tmux commands run through this prefix with piped stdio instead of a
+    /// locally spawned tmux on a pty, which also works on non-unix hosts.
+    pub command_prefix: Vec<String>,
     pub launch: TmuxLaunchTarget,
     pub show_active_pane_border: bool,
 }
@@ -45,6 +50,7 @@ impl Default for TmuxRuntimeConfig {
     fn default() -> Self {
         Self {
             binary: "tmux".to_string(),
+            command_prefix: Vec::new(),
             launch: TmuxLaunchTarget::Managed { persistence: false },
             show_active_pane_border: false,
         }

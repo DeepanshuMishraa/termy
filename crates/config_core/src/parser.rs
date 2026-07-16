@@ -339,6 +339,21 @@ impl AppConfig {
                         config.tmux_binary = parsed;
                     }
                 }
+                RootSettingId::TmuxCommandPrefix => {
+                    if value.trim().eq_ignore_ascii_case("none") {
+                        config.tmux_command_prefix = None;
+                    } else if value.is_empty() {
+                        push_invalid_value(
+                            &mut diagnostics,
+                            line_number,
+                            key,
+                            value,
+                            "a non-empty command prefix or none",
+                        );
+                    } else {
+                        config.tmux_command_prefix = Some(value.to_string());
+                    }
+                }
                 RootSettingId::TmuxShowActivePaneBorder => {
                     if let Some(parsed) =
                         parse_bool_field(&mut diagnostics, line_number, key, value)

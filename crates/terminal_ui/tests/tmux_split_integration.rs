@@ -145,6 +145,7 @@ fn new_tmux_client_with_persistence_live_in_dir(
     for _attempt in 0..6 {
         let config = TmuxRuntimeConfig {
             binary: binary.to_string(),
+            command_prefix: Vec::new(),
             launch: TmuxLaunchTarget::Managed { persistence },
             show_active_pane_border: false,
         };

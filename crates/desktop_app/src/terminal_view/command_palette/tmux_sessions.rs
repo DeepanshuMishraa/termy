@@ -90,16 +90,21 @@ impl TerminalView {
         }
     }
 
-    fn tmux_binary_for_session_palette(&mut self) -> Result<String, String> {
-        let binary = if self.runtime_uses_tmux() {
-            self.tmux_runtime().config.binary.trim().to_string()
+    /// Resolve the (command prefix, binary) pair used to spawn out-of-band
+    /// tmux commands for the session palette.
+    fn tmux_invocation_for_session_palette(&mut self) -> Result<(Vec<String>, String), String> {
+        let (command_prefix, binary) = if self.runtime_uses_tmux() {
+            (
+                self.tmux_runtime().config.command_prefix.clone(),
+                self.tmux_runtime().config.binary.trim().to_string(),
+            )
         } else if let Some(cached) = self
             .cached_tmux_binary
             .as_deref()
             .map(str::trim)
             .filter(|cached| !cached.is_empty())
         {
-            cached.to_string()
+            (self.cached_tmux_command_prefix.clone(), cached.to_string())
         } else {
             let loaded = config::load_runtime_config(
                 &mut self.last_config_error_message,
@@ -107,12 +112,14 @@ impl TerminalView {
             );
             let loaded_binary = loaded.config.tmux_binary.trim().to_string();
             self.cached_tmux_binary = (!loaded_binary.is_empty()).then_some(loaded_binary.clone());
-            loaded_binary
+            let loaded_prefix = loaded.config.tmux_command_prefix_argv();
+            self.cached_tmux_command_prefix = loaded_prefix.clone();
+            (loaded_prefix, loaded_binary)
         };
         if binary.is_empty() {
             return Err("tmux_binary must not be empty".to_string());
         }
-        Ok(binary)
+        Ok((command_prefix, binary))
     }
 
     pub(super) fn reload_tmux_session_palette_items(&mut self) -> Result<(), String> {
@@ -121,12 +128,13 @@ impl TerminalView {
             .first()
             .cloned()
             .unwrap_or(TmuxSocketTarget::Default);
-        let binary = self.tmux_binary_for_session_palette()?;
+        let (command_prefix, binary) = self.tmux_invocation_for_session_palette()?;
         let mut rows = Vec::<TmuxSessionRow>::new();
         let mut failures = Vec::<String>::new();
 
         for socket_target in socket_targets {
-            match TmuxClient::list_sessions(binary.as_str(), socket_target.clone()) {
+            match TmuxClient::list_sessions(&command_prefix, binary.as_str(), socket_target.clone())
+            {
                 Ok(sessions) => {
                     rows.extend(sessions.into_iter().map(|summary| TmuxSessionRow {
                         summary,
@@ -281,8 +289,8 @@ impl TerminalView {
             return;
         }
 
-        let binary = match self.tmux_binary_for_session_palette() {
-            Ok(binary) => binary,
+        let (command_prefix, binary) = match self.tmux_invocation_for_session_palette() {
+            Ok(invocation) => invocation,
             Err(error) => {
                 termy_toast::error(error);
                 self.notify_overlay(cx);
@@ -291,6 +299,7 @@ impl TerminalView {
         };
 
         if let Err(error) = TmuxClient::rename_session(
+            &command_prefix,
             binary.as_str(),
             socket_target,
             current_session_name,
@@ -349,8 +358,9 @@ impl TerminalView {
 
             let _ = cx.update(|cx| {
                 this.update(cx, |view, cx| {
-                    let binary = match view.tmux_binary_for_session_palette() {
-                        Ok(binary) => binary,
+                    let (command_prefix, binary) = match view.tmux_invocation_for_session_palette()
+                    {
+                        Ok(invocation) => invocation,
                         Err(error) => {
                             termy_toast::error(error);
                             view.notify_overlay(cx);
@@ -359,6 +369,7 @@ impl TerminalView {
                     };
 
                     if let Err(error) = TmuxClient::kill_session(
+                        &command_prefix,
                         binary.as_str(),
                         socket_target,
                         session_name.as_str(),

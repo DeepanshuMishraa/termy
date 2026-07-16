@@ -24,8 +24,8 @@ pub(super) enum EditableField {
     Shell,
     Term,
     Colorterm,
-    #[cfg_attr(target_os = "windows", allow(dead_code))]
     TmuxBinary,
+    TmuxCommandPrefix,
     ScrollbackHistory,
     InactiveTabScrollback,
     ScrollMultiplier,
@@ -242,14 +242,10 @@ impl SettingsWindow {
             return false;
         }
 
+        // tmux settings stay visible on Windows: the runtime is reachable
+        // there through tmux_command_prefix (e.g. `wsl.exe -e`).
         if cfg!(target_os = "windows") {
-            return !matches!(
-                setting,
-                RootSettingId::TmuxEnabled
-                    | RootSettingId::TmuxPersistence
-                    | RootSettingId::TmuxShowActivePaneBorder
-                    | RootSettingId::TmuxBinary
-            );
+            return true;
         }
 
         !matches!(setting, RootSettingId::WindowsShell)
@@ -430,6 +426,7 @@ impl SettingsWindow {
             | EditableField::Term
             | EditableField::Colorterm
             | EditableField::TmuxBinary
+            | EditableField::TmuxCommandPrefix
             | EditableField::ScrollbackHistory
             | EditableField::InactiveTabScrollback
             | EditableField::ScrollMultiplier
@@ -556,6 +553,9 @@ impl SettingsWindow {
             EditableField::Term => Self::text_field_spec(Some(RootSettingId::Term)),
             EditableField::Colorterm => Self::text_field_spec(Some(RootSettingId::Colorterm)),
             EditableField::TmuxBinary => Self::text_field_spec(Some(RootSettingId::TmuxBinary)),
+            EditableField::TmuxCommandPrefix => {
+                Self::text_field_spec(Some(RootSettingId::TmuxCommandPrefix))
+            }
             EditableField::ScrollbackHistory => Self::numeric_field_spec(
                 RootSettingId::ScrollbackHistory,
                 NumericStepSpec {
@@ -915,6 +915,9 @@ impl SettingsWindow {
             EditableField::Term => self.config.term.clone(),
             EditableField::Colorterm => self.config.colorterm.clone().unwrap_or_default(),
             EditableField::TmuxBinary => self.config.tmux_binary.clone(),
+            EditableField::TmuxCommandPrefix => {
+                self.config.tmux_command_prefix.clone().unwrap_or_default()
+            }
             EditableField::ScrollbackHistory => self.config.scrollback_history.to_string(),
             EditableField::InactiveTabScrollback => self
                 .config
@@ -1294,6 +1297,7 @@ mod tests {
             EditableField::Term,
             EditableField::Colorterm,
             EditableField::TmuxBinary,
+            EditableField::TmuxCommandPrefix,
             EditableField::ScrollbackHistory,
             EditableField::InactiveTabScrollback,
             EditableField::ScrollMultiplier,

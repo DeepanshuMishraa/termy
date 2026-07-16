@@ -93,14 +93,26 @@ fn preflight_tmux_runtime(config: &config::AppConfig) -> Result<(), StartupBlock
         return Ok(());
     }
 
-    TmuxClient::verify_tmux_version(config.tmux_binary.as_str(), 3, 3)
-        .map_err(|error| StartupBlocker::TmuxPreflight(format!("tmux preflight failed: {error}")))
+    TmuxClient::verify_tmux_version(
+        &config.tmux_command_prefix_argv(),
+        config.tmux_binary.as_str(),
+        3,
+        3,
+    )
+    .map_err(|error| StartupBlocker::TmuxPreflight(format!("tmux preflight failed: {error}")))
 }
 
 #[cfg(target_os = "windows")]
 fn preflight_tmux_runtime(config: &config::AppConfig) -> Result<(), StartupBlocker> {
-    let _ = config;
-    Ok(())
+    let command_prefix = config.tmux_command_prefix_argv();
+    // Without a command prefix the runtime silently stays native on Windows,
+    // so there is nothing to preflight.
+    if !config.tmux_enabled || command_prefix.is_empty() {
+        return Ok(());
+    }
+
+    TmuxClient::verify_tmux_version(&command_prefix, config.tmux_binary.as_str(), 3, 3)
+        .map_err(|error| StartupBlocker::TmuxPreflight(format!("tmux preflight failed: {error}")))
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]

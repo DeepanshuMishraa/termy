@@ -1,20 +1,16 @@
 #![cfg_attr(not(unix), allow(dead_code))]
 
-#[cfg(unix)]
 use anyhow::{Context, Result, anyhow};
 #[cfg(unix)]
 use std::fs::File;
 #[cfg(unix)]
-use std::process::Command;
+use std::os::fd::{FromRawFd, IntoRawFd};
+use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
-#[cfg(unix)]
-use std::{
-    os::fd::{FromRawFd, IntoRawFd},
-    process::Stdio,
-};
 
 #[cfg(unix)]
-use super::session::{append_socket_args, normalize_tmux_command_env};
+use super::session::normalize_tmux_command_env;
+use super::session::{append_socket_args, tmux_base_command};
 use tmux_control_core::types::{
     TmuxLaunchTarget, TmuxRuntimeConfig, TmuxShutdownMode, TmuxSocketTarget,
 };
@@ -121,6 +117,58 @@ pub(crate) fn spawn_tmux_control_mode(
     Ok((child, writer, controller))
 }
 
+/// Spawn the tmux control-mode client through the configured command prefix
+/// (`wsl.exe -e tmux ...`, `ssh myhost tmux ...`) with plain piped stdio.
+///
+/// Control-mode clients do not need a pty, so this path works on every
+/// platform — including Windows, where the local pty spawn path is
+/// unavailable. The working directory is intentionally not forwarded: the
+/// filesystem behind the prefix (WSL distro, remote host) does not share
+/// paths with the host process.
+pub(crate) fn spawn_tmux_control_mode_via_prefix(
+    config: &TmuxRuntimeConfig,
+    socket_target: &TmuxSocketTarget,
+    session_name: &str,
+    attach_existing: bool,
+) -> Result<(
+    std::process::Child,
+    std::process::ChildStdin,
+    std::process::ChildStdout,
+)> {
+    let mut command = tmux_base_command(&config.command_prefix, config.binary.as_str());
+    append_socket_args(&mut command, socket_target);
+    command.args(new_session_args(session_name, attach_existing, None));
+    let mut child = command
+        .env("TERMY_SHELL_INTEGRATION", "0")
+        .env_remove("TERMY_TAB_TITLE_PREFIX")
+        // Avoid inheriting an outer tmux client context; nested `TMUX` can
+        // redirect control-mode startup away from the requested session/socket.
+        .env_remove("TMUX")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        // Keep stderr attached to the app so prefix failures (ssh auth, WSL
+        // startup) stay visible in logs; the control protocol itself only
+        // uses stdout.
+        .stderr(Stdio::inherit())
+        .spawn()
+        .with_context(|| {
+            format!(
+                "failed to spawn tmux control mode via '{}'",
+                config.command_prefix.join(" ")
+            )
+        })?;
+
+    let child_stdin = child
+        .stdin
+        .take()
+        .context("tmux control mode child is missing a piped stdin")?;
+    let child_stdout = child
+        .stdout
+        .take()
+        .context("tmux control mode child is missing a piped stdout")?;
+    Ok((child, child_stdin, child_stdout))
+}
+
 pub(crate) fn append_working_dir_args<'a>(args: &mut Vec<&'a str>, working_dir: Option<&'a str>) {
     let working_dir = working_dir
         .map(str::trim)
@@ -196,6 +244,7 @@ mod tests {
     fn persistent_launch_plan_reuses_fixed_session_without_teardown() {
         let plan = launch_plan(&TmuxRuntimeConfig {
             binary: "tmux".to_string(),
+            command_prefix: Vec::new(),
             launch: TmuxLaunchTarget::Managed { persistence: true },
             show_active_pane_border: false,
         });
@@ -209,6 +258,7 @@ mod tests {
     fn isolated_launch_plan_uses_fresh_session_and_teardown() {
         let plan = launch_plan(&TmuxRuntimeConfig {
             binary: "tmux".to_string(),
+            command_prefix: Vec::new(),
             launch: TmuxLaunchTarget::Managed { persistence: false },
             show_active_pane_border: false,
         });
@@ -225,6 +275,7 @@ mod tests {
     fn explicit_session_launch_plan_uses_requested_target_without_teardown() {
         let plan = launch_plan(&TmuxRuntimeConfig {
             binary: "tmux".to_string(),
+            command_prefix: Vec::new(),
             launch: TmuxLaunchTarget::Session {
                 name: "work".to_string(),
                 socket: TmuxSocketTarget::Named("work".to_string()),
