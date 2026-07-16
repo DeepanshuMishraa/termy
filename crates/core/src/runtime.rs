@@ -1406,12 +1406,12 @@ impl JsonEventListener {
         }
     }
 
-    fn reset_wakeup_queued(&self) {
+    fn reset_wakeup_queued(&self) -> bool {
         // Clear pending-signal state first. Any producer that observes the
         // subsequent queued=false transition will publish fresh pending state,
         // so this ordering cannot erase a newly queued wakeup.
         self.wakeup_signal_pending.store(false, Ordering::Release);
-        self.wakeup_queued.store(false, Ordering::Release);
+        self.wakeup_queued.swap(false, Ordering::AcqRel)
     }
 
     fn signal_pending_wakeup_if_enabled(&self) {
@@ -2352,17 +2352,20 @@ impl Terminal {
     /// Drain pending Alacritty events, writing reply bytes back to the PTY when required.
     /// Returns the collected events and whether more events remain (batch limit hit).
     pub fn drain_events(&self, host: &mut impl TerminalReplyHost) -> (Vec<TerminalEvent>, bool) {
-        // Reset before probing the queue. A previous consumer can leave the
-        // coalescing flag set after taking the last queued wakeup; returning on
-        // an empty queue without this reset would suppress every later Wakeup
-        // event even though wake-channel nudges continue.
-        self.listener.reset_wakeup_queued();
+        // Reset before probing the queue. A previous drain can consume a Wakeup
+        // queued concurrently while leaving the coalescing flag set. Another
+        // PTY update can then be folded into that flag without queueing a new
+        // event, so an empty queue still requires one final redraw.
+        let wakeup_was_queued = self.listener.reset_wakeup_queued();
 
         // Consume the first item before allocating drain state so a coalesced
         // or otherwise spurious host drain stays allocation-free without an
         // `is_empty`/`try_recv` race.
         let Ok(first_event) = self.events_rx.try_recv() else {
-            return (Vec::new(), false);
+            let events = wakeup_was_queued
+                .then(|| vec![TerminalEvent::Wakeup])
+                .unwrap_or_default();
+            return (events, false);
         };
 
         drain_runtime_events(
@@ -3528,7 +3531,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_terminal_drain_rearms_wakeup_event_coalescing() {
+    fn empty_terminal_drain_preserves_a_coalesced_wakeup() {
         let terminal = Terminal::new_display(test_terminal_size(), None);
         terminal
             .listener
@@ -3540,11 +3543,16 @@ mod tests {
             ))
         ));
 
-        // The queue is empty but the listener's coalescing flag is still set.
-        // An empty drain must reset it so the next wakeup is queued normally.
+        // The queued event was already consumed, but another terminal update
+        // can still be coalesced into the listener flag before the host drains.
+        terminal
+            .listener
+            .send_event(alacritty_terminal::event::Event::Wakeup);
+        assert!(terminal.events_rx.is_empty());
+
         let mut reply_host = RecordingReplyHost::default();
         let (events, has_more) = terminal.drain_events(&mut reply_host);
-        assert!(events.is_empty());
+        assert!(matches!(events.as_slice(), [TerminalEvent::Wakeup]));
         assert!(!has_more);
 
         terminal
