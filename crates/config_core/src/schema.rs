@@ -380,6 +380,7 @@ define_root_settings! {
     (SimpleMode, "simple_mode", [], Advanced, "UI", "Simple Mode", "Open the config file instead of the Settings window and disable the command palette", ["simple", "mode", "settings", "config", "palette"], RootSettingValueKind::Boolean, false),
     (OnboardingComplete, "onboarding_complete", [], Advanced, "ONBOARDING", "Onboarding Complete", "Whether the first-run welcome flow has been completed; set to false to see it again", ["onboarding", "welcome", "first run", "tutorial"], RootSettingValueKind::Boolean, false),
     (TmuxBinary, "tmux_binary", [], Terminal, "TMUX", "Tmux Binary", "tmux executable path or binary name", ["tmux", "binary", "path"], RootSettingValueKind::Text, false),
+    (TmuxCommandPrefix, "tmux_command_prefix", [], Terminal, "TMUX", "Tmux Command Prefix", "Command prefix used to reach tmux, for example `wsl.exe -e` on Windows or `ssh myhost`; set to none to run tmux directly", ["tmux", "command", "prefix", "wsl", "ssh", "windows", "remote"], RootSettingValueKind::Text, false),
     (TmuxShowActivePaneBorder, "tmux_show_active_pane_border", [], Terminal, "TMUX", "Show Active Pane Border", "Show active tmux pane border highlight in managed sessions", ["tmux", "pane", "border", "highlight"], RootSettingValueKind::Boolean, false),
     (WorkingDir, "working_dir", [], Advanced, "STARTUP", "Working Directory", "Initial directory for new sessions", ["working directory", "cwd", "startup", "path"], RootSettingValueKind::Text, false),
     (WorkingDirFallback, "working_dir_fallback", ["default_working_dir"], Advanced, "STARTUP", "Working Directory Fallback", "Directory used when working_dir is unset", ["working directory", "fallback", "cwd", "startup"], RootSettingValueKind::Enum, false),
@@ -515,6 +516,7 @@ pub fn root_setting_default_value(config: &AppConfig, id: RootSettingId) -> Opti
         RootSettingId::SimpleMode => Some(config.simple_mode.to_string()),
         RootSettingId::OnboardingComplete => Some(config.onboarding_complete.to_string()),
         RootSettingId::TmuxBinary => Some(config.tmux_binary.clone()),
+        RootSettingId::TmuxCommandPrefix => config.tmux_command_prefix.clone(),
         RootSettingId::TmuxShowActivePaneBorder => {
             Some(config.tmux_show_active_pane_border.to_string())
         }

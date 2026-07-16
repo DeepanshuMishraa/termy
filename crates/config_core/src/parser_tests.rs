@@ -612,6 +612,28 @@ fn tmux_runtime_options_parse() {
 }
 
 #[test]
+fn tmux_command_prefix_parses_none_resets_and_empty_is_invalid() {
+    let config = parse("tmux_command_prefix = wsl.exe -e\n");
+    assert_eq!(config.tmux_command_prefix.as_deref(), Some("wsl.exe -e"));
+    assert_eq!(
+        config.tmux_command_prefix_argv(),
+        vec!["wsl.exe".to_string(), "-e".to_string()]
+    );
+
+    let config = parse("tmux_command_prefix = ssh myhost\ntmux_command_prefix = none\n");
+    assert!(config.tmux_command_prefix.is_none());
+    assert!(config.tmux_command_prefix_argv().is_empty());
+
+    let report = parse_report("tmux_command_prefix =\n");
+    assert_eq!(report.diagnostics.len(), 1);
+    assert_eq!(
+        report.diagnostics[0].kind,
+        ConfigDiagnosticKind::InvalidValue
+    );
+    assert!(report.config.tmux_command_prefix.is_none());
+}
+
+#[test]
 fn removed_tmux_persist_scrollback_key_produces_unknown_root_key_diagnostic() {
     let report = parse_report("tmux_persist_scrollback = true\n");
     assert_eq!(report.diagnostics.len(), 1);

@@ -102,6 +102,11 @@ Platform note: the Agent Sidebar/Workspace is currently unavailable on Windows b
 - tmux executable path or binary name
 - Group: `TMUX`
 
+`tmux_command_prefix`
+- Default: unset
+- Command prefix used to reach tmux, for example `wsl.exe -e` on Windows or `ssh myhost`; set to none to run tmux directly
+- Group: `TMUX`
+
 `tmux_show_active_pane_border`
 - Default: `false`
 - Show active tmux pane border highlight in managed sessions

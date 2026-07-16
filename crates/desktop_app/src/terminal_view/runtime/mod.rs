@@ -39,19 +39,28 @@ impl RuntimeKind {
         matches!(self, Self::Tmux)
     }
 
-    #[cfg(target_os = "windows")]
-    pub(super) fn from_app_config(_config: &AppConfig) -> Self {
-        // Hard cutover: tmux runtime is unsupported on Windows, regardless of config value.
-        Self::Native
+    pub(super) fn from_app_config(config: &AppConfig) -> Self {
+        Self::from_runtime_options(
+            config.tmux_enabled,
+            cfg!(target_os = "windows"),
+            config.tmux_command_prefix_argv().is_empty(),
+        )
     }
 
-    #[cfg(not(target_os = "windows"))]
-    pub(super) fn from_app_config(config: &AppConfig) -> Self {
-        if config.tmux_enabled {
-            Self::Tmux
-        } else {
-            Self::Native
+    fn from_runtime_options(
+        tmux_enabled: bool,
+        is_windows: bool,
+        command_prefix_is_empty: bool,
+    ) -> Self {
+        if !tmux_enabled {
+            return Self::Native;
         }
+        // Windows has no local pty spawn path for tmux; the runtime is only
+        // reachable through a configured command prefix (e.g. `wsl.exe -e`).
+        if is_windows && command_prefix_is_empty {
+            return Self::Native;
+        }
+        Self::Tmux
     }
 }
 
@@ -127,6 +136,7 @@ impl TerminalView {
     pub(super) fn tmux_runtime_from_app_config(config: &AppConfig) -> TmuxRuntimeConfig {
         TmuxRuntimeConfig {
             binary: config.tmux_binary.trim().to_string(),
+            command_prefix: config.tmux_command_prefix_argv(),
             launch: TmuxLaunchTarget::Managed {
                 persistence: config.tmux_persistence,
             },
@@ -227,6 +237,26 @@ impl TerminalView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tmux_runtime_gate_requires_command_prefix_on_windows() {
+        assert_eq!(
+            RuntimeKind::from_runtime_options(false, false, true),
+            RuntimeKind::Native
+        );
+        assert_eq!(
+            RuntimeKind::from_runtime_options(true, false, true),
+            RuntimeKind::Tmux
+        );
+        assert_eq!(
+            RuntimeKind::from_runtime_options(true, true, true),
+            RuntimeKind::Native
+        );
+        assert_eq!(
+            RuntimeKind::from_runtime_options(true, true, false),
+            RuntimeKind::Tmux
+        );
+    }
 
     #[test]
     fn startup_snapshot_cleanup_decision_only_warns_when_cleanup_fails() {

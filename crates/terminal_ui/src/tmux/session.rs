@@ -49,13 +49,29 @@ pub(crate) fn normalize_tmux_command_env(command: &mut Command) {
     }
 }
 
+/// Build the base tmux `Command`, routing through the configured command
+/// prefix when present (`["wsl.exe", "-e"]` yields `wsl.exe -e <binary> ...`).
+pub(crate) fn tmux_base_command(command_prefix: &[String], binary: &str) -> Command {
+    let mut command = match command_prefix.split_first() {
+        Some((program, rest)) => {
+            let mut command = Command::new(program);
+            command.args(rest);
+            command.arg(binary);
+            command
+        }
+        None => Command::new(binary),
+    };
+    normalize_tmux_command_env(&mut command);
+    command
+}
+
 pub(crate) fn run_tmux_command_with_socket(
+    command_prefix: &[String],
     binary: &str,
     socket_target: &TmuxSocketTarget,
     args: &[&str],
 ) -> Result<std::process::Output> {
-    let mut command = Command::new(binary);
-    normalize_tmux_command_env(&mut command);
+    let mut command = tmux_base_command(command_prefix, binary);
     append_socket_args(&mut command, socket_target);
     let output = command.args(args).output()?;
 
@@ -78,12 +94,12 @@ pub(crate) fn run_tmux_command_with_socket(
 }
 
 pub(crate) fn verify_tmux_version(
+    command_prefix: &[String],
     binary: &str,
     minimum_major: u8,
     minimum_minor: u8,
 ) -> Result<()> {
-    let mut command = Command::new(binary);
-    normalize_tmux_command_env(&mut command);
+    let mut command = tmux_base_command(command_prefix, binary);
     let output = command
         .arg("-V")
         .output()
@@ -110,23 +126,29 @@ pub(crate) fn verify_tmux_version(
 }
 
 pub(crate) fn list_sessions(
+    command_prefix: &[String],
     binary: &str,
     socket_target: TmuxSocketTarget,
 ) -> Result<Vec<TmuxSessionSummary>> {
     let format = session_snapshot_format();
-    let output =
-        run_tmux_command_with_socket(binary, &socket_target, &["list-sessions", "-F", format])
-            .with_context(|| {
-                format!(
-                    "tmux session listing failed: {}",
-                    tmux_command_line(&["list-sessions", "-F", format])
-                )
-            })?;
+    let output = run_tmux_command_with_socket(
+        command_prefix,
+        binary,
+        &socket_target,
+        &["list-sessions", "-F", format],
+    )
+    .with_context(|| {
+        format!(
+            "tmux session listing failed: {}",
+            tmux_command_line(&["list-sessions", "-F", format])
+        )
+    })?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     parse_session_summaries(stdout.as_ref())
 }
 
 pub(crate) fn rename_session(
+    command_prefix: &[String],
     binary: &str,
     socket_target: TmuxSocketTarget,
     current_session_name: &str,
@@ -143,6 +165,7 @@ pub(crate) fn rename_session(
     }
 
     run_tmux_command_with_socket(
+        command_prefix,
         binary,
         &socket_target,
         &[
@@ -167,6 +190,7 @@ pub(crate) fn rename_session(
 }
 
 pub(crate) fn kill_session(
+    command_prefix: &[String],
     binary: &str,
     socket_target: TmuxSocketTarget,
     session_name: &str,
@@ -177,6 +201,7 @@ pub(crate) fn kill_session(
     }
 
     run_tmux_command_with_socket(
+        command_prefix,
         binary,
         &socket_target,
         &["kill-session", "-t", session_name],
@@ -216,7 +241,7 @@ mod tests {
 
     #[test]
     fn rename_session_rejects_empty_session_names() {
-        let empty_current = rename_session("tmux", TmuxSocketTarget::Default, " ", "next")
+        let empty_current = rename_session(&[], "tmux", TmuxSocketTarget::Default, " ", "next")
             .expect_err("expected empty current session name failure");
         assert!(
             empty_current
@@ -224,7 +249,7 @@ mod tests {
                 .contains("tmux current session name cannot be empty")
         );
 
-        let empty_next = rename_session("tmux", TmuxSocketTarget::Default, "current", " ")
+        let empty_next = rename_session(&[], "tmux", TmuxSocketTarget::Default, "current", " ")
             .expect_err("expected empty next session name failure");
         assert!(
             empty_next
@@ -235,13 +260,32 @@ mod tests {
 
     #[test]
     fn kill_session_rejects_empty_session_name() {
-        let error = kill_session("tmux", TmuxSocketTarget::Default, " ")
+        let error = kill_session(&[], "tmux", TmuxSocketTarget::Default, " ")
             .expect_err("expected empty session name failure");
         assert!(
             error
                 .to_string()
                 .contains("tmux session name cannot be empty")
         );
+    }
+
+    #[test]
+    fn tmux_base_command_without_prefix_runs_binary_directly() {
+        let command = tmux_base_command(&[], "/usr/bin/tmux");
+        assert_eq!(command.get_program().to_string_lossy(), "/usr/bin/tmux");
+        assert_eq!(command.get_args().count(), 0);
+    }
+
+    #[test]
+    fn tmux_base_command_with_prefix_wraps_binary() {
+        let prefix = vec!["wsl.exe".to_string(), "-e".to_string()];
+        let command = tmux_base_command(&prefix, "tmux");
+        assert_eq!(command.get_program().to_string_lossy(), "wsl.exe");
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(args, vec!["-e", "tmux"]);
     }
 
     #[test]

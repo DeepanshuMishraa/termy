@@ -65,7 +65,7 @@ exec tmux -f /dev/null \"${args[@]}\"\n";
 }
 
 pub(crate) fn tmux_preflight(binary: &str) {
-    TmuxClient::verify_tmux_version(binary, 3, 3).unwrap_or_else(|error| {
+    TmuxClient::verify_tmux_version(&[], binary, 3, 3).unwrap_or_else(|error| {
         panic!("tmux integration preflight failed for binary '{binary}': {error}")
     });
 }

@@ -21,6 +21,7 @@ use tmux_control_core::control::{
 use super::launch::spawn_tmux_control_mode;
 use super::launch::{
     SessionLaunchPlan, append_working_dir_args, managed_session_window_option_override_commands,
+    spawn_tmux_control_mode_via_prefix,
 };
 use super::session::{self, run_tmux_command_with_socket};
 use super::shutdown::{
@@ -35,15 +36,21 @@ use tmux_control_core::control::{
 use tmux_control_core::payload::{
     capture_full_pane_args, capture_pane_range_args, sanitize_tmux_payload, unescape_tmux_payload,
 };
-#[cfg(unix)]
-use tmux_control_core::types::TmuxLaunchTarget;
 use tmux_control_core::types::{
-    TmuxControlError, TmuxNotification, TmuxRuntimeConfig, TmuxSessionSummary, TmuxShutdownMode,
-    TmuxSnapshot, TmuxSocketTarget,
+    TmuxControlError, TmuxLaunchTarget, TmuxNotification, TmuxRuntimeConfig, TmuxSessionSummary,
+    TmuxShutdownMode, TmuxSnapshot, TmuxSocketTarget,
 };
 
 pub struct TmuxClient {
     tmux_binary: String,
+    /// Argv prefix used to reach the tmux binary for out-of-band commands
+    /// (`["wsl.exe", "-e"]`, `["ssh", "myhost"]`); empty for local tmux.
+    command_prefix: Vec<String>,
+    /// Whether out-of-band tmux commands (spawning the tmux binary directly,
+    /// possibly through `command_prefix`) can reach the same server as the
+    /// control channel. False for stream-based clients, whose transport is
+    /// opaque to this process.
+    out_of_band_commands_available: bool,
     session_name: String,
     socket_target: TmuxSocketTarget,
     show_active_pane_border: bool,
@@ -82,7 +89,6 @@ impl TmuxClient {
         super::launch::launch_plan(config)
     }
 
-    #[cfg(unix)]
     pub fn new(
         config: TmuxRuntimeConfig,
         cols: u16,
@@ -95,22 +101,88 @@ impl TmuxClient {
         if launch_plan.session_name.trim().is_empty() {
             return Err(anyhow!("tmux session name cannot be empty"));
         }
-        #[cfg(unix)]
-        let (child, child_stdin, child_stdout) = spawn_tmux_control_mode(
-            &config,
-            &launch_plan.socket_target,
-            launch_plan.session_name.as_str(),
-            launch_plan.attach_existing,
-            initial_working_dir,
-        )?;
 
+        if !config.command_prefix.is_empty() {
+            let (child, child_stdin, child_stdout) = spawn_tmux_control_mode_via_prefix(
+                &config,
+                &launch_plan.socket_target,
+                launch_plan.session_name.as_str(),
+                launch_plan.attach_existing,
+            )?;
+            // The local child (wsl.exe, ssh, ...) is not the tmux client the
+            // server sees, so its pid cannot be matched against
+            // `#{client_pid}`; pid 0 routes detach through the control
+            // channel instead.
+            return Self::from_spawned_control_client(
+                config,
+                launch_plan,
+                enforce_managed_session_ui,
+                child,
+                0,
+                child_stdin,
+                child_stdout,
+                cols,
+                rows,
+                event_wakeup_tx,
+            );
+        }
+
+        #[cfg(unix)]
+        {
+            let (child, child_stdin, child_stdout) = spawn_tmux_control_mode(
+                &config,
+                &launch_plan.socket_target,
+                launch_plan.session_name.as_str(),
+                launch_plan.attach_existing,
+                initial_working_dir,
+            )?;
+            let control_client_pid = child.id();
+            Self::from_spawned_control_client(
+                config,
+                launch_plan,
+                enforce_managed_session_ui,
+                child,
+                control_client_pid,
+                child_stdin,
+                child_stdout,
+                cols,
+                rows,
+                event_wakeup_tx,
+            )
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = initial_working_dir;
+            Err(anyhow!(
+                "tmux control mode on this platform requires tmux_command_prefix \
+                 (for example `wsl.exe -e` or `ssh myhost`)"
+            ))
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn from_spawned_control_client<W, R>(
+        config: TmuxRuntimeConfig,
+        launch_plan: SessionLaunchPlan,
+        enforce_managed_session_ui: bool,
+        child: std::process::Child,
+        control_client_pid: u32,
+        child_stdin: W,
+        child_stdout: R,
+        cols: u16,
+        rows: u16,
+        event_wakeup_tx: Option<Sender<()>>,
+    ) -> Result<Self>
+    where
+        W: Write + Send + 'static,
+        R: Read + Send + 'static,
+    {
         let (request_tx, request_rx) = flume::bounded::<ControlRequest>(REQUEST_QUEUE_BOUND);
         let (pending_tx, pending_rx) = flume::bounded(PENDING_QUEUE_BOUND);
         let (notifications_tx, notifications_rx) =
             flume::bounded::<TmuxNotification>(NOTIFICATION_QUEUE_BOUND);
         let (fatal_exit_tx, fatal_exit_rx) =
             flume::bounded::<Option<String>>(FATAL_EXIT_QUEUE_BOUND);
-        let control_client_pid = child.id();
 
         spawn_control_threads(
             Some(child),
@@ -126,6 +198,8 @@ impl TmuxClient {
 
         let client = Self {
             tmux_binary: config.binary,
+            command_prefix: config.command_prefix,
+            out_of_band_commands_available: true,
             session_name: launch_plan.session_name,
             socket_target: launch_plan.socket_target,
             show_active_pane_border: config.show_active_pane_border,
@@ -142,20 +216,6 @@ impl TmuxClient {
         }
         client.set_client_size(cols, rows)?;
         Ok(client)
-    }
-
-    #[cfg(not(unix))]
-    pub fn new(
-        config: TmuxRuntimeConfig,
-        cols: u16,
-        rows: u16,
-        initial_working_dir: Option<&str>,
-        event_wakeup_tx: Option<Sender<()>>,
-    ) -> Result<Self> {
-        let _ = (config, cols, rows, initial_working_dir, event_wakeup_tx);
-        Err(anyhow!(
-            "tmux control mode is only supported on unix targets"
-        ))
     }
 
     /// Create a `TmuxClient` from existing control-mode I/O streams instead of
@@ -208,6 +268,8 @@ impl TmuxClient {
 
         Ok(Self {
             tmux_binary,
+            command_prefix: Vec::new(),
+            out_of_band_commands_available: false,
             session_name,
             socket_target,
             show_active_pane_border: false,
@@ -470,13 +532,13 @@ impl TmuxClient {
     }
 
     fn shutdown_impl(&self, mode: TmuxShutdownMode) -> Result<()> {
-        // Stream-based clients (pid == 0) have no local process to teardown.
+        // Stream-based clients cannot reach the tmux binary out-of-band.
         // Downgrade to detach-only to avoid running local tmux commands against
         // a potentially unrelated or nonexistent session.
-        let mode = if self.control_client_pid == 0 {
-            TmuxShutdownMode::DetachOnly
-        } else {
+        let mode = if self.out_of_band_commands_available {
             mode
+        } else {
+            TmuxShutdownMode::DetachOnly
         };
         run_shutdown_actions(
             mode,
@@ -493,6 +555,7 @@ impl TmuxClient {
                 // Isolated managed sessions are ephemeral. Teardown is always attempted in
                 // this mode, even if detach failed, so stale sessions cannot accumulate.
                 let teardown_result = Self::kill_session(
+                    &self.command_prefix,
                     self.tmux_binary.as_str(),
                     self.socket_target.clone(),
                     self.session_name.as_str(),
@@ -604,24 +667,32 @@ impl TmuxClient {
         Ok(finalize_capture_payload(&out, false))
     }
 
-    pub fn verify_tmux_version(binary: &str, minimum_major: u8, minimum_minor: u8) -> Result<()> {
-        session::verify_tmux_version(binary, minimum_major, minimum_minor)
+    pub fn verify_tmux_version(
+        command_prefix: &[String],
+        binary: &str,
+        minimum_major: u8,
+        minimum_minor: u8,
+    ) -> Result<()> {
+        session::verify_tmux_version(command_prefix, binary, minimum_major, minimum_minor)
     }
 
     pub fn list_sessions(
+        command_prefix: &[String],
         binary: &str,
         socket_target: TmuxSocketTarget,
     ) -> Result<Vec<TmuxSessionSummary>> {
-        session::list_sessions(binary, socket_target)
+        session::list_sessions(command_prefix, binary, socket_target)
     }
 
     pub fn rename_session(
+        command_prefix: &[String],
         binary: &str,
         socket_target: TmuxSocketTarget,
         current_session_name: &str,
         next_session_name: &str,
     ) -> Result<()> {
         session::rename_session(
+            command_prefix,
             binary,
             socket_target,
             current_session_name,
@@ -630,11 +701,12 @@ impl TmuxClient {
     }
 
     pub fn kill_session(
+        command_prefix: &[String],
         binary: &str,
         socket_target: TmuxSocketTarget,
         session_name: &str,
     ) -> Result<()> {
-        session::kill_session(binary, socket_target, session_name)
+        session::kill_session(command_prefix, binary, socket_target, session_name)
     }
 
     fn enqueue_control_request(&self, request: ControlRequest) -> Result<()> {
@@ -712,14 +784,19 @@ impl TmuxClient {
     }
 
     fn run_tmux_command(&self, args: &[&str]) -> Result<std::process::Output> {
-        run_tmux_command_with_socket(self.tmux_binary.as_str(), &self.socket_target, args)
-            .with_context(|| {
-                format!(
-                    "failed to execute tmux command via '{}': {}",
-                    self.tmux_binary,
-                    tmux_command_line(args)
-                )
-            })
+        run_tmux_command_with_socket(
+            &self.command_prefix,
+            self.tmux_binary.as_str(),
+            &self.socket_target,
+            args,
+        )
+        .with_context(|| {
+            format!(
+                "failed to execute tmux command via '{}': {}",
+                self.tmux_binary,
+                tmux_command_line(args)
+            )
+        })
     }
 
     fn enforce_native_session_ui(&self) -> Result<()> {
@@ -832,6 +909,8 @@ mod tests {
         let (_fatal_exit_tx, fatal_exit_rx) = flume::bounded::<Option<String>>(1);
         TmuxClient {
             tmux_binary: "tmux".to_string(),
+            command_prefix: Vec::new(),
+            out_of_band_commands_available: false,
             session_name: "test-session".to_string(),
             socket_target: TmuxSocketTarget::DedicatedTermy,
             show_active_pane_border: false,

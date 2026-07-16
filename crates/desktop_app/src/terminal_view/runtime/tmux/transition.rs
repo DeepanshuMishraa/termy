@@ -14,6 +14,7 @@ impl TerminalView {
             self.simple_mode = keybind_config.simple_mode;
             let binary = keybind_config.tmux_binary.trim().to_string();
             self.cached_tmux_binary = (!binary.is_empty()).then_some(binary);
+            self.cached_tmux_command_prefix = keybind_config.tmux_command_prefix_argv();
             keybindings::install_keybindings(cx, &keybind_config, self.runtime_uses_tmux());
         }
         cx.set_menus(crate::menus::app_menus(
@@ -57,9 +58,10 @@ impl TerminalView {
         launch: TmuxLaunchTarget,
         cx: &mut Context<Self>,
     ) -> bool {
-        let (binary, show_active_pane_border) = if self.runtime_uses_tmux() {
+        let (binary, command_prefix, show_active_pane_border) = if self.runtime_uses_tmux() {
             (
                 self.tmux_runtime().config.binary.clone(),
+                self.tmux_runtime().config.command_prefix.clone(),
                 self.tmux_runtime().config.show_active_pane_border,
             )
         } else {
@@ -72,20 +74,33 @@ impl TerminalView {
                 if !loaded_binary.is_empty() {
                     self.cached_tmux_binary = Some(loaded_binary.clone());
                 }
-                (loaded_binary, loaded.config.tmux_show_active_pane_border)
+                let loaded_prefix = loaded.config.tmux_command_prefix_argv();
+                self.cached_tmux_command_prefix = loaded_prefix.clone();
+                (
+                    loaded_binary,
+                    loaded_prefix,
+                    loaded.config.tmux_show_active_pane_border,
+                )
             } else {
                 (
                     self.cached_tmux_binary.clone().unwrap_or_default(),
+                    self.cached_tmux_command_prefix.clone(),
                     self.tmux_show_active_pane_border,
                 )
             }
         };
         let runtime_config = TmuxRuntimeConfig {
             binary,
+            command_prefix,
             launch,
             show_active_pane_border,
         };
-        if let Err(error) = TmuxClient::verify_tmux_version(runtime_config.binary.as_str(), 3, 3) {
+        if let Err(error) = TmuxClient::verify_tmux_version(
+            &runtime_config.command_prefix,
+            runtime_config.binary.as_str(),
+            3,
+            3,
+        ) {
             termy_toast::error(format!("tmux preflight failed: {error}"));
             return false;
         }
@@ -310,7 +325,12 @@ impl TerminalView {
             )
             .map(|path| path.to_string_lossy().into_owned())
         });
-        if let Err(error) = TmuxClient::verify_tmux_version(next_config.binary.as_str(), 3, 3) {
+        if let Err(error) = TmuxClient::verify_tmux_version(
+            &next_config.command_prefix,
+            next_config.binary.as_str(),
+            3,
+            3,
+        ) {
             termy_toast::error(format!("tmux preflight failed: {error}"));
             return;
         }

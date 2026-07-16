@@ -358,6 +358,7 @@ pub struct AppConfig {
     pub native_buffer_persistence: bool,
     pub show_debug_overlay: bool,
     pub tmux_binary: String,
+    pub tmux_command_prefix: Option<String>,
     pub tmux_show_active_pane_border: bool,
     pub working_dir: Option<String>,
     pub working_dir_fallback: WorkingDirFallback,
@@ -429,6 +430,17 @@ pub struct TaskConfig {
     pub keybind: Option<KeybindConfigLine>,
 }
 
+impl AppConfig {
+    /// The configured tmux command prefix split into argv items
+    /// (`wsl.exe -e` becomes `["wsl.exe", "-e"]`). Empty when unset.
+    pub fn tmux_command_prefix_argv(&self) -> Vec<String> {
+        self.tmux_command_prefix
+            .as_deref()
+            .map(|prefix| prefix.split_whitespace().map(str::to_string).collect())
+            .unwrap_or_default()
+    }
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
@@ -446,6 +458,7 @@ impl Default for AppConfig {
             native_buffer_persistence: false,
             show_debug_overlay: false,
             tmux_binary: DEFAULT_TMUX_BINARY.to_string(),
+            tmux_command_prefix: None,
             tmux_show_active_pane_border: DEFAULT_TMUX_SHOW_ACTIVE_PANE_BORDER,
             working_dir: None,
             working_dir_fallback: WorkingDirFallback::default(),

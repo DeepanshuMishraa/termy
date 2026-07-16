@@ -1172,6 +1172,7 @@ pub struct TerminalView {
     config_fingerprint: Option<u64>,
     last_config_error_message: Option<String>,
     cached_tmux_binary: Option<String>,
+    cached_tmux_command_prefix: Vec<String>,
     font_family: SharedString,
     ui_font_family: SharedString,
     base_font_size: f32,
@@ -3651,6 +3652,7 @@ impl TerminalView {
                 let binary = config.tmux_binary.trim().to_string();
                 (!binary.is_empty()).then_some(binary)
             },
+            cached_tmux_command_prefix: config.tmux_command_prefix_argv(),
             font_family: config.font_family.into(),
             ui_font_family: config.ui_font_family.into(),
             base_font_size,
@@ -3932,6 +3934,7 @@ impl TerminalView {
             let binary = config.tmux_binary.trim().to_string();
             (!binary.is_empty()).then_some(binary)
         };
+        self.cached_tmux_command_prefix = config.tmux_command_prefix_argv();
         let previous_font_family = self.font_family.clone();
         let previous_font_size = self.font_size;
         self.theme_mode = config.theme_mode;
