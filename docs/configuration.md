@@ -127,6 +127,11 @@ Platform note: the Agent Sidebar/Workspace is currently unavailable on Windows b
 - COLORTERM value exposed to child applications
 - Group: `SHELL`
 
+`macos_option_as_alt`
+- Default: `false`
+- Send macOS Option plus printable keys as escape-prefixed terminal Alt input
+- Group: `KEYBOARD`
+
 `cursor_style`
 - Default: `block`
 - Shape of the terminal cursor

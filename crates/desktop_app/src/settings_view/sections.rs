@@ -293,8 +293,12 @@ impl SettingsWindow {
                 SettingsSection::Terminal,
                 cx,
             ))
-            .child(self.render_terminal_cursor_group(cx))
-            .child(self.render_terminal_shell_group(cx));
+            .child(self.render_terminal_cursor_group(cx));
+
+        #[cfg(target_os = "macos")]
+        let section = section.child(self.render_terminal_keyboard_group(cx));
+
+        let section = section.child(self.render_terminal_shell_group(cx));
 
         #[cfg(not(target_os = "windows"))]
         let section = section.child(self.render_terminal_tmux_group(cx));
@@ -328,6 +332,20 @@ impl SettingsWindow {
             ),
         ];
         self.render_settings_group("Cursor", rows)
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(super) fn render_terminal_keyboard_group(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let macos_option_as_alt = self.config.macos_option_as_alt;
+        let rows = vec![self.render_root_bool_setting_row(
+            "macos_option_as_alt",
+            "macos_option_as_alt-toggle",
+            RootSettingId::MacosOptionAsAlt,
+            macos_option_as_alt,
+            "Saved",
+            cx,
+        )];
+        self.render_settings_group("Keyboard", rows)
     }
 
     pub(super) fn render_terminal_shell_group(&mut self, cx: &mut Context<Self>) -> AnyElement {

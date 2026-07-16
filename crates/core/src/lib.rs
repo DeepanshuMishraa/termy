@@ -26,7 +26,7 @@ pub use config::{
 pub use frame::{TermyCell, TermyColor, TermyFrame, TermyFrameUpdate};
 pub use keyboard::{
     Keystroke, Modifiers, TerminalKeyEventKind, TerminalKeyboardMode, TermyKeystroke,
-    TermyModifiers, keystroke_to_input,
+    TermyModifiers, keystroke_to_input, keystroke_to_input_with_options,
 };
 pub use kitty_graphics::{
     KittyGraphicsApplyResult, KittyGraphicsCommand, KittyGraphicsInterceptor, KittyGraphicsItem,

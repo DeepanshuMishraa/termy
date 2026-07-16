@@ -79,6 +79,34 @@ pub fn keystroke_to_input(
     keyboard_mode: TerminalKeyboardMode,
     prompt_shortcuts_enabled: bool,
 ) -> Option<Vec<u8>> {
+    keystroke_to_input_with_options(
+        keystroke,
+        event_kind,
+        keyboard_mode,
+        prompt_shortcuts_enabled,
+        false,
+    )
+}
+
+pub fn keystroke_to_input_with_options(
+    keystroke: &Keystroke,
+    event_kind: TerminalKeyEventKind,
+    keyboard_mode: TerminalKeyboardMode,
+    prompt_shortcuts_enabled: bool,
+    macos_option_as_alt: bool,
+) -> Option<Vec<u8>> {
+    // Option-as-Alt only overrides legacy composed-character input. When the
+    // kitty keyboard protocol is active the enhanced encoder already reports
+    // the base key with the Alt modifier (and paired press/release events), so
+    // short-circuiting here would send legacy ESC-prefixed bytes that break
+    // the disambiguation TUIs negotiated.
+    if macos_option_as_alt
+        && !keyboard_mode.enhanced_reporting_active()
+        && let Some(input) = macos_option_as_alt_input(keystroke, event_kind)
+    {
+        return Some(input);
+    }
+
     // "Natural text editing" shortcuts (cmd/alt+arrows, cmd+backspace, etc.) send
     // legacy bytes (Ctrl-U, ESC b, ...) even when the kitty keyboard protocol is
     // active, so they keep working in TUIs that opted into enhanced reporting.
@@ -105,6 +133,41 @@ pub fn keystroke_to_input(
         }
         TerminalKeyEventKind::Release => None,
     })
+}
+
+fn macos_option_as_alt_input(
+    keystroke: &Keystroke,
+    event_kind: TerminalKeyEventKind,
+) -> Option<Vec<u8>> {
+    if !cfg!(target_os = "macos")
+        || !matches!(
+            event_kind,
+            TerminalKeyEventKind::Press | TerminalKeyEventKind::Repeat
+        )
+        || !keystroke.modifiers.alt
+        || keystroke.modifiers.control
+        || keystroke.modifiers.platform
+        || keystroke.modifiers.function
+    {
+        return None;
+    }
+
+    let text = if keystroke.key == "space" {
+        " ".to_string()
+    } else if keystroke.key.chars().count() == 1 {
+        if keystroke.modifiers.shift {
+            keystroke.key.to_uppercase()
+        } else {
+            keystroke.key.clone()
+        }
+    } else {
+        return None;
+    };
+
+    let mut input = Vec::with_capacity(1 + text.len());
+    input.push(0x1b);
+    input.extend_from_slice(text.as_bytes());
+    Some(input)
 }
 
 fn enhanced_keystroke_to_input(
@@ -858,7 +921,7 @@ mod tests {
     use super::pure_text_event_text;
     use super::{
         Keystroke, Modifiers, TerminalKeyEventKind, TerminalKeyboardMode, associated_text,
-        keystroke_to_input,
+        keystroke_to_input, keystroke_to_input_with_options,
     };
 
     fn keystroke(key: &str, key_char: Option<&str>, modifiers: Modifiers) -> Keystroke {
@@ -1417,6 +1480,105 @@ mod tests {
                 true,
             ),
             Some(b"\x1b[0;1;64u".to_vec())
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_option_as_alt_emits_escape_prefixed_printable_key() {
+        let modifiers = Modifiers {
+            alt: true,
+            ..Modifiers::default()
+        };
+
+        assert_eq!(
+            keystroke_to_input_with_options(
+                &keystroke("b", Some("∫"), modifiers),
+                TerminalKeyEventKind::Press,
+                TerminalKeyboardMode::default(),
+                true,
+                true,
+            ),
+            Some(b"\x1bb".to_vec())
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_option_as_alt_emits_escape_prefixed_space() {
+        let modifiers = Modifiers {
+            alt: true,
+            ..Modifiers::default()
+        };
+
+        assert_eq!(
+            keystroke_to_input_with_options(
+                &keystroke("space", Some(" "), modifiers),
+                TerminalKeyEventKind::Press,
+                TerminalKeyboardMode::default(),
+                true,
+                true,
+            ),
+            Some(b"\x1b ".to_vec())
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_option_as_alt_defers_to_enhanced_reporting() {
+        let modifiers = Modifiers {
+            alt: true,
+            ..Modifiers::default()
+        };
+        let keyboard_mode = TerminalKeyboardMode {
+            disambiguate_escape_codes: true,
+            ..TerminalKeyboardMode::default()
+        };
+
+        assert_eq!(
+            keystroke_to_input_with_options(
+                &keystroke("b", Some("∫"), modifiers),
+                TerminalKeyEventKind::Press,
+                keyboard_mode,
+                true,
+                true,
+            ),
+            Some(b"\x1b[98;3u".to_vec())
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_option_as_alt_keeps_press_release_paired_in_event_type_mode() {
+        let modifiers = Modifiers {
+            alt: true,
+            ..Modifiers::default()
+        };
+        let keyboard_mode = TerminalKeyboardMode {
+            disambiguate_escape_codes: true,
+            report_event_types: true,
+            ..TerminalKeyboardMode::default()
+        };
+
+        assert_eq!(
+            keystroke_to_input_with_options(
+                &keystroke("b", Some("∫"), modifiers),
+                TerminalKeyEventKind::Press,
+                keyboard_mode,
+                true,
+                true,
+            ),
+            Some(b"\x1b[98;3u".to_vec())
+        );
+        assert_eq!(
+            keystroke_to_input_with_options(
+                &keystroke("b", None, modifiers),
+                TerminalKeyEventKind::Release,
+                keyboard_mode,
+                true,
+                true,
+            ),
+            Some(b"\x1b[98;3:3u".to_vec())
         );
     }
 }

@@ -1150,6 +1150,7 @@ pub struct TerminalView {
     show_termy_in_titlebar: bool,
     tab_shell_integration: TabTitleShellIntegration,
     shell_integration_enabled: bool,
+    macos_option_as_alt: bool,
     progress_indicator_enabled: bool,
     progress_indicator_animation_scheduled: bool,
     configured_working_dir: Option<String>,
@@ -3628,6 +3629,7 @@ impl TerminalView {
             show_termy_in_titlebar: config.show_termy_in_titlebar,
             tab_shell_integration,
             shell_integration_enabled: config.shell_integration_enabled,
+            macos_option_as_alt: config.macos_option_as_alt,
             progress_indicator_enabled: config.progress_indicator_enabled,
             progress_indicator_animation_scheduled: false,
             configured_working_dir,
@@ -3993,6 +3995,7 @@ impl TerminalView {
             explicit_prefix: self.tab_title.explicit_prefix.clone(),
         };
         self.shell_integration_enabled = config.shell_integration_enabled;
+        self.macos_option_as_alt = config.macos_option_as_alt;
         self.progress_indicator_enabled = config.progress_indicator_enabled;
         #[cfg(target_os = "windows")]
         if !self.tmux_enabled_config && config.tmux_enabled {

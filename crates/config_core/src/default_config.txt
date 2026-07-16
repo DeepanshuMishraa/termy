@@ -83,6 +83,8 @@ shell = none
 term = xterm-256color
 # COLORTERM value exposed to child applications
 colorterm = truecolor
+# Send macOS Option plus printable keys as escape-prefixed terminal Alt input
+macos_option_as_alt = false
 # Default startup window width in pixels
 window_width = 1280
 # Default startup window height in pixels
