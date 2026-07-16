@@ -95,7 +95,15 @@ pub fn keystroke_to_input_with_options(
     prompt_shortcuts_enabled: bool,
     macos_option_as_alt: bool,
 ) -> Option<Vec<u8>> {
-    if macos_option_as_alt && let Some(input) = macos_option_as_alt_input(keystroke, event_kind) {
+    // Option-as-Alt only overrides legacy composed-character input. When the
+    // kitty keyboard protocol is active the enhanced encoder already reports
+    // the base key with the Alt modifier (and paired press/release events), so
+    // short-circuiting here would send legacy ESC-prefixed bytes that break
+    // the disambiguation TUIs negotiated.
+    if macos_option_as_alt
+        && !keyboard_mode.enhanced_reporting_active()
+        && let Some(input) = macos_option_as_alt_input(keystroke, event_kind)
+    {
         return Some(input);
     }
 
@@ -1512,6 +1520,65 @@ mod tests {
                 true,
             ),
             Some(b"\x1b ".to_vec())
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_option_as_alt_defers_to_enhanced_reporting() {
+        let modifiers = Modifiers {
+            alt: true,
+            ..Modifiers::default()
+        };
+        let keyboard_mode = TerminalKeyboardMode {
+            disambiguate_escape_codes: true,
+            ..TerminalKeyboardMode::default()
+        };
+
+        assert_eq!(
+            keystroke_to_input_with_options(
+                &keystroke("b", Some("∫"), modifiers),
+                TerminalKeyEventKind::Press,
+                keyboard_mode,
+                true,
+                true,
+            ),
+            Some(b"\x1b[98;3u".to_vec())
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_option_as_alt_keeps_press_release_paired_in_event_type_mode() {
+        let modifiers = Modifiers {
+            alt: true,
+            ..Modifiers::default()
+        };
+        let keyboard_mode = TerminalKeyboardMode {
+            disambiguate_escape_codes: true,
+            report_event_types: true,
+            ..TerminalKeyboardMode::default()
+        };
+
+        assert_eq!(
+            keystroke_to_input_with_options(
+                &keystroke("b", Some("∫"), modifiers),
+                TerminalKeyEventKind::Press,
+                keyboard_mode,
+                true,
+                true,
+            ),
+            Some(b"\x1b[98;3u".to_vec())
+        );
+        assert_eq!(
+            keystroke_to_input_with_options(
+                &keystroke("b", None, modifiers),
+                TerminalKeyEventKind::Release,
+                keyboard_mode,
+                true,
+                true,
+            ),
+            Some(b"\x1b[98;3:3u".to_vec())
         );
     }
 }
