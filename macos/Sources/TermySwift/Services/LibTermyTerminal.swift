@@ -4,6 +4,7 @@ import Foundation
 enum LibTermyError: Error, CustomStringConvertible {
     case missingTerminal
     case missingCells
+    case missingGraphicsPlacements
     case cellCountMismatch
 
     var description: String {
@@ -12,6 +13,8 @@ enum LibTermyError: Error, CustomStringConvertible {
             return "libtermy did not return a terminal handle"
         case .missingCells:
             return "libtermy returned a frame without cells"
+        case .missingGraphicsPlacements:
+            return "libtermy returned graphics metadata without placements"
         case .cellCountMismatch:
             return "libtermy returned a cell count that does not match the frame damage"
         }
@@ -499,6 +502,75 @@ final class LibTermyTerminal {
             displayOffset: Int(update.display_offset),
             historySize: Int(update.history_size),
             damage: damage
+        )
+    }
+
+    func kittyGraphicsRevision() throws -> UInt64 {
+        let handle = try terminalHandle()
+        var revision: UInt64 = 0
+        try TermyFfiBridge.requireOK(
+            "termy_terminal_kitty_graphics_revision",
+            termy_terminal_kitty_graphics_revision(handle, &revision)
+        )
+        return revision
+    }
+
+    func kittyGraphicsPlacements() throws -> TerminalKittyGraphicsSnapshot {
+        let handle = try terminalHandle()
+        var batch = TermyFfiKittyGraphicsBatch()
+        try TermyFfiBridge.requireOK(
+            "termy_terminal_kitty_graphics_placements",
+            termy_terminal_kitty_graphics_placements(handle, &batch)
+        )
+        defer {
+            _ = termy_kitty_graphics_batch_free(&batch)
+        }
+
+        guard batch.placements_len > 0 else {
+            return TerminalKittyGraphicsSnapshot(revision: batch.revision, placements: [])
+        }
+        guard let placementsPtr = batch.placements_ptr else {
+            throw LibTermyError.missingGraphicsPlacements
+        }
+
+        let placements = UnsafeBufferPointer(
+            start: placementsPtr,
+            count: Int(batch.placements_len)
+        ).map { placement in
+            let png: Data
+            if placement.png.len > 0, let pngPtr = placement.png.ptr {
+                png = Data(bytes: pngPtr, count: Int(placement.png.len))
+            } else {
+                png = Data()
+            }
+            return TerminalKittyGraphicsPlacement(
+                placementSerial: placement.placement_serial,
+                imageID: placement.image_id,
+                placementID: placement.placement_id,
+                png: png,
+                imageWidth: Int(placement.image_width),
+                imageHeight: Int(placement.image_height),
+                imageGeneration: placement.image_generation,
+                viewportRow: Int(placement.viewport_row),
+                col: Int(placement.col),
+                sourceX: Int(placement.source_x),
+                sourceY: Int(placement.source_y),
+                sourceWidth: Int(placement.source_width),
+                sourceHeight: Int(placement.source_height),
+                displayCols: placement.has_display_cols ? Int(placement.display_cols) : nil,
+                displayRows: placement.has_display_rows ? Int(placement.display_rows) : nil,
+                occupiedCols: Int(placement.occupied_cols),
+                occupiedRows: Int(placement.occupied_rows),
+                xOffset: Int(placement.x_offset),
+                yOffset: Int(placement.y_offset),
+                zIndex: Int(placement.z_index)
+            )
+        }
+        .sorted(by: TerminalKittyGraphicsPlacement.paintOrder)
+
+        return TerminalKittyGraphicsSnapshot(
+            revision: batch.revision,
+            placements: placements
         )
     }
 

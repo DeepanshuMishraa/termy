@@ -41,7 +41,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, Receiver as StdReceiver, Sender as StdSender, TryRecvError},
     },
     time::Instant,
@@ -1661,6 +1661,7 @@ struct NativeEventLoop {
     tx: StdSender<EventLoopMsg>,
     terminal: Arc<FairMutex<Term<JsonEventListener>>>,
     kitty_graphics: Arc<FairMutex<KittyGraphicsState>>,
+    kitty_graphics_revision: Arc<AtomicU64>,
     terminal_size: Arc<FairMutex<TerminalSize>>,
     event_proxy: JsonEventListener,
     drain_on_exit: bool,
@@ -1670,6 +1671,7 @@ impl NativeEventLoop {
     fn new(
         terminal: Arc<FairMutex<Term<JsonEventListener>>>,
         kitty_graphics: Arc<FairMutex<KittyGraphicsState>>,
+        kitty_graphics_revision: Arc<AtomicU64>,
         terminal_size: Arc<FairMutex<TerminalSize>>,
         event_proxy: JsonEventListener,
         pty: tty::Pty,
@@ -1683,6 +1685,7 @@ impl NativeEventLoop {
             tx,
             terminal,
             kitty_graphics,
+            kitty_graphics_revision,
             terminal_size,
             event_proxy,
             drain_on_exit,
@@ -1831,6 +1834,9 @@ impl NativeEventLoop {
             }
         }
 
+        if graphics_changed {
+            self.kitty_graphics_revision.fetch_add(1, Ordering::Relaxed);
+        }
         if graphics_changed || (state.parser.sync_bytes_count() < parsed && parsed > 0) {
             self.event_proxy.send_event(AlacEvent::Wakeup);
         }
@@ -2042,6 +2048,7 @@ pub struct Terminal {
     kitty_graphics_interceptor: FairMutex<KittyGraphicsInterceptor>,
     kitty_graphics_cursor_tracker: FairMutex<KittyGraphicsCursorTracker>,
     kitty_graphics: Arc<FairMutex<KittyGraphicsState>>,
+    kitty_graphics_revision: Arc<AtomicU64>,
     graphics_size: Arc<FairMutex<TerminalSize>>,
     /// Channel to send input to the PTY. `None` for display-only terminals
     /// (e.g. tmux control-mode panes) that are fed via `feed_output` and have
@@ -2122,6 +2129,7 @@ impl Terminal {
         let term = Term::new(term_config, &size, listener.clone());
         let term = Arc::new(FairMutex::new(term));
         let kitty_graphics = Arc::new(FairMutex::new(KittyGraphicsState::default()));
+        let kitty_graphics_revision = Arc::new(AtomicU64::new(0));
         let graphics_size = Arc::new(FairMutex::new(size));
 
         let window_id = 0;
@@ -2134,6 +2142,7 @@ impl Terminal {
         let event_loop = NativeEventLoop::new(
             term.clone(),
             kitty_graphics.clone(),
+            kitty_graphics_revision.clone(),
             graphics_size.clone(),
             listener.clone(),
             pty,
@@ -2149,6 +2158,7 @@ impl Terminal {
             kitty_graphics_interceptor: FairMutex::new(KittyGraphicsInterceptor::default()),
             kitty_graphics_cursor_tracker: FairMutex::new(KittyGraphicsCursorTracker::default()),
             kitty_graphics,
+            kitty_graphics_revision,
             graphics_size,
             pty_tx: Some(pty_tx),
             events_rx,
@@ -2172,6 +2182,7 @@ impl Terminal {
         let term = Term::new(term_config, &size, listener.clone());
         let term = Arc::new(FairMutex::new(term));
         let kitty_graphics = Arc::new(FairMutex::new(KittyGraphicsState::default()));
+        let kitty_graphics_revision = Arc::new(AtomicU64::new(0));
 
         Self {
             term,
@@ -2180,6 +2191,7 @@ impl Terminal {
             kitty_graphics_interceptor: FairMutex::new(KittyGraphicsInterceptor::default()),
             kitty_graphics_cursor_tracker: FairMutex::new(KittyGraphicsCursorTracker::default()),
             kitty_graphics,
+            kitty_graphics_revision,
             graphics_size: Arc::new(FairMutex::new(size)),
             pty_tx: None,
             events_rx,
@@ -2240,6 +2252,7 @@ impl Terminal {
         let mut cursor_tracker = self.kitty_graphics_cursor_tracker.lock();
         let mut parser = self.parser.lock();
         let mut term = self.term.lock();
+        let mut graphics_changed = false;
         for item in interceptor.process(bytes) {
             match item {
                 KittyGraphicsItem::Text(text) => {
@@ -2252,7 +2265,7 @@ impl Terminal {
                         track_scrolls,
                     );
                     if !effects.is_empty() {
-                        effects.apply_to(&mut self.kitty_graphics.lock());
+                        graphics_changed |= effects.apply_to(&mut self.kitty_graphics.lock());
                     }
                 }
                 KittyGraphicsItem::Command(command) => {
@@ -2270,6 +2283,7 @@ impl Terminal {
                         self.size,
                         screen,
                     );
+                    graphics_changed |= result.changed;
                     if result.cursor_advance_screen == Some(screen)
                         && let Some((cols, rows)) = result.cursor_advance
                     {
@@ -2280,13 +2294,17 @@ impl Terminal {
                             full_screen_scroll_region,
                         );
                         if untracked_scroll > 0 {
-                            self.kitty_graphics
+                            graphics_changed |= self
+                                .kitty_graphics
                                 .lock()
                                 .scroll_up_without_history_on_screen(untracked_scroll, screen);
                         }
                     }
                 }
             }
+        }
+        if graphics_changed {
+            self.kitty_graphics_revision.fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -2336,16 +2354,30 @@ impl Terminal {
 
     /// Snapshot visible Kitty graphics placements for a renderer.
     pub fn kitty_graphics_placements(&self) -> Vec<KittyGraphicsRenderPlacement> {
+        self.kitty_graphics_snapshot().1
+    }
+
+    /// Monotonic revision for Kitty image or placement state.
+    pub fn kitty_graphics_revision(&self) -> u64 {
+        self.kitty_graphics_revision.load(Ordering::Relaxed)
+    }
+
+    /// Snapshot the current Kitty revision and visible placements together.
+    pub fn kitty_graphics_snapshot(&self) -> (u64, Vec<KittyGraphicsRenderPlacement>) {
         let term = self.term.lock();
         let grid = term.grid();
         let screen =
             KittyGraphicsScreen::from_alternate_screen(term.mode().contains(TermMode::ALT_SCREEN));
-        self.kitty_graphics.lock().render_placements_on_screen(
+        let placements = self.kitty_graphics.lock().render_placements_on_screen(
             grid.history_size(),
             grid.display_offset(),
             grid.screen_lines(),
             grid.columns(),
             screen,
+        );
+        (
+            self.kitty_graphics_revision.load(Ordering::Relaxed),
+            placements,
         )
     }
 
@@ -2725,9 +2757,11 @@ mod tests {
     #[test]
     fn display_terminal_intercepts_and_places_kitty_graphics() {
         let terminal = Terminal::new_display(test_terminal_size(), None);
+        let initial_revision = terminal.kitty_graphics_revision();
         terminal.feed_output(b"\x1b_Ga=T,f=32,s=1,v=1,i=77,c=2,r=3;AQID/w==\x1b\\");
 
-        let placements = terminal.kitty_graphics_placements();
+        let (revision, placements) = terminal.kitty_graphics_snapshot();
+        assert!(revision > initial_revision);
         assert_eq!(placements.len(), 1);
         assert_eq!(placements[0].image_id, 77);
         assert_eq!(placements[0].display_cols, Some(2));

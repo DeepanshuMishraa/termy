@@ -127,6 +127,38 @@ typedef struct {
 } TermyFfiBytes;
 
 typedef struct {
+  uint64_t placement_serial;
+  uint32_t image_id;
+  uint32_t placement_id;
+  TermyFfiBytes png;
+  uint32_t image_width;
+  uint32_t image_height;
+  uint64_t image_generation;
+  int32_t viewport_row;
+  size_t col;
+  uint32_t source_x;
+  uint32_t source_y;
+  uint32_t source_width;
+  uint32_t source_height;
+  bool has_display_cols;
+  uint32_t display_cols;
+  bool has_display_rows;
+  uint32_t display_rows;
+  uint32_t occupied_cols;
+  uint32_t occupied_rows;
+  uint32_t x_offset;
+  uint32_t y_offset;
+  int32_t z_index;
+} TermyFfiKittyGraphicsPlacement;
+
+typedef struct {
+  uint64_t revision;
+  TermyFfiKittyGraphicsPlacement *placements_ptr;
+  size_t placements_len;
+  size_t placements_capacity;
+} TermyFfiKittyGraphicsBatch;
+
+typedef struct {
   uint32_t kind;
   int32_t exit_code;
   uint8_t progress_state;
@@ -499,6 +531,14 @@ TermyFfiStatus termy_terminal_take_frame_update(
     bool force_full,
     TermyFfiFrameUpdate *out_update);
 TermyFfiStatus termy_frame_update_free(TermyFfiFrameUpdate *update);
+TermyFfiStatus termy_terminal_kitty_graphics_revision(
+    TermyFfiTerminal *terminal,
+    uint64_t *out_revision);
+TermyFfiStatus termy_terminal_kitty_graphics_placements(
+    TermyFfiTerminal *terminal,
+    TermyFfiKittyGraphicsBatch *out_batch);
+TermyFfiStatus termy_kitty_graphics_batch_free(
+    TermyFfiKittyGraphicsBatch *batch);
 TermyFfiStatus termy_terminal_hyperlink_at(
     TermyFfiTerminal *terminal,
     size_t row,

@@ -7,6 +7,8 @@ struct TerminalGridView: View {
     let renderPlan: TerminalRenderPlan
     let renderDamage: TerminalDamage
     let selection: TerminalSelection?
+    let kittyGraphicsPlacements: [TerminalKittyGraphicsPlacement]
+    let selectedKittyGraphics: TerminalKittyGraphicsIdentity?
     let renderConfig: TerminalRenderConfig
     let searchMatches: [TerminalSearchMatch]
     let activeSearchMatch: TerminalSearchMatch?
@@ -20,6 +22,8 @@ struct TerminalGridView: View {
             renderPlan: renderPlan,
             renderDamage: renderDamage,
             selection: selection,
+            kittyGraphicsPlacements: kittyGraphicsPlacements,
+            selectedKittyGraphics: selectedKittyGraphics,
             renderConfig: renderConfig,
             searchMatches: searchMatches,
             activeSearchMatch: activeSearchMatch,
@@ -37,6 +41,8 @@ private struct TerminalGridRepresentable: NSViewRepresentable {
     let renderPlan: TerminalRenderPlan
     let renderDamage: TerminalDamage
     let selection: TerminalSelection?
+    let kittyGraphicsPlacements: [TerminalKittyGraphicsPlacement]
+    let selectedKittyGraphics: TerminalKittyGraphicsIdentity?
     let renderConfig: TerminalRenderConfig
     let searchMatches: [TerminalSearchMatch]
     let activeSearchMatch: TerminalSearchMatch?
@@ -54,6 +60,8 @@ private struct TerminalGridRepresentable: NSViewRepresentable {
             renderPlan: renderPlan,
             renderDamage: renderDamage,
             selection: selection,
+            kittyGraphicsPlacements: kittyGraphicsPlacements,
+            selectedKittyGraphics: selectedKittyGraphics,
             renderConfig: renderConfig,
             searchMatches: searchMatches,
             activeSearchMatch: activeSearchMatch,
@@ -68,6 +76,8 @@ final class TerminalGridNSView: NSView {
     private var terminalFrame = TerminalFrame.empty
     private var renderPlan = TerminalRenderPlan.empty
     private var selection: TerminalSelection?
+    private var kittyGraphicsPlacements: [TerminalKittyGraphicsPlacement] = []
+    private var selectedKittyGraphics: TerminalKittyGraphicsIdentity?
     private var renderConfig = TerminalRenderConfig.default
     private var searchMatches: [TerminalSearchMatch] = []
     private var activeSearchMatch: TerminalSearchMatch?
@@ -85,6 +95,7 @@ final class TerminalGridNSView: NSView {
     private var cachedBoldFont = NSFont.monospacedSystemFont(ofSize: 12, weight: .semibold)
     private var nsColorCache: [UInt32: NSColor] = [:]
     private var alphaColorCache: [UInt64: NSColor] = [:]
+    private var kittyGraphicsImageCache: [TerminalKittyGraphicsImageKey: NSImage] = [:]
     private let lineCache = TextLineCache()
     private var occlusionObserver: NotificationObserverToken?
 
@@ -215,6 +226,8 @@ final class TerminalGridNSView: NSView {
         renderPlan: TerminalRenderPlan,
         renderDamage: TerminalDamage,
         selection: TerminalSelection?,
+        kittyGraphicsPlacements: [TerminalKittyGraphicsPlacement],
+        selectedKittyGraphics: TerminalKittyGraphicsIdentity?,
         renderConfig: TerminalRenderConfig,
         searchMatches: [TerminalSearchMatch],
         activeSearchMatch: TerminalSearchMatch?,
@@ -227,6 +240,8 @@ final class TerminalGridNSView: NSView {
             || terminalFrame.displayOffset != frame.displayOffset
             || self.renderConfig != renderConfig
             || self.selection != selection
+            || self.kittyGraphicsPlacements != kittyGraphicsPlacements
+            || self.selectedKittyGraphics != selectedKittyGraphics
             || self.searchMatches != searchMatches
             || self.activeSearchMatch != activeSearchMatch
             || self.hoveredLink != hoveredLink
@@ -235,12 +250,18 @@ final class TerminalGridNSView: NSView {
         self.terminalFrame = frame
         self.renderPlan = renderPlan
         self.selection = selection
+        self.kittyGraphicsPlacements = kittyGraphicsPlacements
+        self.selectedKittyGraphics = selectedKittyGraphics
         self.renderConfig = renderConfig
         self.searchMatches = searchMatches
         self.activeSearchMatch = activeSearchMatch
         self.hoveredLink = hoveredLink
         self.isTerminalFocused = isFocused
         self.isCursorVisible = isCursorVisible
+        let activeImageKeys = Set(kittyGraphicsPlacements.map(\.imageKey))
+        kittyGraphicsImageCache = kittyGraphicsImageCache.filter {
+            activeImageKeys.contains($0.key)
+        }
 
         if requiresFullRedraw || renderDamage == .full {
             needsDisplay = true
@@ -262,6 +283,7 @@ final class TerminalGridNSView: NSView {
         }
 
         let dirtyBounds = dirtyGridBounds(for: dirtyRect)
+        drawKittyGraphics(aboveText: false, in: dirtyRect)
         drawBackgrounds(in: dirtyRect, dirtyBounds: dirtyBounds)
         drawSearch(in: dirtyRect, dirtyBounds: dirtyBounds)
         drawSelection(in: dirtyRect, dirtyBounds: dirtyBounds)
@@ -270,6 +292,74 @@ final class TerminalGridNSView: NSView {
         drawStrokeGlyphs(in: dirtyRect, dirtyBounds: dirtyBounds)
         drawText(in: dirtyRect, dirtyBounds: dirtyBounds)
         drawHoveredLink(in: dirtyRect, dirtyBounds: dirtyBounds)
+        drawKittyGraphics(aboveText: true, in: dirtyRect)
+    }
+
+    private func drawKittyGraphics(aboveText: Bool, in dirtyRect: NSRect) {
+        for placement in kittyGraphicsPlacements
+        where (placement.zIndex >= 0) == aboveText {
+            let destination = placement.bounds(renderConfig: renderConfig)
+            guard destination.width > 0,
+                  destination.height > 0,
+                  destination.intersects(dirtyRect),
+                  placement.sourceWidth > 0,
+                  placement.sourceHeight > 0,
+                  placement.imageWidth > 0,
+                  placement.imageHeight > 0,
+                  let image = kittyGraphicsImage(for: placement)
+            else {
+                continue
+            }
+
+            let scaleX = destination.width / CGFloat(placement.sourceWidth)
+            let scaleY = destination.height / CGFloat(placement.sourceHeight)
+            let fullImageRect = CGRect(
+                x: destination.minX - CGFloat(placement.sourceX) * scaleX,
+                y: destination.minY - CGFloat(placement.sourceY) * scaleY,
+                width: CGFloat(placement.imageWidth) * scaleX,
+                height: CGFloat(placement.imageHeight) * scaleY
+            )
+
+            NSGraphicsContext.saveGraphicsState()
+            NSBezierPath(rect: destination).addClip()
+            image.draw(
+                in: fullImageRect,
+                from: .zero,
+                operation: .sourceOver,
+                fraction: 1,
+                respectFlipped: true,
+                hints: [.interpolation: NSImageInterpolation.high]
+            )
+
+            let selected = selectedKittyGraphics == placement.identity
+                || placement.intersects(
+                    selection: selection,
+                    cols: terminalFrame.cols,
+                    rows: terminalFrame.rows
+                )
+            if selected {
+                NSColor.controlAccentColor.withAlphaComponent(0.22).setFill()
+                fill(destination)
+                NSColor.controlAccentColor.withAlphaComponent(0.92).setStroke()
+                let border = NSBezierPath(rect: destination.insetBy(dx: 1, dy: 1))
+                border.lineWidth = 2
+                border.stroke()
+            }
+            NSGraphicsContext.restoreGraphicsState()
+        }
+    }
+
+    private func kittyGraphicsImage(
+        for placement: TerminalKittyGraphicsPlacement
+    ) -> NSImage? {
+        if let cached = kittyGraphicsImageCache[placement.imageKey] {
+            return cached
+        }
+        guard let image = NSImage(data: placement.png) else {
+            return nil
+        }
+        kittyGraphicsImageCache[placement.imageKey] = image
+        return image
     }
 
     private var backingScale: CGFloat {

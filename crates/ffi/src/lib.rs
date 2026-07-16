@@ -13,14 +13,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use flume::{Receiver, Sender, bounded};
 use termy_core::{
-    ConfigDiagnostic, ConfigDiagnosticKind, LoadedTermyConfig, ProgressState, Terminal,
-    TerminalClipboardTarget, TerminalDamageSnapshot, TerminalDirtySpan, TerminalEvent,
-    TerminalKeyEventKind, TerminalMouseButton, TerminalMouseEventKind, TerminalMouseModifiers,
-    TerminalMousePosition, TerminalOptions, TerminalQueryColors, TerminalReplyHost,
-    TerminalRuntimeConfig, TerminalSize, TermyCell, TermyColor, TermyFrameUpdate, TermyKeystroke,
-    TermyModifiers, TermySearchOptions, TermySharedSearchMatch, encode_mouse_report,
-    keystroke_to_input, load_config_from_contents, load_config_from_default_path,
-    load_config_from_path,
+    ConfigDiagnostic, ConfigDiagnosticKind, KittyGraphicsRenderPlacement, LoadedTermyConfig,
+    ProgressState, Terminal, TerminalClipboardTarget, TerminalDamageSnapshot, TerminalDirtySpan,
+    TerminalEvent, TerminalKeyEventKind, TerminalMouseButton, TerminalMouseEventKind,
+    TerminalMouseModifiers, TerminalMousePosition, TerminalOptions, TerminalQueryColors,
+    TerminalReplyHost, TerminalRuntimeConfig, TerminalSize, TermyCell, TermyColor,
+    TermyFrameUpdate, TermyKeystroke, TermyModifiers, TermySearchOptions, TermySharedSearchMatch,
+    encode_mouse_report, keystroke_to_input, load_config_from_contents,
+    load_config_from_default_path, load_config_from_path,
 };
 
 #[repr(C)]
@@ -121,6 +121,42 @@ pub struct TermyFfiBytes {
     pub ptr: *mut u8,
     pub len: usize,
     pub capacity: usize,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TermyFfiKittyGraphicsPlacement {
+    pub placement_serial: u64,
+    pub image_id: u32,
+    pub placement_id: u32,
+    pub png: TermyFfiBytes,
+    pub image_width: u32,
+    pub image_height: u32,
+    pub image_generation: u64,
+    pub viewport_row: i32,
+    pub col: usize,
+    pub source_x: u32,
+    pub source_y: u32,
+    pub source_width: u32,
+    pub source_height: u32,
+    pub has_display_cols: bool,
+    pub display_cols: u32,
+    pub has_display_rows: bool,
+    pub display_rows: u32,
+    pub occupied_cols: u32,
+    pub occupied_rows: u32,
+    pub x_offset: u32,
+    pub y_offset: u32,
+    pub z_index: i32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TermyFfiKittyGraphicsBatch {
+    pub revision: u64,
+    pub placements_ptr: *mut TermyFfiKittyGraphicsPlacement,
+    pub placements_len: usize,
+    pub placements_capacity: usize,
 }
 
 #[repr(C)]
@@ -470,6 +506,35 @@ fn ffi_bytes_from_vec(mut bytes: Vec<u8>) -> TermyFfiBytes {
 
 fn ffi_bytes_from_string(value: String) -> TermyFfiBytes {
     ffi_bytes_from_vec(value.into_bytes())
+}
+
+fn ffi_kitty_graphics_placement_from_placement(
+    placement: KittyGraphicsRenderPlacement,
+) -> TermyFfiKittyGraphicsPlacement {
+    TermyFfiKittyGraphicsPlacement {
+        placement_serial: placement.placement_serial,
+        image_id: placement.image_id,
+        placement_id: placement.placement_id,
+        png: ffi_bytes_from_vec(placement.png.as_ref().to_vec()),
+        image_width: placement.image_width,
+        image_height: placement.image_height,
+        image_generation: placement.image_generation,
+        viewport_row: placement.viewport_row,
+        col: placement.col,
+        source_x: placement.source_x,
+        source_y: placement.source_y,
+        source_width: placement.source_width,
+        source_height: placement.source_height,
+        has_display_cols: placement.display_cols.is_some(),
+        display_cols: placement.display_cols.unwrap_or_default(),
+        has_display_rows: placement.display_rows.is_some(),
+        display_rows: placement.display_rows.unwrap_or_default(),
+        occupied_cols: placement.occupied_cols,
+        occupied_rows: placement.occupied_rows,
+        x_offset: placement.x_offset,
+        y_offset: placement.y_offset,
+        z_index: placement.z_index,
+    }
 }
 
 fn progress_parts(progress: ProgressState) -> (u8, u8) {
@@ -2953,6 +3018,78 @@ pub unsafe extern "C" fn termy_frame_update_free(
             }
         }
         *update = TermyFfiFrameUpdate::default();
+        TermyFfiStatus::Ok
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_terminal_kitty_graphics_revision(
+    terminal: *mut TermyFfiTerminal,
+    out_revision: *mut u64,
+) -> TermyFfiStatus {
+    ffi_status_guard(|| {
+        if terminal.is_null() || out_revision.is_null() {
+            return TermyFfiStatus::Null;
+        }
+
+        unsafe {
+            *out_revision = (*terminal).terminal.kitty_graphics_revision();
+        }
+        TermyFfiStatus::Ok
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_terminal_kitty_graphics_placements(
+    terminal: *mut TermyFfiTerminal,
+    out_batch: *mut TermyFfiKittyGraphicsBatch,
+) -> TermyFfiStatus {
+    ffi_status_guard(|| {
+        if terminal.is_null() || out_batch.is_null() {
+            return TermyFfiStatus::Null;
+        }
+
+        let (revision, placements) = unsafe { (*terminal).terminal.kitty_graphics_snapshot() };
+        let placements = placements
+            .into_iter()
+            .map(ffi_kitty_graphics_placement_from_placement)
+            .collect::<Vec<_>>();
+        let (placements_ptr, placements_len, placements_capacity) = leak_vec(placements);
+        unsafe {
+            *out_batch = TermyFfiKittyGraphicsBatch {
+                revision,
+                placements_ptr,
+                placements_len,
+                placements_capacity,
+            };
+        }
+        TermyFfiStatus::Ok
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_kitty_graphics_batch_free(
+    batch: *mut TermyFfiKittyGraphicsBatch,
+) -> TermyFfiStatus {
+    ffi_status_guard(|| {
+        if batch.is_null() {
+            return TermyFfiStatus::Null;
+        }
+
+        let batch = unsafe { &mut *batch };
+        if !batch.placements_ptr.is_null() {
+            let placements = unsafe {
+                Vec::from_raw_parts(
+                    batch.placements_ptr,
+                    batch.placements_len,
+                    batch.placements_capacity,
+                )
+            };
+            for placement in placements {
+                free_bytes(placement.png);
+            }
+        }
+        *batch = TermyFfiKittyGraphicsBatch::default();
         TermyFfiStatus::Ok
     })
 }
