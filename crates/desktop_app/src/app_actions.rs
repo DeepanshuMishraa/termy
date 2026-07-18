@@ -70,6 +70,18 @@ pub(crate) fn update_open_settings_windows(
     }
 }
 
+pub(crate) fn refresh_open_terminal_theme_assets(cx: &mut App) {
+    for terminal_window in cx
+        .windows()
+        .into_iter()
+        .filter_map(|handle| handle.downcast::<TerminalView>())
+    {
+        let _ = terminal_window.update(cx, |view, _window, cx| {
+            view.reload_theme_assets(cx);
+        });
+    }
+}
+
 pub(crate) fn close_settings_windows(cx: &mut App) {
     for settings_window in cx
         .windows()

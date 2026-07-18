@@ -1405,6 +1405,26 @@ pub unsafe extern "C" fn termy_config_render_config(
     })
 }
 
+fn system_appearance_from_raw(system_appearance: u32) -> termy_core::SystemAppearance {
+    match system_appearance {
+        0 => termy_core::SystemAppearance::Light,
+        _ => termy_core::SystemAppearance::Dark,
+    }
+}
+
+fn terminal_query_colors_for_appearance(
+    loaded: &LoadedTermyConfig,
+    system_appearance: u32,
+) -> TerminalQueryColors {
+    termy_core::terminal_query_colors_from_resolved_theme(
+        &termy_core::resolve_theme_colors_from_app_config(
+            &loaded.app_config,
+            loaded.path.as_deref(),
+            system_appearance_from_raw(system_appearance),
+        ),
+    )
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn termy_config_render_config_for_appearance(
     config: *const TermyFfiConfig,
@@ -1417,16 +1437,12 @@ pub unsafe extern "C" fn termy_config_render_config_for_appearance(
         }
 
         let loaded = unsafe { &(*config).loaded };
-        let system_appearance = match system_appearance {
-            0 => termy_core::SystemAppearance::Light,
-            _ => termy_core::SystemAppearance::Dark,
-        };
         let app_config = &loaded.app_config;
         let cell_metrics = termy_core::measure_cell_from_config(app_config);
         let theme_colors = termy_core::resolve_theme_colors_from_app_config(
             app_config,
             loaded.path.as_deref(),
-            system_appearance,
+            system_appearance_from_raw(system_appearance),
         );
         unsafe {
             *out_render_config = TermyFfiRenderConfig {
@@ -2521,13 +2537,34 @@ pub unsafe extern "C" fn termy_terminal_reload_default_config_colors(
         let Ok(loaded) = load_config_from_default_path() else {
             return TermyFfiStatus::ConfigLoadFailed;
         };
-        let query_colors = termy_core::terminal_query_colors_from_resolved_theme(
-            &termy_core::resolve_theme_colors_from_app_config(
-                &loaded.app_config,
-                loaded.path.as_deref(),
-                termy_core::SystemAppearance::Dark,
-            ),
-        );
+        let query_colors = terminal_query_colors_for_appearance(&loaded, 1);
+        unsafe {
+            (*terminal).terminal.set_query_colors(query_colors);
+        }
+        TermyFfiStatus::Ok
+    })
+}
+
+/// Apply the palette resolved from `config` for the host's current appearance
+/// to an existing terminal. This updates default and ANSI colors used by frame
+/// snapshots and terminal color-query replies without restarting the PTY.
+///
+/// `system_appearance` uses the same ABI as
+/// [`termy_config_render_config_for_appearance`]: `0` is light and every other
+/// value is dark.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_terminal_apply_config_colors_for_appearance(
+    terminal: *mut TermyFfiTerminal,
+    config: *const TermyFfiConfig,
+    system_appearance: u32,
+) -> TermyFfiStatus {
+    ffi_status_guard(|| {
+        if terminal.is_null() || config.is_null() {
+            return TermyFfiStatus::Null;
+        }
+
+        let query_colors =
+            unsafe { terminal_query_colors_for_appearance(&(*config).loaded, system_appearance) };
         unsafe {
             (*terminal).terminal.set_query_colors(query_colors);
         }

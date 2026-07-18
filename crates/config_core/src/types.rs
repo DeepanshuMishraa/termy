@@ -447,7 +447,7 @@ impl Default for AppConfig {
         Self {
             theme: "termy".to_string(),
             theme_mode: AppearanceMode::default(),
-            theme_light: "termy".to_string(),
+            theme_light: "termy-light".to_string(),
             theme_dark: "termy".to_string(),
             app_icon: AppIcon::default(),
             chrome_contrast: false,

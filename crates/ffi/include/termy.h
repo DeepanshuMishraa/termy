@@ -473,6 +473,10 @@ void termy_tmux_control_close(TermyFfiTmuxControl *session);
 
 TermyFfiStatus termy_settings_prettify_config(void);
 TermyFfiStatus termy_terminal_reload_default_config_colors(TermyFfiTerminal *terminal);
+TermyFfiStatus termy_terminal_apply_config_colors_for_appearance(
+    TermyFfiTerminal *terminal,
+    const TermyFfiConfig *config,
+    uint32_t system_appearance);
 /* Destroy a terminal handle. See the handle contract above: any wakeup thread
  * must be woken (notify) and joined before calling this; freeing while a thread
  * is inside wait_for_wakeup is a use-after-free. Passing null is a no-op. */

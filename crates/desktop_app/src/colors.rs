@@ -1,4 +1,7 @@
-use crate::config::{CustomColors, SHELL_DECIDE_THEME_ID};
+use crate::config::{
+    AppConfig, AppearanceMode, CustomColors, SHELL_DECIDE_THEME_ID, SystemAppearance,
+    resolve_active_theme,
+};
 use crate::theme_store;
 use alacritty_terminal::vte::ansi::{Color as AnsiColor, NamedColor, Rgb as AnsiRgb};
 use gpui::Rgba;
@@ -21,14 +24,46 @@ impl Default for TerminalColors {
 
 impl TerminalColors {
     pub fn from_theme(theme: &str, custom: &CustomColors) -> Self {
+        Self::from_theme_with_fallback(theme, custom, themes::termy())
+    }
+
+    pub fn from_config(config: &AppConfig, system_appearance: SystemAppearance) -> Self {
+        let theme = resolve_active_theme(config, system_appearance);
+        let fallback = match (config.theme_mode, system_appearance) {
+            (AppearanceMode::System, SystemAppearance::Light) => themes::termy_light(),
+            _ => themes::termy(),
+        };
+        Self::from_theme_with_fallback(theme, &config.colors, fallback)
+    }
+
+    pub fn from_system_theme(
+        theme: &str,
+        custom: &CustomColors,
+        system_appearance: SystemAppearance,
+    ) -> Self {
+        let fallback = match system_appearance {
+            SystemAppearance::Light => themes::termy_light(),
+            SystemAppearance::Dark => themes::termy(),
+        };
+        Self::from_theme_with_fallback(theme, custom, fallback)
+    }
+
+    fn from_theme_with_fallback(
+        theme: &str,
+        custom: &CustomColors,
+        fallback: themes::ThemeColors,
+    ) -> Self {
         let mut colors = if theme.eq_ignore_ascii_case(SHELL_DECIDE_THEME_ID) {
-            Self::default()
+            Self::from_theme_colors(fallback)
         } else {
-            match theme_store::load_installed_theme_colors(theme)
+            if let Some(theme_colors) = theme_store::load_installed_theme_colors(theme)
+                .or_else(|| themes::builtin_theme(theme))
                 .or_else(|| themes::resolve_theme(theme))
             {
-                Some(theme_colors) => Self::from_theme_colors(theme_colors),
-                None => Self::default(),
+                Self::from_theme_colors(theme_colors)
+            } else {
+                log::warn!("Theme '{theme}' is unavailable; using the built-in fallback");
+                Self::from_theme_colors(fallback)
             }
         };
         colors.apply_custom(custom);

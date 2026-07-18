@@ -187,7 +187,12 @@ pub fn resolve_theme_colors_from_app_config(
     } else {
         load_installed_theme_colors(&active_theme, config_path)
             .or_else(|| builtin_theme_colors(&active_theme))
-            .unwrap_or_else(termy_themes::termy)
+            .unwrap_or_else(|| match (config.theme_mode, system_appearance) {
+                (termy_config_core::AppearanceMode::System, SystemAppearance::Light) => {
+                    termy_themes::termy_light()
+                }
+                _ => termy_themes::termy(),
+            })
     };
     apply_custom_colors(&mut colors, &config.colors);
 
@@ -235,6 +240,7 @@ fn load_installed_theme_colors(theme_id: &str, config_path: Option<&Path>) -> Op
 fn builtin_theme_colors(theme_id: &str) -> Option<ThemeColors> {
     match normalize_theme_id(theme_id).as_str() {
         "termy" => Some(termy_themes::termy()),
+        "termy-light" | "termylight" => Some(termy_themes::termy_light()),
         "tokyo-night" | "tokyonight" => Some(termy_themes::tokyo_night()),
         "catppuccin-mocha" | "catppuccin" | "catppuccinmocha" => {
             Some(termy_themes::catppuccin_mocha())
@@ -364,6 +370,33 @@ mod tests {
                 g: 5,
                 b: 6,
                 a: 255,
+            }
+        );
+    }
+
+    #[test]
+    fn missing_system_light_theme_uses_light_builtin_fallback() {
+        let tempdir = tempdir().expect("tempdir");
+        let config_path = tempdir.path().join("config.txt");
+        let config = AppConfig {
+            theme_mode: termy_config_core::AppearanceMode::System,
+            theme_light: "missing-light-theme".to_string(),
+            ..AppConfig::default()
+        };
+
+        let colors = resolve_theme_colors_from_app_config(
+            &config,
+            Some(&config_path),
+            SystemAppearance::Light,
+        );
+
+        assert_eq!(
+            colors.background,
+            TermyColor {
+                r: 0xFA,
+                g: 0xFA,
+                b: 0xF9,
+                a: 0xFF,
             }
         );
     }

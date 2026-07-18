@@ -4,7 +4,7 @@ theme = termy
 # Use a single theme or switch with system appearance
 theme_mode = manual
 # Theme applied when system appearance is light
-theme_light = termy
+theme_light = termy-light
 # Theme applied when system appearance is dark
 theme_dark = termy
 # macOS app icon shown in the Dock and app switcher

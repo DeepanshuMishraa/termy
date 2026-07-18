@@ -3,11 +3,13 @@
 //! through the normal snapshot/render FFI.
 
 use termy_ffi::{
-    TermyFfiFrame, TermyFfiKittyGraphicsBatch, TermyFfiStatus, TermyFfiTerminal,
-    termy_display_terminal_new, termy_frame_free, termy_kitty_graphics_batch_free,
-    termy_size_default, termy_terminal_feed_output, termy_terminal_free,
-    termy_terminal_kitty_graphics_placements, termy_terminal_kitty_graphics_revision,
-    termy_terminal_snapshot,
+    TermyFfiConfig, TermyFfiFrame, TermyFfiKittyGraphicsBatch, TermyFfiRenderConfig,
+    TermyFfiStatus, TermyFfiTerminal, termy_config_free, termy_config_from_contents,
+    termy_config_render_config_for_appearance, termy_display_terminal_new, termy_frame_free,
+    termy_kitty_graphics_batch_free, termy_render_config_free, termy_size_default,
+    termy_terminal_apply_config_colors_for_appearance, termy_terminal_feed_output,
+    termy_terminal_free, termy_terminal_kitty_graphics_placements,
+    termy_terminal_kitty_graphics_revision, termy_terminal_snapshot,
 };
 
 #[test]
@@ -45,6 +47,81 @@ fn display_terminal_feed_output_lands_in_grid() {
 
     unsafe { termy_frame_free(&mut frame) };
     unsafe { termy_terminal_free(terminal) };
+}
+
+#[test]
+fn display_terminal_palette_tracks_requested_system_appearance() {
+    let contents = b"theme_mode = system\ntheme_light = termy-light\ntheme_dark = termy\n";
+    let mut config: *mut TermyFfiConfig = std::ptr::null_mut();
+    assert_eq!(
+        unsafe { termy_config_from_contents(contents.as_ptr(), contents.len(), &mut config) },
+        TermyFfiStatus::Ok
+    );
+
+    let mut light = TermyFfiRenderConfig::default();
+    let mut dark = TermyFfiRenderConfig::default();
+    assert_eq!(
+        unsafe { termy_config_render_config_for_appearance(config, 0, &mut light) },
+        TermyFfiStatus::Ok
+    );
+    assert_eq!(
+        unsafe { termy_config_render_config_for_appearance(config, 1, &mut dark) },
+        TermyFfiStatus::Ok
+    );
+    assert_ne!(light.background, dark.background);
+    assert_eq!(
+        (light.background.r, light.background.g, light.background.b),
+        (0xFA, 0xFA, 0xF9)
+    );
+    assert_eq!(
+        (dark.background.r, dark.background.g, dark.background.b),
+        (0x0B, 0x10, 0x20)
+    );
+
+    let size = termy_size_default();
+    let mut terminal: *mut TermyFfiTerminal = std::ptr::null_mut();
+    assert_eq!(
+        unsafe { termy_display_terminal_new(size, &mut terminal) },
+        TermyFfiStatus::Ok
+    );
+
+    assert_eq!(
+        unsafe { termy_terminal_apply_config_colors_for_appearance(terminal, config, 0) },
+        TermyFfiStatus::Ok
+    );
+    let mut frame = TermyFfiFrame::default();
+    assert_eq!(
+        unsafe { termy_terminal_snapshot(terminal, &mut frame) },
+        TermyFfiStatus::Ok
+    );
+    let cells = unsafe { std::slice::from_raw_parts(frame.cells_ptr, frame.cells_len) };
+    assert_eq!(cells[0].fg, light.foreground);
+    assert_eq!(cells[0].bg, light.background);
+    assert_eq!(unsafe { termy_frame_free(&mut frame) }, TermyFfiStatus::Ok);
+
+    assert_eq!(
+        unsafe { termy_terminal_apply_config_colors_for_appearance(terminal, config, 1) },
+        TermyFfiStatus::Ok
+    );
+    assert_eq!(
+        unsafe { termy_terminal_snapshot(terminal, &mut frame) },
+        TermyFfiStatus::Ok
+    );
+    let cells = unsafe { std::slice::from_raw_parts(frame.cells_ptr, frame.cells_len) };
+    assert_eq!(cells[0].fg, dark.foreground);
+    assert_eq!(cells[0].bg, dark.background);
+
+    assert_eq!(unsafe { termy_frame_free(&mut frame) }, TermyFfiStatus::Ok);
+    assert_eq!(unsafe { termy_terminal_free(terminal) }, TermyFfiStatus::Ok);
+    assert_eq!(
+        unsafe { termy_render_config_free(&mut light) },
+        TermyFfiStatus::Ok
+    );
+    assert_eq!(
+        unsafe { termy_render_config_free(&mut dark) },
+        TermyFfiStatus::Ok
+    );
+    assert_eq!(unsafe { termy_config_free(config) }, TermyFfiStatus::Ok);
 }
 
 #[test]

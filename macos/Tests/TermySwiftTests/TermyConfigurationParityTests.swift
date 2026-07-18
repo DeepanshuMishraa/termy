@@ -1,7 +1,24 @@
+import AppKit
 import XCTest
 @testable import TermySwift
 
 final class TermyConfigurationParityTests: XCTestCase {
+    func testEffectiveAppKitAppearanceMapsToFfiAppearance() throws {
+        let light = try XCTUnwrap(NSAppearance(named: .aqua))
+        let dark = try XCTUnwrap(NSAppearance(named: .darkAqua))
+        let highContrastLight = try XCTUnwrap(
+            NSAppearance(named: .accessibilityHighContrastAqua)
+        )
+        let highContrastDark = try XCTUnwrap(
+            NSAppearance(named: .accessibilityHighContrastDarkAqua)
+        )
+
+        XCTAssertEqual(LibTermyTerminal.systemAppearanceRawValue(for: light), 0)
+        XCTAssertEqual(LibTermyTerminal.systemAppearanceRawValue(for: dark), 1)
+        XCTAssertEqual(LibTermyTerminal.systemAppearanceRawValue(for: highContrastLight), 0)
+        XCTAssertEqual(LibTermyTerminal.systemAppearanceRawValue(for: highContrastDark), 1)
+    }
+
     func testSwiftConfigurationLoadsSharedNativeSafetyTasksAndKeybinds() throws {
         let configuration = try TermyAppConfiguration.load(contents: """
         window_width = 1440

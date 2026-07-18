@@ -686,9 +686,7 @@ impl SettingsWindow {
             config::set_color_setting(id, Some(&canonical))?;
             self.set_custom_color_for_id(id, Some(parsed));
         }
-        let resolved =
-            termy_config_core::resolve_active_theme(&self.config, self.system_appearance);
-        self.colors = TerminalColors::from_theme(resolved, &self.config.colors);
+        self.colors = TerminalColors::from_config(&self.config, self.system_appearance);
         Ok(())
     }
 }

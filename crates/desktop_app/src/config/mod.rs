@@ -16,8 +16,9 @@ use std::{
 pub use error::ConfigIoError;
 pub use io::{ensure_config_file, open_config_file, subscribe_config_changes};
 pub use mutate::{
-    import_colors_from_json, prettify_config_file, remove_root_setting, set_color_setting,
-    set_keybind_lines, set_root_setting, set_theme_in_config, upsert_task,
+    import_colors_from_json, prettify_config_file, remove_root_setting,
+    reset_theme_references_in_config, set_color_setting, set_keybind_lines, set_root_setting,
+    set_theme_in_config, upsert_task,
 };
 pub use preview::{
     BackgroundOpacityPreview, current_background_opacity_preview, effective_background_opacity,
@@ -324,6 +325,26 @@ mod tests {
     fn default_config_template_matches_default_struct() {
         let parsed = AppConfig::from_contents(DEFAULT_CONFIG);
         assert_eq!(parsed, AppConfig::default());
+    }
+
+    #[test]
+    fn gpui_window_appearance_maps_light_and_dark_variants() {
+        assert_eq!(
+            system_appearance_from_window(gpui::WindowAppearance::Light),
+            SystemAppearance::Light
+        );
+        assert_eq!(
+            system_appearance_from_window(gpui::WindowAppearance::VibrantLight),
+            SystemAppearance::Light
+        );
+        assert_eq!(
+            system_appearance_from_window(gpui::WindowAppearance::Dark),
+            SystemAppearance::Dark
+        );
+        assert_eq!(
+            system_appearance_from_window(gpui::WindowAppearance::VibrantDark),
+            SystemAppearance::Dark
+        );
     }
 
     #[test]

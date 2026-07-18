@@ -380,6 +380,7 @@ fn start_theme_install_from_deeplink(cx: &mut App, slug: String) {
                                 settings_cx,
                             );
                         });
+                        app_actions::refresh_open_terminal_theme_assets(cx);
                     }
                     Err(error) => {
                         log::error!("Failed to install theme from deeplink: {error}");

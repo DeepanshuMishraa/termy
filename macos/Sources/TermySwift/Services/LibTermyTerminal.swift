@@ -1,3 +1,4 @@
+import AppKit
 import CTermy
 import Foundation
 
@@ -106,12 +107,16 @@ final class LibTermyTerminal {
         size.cols = cols
         size.rows = rows
         let config = try loadUserConfig ? Self.loadDefaultConfig() : nil
+        let systemAppearance = config.map { _ in Self.currentSystemAppearanceRawValue() }
         // `renderConfig` (a non-optional `let`) is the last property to gain a
         // value, so until it's set the object is not fully initialized and
         // `deinit` won't run. If `renderConfig(for:)` throws after we've stored
         // `config`, the boxed config would leak — so free it explicitly here.
         do {
-            renderConfig = try Self.renderConfig(for: config)
+            renderConfig = try Self.renderConfig(
+                for: config,
+                systemAppearanceRawValue: systemAppearance
+            )
         } catch {
             if let config {
                 _ = termy_config_free(config)
@@ -148,6 +153,20 @@ final class LibTermyTerminal {
         guard let terminal else {
             throw LibTermyError.missingTerminal
         }
+        do {
+            try Self.applyConfigColors(
+                to: terminal,
+                from: config,
+                systemAppearanceRawValue: systemAppearance
+            )
+        } catch {
+            _ = termy_terminal_free(terminal)
+            if let configHandle {
+                _ = termy_config_free(configHandle)
+                self.configHandle = nil
+            }
+            throw error
+        }
         // The Swift shell consumes the FFI wake channel, so plain wakeups are
         // useful: they move idle terminals from timer cadence to immediate poll.
         _ = termy_terminal_set_wakeup_enabled(terminal, true)
@@ -161,10 +180,14 @@ final class LibTermyTerminal {
         size.cols = cols
         size.rows = rows
         let config = try loadUserConfig ? Self.loadDefaultConfig() : nil
+        let systemAppearance = config.map { _ in Self.currentSystemAppearanceRawValue() }
         // See the main initializer: free `config` if `renderConfig(for:)` throws
         // before the object is fully initialized, since `deinit` won't run yet.
         do {
-            renderConfig = try Self.renderConfig(for: config)
+            renderConfig = try Self.renderConfig(
+                for: config,
+                systemAppearanceRawValue: systemAppearance
+            )
         } catch {
             if let config {
                 _ = termy_config_free(config)
@@ -180,6 +203,20 @@ final class LibTermyTerminal {
         )
         guard let terminal else {
             throw LibTermyError.missingTerminal
+        }
+        do {
+            try Self.applyConfigColors(
+                to: terminal,
+                from: config,
+                systemAppearanceRawValue: systemAppearance
+            )
+        } catch {
+            _ = termy_terminal_free(terminal)
+            if let configHandle {
+                _ = termy_config_free(configHandle)
+                self.configHandle = nil
+            }
+            throw error
         }
         handle = terminal
     }
@@ -312,14 +349,27 @@ final class LibTermyTerminal {
         }
     }
 
-    /// Reload the terminal's theme palette from the on-disk config so existing
-    /// cells recolor on the next snapshot.
-    func reloadColors() throws {
+    /// Reload render settings and the live terminal palette from one config
+    /// snapshot and one effective AppKit appearance.
+    func reloadAppearance() throws -> TerminalRenderConfig {
         let handle = try terminalHandle()
-        try TermyFfiBridge.requireOK(
-            "termy_terminal_reload_default_config_colors",
-            termy_terminal_reload_default_config_colors(handle)
+        let config = try Self.loadDefaultConfig()
+        defer {
+            if let config {
+                _ = termy_config_free(config)
+            }
+        }
+        let systemAppearance = Self.currentSystemAppearanceRawValue()
+        let renderConfig = try Self.renderConfig(
+            for: config,
+            systemAppearanceRawValue: systemAppearance
         )
+        try Self.applyConfigColors(
+            to: handle,
+            from: config,
+            systemAppearanceRawValue: systemAppearance
+        )
+        return renderConfig
     }
 
     /// Load a fresh render config (font, metrics, colors, padding) from the
@@ -331,7 +381,10 @@ final class LibTermyTerminal {
                 _ = termy_config_free(config)
             }
         }
-        return try renderConfig(for: config)
+        return try renderConfig(
+            for: config,
+            systemAppearanceRawValue: currentSystemAppearanceRawValue()
+        )
     }
 
     func clearScrollback() throws -> Bool {
@@ -663,7 +716,10 @@ final class LibTermyTerminal {
         return config
     }
 
-    private static func renderConfig(for config: OpaquePointer?) throws -> TerminalRenderConfig {
+    private static func renderConfig(
+        for config: OpaquePointer?,
+        systemAppearanceRawValue: UInt32?
+    ) throws -> TerminalRenderConfig {
         guard let config else {
             return .default
         }
@@ -673,7 +729,7 @@ final class LibTermyTerminal {
             "termy_config_render_config_for_appearance",
             termy_config_render_config_for_appearance(
                 config,
-                Self.currentSystemAppearanceRawValue(),
+                systemAppearanceRawValue ?? 1,
                 &renderConfig
             )
         )
@@ -683,8 +739,35 @@ final class LibTermyTerminal {
         return TerminalRenderConfig(renderConfig)
     }
 
+    private static func applyConfigColors(
+        to terminal: OpaquePointer,
+        from config: OpaquePointer?,
+        systemAppearanceRawValue: UInt32?
+    ) throws {
+        guard let config, let systemAppearanceRawValue else {
+            return
+        }
+        try TermyFfiBridge.requireOK(
+            "termy_terminal_apply_config_colors_for_appearance",
+            termy_terminal_apply_config_colors_for_appearance(
+                terminal,
+                config,
+                systemAppearanceRawValue
+            )
+        )
+    }
+
     private static func currentSystemAppearanceRawValue() -> UInt32 {
-        UserDefaults.standard.string(forKey: "AppleInterfaceStyle") == "Dark" ? 1 : 0
+        // User-configured terminals are owned by AppKit/SwiftUI main-actor
+        // models. Resolve the effective app appearance there so per-app and
+        // accessibility appearances are handled along with the OS theme.
+        MainActor.assumeIsolated {
+            systemAppearanceRawValue(for: NSApp.effectiveAppearance)
+        }
+    }
+
+    static func systemAppearanceRawValue(for appearance: NSAppearance) -> UInt32 {
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? 1 : 0
     }
 
     private static func workingDirectory(for config: OpaquePointer?) throws -> String? {

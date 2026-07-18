@@ -417,8 +417,12 @@ final class TerminalViewModel: ObservableObject {
     /// reloaded theme palette so existing cells recolor.
     private func reloadAppearance() {
         do {
-            applyBaseRenderConfig(try LibTermyTerminal.loadRenderConfig())
-            try terminal?.reloadColors()
+            let config = if let terminal {
+                try terminal.reloadAppearance()
+            } else {
+                try LibTermyTerminal.loadRenderConfig()
+            }
+            applyBaseRenderConfig(config)
             pollAndPresent(force: true)
         } catch {
             report(error)

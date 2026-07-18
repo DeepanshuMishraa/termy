@@ -3531,7 +3531,7 @@ impl TerminalView {
         let config_fingerprint = config_path.as_deref().and_then(config::config_fingerprint);
         let system_appearance = system_appearance_from_window(window.appearance());
         let theme_id = resolve_active_theme(&config, system_appearance).to_string();
-        let colors = TerminalColors::from_theme(&theme_id, &config.colors);
+        let colors = TerminalColors::from_config(&config, system_appearance);
         let base_font_size = config.font_size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
         let padding_x = config.padding_x.max(0.0);
         let padding_y = config.padding_y.max(0.0);
@@ -3921,12 +3921,46 @@ impl TerminalView {
                 SystemAppearance::Dark => self.dark_theme.clone(),
             },
         };
-        if resolved == self.theme_id {
-            return;
-        }
+        self.apply_resolved_theme(resolved, cx);
+    }
+
+    fn apply_resolved_theme(&mut self, resolved: String, cx: &mut Context<Self>) {
         self.theme_id = resolved;
-        self.colors = TerminalColors::from_theme(&self.theme_id, &self.custom_colors);
+        self.colors = match self.theme_mode {
+            config::AppearanceMode::Manual => {
+                TerminalColors::from_theme(&self.theme_id, &self.custom_colors)
+            }
+            config::AppearanceMode::System => TerminalColors::from_system_theme(
+                &self.theme_id,
+                &self.custom_colors,
+                self.system_appearance,
+            ),
+        };
+        let query_colors = Self::terminal_query_colors(&self.colors);
+        self.terminal_runtime.query_colors = query_colors;
+
+        // Cell colors are resolved before entering the pane cache. A repaint by
+        // itself would otherwise reuse rows from the previous appearance.
+        self.clear_pane_render_caches();
+        for tab in &self.tabs {
+            for pane in &tab.panes {
+                if let Some(terminal) = pane.maybe_terminal() {
+                    terminal.set_query_colors(query_colors);
+                }
+            }
+        }
         cx.notify();
+    }
+
+    pub(crate) fn reload_theme_assets(&mut self, cx: &mut Context<Self>) {
+        let resolved = match self.theme_mode {
+            config::AppearanceMode::Manual => self.manual_theme.clone(),
+            config::AppearanceMode::System => match self.system_appearance {
+                SystemAppearance::Light => self.light_theme.clone(),
+                SystemAppearance::Dark => self.dark_theme.clone(),
+            },
+        };
+        self.apply_resolved_theme(resolved, cx);
     }
 
     fn apply_runtime_config(&mut self, config: AppConfig, cx: &mut Context<Self>) -> bool {
@@ -3945,7 +3979,7 @@ impl TerminalView {
         self.dark_theme = config.theme_dark.clone();
         self.custom_colors = config.colors.clone();
         self.theme_id = resolve_active_theme(&config, self.system_appearance).to_string();
-        self.colors = TerminalColors::from_theme(&self.theme_id, &config.colors);
+        self.colors = TerminalColors::from_config(&config, self.system_appearance);
         self.inactive_tab_scrollback = config.inactive_tab_scrollback;
         self.tasks = config.tasks.clone();
         self.warn_on_quit = config.warn_on_quit;

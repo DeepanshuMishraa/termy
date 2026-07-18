@@ -1,7 +1,5 @@
 use crate::colors::TerminalColors;
-use crate::config::{
-    self, AppConfig, SystemAppearance, resolve_active_theme, system_appearance_from_window,
-};
+use crate::config::{self, AppConfig, SystemAppearance, system_appearance_from_window};
 use crate::text_input::{TextInputAlignment, TextInputElement, TextInputProvider, TextInputState};
 use crate::theme_store::{self, ThemeStoreAuthSession, ThemeStoreAuthUser, ThemeStoreTheme};
 use crate::ui::scrollbar::{self as ui_scrollbar, ScrollbarPaintStyle, ScrollbarRange};
@@ -192,8 +190,7 @@ impl SettingsWindow {
         available_font_families.sort_unstable_by_key(|font| font.to_ascii_lowercase());
         available_font_families.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
         let system_appearance = system_appearance_from_window(window.appearance());
-        let resolved_theme = resolve_active_theme(&config, system_appearance);
-        let colors = TerminalColors::from_theme(resolved_theme, &config.colors);
+        let colors = TerminalColors::from_config(&config, system_appearance);
         let searchable_settings = Self::build_searchable_settings();
         let searchable_setting_indices =
             Self::build_searchable_setting_indices(&searchable_settings);
@@ -335,8 +332,7 @@ impl SettingsWindow {
         }
         self.system_appearance = next;
         if self.config.theme_mode != config::AppearanceMode::Manual {
-            let resolved = resolve_active_theme(&self.config, self.system_appearance);
-            self.colors = TerminalColors::from_theme(resolved, &self.config.colors);
+            self.colors = TerminalColors::from_config(&self.config, self.system_appearance);
             cx.notify();
         }
     }
@@ -439,6 +435,8 @@ impl SettingsWindow {
                                 log::error!("Failed to persist installed theme state: {error}");
                             }
                             let _ = view.reload_config_if_changed(cx);
+                            view.reload_theme_assets(cx);
+                            crate::app_actions::refresh_open_terminal_theme_assets(cx);
                         }
                         Err(error) => termy_toast::error(error),
                     }
@@ -481,21 +479,37 @@ impl SettingsWindow {
             return;
         }
 
+        if termy_themes::builtin_theme(&key).is_none() {
+            let reset = match config::reset_theme_references_in_config(&key) {
+                Ok(reset) => reset,
+                Err(error) => {
+                    log::error!("Failed to reset theme references during uninstall: {error}");
+                    termy_toast::error("Failed to reset selected theme");
+                    return;
+                }
+            };
+            if reset.theme {
+                self.config.theme = config::SHELL_DECIDE_THEME_ID.to_string();
+            }
+            if reset.theme_light {
+                self.config.theme_light = "termy-light".to_string();
+            }
+            if reset.theme_dark {
+                self.config.theme_dark = "termy".to_string();
+            }
+        }
+
         match theme_store::uninstall_installed_theme(&key) {
             Ok(true) => {
                 self.theme_store_installed_versions.remove(&key);
-                if self.config.theme.eq_ignore_ascii_case(&key) {
-                    if let Err(error) = config::set_theme_in_config(config::SHELL_DECIDE_THEME_ID) {
-                        log::error!("Failed to reset theme during uninstall: {error}");
-                        termy_toast::error("Failed to reset selected theme");
-                        return;
-                    }
-                    self.config.theme = config::SHELL_DECIDE_THEME_ID.to_string();
-                }
                 let _ = self.reload_config_if_changed(cx);
+                self.reload_theme_assets(cx);
+                crate::app_actions::refresh_open_terminal_theme_assets(cx);
                 termy_toast::success("Theme uninstalled");
             }
             Ok(false) => {
+                self.reload_theme_assets(cx);
+                crate::app_actions::refresh_open_terminal_theme_assets(cx);
                 termy_toast::info("Theme is not installed");
             }
             Err(error) => {
@@ -513,6 +527,12 @@ impl SettingsWindow {
     ) {
         self.theme_store_installed_versions
             .insert(slug.trim().to_ascii_lowercase(), version.to_string());
+        self.reload_theme_assets(cx);
+        cx.notify();
+    }
+
+    fn reload_theme_assets(&mut self, cx: &mut Context<Self>) {
+        self.colors = TerminalColors::from_config(&self.config, self.system_appearance);
         cx.notify();
     }
 
@@ -624,8 +644,7 @@ impl SettingsWindow {
         if self.config.app_icon != config.app_icon {
             crate::app_icon::apply(config.app_icon);
         }
-        let resolved_theme = resolve_active_theme(&config, self.system_appearance);
-        self.colors = TerminalColors::from_theme(resolved_theme, &config.colors);
+        self.colors = TerminalColors::from_config(&config, self.system_appearance);
         self.config = config;
         let previous_preview = self.preview_background_opacity;
         let synced_preview = config::synced_background_opacity_preview(

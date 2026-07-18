@@ -9,6 +9,7 @@ mod one_dark;
 mod palenight;
 mod solarized_dark;
 mod termy;
+mod termy_light;
 mod tokyo_night;
 mod tomorrow_night;
 
@@ -96,8 +97,11 @@ pub fn available_theme_ids() -> Vec<&'static str> {
 }
 
 pub fn builtin_theme(theme_id: &str) -> Option<ThemeColors> {
-    let _ = theme_id;
-    None
+    match normalize_theme_id(theme_id).as_str() {
+        "termy" => Some(termy()),
+        "termy-light" | "termylight" => Some(termy_light()),
+        _ => None,
+    }
 }
 
 pub fn tokyo_night() -> ThemeColors {
@@ -106,6 +110,10 @@ pub fn tokyo_night() -> ThemeColors {
 
 pub fn termy() -> ThemeColors {
     termy::theme()
+}
+
+pub fn termy_light() -> ThemeColors {
+    termy_light::theme()
 }
 
 pub fn catppuccin_mocha() -> ThemeColors {
@@ -154,4 +162,18 @@ pub fn oceanic_next() -> ThemeColors {
 
 fn rgba(r: u8, g: u8, b: u8) -> Rgb8 {
     Rgb8::new(r, g, b)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn termy_light_is_an_offline_builtin_with_a_light_background() {
+        let colors = builtin_theme("termy-light").expect("termy-light builtin");
+
+        assert_eq!(colors.foreground, Rgb8::new(0x09, 0x09, 0x0B));
+        assert_eq!(colors.background, Rgb8::new(0xFA, 0xFA, 0xF9));
+        assert_eq!(colors.cursor, Rgb8::new(0x4F, 0xA8, 0x4A));
+    }
 }
