@@ -704,15 +704,17 @@ fn should_render_braille_as_geometry(row_cells: &[CellRenderInfo], index: usize)
         return false;
     }
 
-    // QR output is emitted as contiguous braille runs. CLI loading spinners
-    // usually draw one isolated braille frame, so leave those to the font.
-    index
-        .checked_sub(1)
-        .and_then(|previous| row_cells.get(previous))
-        .is_some_and(|neighbor| is_braille_pattern_char(neighbor.char))
-        || row_cells
-            .get(index + 1)
+    // QR output is emitted as longer contiguous braille runs. Some CLI loading
+    // spinners use two cells, so only switch to geometry for runs of three or more.
+    let is_braille_at = |candidate: usize| {
+        row_cells
+            .get(candidate)
             .is_some_and(|neighbor| is_braille_pattern_char(neighbor.char))
+    };
+
+    (index >= 2 && is_braille_at(index - 2) && is_braille_at(index - 1))
+        || (index >= 1 && is_braille_at(index - 1) && is_braille_at(index + 1))
+        || (is_braille_at(index + 1) && is_braille_at(index + 2))
 }
 
 const fn box_segments(
@@ -2693,7 +2695,8 @@ mod tests {
             vec![
                 test_cell(0, 0, '\u{28FF}'),
                 test_cell(1, 0, '\u{28FF}'),
-                test_cell(2, 0, 'x'),
+                test_cell(2, 0, '\u{28FF}'),
+                test_cell(3, 0, 'x'),
             ],
             None,
         );
@@ -2701,19 +2704,27 @@ mod tests {
         let ops = collect_draw_ops(&grid);
         assert!(matches!(&ops[0], TextDrawOp::Block(_)));
         assert!(matches!(&ops[1], TextDrawOp::Block(_)));
-        assert!(matches!(&ops[2], TextDrawOp::Batch(_)));
+        assert!(matches!(&ops[2], TextDrawOp::Block(_)));
+        assert!(matches!(&ops[3], TextDrawOp::Batch(_)));
     }
 
     #[test]
-    fn draw_ops_keep_isolated_braille_as_text_for_spinners() {
+    fn draw_ops_keep_two_cell_braille_spinners_as_text() {
         let grid = test_grid(
-            vec![test_cell(0, 0, '\u{280B}'), test_cell(1, 0, 'x')],
+            vec![
+                test_cell(0, 0, '\u{2830}'),
+                test_cell(1, 0, '\u{2830}'),
+                test_cell(2, 0, 'x'),
+            ],
             None,
         );
 
         let ops = collect_draw_ops(&grid);
         assert_eq!(ops.len(), 1);
-        assert!(matches!(&ops[0], TextDrawOp::Batch(_)));
+        assert!(matches!(
+            &ops[0],
+            TextDrawOp::Batch(batch) if batch.text.as_ref() == "\u{2830}\u{2830}x"
+        ));
     }
 
     #[test]
