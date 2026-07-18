@@ -1,6 +1,6 @@
 # Native macOS production roadmap
 
-Status date: 2026-07-13
+Status date: 2026-07-17
 
 This roadmap takes the SwiftUI/AppKit host in `macos/` from a strong experimental
 implementation to the default production macOS build of Termy. It is ordered:
@@ -12,7 +12,7 @@ intentionally the final task.
 The native host is closer to production than the older roadmap suggests.
 
 - Swift 6 warnings-as-errors builds successfully.
-- 224 Swift tests pass; one native tab-bar test skips when AppKit does not expose
+- 235 Swift tests pass; one native tab-bar test skips when AppKit does not expose
   the private tab-bar views in the test session.
 - The Rust FFI test suite passes, including header/export contract tests.
 - Native arm64 and x86_64 release DMGs build and their disk-image checksums verify.
@@ -27,11 +27,15 @@ The native host is closer to production than the older roadmap suggests.
 Known production blockers:
 
 - The representative performance workflow has not completed successfully on a
-  committed candidate. Its latest run exposed a short-lived latency-scenario
-  process that can exit before `xctrace` attaches on a cold hosted runner; the
-  lifecycle fix is locally verified and still needs a green remote run.
+  committed candidate. The earlier `xctrace` attach race was fixed, but the
+  latest 2026-07-16 run still failed in two distinct ways: `Benchmark and gate`
+  stopped after roughly 20 minutes with `missing echo_start markers`, while the
+  native-versus-GPUI job completed its deterministic render and launch gates
+  before timing out during the windowed comparison at its 75-minute limit.
 - The main release workflow still publishes the GPUI macOS app, not the native
-  app.
+  app. Native candidate DMGs are now produced and validated per release by the
+  separate `macOS Native Candidates` workflow (green from v0.2.19 through the
+  current v0.2.25), but they remain unpublished Actions artifacts.
 - Interaction-heavy behavior still needs clean-machine and real-user testing:
   IME candidate placement, VoiceOver focus, selection/scrollback, native tabs,
   and tmux layouts.
@@ -76,7 +80,7 @@ The native app is production ready only when all of the following are true:
 | 4 | Make rendering and launch performance gates representative | 2–3 days | CI lifecycle fix locally verified; green run pending |
 | 5 | Close terminal interaction and tmux correctness gaps | 2–4 days | In progress; real AppKit/tmux/tab lifecycle smokes green locally |
 | 6 | Complete accessibility, IME, lifecycle, and failure-path QA | 2–3 days | In progress; cursor-cell IME anchoring green locally |
-| 7 | Wire native artifacts into release CI without cutover | 1–2 days | Candidate workflow implemented locally; dispatch evidence pending |
+| 7 | Wire native artifacts into release CI without cutover | 1–2 days | Release-triggered arm64/x86_64 candidates green through v0.2.25; full performance dependency pending |
 | 8 | Run clean-environment beta and soak testing | 3–7 elapsed days | Pending |
 | 9 | Freeze and approve the unsigned production release candidate | 1 day | Pending |
 | 10 | Code-sign, notarize, validate, and publish | 1–2 days | Pending |
@@ -282,9 +286,17 @@ pass on a handful of frames.
   seconds for `echo-train`; a local end-to-end `idle-burst` comparison completed
   all four Activity Monitor and Animation Hitches attach/export passes.
 
+- Run
+  [`29504754706`](https://github.com/lassejlv/termy/actions/runs/29504754706)
+  confirmed that the original attach race is no longer the active failure. Its
+  generic benchmark job stopped with `missing echo_start markers` after about
+  20 minutes. The native job passed deterministic render and launch/resource
+  gates, then exhausted its 75-minute job limit inside the windowed native/GPUI
+  comparison.
+
 The remaining unchecked exit evidence is a green, non-cancelled workflow run
-from a committed candidate containing the lifecycle fix; local tests cannot
-establish that GitHub result.
+from a committed candidate. The hosted marker capture and comparison runtime
+must be fixed before Task 4 can close.
 
 ## Task 5 — Close interaction and tmux correctness gaps
 
@@ -330,7 +342,7 @@ usage rather than only model-level tests.
   covers live resize propagation, sustained output into scrollback, copy,
   pane-process exit, control-session shutdown, and disabled/missing-binary
   decline paths.
-- The focused AppKit event suite and the complete 212-test Swift suite are green
+- The focused AppKit event suite and the complete 235-test Swift suite are green
   locally. Wrapped/scrollback/pane-boundary selection and the deeper interaction
   scenarios below remain open.
 
@@ -443,8 +455,8 @@ process lifecycle changes, and damaged local state.
 
 ## Task 7 — Add native artifacts to release CI without cutting over
 
-Started: 2026-07-13. Workflow implementation is local; a clean hosted dispatch
-is still required for exit evidence.
+Started: 2026-07-13. The workflow is committed and green on release-triggered
+clean checkouts; the full Task 4 performance workflow remains an exit dependency.
 
 ### Objective
 
@@ -462,6 +474,12 @@ the public fallback.
   metadata as unpublished 30-day Actions artifacts.
 - Added `macos/docs/native-candidate-release.md` with the artifact contract and
   exact local reproduction commands.
+- Release-triggered runs for v0.2.19 through v0.2.25 completed successfully.
+  The latest run
+  [`29538671160`](https://github.com/lassejlv/termy/actions/runs/29538671160)
+  built and validated both architectures, ran the deterministic render, launch,
+  and 30-second interaction/soak gates, and uploaded unpublished DMGs,
+  checksums, metadata, and reports.
 
 ### Work
 
@@ -482,8 +500,8 @@ the public fallback.
 
 ### Exit gate
 
-- A workflow dispatch produces both native candidate DMGs and checksums from a
-  clean checkout.
+- A release event or manual workflow dispatch produces both native candidate
+  DMGs and checksums from a clean checkout.
 - Both candidates pass structural, linkage, launch, and performance gates.
 - The candidate artifacts remain unpublished to normal users.
 - A failed native job cannot break the existing GPUI release path.

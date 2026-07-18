@@ -332,6 +332,22 @@ impl KittyGraphicsState {
         size: TerminalSize,
         screen: KittyGraphicsScreen,
     ) -> KittyGraphicsApplyResult {
+        log::debug!(
+            "kitty graphics command: a={:?} i={:?} p={:?} q={:?} m={:?} f={:?} t={:?} s={:?} v={:?} c={:?} r={:?} payload={}B cursor=({cursor_col},{cursor_row}) screen={screen:?}",
+            command.char_value('a'),
+            command.u32_value('i'),
+            command.u32_value('p'),
+            command.u32_value('q'),
+            command.u32_value('m'),
+            command.u32_value('f'),
+            command.char_value('t'),
+            command.u32_value('s'),
+            command.u32_value('v'),
+            command.u32_value('c'),
+            command.u32_value('r'),
+            command.payload.len(),
+        );
+
         if command.oversized {
             let response_command = self
                 .pending
@@ -765,6 +781,18 @@ impl KittyGraphicsState {
         let cell_height = size.cell_height.max(1.0);
         let requested_cols = command.u32_value('c').filter(|value| *value > 0);
         let requested_rows = command.u32_value('r').filter(|value| *value > 0);
+        // Columns remaining from the cursor to the right edge of the screen.
+        // Used for Kitty's natural-size right-edge truncation rule.
+        let available_cols = u32::try_from(size.cols as usize)
+            .unwrap_or(u32::MAX)
+            .saturating_sub(u32::try_from(cursor_col).unwrap_or(u32::MAX))
+            .max(1);
+        let available_width_px = available_cols as f32 * cell_width;
+
+        // Optional source-rectangle width after natural-size truncation. When
+        // the client omits c/r, Kitty shows the image at 1:1 pixels and
+        // truncates (not scales) anything past the available width.
+        let mut placed_source_width = source_width;
         let (display_cols, display_rows) = match (requested_cols, requested_rows) {
             (Some(cols), Some(rows)) => (Some(cols), Some(rows)),
             (Some(cols), None) => {
@@ -783,12 +811,21 @@ impl KittyGraphicsState {
                     Some(rows),
                 )
             }
-            (None, None) => (None, None),
+            (None, None) => {
+                if source_width as f32 > available_width_px {
+                    placed_source_width = available_width_px.floor().max(1.0) as u32;
+                }
+                let cols = (placed_source_width as f32 / cell_width)
+                    .ceil()
+                    .max(1.0) as u32;
+                let rows = (source_height as f32 / cell_height).ceil().max(1.0) as u32;
+                // Materialize explicit cell size so hosts paint with one path
+                // (cell box) instead of raw PNG pixel dimensions.
+                (Some(cols.min(available_cols)), Some(rows))
+            }
         };
-        let occupied_cols = display_cols
-            .unwrap_or_else(|| (source_width as f32 / cell_width).ceil().max(1.0) as u32);
-        let occupied_rows = display_rows
-            .unwrap_or_else(|| (source_height as f32 / cell_height).ceil().max(1.0) as u32);
+        let occupied_cols = display_cols.unwrap_or(1);
+        let occupied_rows = display_rows.unwrap_or(1);
         let placement_id = command.u32_value('p').unwrap_or(0);
         if placement_id != 0 {
             self.placements.retain(|placement| {
@@ -809,7 +846,7 @@ impl KittyGraphicsState {
             col: cursor_col,
             source_x,
             source_y,
-            source_width,
+            source_width: placed_source_width,
             source_height,
             display_cols,
             display_rows,
@@ -1002,6 +1039,12 @@ impl KittyGraphicsState {
         cursor_advance: Option<(u32, u32)>,
         screen: KittyGraphicsScreen,
     ) -> KittyGraphicsApplyResult {
+        log::debug!(
+            "kitty graphics ok: a={:?} i={:?} p={:?} changed={changed} cursor_advance={cursor_advance:?}",
+            command.char_value('a'),
+            command.u32_value('i'),
+            command.u32_value('p'),
+        );
         KittyGraphicsApplyResult {
             response: response(command, true, "OK"),
             cursor_advance,
@@ -1011,6 +1054,15 @@ impl KittyGraphicsState {
     }
 
     fn failure(&self, command: &KittyGraphicsCommand, message: &str) -> KittyGraphicsApplyResult {
+        // Logged even when q=2 suppresses the wire reply, so silent client
+        // failures remain visible in host logs.
+        log::warn!(
+            "kitty graphics error: a={:?} i={:?} p={:?} q={:?} {message}",
+            command.char_value('a'),
+            command.u32_value('i'),
+            command.u32_value('p'),
+            command.u32_value('q'),
+        );
         KittyGraphicsApplyResult {
             response: response(command, false, message),
             ..KittyGraphicsApplyResult::default()
@@ -1257,6 +1309,98 @@ mod tests {
         assert_eq!(placements[0].occupied_cols, 2);
         assert_eq!(placements[0].occupied_rows, 3);
         assert!(placements[0].png.starts_with(b"\x89PNG"));
+    }
+
+    #[test]
+    fn natural_size_uses_cell_metrics_for_occupancy() {
+        // 100×40 px image, 10×20 cell → 10 cols × 2 rows at 1:1.
+        let pixels = vec![0u8; 100 * 40 * 4];
+        let mut state = KittyGraphicsState::default();
+        let result = state.apply(
+            command("a=T,f=32,s=100,v=40,i=50,q=1,C=0", &pixels),
+            0,
+            0,
+            0,
+            size(),
+        );
+        assert!(result.changed);
+        assert_eq!(result.cursor_advance, Some((10, 2)));
+        let placements = state.render_placements(0, 0, 24, 80);
+        assert_eq!(placements.len(), 1);
+        assert_eq!(placements[0].occupied_cols, 10);
+        assert_eq!(placements[0].occupied_rows, 2);
+        assert_eq!(placements[0].display_cols, Some(10));
+        assert_eq!(placements[0].display_rows, Some(2));
+        assert_eq!(placements[0].source_width, 100);
+        assert_eq!(placements[0].source_height, 40);
+    }
+
+    #[test]
+    fn natural_size_truncates_to_available_width_not_scale() {
+        // 500×20 px image at col 70 on an 80-col grid with 10px cells:
+        // only 10 cols / 100px remain → truncate source width to 100, occupy 10.
+        let pixels = vec![0u8; 500 * 20 * 4];
+        let mut state = KittyGraphicsState::default();
+        let result = state.apply(
+            command("a=T,f=32,s=500,v=20,i=51,q=1,C=0", &pixels),
+            70,
+            0,
+            0,
+            size(),
+        );
+        assert!(result.changed);
+        assert_eq!(result.cursor_advance, Some((10, 1)));
+        let placements = state.render_placements(0, 0, 24, 80);
+        assert_eq!(placements.len(), 1);
+        assert_eq!(placements[0].col, 70);
+        assert_eq!(placements[0].occupied_cols, 10);
+        assert_eq!(placements[0].occupied_rows, 1);
+        assert_eq!(
+            placements[0].source_width, 100,
+            "right-edge truncation must crop source width, not scale the whole image"
+        );
+        assert_eq!(placements[0].source_height, 20);
+    }
+
+    #[test]
+    fn explicit_cell_size_is_not_truncated_to_available_width() {
+        // Client-requested c/r is authoritative (Grok fit_image_to_cells path).
+        let pixels = vec![0u8; 500 * 20 * 4];
+        let mut state = KittyGraphicsState::default();
+        let result = state.apply(
+            command("a=T,f=32,s=500,v=20,i=52,c=40,r=4,q=1,C=1", &pixels),
+            70,
+            0,
+            0,
+            size(),
+        );
+        assert!(result.changed);
+        assert_eq!(result.cursor_advance, None);
+        let placements = state.render_placements(0, 0, 24, 80);
+        assert_eq!(placements.len(), 1);
+        assert_eq!(placements[0].occupied_cols, 40);
+        assert_eq!(placements[0].occupied_rows, 4);
+        assert_eq!(placements[0].source_width, 500);
+    }
+
+    #[test]
+    fn place_with_only_cols_derives_rows_from_aspect_ratio() {
+        let pixels = vec![0u8; 100 * 40 * 4];
+        let mut state = KittyGraphicsState::default();
+        state.apply(
+            command("a=t,f=32,s=100,v=40,i=53,q=1", &pixels),
+            0,
+            0,
+            0,
+            size(),
+        );
+        let result = state.apply(command("a=p,i=53,c=20,q=1,C=1", &[]), 0, 0, 0, size());
+        assert!(result.changed);
+        let placements = state.render_placements(0, 0, 24, 80);
+        assert_eq!(placements.len(), 1);
+        // width 20 cols = 200px; height keeps aspect → 80px → 4 rows.
+        assert_eq!(placements[0].occupied_cols, 20);
+        assert_eq!(placements[0].occupied_rows, 4);
     }
 
     #[test]

@@ -2002,11 +2002,16 @@ impl TerminalSize {
 
 impl From<TerminalSize> for WindowSize {
     fn from(size: TerminalSize) -> Self {
+        // Kitty clients (and Grok's fit_image_to_cells) read TIOCGWINSZ
+        // ws_xpixel/ws_ypixel via these cell metrics. A zero here makes
+        // `cols * cell_width == 0`, which often causes clients to fall back
+        // to treating image pixels as cell counts and request full-screen
+        // placements.
         WindowSize {
             num_cols: size.cols,
             num_lines: size.rows,
-            cell_width: size.cell_width as u16,
-            cell_height: size.cell_height as u16,
+            cell_width: size.cell_width.round().clamp(1.0, u16::MAX as f32) as u16,
+            cell_height: size.cell_height.round().clamp(1.0, u16::MAX as f32) as u16,
         }
     }
 }
@@ -2150,6 +2155,7 @@ impl Terminal {
         )?;
         let pty_tx = event_loop.channel();
         event_loop.spawn();
+        log::info!("terminal runtime started; kitty graphics logging active (RUST_LOG=termy_core=debug for per-command detail)");
 
         Ok(Self {
             term,
@@ -2734,7 +2740,7 @@ mod tests {
     use crate::protocol::{TerminalClipboardTarget, TerminalQueryColors, TerminalReplyHost};
     use crate::search::TermySearchOptions;
     use alacritty_terminal::{
-        event::{Event as AlacEvent, EventListener, VoidListener},
+        event::{Event as AlacEvent, EventListener, VoidListener, WindowSize},
         grid::{Dimensions, Scroll},
         sync::FairMutex,
         term::{ClipboardType, Config as TermConfig, LineDamageBounds, Term, TermMode},
@@ -3094,6 +3100,27 @@ mod tests {
         .clamped();
         assert_eq!(clamped.cols, 200);
         assert_eq!(clamped.rows, 60);
+    }
+
+    #[test]
+    fn window_size_cell_metrics_round_and_never_report_zero() {
+        let rounded = WindowSize::from(TerminalSize {
+            cols: 80,
+            rows: 24,
+            cell_width: 9.6,
+            cell_height: 18.4,
+        });
+        assert_eq!(rounded.cell_width, 10);
+        assert_eq!(rounded.cell_height, 18);
+
+        let tiny = WindowSize::from(TerminalSize {
+            cols: 80,
+            rows: 24,
+            cell_width: 0.2,
+            cell_height: 0.0,
+        });
+        assert_eq!(tiny.cell_width, 1);
+        assert_eq!(tiny.cell_height, 1);
     }
 
     #[test]

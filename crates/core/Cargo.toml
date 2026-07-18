@@ -12,6 +12,7 @@ anyhow = { workspace = true }
 alacritty_terminal = { workspace = true }
 base64 = "0.22"
 flume = { workspace = true }
+log = { workspace = true }
 dirs = { workspace = true }
 flate2 = "1.1"
 fontdb = "0.23"
