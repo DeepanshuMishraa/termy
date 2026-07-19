@@ -5,8 +5,10 @@ fn should_show_new_tab_menu(
     browser_tabs_available: bool,
     runtime_kind: RuntimeKind,
     windows_shell_menu_available: bool,
+    saved_ssh_hosts_available: bool,
 ) -> bool {
-    runtime_kind == RuntimeKind::Native && (browser_tabs_available || windows_shell_menu_available)
+    runtime_kind == RuntimeKind::Native
+        && (browser_tabs_available || windows_shell_menu_available || saved_ssh_hosts_available)
 }
 
 fn runtime_config_for_windows_shell(
@@ -337,10 +339,12 @@ impl TerminalView {
     /// "+" button entry point: opens a dropdown when the platform has extra
     /// tab choices; otherwise it creates a terminal tab directly.
     pub(crate) fn handle_new_tab_button(&mut self, anchor: (f32, f32), cx: &mut Context<Self>) {
+        self.reload_saved_ssh_hosts();
         if should_show_new_tab_menu(
             self.browser_tabs_available(),
             self.runtime_kind(),
             cfg!(target_os = "windows"),
+            !self.saved_ssh_hosts.is_empty(),
         ) {
             self.toggle_new_tab_menu(anchor, cx);
         } else {
@@ -363,6 +367,17 @@ impl TerminalView {
             true
         } else {
             false
+        }
+    }
+
+    fn reload_saved_ssh_hosts(&mut self) {
+        match crate::ssh::load_hosts(self.config_path.as_deref()) {
+            Ok(hosts) => self.saved_ssh_hosts = hosts,
+            Err(error) => {
+                log::warn!("Failed to reload saved SSH hosts: {error}");
+                termy_toast::error(error);
+                self.saved_ssh_hosts.clear();
+            }
         }
     }
 
@@ -431,50 +446,136 @@ impl TerminalView {
                     predicted_prompt_cwd.as_deref(),
                 );
 
-                let tab_id = self.allocate_tab_id();
-                let old_active_tab = self.active_tab;
-                let new_tab_index = self.active_tab.saturating_add(1).min(self.tabs.len());
-                self.tabs.insert(
-                    new_tab_index,
-                    Self::create_native_tab(
-                        tab_id,
-                        terminal,
-                        size.cols,
-                        size.rows,
-                        predicted_title,
-                    ),
-                );
-                self.refresh_tab_title(new_tab_index);
-                self.active_tab = new_tab_index;
-                if let Some(inactive_scrollback) = self.inactive_tab_scrollback {
-                    let active_options = self.terminal_runtime.term_options();
-                    let inactive_options =
-                        active_options.with_scrollback_history(inactive_scrollback);
-                    if let Some(tab) = self.tabs.get(old_active_tab) {
-                        for pane in &tab.panes {
-                            if let Some(terminal) = pane.maybe_terminal() {
-                                terminal.set_term_options(inactive_options);
-                            }
-                        }
-                    }
-                    if let Some(tab) = self.tabs.get(new_tab_index) {
-                        for pane in &tab.panes {
-                            if let Some(terminal) = pane.maybe_terminal() {
-                                terminal.set_term_options(active_options);
-                            }
-                        }
-                    }
-                }
-                self.mark_tab_strip_layout_dirty();
-                self.reset_tab_interaction_state();
-                self.sync_tab_strip_for_active_tab();
-                self.sync_plugin_lifecycle_state(false, cx);
-                self.schedule_persist_native_workspace(cx);
-                self.start_new_tab_animation(tab_id, cx);
-                cx.notify();
-                true
+                self.insert_native_terminal_tab(terminal, size, predicted_title, cx)
             }
         }
+    }
+
+    pub(crate) fn add_ssh_tab(&mut self, host_id: &str, cx: &mut Context<Self>) -> bool {
+        if self.runtime_kind() != RuntimeKind::Native {
+            termy_toast::error("SSH hosts can only be opened from the native terminal runtime");
+            return false;
+        }
+
+        self.reload_saved_ssh_hosts();
+        let Some(host) = self
+            .saved_ssh_hosts
+            .iter()
+            .find(|host| host.id == host_id)
+            .cloned()
+        else {
+            termy_toast::error("That saved SSH host no longer exists");
+            return false;
+        };
+        let process = match termy_ssh_core::openssh_launch(&host) {
+            Ok(process) => process,
+            Err(error) => {
+                termy_toast::error(format!("Invalid SSH host “{}”: {error}", host.display_name));
+                return false;
+            }
+        };
+
+        let mut runtime_config = self.terminal_runtime.clone();
+        let saved_secret_available = match crate::ssh::manager(self.config_path.as_deref())
+            .and_then(|manager| manager.has_secret(&host.id, host.authentication.secret_kind()))
+        {
+            Ok(available) => available,
+            Err(error) => {
+                termy_toast::warning(format!(
+                    "Could not read the saved credential for “{}”; SSH will prompt in the terminal: {error}",
+                    host.display_name
+                ));
+                false
+            }
+        };
+        if saved_secret_available {
+            let askpass = std::env::current_exe()
+                .map_err(|error| format!("Unable to locate the Termy executable: {error}"))
+                .and_then(|executable| {
+                    termy_ssh_core::askpass_environment(&executable, std::process::id(), &host)
+                });
+            match askpass {
+                Ok(environment) => runtime_config.environment.extend(environment),
+                Err(error) => {
+                    termy_toast::warning(format!(
+                        "Could not prepare the saved credential for “{}”; SSH will prompt in the terminal: {error}",
+                        host.display_name
+                    ));
+                }
+            }
+        }
+
+        let size = self
+            .active_terminal()
+            .map(|terminal| terminal.size())
+            .unwrap_or_default();
+        let launch = TerminalLaunch::Program {
+            program: process.program,
+            args: process.args,
+        };
+        let terminal = match Terminal::new_native_with_launch(
+            size,
+            None,
+            Some(&self.native_terminal_wakeup_router),
+            Some(&self.tab_shell_integration),
+            Some(&runtime_config),
+            Some(&launch),
+        ) {
+            Ok(terminal) => terminal,
+            Err(error) => {
+                termy_toast::error(format!(
+                    "Could not start SSH session “{}”: {error}. Check that OpenSSH is installed and ssh is on PATH.",
+                    host.display_name
+                ));
+                return false;
+            }
+        };
+
+        self.insert_native_terminal_tab(terminal, size, Some(host.display_name), cx)
+    }
+
+    fn insert_native_terminal_tab(
+        &mut self,
+        terminal: Terminal,
+        size: TerminalSize,
+        predicted_title: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let tab_id = self.allocate_tab_id();
+        let old_active_tab = self.active_tab;
+        let new_tab_index = self.active_tab.saturating_add(1).min(self.tabs.len());
+        self.tabs.insert(
+            new_tab_index,
+            Self::create_native_tab(tab_id, terminal, size.cols, size.rows, predicted_title),
+        );
+        self.refresh_tab_title(new_tab_index);
+        self.active_tab = new_tab_index;
+        if let Some(inactive_scrollback) = self.inactive_tab_scrollback {
+            let active_options = self.terminal_runtime.term_options();
+            let inactive_options = active_options.with_scrollback_history(inactive_scrollback);
+            if let Some(tab) = self.tabs.get(old_active_tab) {
+                for pane in &tab.panes {
+                    if let Some(terminal) = pane.maybe_terminal() {
+                        terminal.set_term_options(inactive_options);
+                    }
+                }
+            }
+            if let Some(tab) = self.tabs.get(new_tab_index) {
+                for pane in &tab.panes {
+                    if let Some(terminal) = pane.maybe_terminal() {
+                        terminal.set_term_options(active_options);
+                    }
+                }
+            }
+        }
+        self.mark_tab_strip_layout_dirty();
+        self.reset_tab_interaction_state();
+        self.sync_tab_strip_for_active_tab();
+        self.sync_plugin_lifecycle_state(false, cx);
+        self.schedule_persist_native_workspace(cx);
+        self.start_new_tab_animation(tab_id, cx);
+        cx.notify();
+        true
     }
 
     pub(crate) fn close_tab(&mut self, index: usize, cx: &mut Context<Self>) {
@@ -1813,9 +1914,30 @@ mod tests {
 
     #[test]
     fn windows_shell_choices_open_the_new_tab_menu_without_browser_tabs() {
-        assert!(should_show_new_tab_menu(false, RuntimeKind::Native, true));
-        assert!(!should_show_new_tab_menu(false, RuntimeKind::Native, false));
-        assert!(!should_show_new_tab_menu(true, RuntimeKind::Tmux, true));
+        assert!(should_show_new_tab_menu(
+            false,
+            RuntimeKind::Native,
+            true,
+            false
+        ));
+        assert!(!should_show_new_tab_menu(
+            false,
+            RuntimeKind::Native,
+            false,
+            false
+        ));
+        assert!(should_show_new_tab_menu(
+            false,
+            RuntimeKind::Native,
+            false,
+            true
+        ));
+        assert!(!should_show_new_tab_menu(
+            true,
+            RuntimeKind::Tmux,
+            true,
+            true
+        ));
     }
 
     #[test]

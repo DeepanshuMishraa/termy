@@ -222,6 +222,8 @@ check_forbidden_dep "termy_plugin_runtime" "gpui"
 check_forbidden_dep "termy_plugin_runtime" "termy_command_core"
 check_forbidden_dep "termy_plugin_runtime" "termy_config_core"
 check_forbidden_dep "termy_plugin_runtime" "termy_terminal_ui"
+check_forbidden_dep "termy_ssh_core" "gpui"
+check_forbidden_dep "termy_ssh_core" "termy_terminal_ui"
 
 require_issue_url_for_pattern \
   'clippy::cognitive_complexity' \

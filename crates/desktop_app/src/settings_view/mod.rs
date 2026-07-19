@@ -33,6 +33,7 @@ mod keybinds;
 mod plugins;
 mod search;
 mod sections;
+mod ssh;
 mod state;
 mod state_apply;
 mod style;
@@ -40,6 +41,7 @@ mod style;
 mod test_utils;
 
 use self::search::SearchableSetting;
+use self::ssh::{ActiveSshInput, SshHostForm};
 use self::state::{ActiveTextInput, DropdownOption, EditableField};
 use input_mode::KeyInputMode;
 
@@ -94,6 +96,7 @@ static NEXT_BACKGROUND_OPACITY_PREVIEW_OWNER_ID: AtomicU64 = AtomicU64::new(1);
 pub(crate) enum SettingsSection {
     Appearance,
     Terminal,
+    Ssh,
     Tabs,
     ThemeStore,
     Plugins,
@@ -122,6 +125,7 @@ pub struct SettingsWindow {
     available_font_families: Vec<String>,
     focus_handle: FocusHandle,
     active_input: Option<ActiveTextInput>,
+    ssh_input: Option<ActiveSshInput>,
     content_scroll_handle: ScrollHandle,
     setting_scroll_anchors: HashMap<&'static str, ScrollAnchor>,
     searchable_settings: Vec<SearchableSetting>,
@@ -168,6 +172,9 @@ pub struct SettingsWindow {
     plugin_bun_path: Option<PathBuf>,
     plugin_bun_error: Option<String>,
     plugin_operation_in_flight: bool,
+    ssh_hosts: Vec<termy_ssh_core::SshHost>,
+    ssh_hosts_error: Option<String>,
+    ssh_form: Option<SshHostForm>,
 }
 
 impl SettingsWindow {
@@ -205,6 +212,10 @@ impl SettingsWindow {
             Ok(path) => (path, None),
             Err(error) => (None, Some(error)),
         };
+        let (ssh_hosts, ssh_hosts_error) = match crate::ssh::load_hosts(config_path.as_deref()) {
+            Ok(hosts) => (hosts, None),
+            Err(error) => (Vec::new(), Some(error)),
+        };
         let mut view = Self {
             active_section: SettingsSection::Advanced,
             config,
@@ -214,6 +225,7 @@ impl SettingsWindow {
             available_font_families,
             focus_handle: cx.focus_handle(),
             active_input: None,
+            ssh_input: None,
             content_scroll_handle,
             setting_scroll_anchors,
             searchable_settings,
@@ -261,6 +273,9 @@ impl SettingsWindow {
             plugin_bun_path,
             plugin_bun_error,
             plugin_operation_in_flight: false,
+            ssh_hosts,
+            ssh_hosts_error,
+            ssh_form: None,
         };
         view.focus_handle.focus(window, cx);
 
@@ -770,6 +785,7 @@ impl SettingsWindow {
     ) -> bool {
         if self.active_input.is_none()
             && self.plugin_setting_input.is_none()
+            && self.ssh_input.is_none()
             && event.keystroke.key.eq_ignore_ascii_case("tab")
             && !event.keystroke.modifiers.alt
             && !event.keystroke.modifiers.control
@@ -892,6 +908,10 @@ impl SettingsWindow {
     }
 
     fn handle_active_input_key_down(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+        if self.ssh_input.is_some() {
+            self.handle_ssh_input_key_down(event, cx);
+            return;
+        }
         if self.plugin_setting_input.is_some() {
             self.handle_plugin_setting_input_key_down(event, cx);
             return;
@@ -1010,6 +1030,7 @@ impl SettingsWindow {
         if Self::is_plain_escape(event)
             && self.active_input.is_none()
             && self.plugin_setting_input.is_none()
+            && self.ssh_input.is_none()
         {
             window.remove_window();
             return;
@@ -1037,6 +1058,9 @@ impl SettingsWindow {
 
 impl TextInputProvider for SettingsWindow {
     fn text_input_state(&self) -> Option<&TextInputState> {
+        if let Some(input) = self.ssh_input.as_ref() {
+            return Some(&input.state);
+        }
         if let Some(input) = self.plugin_setting_input.as_ref() {
             return Some(&input.state);
         }
@@ -1057,6 +1081,9 @@ impl TextInputProvider for SettingsWindow {
     }
 
     fn text_input_state_mut(&mut self) -> Option<&mut TextInputState> {
+        if let Some(input) = self.ssh_input.as_mut() {
+            return Some(&mut input.state);
+        }
         if let Some(input) = self.plugin_setting_input.as_mut() {
             return Some(&mut input.state);
         }
@@ -1127,6 +1154,7 @@ impl gpui::EntityInputHandler for SettingsWindow {
         }
 
         if changed {
+            self.sync_active_ssh_input();
             self.refresh_search_navigation(window, cx);
         }
     }
@@ -1146,6 +1174,7 @@ impl gpui::EntityInputHandler for SettingsWindow {
         }
 
         if changed {
+            self.sync_active_ssh_input();
             self.refresh_search_navigation(window, cx);
         }
     }
@@ -1236,11 +1265,13 @@ impl Render for SettingsWindow {
             .on_key_down(cx.listener(Self::handle_key_down))
             .on_any_mouse_down(cx.listener(|view, _event: &MouseDownEvent, _window, cx| {
                 if view.active_input.is_some()
+                    || view.ssh_input.is_some()
                     || view.sidebar_search_active
                     || view.theme_store_search_active
                     || view.capturing_action.is_some()
                 {
                     view.active_input = None;
+                    view.ssh_input = None;
                     view.capturing_action = None;
                     view.blur_sidebar_search();
                     view.theme_store_search_active = false;

@@ -2196,6 +2196,118 @@ impl TerminalView {
             "New Terminal Tab"
         };
 
+        let mut panel = div()
+            .id("new-tab-menu-panel")
+            .absolute()
+            .left(px(menu_x))
+            .top(px(menu_y))
+            .w(px(NEW_TAB_MENU_WIDTH))
+            .py(px(4.0))
+            .bg(panel_bg)
+            .border_1()
+            .border_color(panel_border)
+            .rounded(px(8.0))
+            .shadow_lg()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|_view, _event: &MouseDownEvent, _window, cx| {
+                    cx.stop_propagation();
+                }),
+            )
+            .child(menu_row(
+                "new-tab-menu-terminal",
+                default_terminal_label,
+                cx,
+                |view, cx| view.add_tab(cx),
+            ));
+
+        if cfg!(target_os = "windows") {
+            panel = panel
+                .child(menu_row(
+                    "new-tab-menu-command-prompt",
+                    "Command Prompt",
+                    cx,
+                    |view, cx| {
+                        view.add_tab_with_windows_shell(RuntimeWindowsShell::Cmd, cx);
+                    },
+                ))
+                .child(menu_row(
+                    "new-tab-menu-windows-powershell",
+                    "Windows PowerShell",
+                    cx,
+                    |view, cx| {
+                        view.add_tab_with_windows_shell(RuntimeWindowsShell::PowerShell, cx);
+                    },
+                ))
+                .child(menu_row(
+                    "new-tab-menu-powershell-core",
+                    "PowerShell 7",
+                    cx,
+                    |view, cx| {
+                        view.add_tab_with_windows_shell(RuntimeWindowsShell::PowerShellCore, cx);
+                    },
+                ))
+                .child(menu_row(
+                    "new-tab-menu-git-bash",
+                    "Git Bash",
+                    cx,
+                    |view, cx| {
+                        view.add_tab_with_windows_shell(RuntimeWindowsShell::GitBash, cx);
+                    },
+                ));
+        }
+
+        if self.browser_tabs_available() {
+            panel = panel.child(menu_row(
+                "new-tab-menu-browser",
+                "New Browser Tab",
+                cx,
+                |view, cx| view.add_browser_tab(cx),
+            ));
+        }
+
+        if !self.saved_ssh_hosts.is_empty() {
+            panel = panel
+                .child(div().mx(px(8.0)).my(px(4.0)).h(px(1.0)).bg(panel_border))
+                .child(
+                    div()
+                        .h(px(22.0))
+                        .px(px(10.0))
+                        .flex()
+                        .items_center()
+                        .text_size(px(10.0))
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(overlay_style.panel_foreground(0.58))
+                        .child("SSH HOSTS"),
+                );
+            for host in self.saved_ssh_hosts.clone() {
+                let row_id = SharedString::from(format!("new-tab-menu-ssh-{}", host.id));
+                let host_id = host.id;
+                panel = panel.child(
+                    div()
+                        .id(row_id)
+                        .h(px(row_height))
+                        .px(px(10.0))
+                        .flex()
+                        .items_center()
+                        .text_size(px(13.0))
+                        .text_color(text_color)
+                        .cursor_pointer()
+                        .overflow_hidden()
+                        .hover(move |style| style.bg(hover_bg))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |view, _event: &MouseDownEvent, _window, cx| {
+                                let _ = view.close_new_tab_menu(cx);
+                                view.add_ssh_tab(&host_id, cx);
+                                cx.stop_propagation();
+                            }),
+                        )
+                        .child(host.display_name),
+                );
+            }
+        }
+
         Some(
             div()
                 .id("new-tab-menu-overlay")
@@ -2211,87 +2323,7 @@ impl TerminalView {
                         cx.stop_propagation();
                     }),
                 )
-                .child(
-                    div()
-                        .id("new-tab-menu-panel")
-                        .absolute()
-                        .left(px(menu_x))
-                        .top(px(menu_y))
-                        .w(px(NEW_TAB_MENU_WIDTH))
-                        .py(px(4.0))
-                        .bg(panel_bg)
-                        .border_1()
-                        .border_color(panel_border)
-                        .rounded(px(8.0))
-                        .shadow_lg()
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|_view, _event: &MouseDownEvent, _window, cx| {
-                                cx.stop_propagation();
-                            }),
-                        )
-                        .child(menu_row(
-                            "new-tab-menu-terminal",
-                            default_terminal_label,
-                            cx,
-                            |view, cx| view.add_tab(cx),
-                        ))
-                        .when(cfg!(target_os = "windows"), |panel| {
-                            panel
-                                .child(menu_row(
-                                    "new-tab-menu-command-prompt",
-                                    "Command Prompt",
-                                    cx,
-                                    |view, cx| {
-                                        view.add_tab_with_windows_shell(
-                                            RuntimeWindowsShell::Cmd,
-                                            cx,
-                                        );
-                                    },
-                                ))
-                                .child(menu_row(
-                                    "new-tab-menu-windows-powershell",
-                                    "Windows PowerShell",
-                                    cx,
-                                    |view, cx| {
-                                        view.add_tab_with_windows_shell(
-                                            RuntimeWindowsShell::PowerShell,
-                                            cx,
-                                        );
-                                    },
-                                ))
-                                .child(menu_row(
-                                    "new-tab-menu-powershell-core",
-                                    "PowerShell 7",
-                                    cx,
-                                    |view, cx| {
-                                        view.add_tab_with_windows_shell(
-                                            RuntimeWindowsShell::PowerShellCore,
-                                            cx,
-                                        );
-                                    },
-                                ))
-                                .child(menu_row(
-                                    "new-tab-menu-git-bash",
-                                    "Git Bash",
-                                    cx,
-                                    |view, cx| {
-                                        view.add_tab_with_windows_shell(
-                                            RuntimeWindowsShell::GitBash,
-                                            cx,
-                                        );
-                                    },
-                                ))
-                        })
-                        .when(self.browser_tabs_available(), |panel| {
-                            panel.child(menu_row(
-                                "new-tab-menu-browser",
-                                "New Browser Tab",
-                                cx,
-                                |view, cx| view.add_browser_tab(cx),
-                            ))
-                        }),
-                )
+                .child(panel)
                 .into_any_element(),
         )
     }

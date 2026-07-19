@@ -815,9 +815,7 @@ impl KittyGraphicsState {
                 if source_width as f32 > available_width_px {
                     placed_source_width = available_width_px.floor().max(1.0) as u32;
                 }
-                let cols = (placed_source_width as f32 / cell_width)
-                    .ceil()
-                    .max(1.0) as u32;
+                let cols = (placed_source_width as f32 / cell_width).ceil().max(1.0) as u32;
                 let rows = (source_height as f32 / cell_height).ceil().max(1.0) as u32;
                 // Materialize explicit cell size so hosts paint with one path
                 // (cell box) instead of raw PNG pixel dimensions.

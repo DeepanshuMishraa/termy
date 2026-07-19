@@ -1,19 +1,15 @@
 [package]
-name = "termy_plugin_runtime"
+name = "termy_ssh_core"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
 
 [lints]
 workspace = true
 
 [dependencies]
-dirs = { workspace = true }
 keyring = { workspace = true }
-rand_core = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-sha2 = { workspace = true }
-url = { workspace = true }
-
-[dev-dependencies]
 tempfile = { workspace = true }
+uuid = { workspace = true }

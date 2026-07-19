@@ -43,11 +43,12 @@ use termy_terminal_ui::{
     TabTitleShellIntegration, Terminal as NativeTerminal, TerminalClipboardTarget,
     TerminalCursorState, TerminalCursorStyle, TerminalDamageSnapshot, TerminalDirtySpan,
     TerminalEvent, TerminalGrid, TerminalGridPaintCacheHandle, TerminalGridPaintDamage,
-    TerminalGridRows, TerminalKeyEventKind, TerminalKeyboardMode, TerminalMouseMode,
-    TerminalOptions, TerminalQueryColors, TerminalReplyHost, TerminalRuntimeConfig, TerminalSize,
-    TerminalWakeupNotifier, TmuxLaunchTarget, WindowsShell as RuntimeWindowsShell,
-    WorkingDirFallback as RuntimeWorkingDirFallback, find_link_in_line, hyperlink_at_viewport_cell,
-    keystroke_to_input, normalize_working_directory_candidate, resolve_launch_working_directory,
+    TerminalGridRows, TerminalKeyEventKind, TerminalKeyboardMode, TerminalLaunch,
+    TerminalMouseMode, TerminalOptions, TerminalQueryColors, TerminalReplyHost,
+    TerminalRuntimeConfig, TerminalSize, TerminalWakeupNotifier, TmuxLaunchTarget,
+    WindowsShell as RuntimeWindowsShell, WorkingDirFallback as RuntimeWorkingDirFallback,
+    find_link_in_line, hyperlink_at_viewport_cell, keystroke_to_input,
+    normalize_working_directory_candidate, resolve_launch_working_directory,
     resolve_working_directory_path,
 };
 use termy_toast::ToastManager;
@@ -543,6 +544,29 @@ impl Terminal {
                 tab_title_shell_integration,
                 runtime_config,
                 startup_command,
+            )?),
+        }))
+    }
+
+    fn new_native_with_launch(
+        size: TerminalSize,
+        configured_working_dir: Option<&str>,
+        wakeup_router: Option<&NativeTerminalWakeupRouter>,
+        tab_title_shell_integration: Option<&TabTitleShellIntegration>,
+        runtime_config: Option<&TerminalRuntimeConfig>,
+        launch: Option<&TerminalLaunch>,
+    ) -> anyhow::Result<Self> {
+        let wakeup_id = NEXT_NATIVE_TERMINAL_WAKEUP_ID.fetch_add(1, Ordering::Relaxed);
+        let wakeup_notifier = wakeup_router.map(|router| router.notifier(wakeup_id));
+        Ok(Self::Native(NativeTerminalInstance {
+            wakeup_id,
+            terminal: Mutex::new(NativeTerminal::new_with_launch_and_wakeup_notifier(
+                size,
+                configured_working_dir,
+                wakeup_notifier,
+                tab_title_shell_integration,
+                runtime_config,
+                launch,
             )?),
         }))
     }
@@ -1217,6 +1241,7 @@ pub struct TerminalView {
     /// Window-space top-left of the "+" dropdown for platform-specific tab
     /// choices; `None` while closed.
     new_tab_menu_anchor: Option<(f32, f32)>,
+    saved_ssh_hosts: Vec<termy_ssh_core::SshHost>,
     hovered_link: Option<HoveredLink>,
     hovered_toast: Option<u64>,
     copied_toast_feedback: Option<(u64, Instant)>,
@@ -3533,6 +3558,14 @@ impl TerminalView {
             }
         };
         let config_fingerprint = config_path.as_deref().and_then(config::config_fingerprint);
+        let saved_ssh_hosts = match crate::ssh::load_hosts(config_path.as_deref()) {
+            Ok(hosts) => hosts,
+            Err(error) => {
+                log::warn!("Failed to load saved SSH hosts: {error}");
+                termy_toast::error(error);
+                Vec::new()
+            }
+        };
         let system_appearance = system_appearance_from_window(window.appearance());
         let theme_id = resolve_active_theme(&config, system_appearance).to_string();
         let colors = TerminalColors::from_config(&config, system_appearance);
@@ -3697,6 +3730,7 @@ impl TerminalView {
             terminal_context_menu: None,
             tab_context_menu: None,
             new_tab_menu_anchor: None,
+            saved_ssh_hosts,
             hovered_link: None,
             hovered_toast: None,
             copied_toast_feedback: None,

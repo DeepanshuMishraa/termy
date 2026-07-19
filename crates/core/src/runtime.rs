@@ -152,6 +152,17 @@ pub struct TerminalRuntimeConfig {
     pub default_cursor_style: TerminalCursorStyle,
 }
 
+/// Selects what owns a newly-created PTY.
+///
+/// `ShellCommand` preserves the existing shell-evaluated startup-command API.
+/// Structured tools such as OpenSSH must use `Program`, which sends each
+/// argument directly to the child without routing through a shell.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TerminalLaunch {
+    ShellCommand(String),
+    Program { program: String, args: Vec<String> },
+}
+
 impl Default for TerminalRuntimeConfig {
     fn default() -> Self {
         Self {
@@ -952,17 +963,37 @@ fn launch_to_shell(launch: ShellLaunch) -> Shell {
     Shell::new(program, launch.args)
 }
 
-fn startup_shell(runtime_config: &TerminalRuntimeConfig, startup_command: Option<&str>) -> Shell {
-    if let Some(command) = startup_command
-        .map(str::trim)
-        .filter(|command| !command.is_empty())
-    {
+fn resolved_terminal_launch(
+    runtime_config: &TerminalRuntimeConfig,
+    launch: Option<&TerminalLaunch>,
+) -> anyhow::Result<ShellLaunch> {
+    if let Some(TerminalLaunch::Program { program, args }) = launch {
+        anyhow::ensure!(
+            !program.trim().is_empty(),
+            "terminal program cannot be empty"
+        );
+        anyhow::ensure!(
+            !program.contains('\0') && !args.iter().any(|arg| arg.contains('\0')),
+            "terminal program and arguments cannot contain NUL bytes"
+        );
+        return Ok(ShellLaunch {
+            program: program.clone(),
+            args: args.clone(),
+        });
+    }
+
+    if let Some(command) = launch.and_then(|launch| match launch {
+        TerminalLaunch::ShellCommand(command) => {
+            Some(command.trim()).filter(|command| !command.is_empty())
+        }
+        TerminalLaunch::Program { .. } => None,
+    }) {
         #[cfg(unix)]
         {
-            return Shell::new(
-                "/bin/sh".to_string(),
-                vec!["-c".to_string(), command.to_string()],
-            );
+            return Ok(ShellLaunch {
+                program: "/bin/sh".to_string(),
+                args: vec!["-c".to_string(), command.to_string()],
+            });
         }
 
         #[cfg(target_os = "windows")]
@@ -973,20 +1004,20 @@ fn startup_shell(runtime_config: &TerminalRuntimeConfig, startup_command: Option
                 .map(str::trim)
                 .is_some_and(|shell| !shell.is_empty())
             {
-                return Shell::new(
-                    "cmd.exe".to_string(),
-                    vec!["/C".to_string(), command.to_string()],
-                );
+                return Ok(ShellLaunch {
+                    program: "cmd.exe".to_string(),
+                    args: vec!["/C".to_string(), command.to_string()],
+                });
             }
 
-            return launch_to_shell(windows_startup_command_shell(
+            return Ok(windows_startup_command_shell(
                 runtime_config.windows_shell,
                 command,
             ));
         }
     }
 
-    launch_to_shell(default_shell_launch(runtime_config))
+    Ok(default_shell_launch(runtime_config))
 }
 
 fn user_home_dir() -> Option<PathBuf> {
@@ -2109,10 +2140,31 @@ impl Terminal {
         runtime_config: Option<&TerminalRuntimeConfig>,
         startup_command: Option<&str>,
     ) -> anyhow::Result<Self> {
+        let launch =
+            startup_command.map(|command| TerminalLaunch::ShellCommand(command.to_string()));
+        Self::new_with_launch_and_wakeup_notifier(
+            size,
+            configured_working_dir,
+            wakeup_notifier,
+            tab_title_shell_integration,
+            runtime_config,
+            launch.as_ref(),
+        )
+    }
+
+    /// Create a terminal whose child is selected with a typed launch contract.
+    pub fn new_with_launch_and_wakeup_notifier(
+        size: TerminalSize,
+        configured_working_dir: Option<&str>,
+        wakeup_notifier: Option<TerminalWakeupNotifier>,
+        tab_title_shell_integration: Option<&TabTitleShellIntegration>,
+        runtime_config: Option<&TerminalRuntimeConfig>,
+        launch: Option<&TerminalLaunch>,
+    ) -> anyhow::Result<Self> {
         let size = size.clamped();
         let (events_tx, events_rx) = unbounded();
         let runtime_config = runtime_config.cloned().unwrap_or_default();
-        let shell = startup_shell(&runtime_config, startup_command);
+        let shell = launch_to_shell(resolved_terminal_launch(&runtime_config, launch)?);
 
         let working_directory = resolve_launch_working_directory(
             configured_working_dir,
@@ -2155,7 +2207,9 @@ impl Terminal {
         )?;
         let pty_tx = event_loop.channel();
         event_loop.spawn();
-        log::info!("terminal runtime started; kitty graphics logging active (RUST_LOG=termy_core=debug for per-command detail)");
+        log::info!(
+            "terminal runtime started; kitty graphics logging active (RUST_LOG=termy_core=debug for per-command detail)"
+        );
 
         Ok(Self {
             term,
@@ -2725,13 +2779,13 @@ mod tests {
         GHOSTTY_COMPAT_TERM_PROGRAM_VERSION, JsonEventListener, KittyGraphicsCursorTracker,
         MAX_SCROLLBACK_HISTORY, MAX_TERMINAL_COLS, MAX_TERMINAL_ROWS, RuntimeEvent,
         TERMY_TERM_PROGRAM, Terminal, TerminalCursorState, TerminalCursorStyle,
-        TerminalDamageSnapshot, TerminalEvent, TerminalOptions, TerminalRuntimeConfig,
-        TerminalSize, TerminalWakeupNotifier, WindowsShell, WorkingDirFallback,
-        advance_kitty_graphics_cursor, advance_kitty_graphics_text, apply_term_config,
-        cursor_position_from_term, cursor_state_from_term, default_shell_launch,
+        TerminalDamageSnapshot, TerminalEvent, TerminalLaunch, TerminalOptions,
+        TerminalRuntimeConfig, TerminalSize, TerminalWakeupNotifier, WindowsShell,
+        WorkingDirFallback, advance_kitty_graphics_cursor, advance_kitty_graphics_text,
+        apply_term_config, cursor_position_from_term, cursor_state_from_term, default_shell_launch,
         drain_runtime_events, normalize_working_directory_candidate, pty_env_overrides,
-        resolve_launch_working_directory, resolve_shell_path, search_term_buffer,
-        should_drop_event, take_term_damage_snapshot, terminal_event_from_osc,
+        resolve_launch_working_directory, resolve_shell_path, resolved_terminal_launch,
+        search_term_buffer, should_drop_event, take_term_damage_snapshot, terminal_event_from_osc,
         termmode_to_terminal_mouse_mode, user_home_dir,
     };
     use crate::keyboard::{
@@ -4315,6 +4369,44 @@ mod tests {
         let launch = default_shell_launch(&config);
         assert_eq!(launch.program, "/bin/custom");
         assert_eq!(config.resolved_shell_program(), "/bin/custom");
+    }
+
+    #[test]
+    fn typed_program_launch_keeps_arguments_out_of_the_shell() {
+        let launch = TerminalLaunch::Program {
+            program: "ssh".to_string(),
+            args: vec![
+                "-i".to_string(),
+                "/tmp/key; touch /tmp/should-not-exist".to_string(),
+                "--".to_string(),
+                "example.com".to_string(),
+            ],
+        };
+        let resolved = resolved_terminal_launch(&TerminalRuntimeConfig::default(), Some(&launch))
+            .expect("typed launch");
+        assert_eq!(resolved.program, "ssh");
+        assert_eq!(
+            resolved.args,
+            vec![
+                "-i".to_string(),
+                "/tmp/key; touch /tmp/should-not-exist".to_string(),
+                "--".to_string(),
+                "example.com".to_string(),
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn existing_startup_commands_still_use_the_unix_shell() {
+        let launch = TerminalLaunch::ShellCommand("printf existing-behavior".to_string());
+        let resolved = resolved_terminal_launch(&TerminalRuntimeConfig::default(), Some(&launch))
+            .expect("shell command launch");
+        assert_eq!(resolved.program, "/bin/sh");
+        assert_eq!(
+            resolved.args,
+            vec!["-c".to_string(), "printf existing-behavior".to_string()]
+        );
     }
 
     #[cfg(target_os = "windows")]

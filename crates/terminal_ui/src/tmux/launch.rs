@@ -492,7 +492,12 @@ mod tests {
             vec!["-CC", "new-session", "-s", "work"]
         );
         assert_eq!(
-            new_session_args(ControlModeFlag::Pty, "work", false, Some("/tmp/#(run-shell)")),
+            new_session_args(
+                ControlModeFlag::Pty,
+                "work",
+                false,
+                Some("/tmp/#(run-shell)")
+            ),
             vec!["-CC", "new-session", "-s", "work"]
         );
     }

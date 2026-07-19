@@ -34,7 +34,9 @@ impl SettingsWindow {
             self.capturing_action.is_some(),
             self.sidebar_search_active,
             self.theme_store_search_active,
-            self.active_input.is_some() || self.plugin_setting_input.is_some(),
+            self.active_input.is_some()
+                || self.plugin_setting_input.is_some()
+                || self.ssh_input.is_some(),
         )
     }
 }

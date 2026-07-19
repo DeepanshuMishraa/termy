@@ -7,6 +7,7 @@
     "search",
     "command-palette",
     "plugins",
+    "ssh-hosts",
     "tmux-sessions",
     "tasks-layouts"
   ],

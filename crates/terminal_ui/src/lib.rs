@@ -35,7 +35,7 @@ pub use render_metrics::{
 };
 pub use runtime::{
     TabTitleShellIntegration, Terminal, TerminalCursorState, TerminalCursorStyle,
-    TerminalDamageSnapshot, TerminalDirtySpan, TerminalEvent, TerminalOptions,
+    TerminalDamageSnapshot, TerminalDirtySpan, TerminalEvent, TerminalLaunch, TerminalOptions,
     TerminalRuntimeConfig, TerminalSize, TerminalWakeupNotifier, WindowsShell, WorkingDirFallback,
     normalize_working_directory_candidate, resolve_launch_working_directory,
     resolve_working_directory_path,

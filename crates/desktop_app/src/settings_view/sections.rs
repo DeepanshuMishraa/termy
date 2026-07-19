@@ -38,6 +38,7 @@ impl SettingsWindow {
                     self.render_appearance_section(cx).into_any_element()
                 }
                 SettingsSection::Terminal => self.render_terminal_section(cx).into_any_element(),
+                SettingsSection::Ssh => self.render_ssh_section(cx).into_any_element(),
                 SettingsSection::Tabs => self.render_tabs_section(cx).into_any_element(),
                 SettingsSection::ThemeStore => {
                     self.render_theme_store_section(cx).into_any_element()

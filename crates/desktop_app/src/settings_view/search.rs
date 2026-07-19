@@ -83,6 +83,7 @@ mod tests {
                 SettingsSection::ThemeStore,
                 SettingsSection::Plugins,
                 SettingsSection::Terminal,
+                SettingsSection::Ssh,
                 SettingsSection::Tabs,
                 SettingsSection::Keybindings,
             ]
@@ -98,6 +99,10 @@ mod tests {
         assert_eq!(
             SettingsWindow::setting_metadata("plugins").map(|metadata| metadata.section),
             Some(SettingsSection::Plugins)
+        );
+        assert_eq!(
+            SettingsWindow::setting_metadata("ssh_hosts").map(|metadata| metadata.section),
+            Some(SettingsSection::Ssh)
         );
     }
 
@@ -177,6 +182,15 @@ static SETTINGS_METADATA: LazyLock<Vec<SettingMetadata>> = LazyLock::new(|| {
         description: "Install and manage trusted local plugins.",
         keywords: &["plugin", "extension", "bun", "typescript", "install"],
     });
+    entries.push(SettingMetadata {
+        key: "ssh_hosts",
+        section: SettingsSection::Ssh,
+        title: "SSH Hosts",
+        description: "Create and manage saved OpenSSH connections.",
+        keywords: &[
+            "ssh", "remote", "host", "server", "key", "password", "keychain",
+        ],
+    });
     entries
 });
 
@@ -195,6 +209,7 @@ impl SettingsWindow {
         match section {
             SettingsSection::Appearance => "Appearance",
             SettingsSection::Terminal => "Terminal",
+            SettingsSection::Ssh => "SSH",
             SettingsSection::Tabs => "Tabs",
             SettingsSection::ThemeStore => "Themes",
             SettingsSection::Plugins => "Plugins",
@@ -208,6 +223,7 @@ impl SettingsWindow {
         match section {
             SettingsSection::Appearance => "Theme, type, and terminal surface",
             SettingsSection::Terminal => "Shell, input, scrolling, and tmux",
+            SettingsSection::Ssh => "Saved hosts, authentication, and remote sessions",
             SettingsSection::Tabs => "Tabs, sidebar, browser, and title bar",
             SettingsSection::ThemeStore => "Find and install community themes",
             SettingsSection::Plugins => "Install and manage plugins",
@@ -221,6 +237,7 @@ impl SettingsWindow {
         match section {
             SettingsSection::Appearance => "icons/settings/appearance.svg",
             SettingsSection::Terminal => "icons/settings/terminal.svg",
+            SettingsSection::Ssh => "icons/settings/terminal.svg",
             SettingsSection::Tabs => "icons/settings/tabs.svg",
             SettingsSection::ThemeStore => "icons/settings/themes.svg",
             SettingsSection::Plugins => "icons/settings/plugins.svg",
@@ -230,7 +247,7 @@ impl SettingsWindow {
         }
     }
 
-    pub(super) const fn settings_sections_in_order() -> [SettingsSection; 8] {
+    pub(super) const fn settings_sections_in_order() -> [SettingsSection; 9] {
         [
             SettingsSection::Advanced,
             SettingsSection::Appearance,
@@ -238,6 +255,7 @@ impl SettingsWindow {
             SettingsSection::ThemeStore,
             SettingsSection::Plugins,
             SettingsSection::Terminal,
+            SettingsSection::Ssh,
             SettingsSection::Tabs,
             SettingsSection::Keybindings,
         ]
@@ -251,6 +269,7 @@ impl SettingsWindow {
     ) {
         self.active_section = section;
         self.active_input = None;
+        self.ssh_input = None;
         self.plugin_setting_input = None;
         self.active_plugin_setting_select = None;
         self.capturing_action = None;
@@ -263,6 +282,8 @@ impl SettingsWindow {
         self.request_scrollbar_refresh_frames(3, window, cx);
         if section == SettingsSection::Plugins {
             self.refresh_plugin_settings(cx);
+        } else if section == SettingsSection::Ssh {
+            self.refresh_ssh_hosts();
         }
     }
 
@@ -677,6 +698,7 @@ impl SettingsWindow {
                         "Workflow",
                         &[
                             SettingsSection::Terminal,
+                            SettingsSection::Ssh,
                             SettingsSection::Tabs,
                             SettingsSection::Keybindings,
                         ],

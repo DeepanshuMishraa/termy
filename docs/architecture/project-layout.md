@@ -10,6 +10,7 @@ Termy is a single repository with several product surfaces. Keep changes in the 
 - `crates/plugin_runtime/` owns plugin discovery, descriptor/action validation, and the persistent Bun host with one Worker per plugin. It must stay independent of GPUI and desktop command execution.
 - `crates/terminal_ui/` owns the GPUI-facing terminal grid/runtime adapter, native pane model, and tmux support used by the desktop app.
 - `crates/config_core/`, `crates/command_core/`, `crates/theme_core/`, and `crates/search/` own pure domain logic shared by the app, CLI, docs generation, and embedding surfaces.
+- `crates/ssh_core/` owns saved SSH host validation, non-secret persistence, exact OpenSSH arguments, and system-keychain credential lifecycle.
 - `crates/ffi/` exposes libtermy to C-compatible hosts.
 - `website/` owns the public website and user-facing docs.
 - `docs/` owns contributor and architecture docs inside the repo.
@@ -22,7 +23,7 @@ Termy is a single repository with several product surfaces. Keep changes in the 
 - `termy_core` (`crates/core/`) is the headless runtime/API for embedders.
 - `termy_plugin_runtime` (`crates/plugin_runtime/`) is the GPUI-free TypeScript plugin runtime consumed by the desktop app.
 - `termy_terminal_ui` (`crates/terminal_ui/`) is the GPUI-facing terminal adapter used by the desktop app.
-- `termy_command_core`, `termy_config_core`, `termy_theme_core`, `termy_search`, and `termy_themes` are pure domain crates.
+- `termy_command_core`, `termy_config_core`, `termy_theme_core`, `termy_search`, `termy_ssh_core`, and `termy_themes` are pure domain crates.
 - `termy_ffi` and `termy_native_sdk` are embedding/native-integration surfaces.
 - `termy_cli`, `termy_cli_install_core`, `termy_release_core`, `termy_auto_update`, and `termy_auto_update_ui` own command-line, install, release, and update support.
 - `termy_toast` owns tiny notification primitives.

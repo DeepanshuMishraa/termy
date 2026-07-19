@@ -16,6 +16,7 @@ mod keybindings;
 mod macos_titlebar_drag;
 mod menus;
 mod settings_view;
+mod ssh;
 mod startup;
 mod terminal_view;
 mod text_editing;
@@ -476,6 +477,9 @@ fn spawn_deeplink_listener(cx: &mut App, deeplink_rx: Receiver<Vec<String>>) {
 
 fn main() {
     let cli_args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(status) = ssh::run_askpass_if_requested(&cli_args) {
+        std::process::exit(status);
+    }
     if cli_delegate::should_delegate_to_cli(&cli_args) {
         cli_delegate::delegate_to_cli_or_exit(cli_args);
     }
