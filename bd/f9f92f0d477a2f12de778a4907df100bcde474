@@ -1,0 +1,41 @@
+macos/Tests/TermySwiftTests/TermyConfigurationParityTests.swift
+  s_e8a9b7a7c75b8d::t_fe0df3233e7d1d 52,93
+crates/ffi/include/termy.h
+  s_e8a9b7a7c75b8d::t_fe0df3233e7d1d 295,497-500
+  s_197cb923d69972::t_6be580c04fe9c5 501
+macos/Tests/TermySwiftTests/TerminalKeyInputMappingTests.swift
+  s_e8a9b7a7c75b8d::t_fe0df3233e7d1d 7-16
+macos/Sources/TermySwift/Services/LibTermyTerminal.swift
+  s_e8a9b7a7c75b8d::t_fe0df3233e7d1d 265-268,289-294,297
+macos/Sources/TermySwift/Services/TerminalViewModel.swift
+  s_e8a9b7a7c75b8d::t_fe0df3233e7d1d 476-479
+crates/ffi/src/lib.rs
+  s_e8a9b7a7c75b8d::t_fe0df3233e7d1d 22,307,1196,2668,2670-2676,4404-4438,4440-4444
+  s_e8a9b7a7c75b8d::t_5abf261cd366c2 2665-2667,2677-2715,2717-2725,2727-2730,4439
+macos/Sources/TermySwift/Services/TermyAppConfiguration.swift
+  s_e8a9b7a7c75b8d::t_fe0df3233e7d1d 355,376-377,399-400,421,444
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "bdf9f92f0d477a2f12de778a4907df100bcde474",
+  "prompts": {},
+  "sessions": {
+    "s_197cb923d69972": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f7fd8-d681-7c91-b5d7-4201ec5c6693",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Deepanshu Mishra <d4deepanshu723@gmail.com>"
+    },
+    "s_e8a9b7a7c75b8d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f7fd3-67d7-7a00-9568-6d4ca67dd0b1",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Deepanshu Mishra <d4deepanshu723@gmail.com>"
+    }
+  }
+}
