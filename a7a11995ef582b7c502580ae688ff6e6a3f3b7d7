@@ -1,0 +1,46 @@
+docs/configuration.md
+  s_ce13ea747aa8fe::t_15b0625dd9d95b 130-134
+crates/core/src/keyboard.rs
+  s_ce13ea747aa8fe::t_4a67202cbbe7de 98
+  s_ce13ea747aa8fe::t_56fb9c13077989 916,1477-1516
+  s_ce13ea747aa8fe::t_60d6c0e30cfbde 82-97,99-101,130-163
+  s_ce13ea747aa8fe::t_8f4274c38615ba 164
+crates/desktop_app/src/settings_view/sections.rs
+  s_ce13ea747aa8fe::t_d416250ea9e96a 296-301,337-348
+  s_ce13ea747aa8fe::t_0541699fa4a6cb 349-350
+crates/config_core/src/parser.rs
+  s_ce13ea747aa8fe::t_d1ea534503a556 613-619
+crates/config_core/src/default_config.txt
+  s_ce13ea747aa8fe::t_d1ea534503a556 87
+  s_ce13ea747aa8fe::t_15b0625dd9d95b 86
+crates/config_core/src/schema.rs
+  s_ce13ea747aa8fe::t_d1ea534503a556 409,592
+crates/config_core/src/parser_tests.rs
+  s_ce13ea747aa8fe::t_d1ea534503a556 382
+crates/core/src/lib.rs
+  s_ce13ea747aa8fe::t_60d6c0e30cfbde 28
+crates/terminal_ui/src/keyboard.rs
+  s_ce13ea747aa8fe::t_60d6c0e30cfbde 8,21,26
+crates/config_core/src/types.rs
+  s_ce13ea747aa8fe::t_d1ea534503a556 381,470
+crates/desktop_app/src/terminal_view/mod.rs
+  s_ce13ea747aa8fe::t_d1ea534503a556 1092,3570,3935
+crates/desktop_app/src/terminal_view/interaction/input.rs
+  s_ce13ea747aa8fe::t_d1ea534503a556 296
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "a7a11995ef582b7c502580ae688ff6e6a3f3b7d7",
+  "prompts": {},
+  "sessions": {
+    "s_ce13ea747aa8fe": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6623-422d-76e2-9d64-eb4097db6234",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Deepanshu Mishra <d4deepanshu723@gmail.com>"
+    }
+  }
+}
