@@ -770,7 +770,7 @@ final class LibTermyTerminal {
         // models. Resolve the effective app appearance there so per-app and
         // accessibility appearances are handled along with the OS theme.
         MainActor.assumeIsolated {
-            systemAppearanceRawValue(for: NSApp.effectiveAppearance)
+            systemAppearanceRawValue(for: NSApplication.shared.effectiveAppearance)
         }
     }
 
