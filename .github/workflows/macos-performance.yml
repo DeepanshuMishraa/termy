@@ -143,6 +143,8 @@ jobs:
         working-directory: candidate
         env:
           TERMY_RENDER_REPORT_PATH: ${{ github.workspace }}/native-render-report.json
+          # Measure the optimized release candidate built above, not a fresh debug build.
+          TERMY_RENDER_BENCHMARK_BINARY: ${{ github.workspace }}/candidate/macos/.build/dmg-arm64/Termy.app/Contents/MacOS/Termy
         run: ./macos/scripts/check-render-perf-regressions.sh
 
       - name: Measure launch, idle CPU, and pane memory
