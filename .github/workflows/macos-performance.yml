@@ -82,6 +82,7 @@ jobs:
         run: |
           "$GITHUB_WORKSPACE/candidate/macos/scripts/check-performance-gates.sh" \
             --summary "$GITHUB_WORKSPACE/benchmark-output-${{ matrix.scenario }}/summary.json" \
+            --max-idle-wakeup-delta 500 \
             --min-displayed-frames 0
 
       - name: Upload benchmark report
