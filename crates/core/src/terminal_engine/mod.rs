@@ -118,7 +118,7 @@ impl Engine {
     }
 
     pub fn feed(&mut self, bytes: &[u8]) {
-        self.feed_at(bytes, Instant::now());
+        self.feed_impl(bytes, None, false);
     }
 
     /// Like [`Self::feed`], but stops right after a kitty image upload
@@ -127,7 +127,7 @@ impl Engine {
     /// lock), passes the result to [`Self::commit_upload`], then feeds the
     /// rest. Uploads inside a synchronized update are still applied inline.
     pub(crate) fn feed_deferring_uploads(&mut self, bytes: &[u8]) -> usize {
-        self.feed_impl(bytes, Instant::now(), true)
+        self.feed_impl(bytes, None, true)
     }
 
     pub(crate) fn has_deferred_upload(&self) -> bool {
@@ -144,26 +144,33 @@ impl Engine {
         self.generation = self.generation.wrapping_add(1);
     }
 
+    #[cfg(test)]
     fn feed_at(&mut self, bytes: &[u8], now: Instant) {
-        self.feed_impl(bytes, now, false);
+        self.feed_impl(bytes, Some(now), false);
     }
 
-    fn feed_impl(&mut self, bytes: &[u8], now: Instant, defer_uploads: bool) -> usize {
+    /// Only synchronized updates need the time, and reading the clock would
+    /// dominate small PTY reads, so `now` is read when first needed.
+    fn feed_impl(&mut self, bytes: &[u8], now: Option<Instant>, defer_uploads: bool) -> usize {
+        let mut now = now;
+        let mut now = move || *now.get_or_insert_with(Instant::now);
         // An upload nobody took must not keep pausing the parser.
-        if let Some(upload) = self.state.take_deferred_upload() {
+        if self.state.has_deferred_upload()
+            && let Some(upload) = self.state.take_deferred_upload()
+        {
             self.commit_upload(upload.prepare());
         }
         self.state.grid.prepare_output(bytes.len());
         if self
             .synchronized_update_deadline()
-            .is_some_and(|deadline| deadline <= now)
+            .is_some_and(|deadline| deadline <= now())
         {
             self.stop_synchronized_update();
         }
         let mut offset = 0;
         while offset < bytes.len() {
             if self.synchronized_update_deadline().is_some() {
-                let buffered = self.synchronized_update.push(&bytes[offset..], now);
+                let buffered = self.synchronized_update.push(&bytes[offset..], now());
                 offset += buffered.consumed;
                 if buffered.commit {
                     self.stop_synchronized_update();
@@ -178,7 +185,7 @@ impl Engine {
                 self.generation = self.generation.wrapping_add(1);
                 if self.state.modes.synchronized_update {
                     self.synchronized_update
-                        .begin(now, self.state.saved_private_mode(2026));
+                        .begin(now(), self.state.saved_private_mode(2026));
                 }
                 if self.state.has_deferred_upload() {
                     break;

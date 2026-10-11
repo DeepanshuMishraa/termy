@@ -22,9 +22,10 @@ pub(super) struct Graphics {
     last_view: Option<(bool, usize, usize, usize, usize)>,
     size: Option<TerminalSize>,
     // While set, a completed upload stops the parser undecoded (see
-    // `Engine::feed_deferring_uploads`) and waits in `deferred`.
+    // `Engine::feed_deferring_uploads`) and waits in `deferred`. Boxed so
+    // the per-feed checks don't move a large, almost always empty value.
     defer_uploads: bool,
-    deferred: Option<KittyUpload>,
+    deferred: Option<Box<KittyUpload>>,
     #[cfg(test)]
     placeholder_scans: usize,
 }
@@ -221,7 +222,7 @@ impl State {
                 screen,
                 placeholders,
             );
-            self.graphics.deferred = upload;
+            self.graphics.deferred = upload.map(Box::new);
             result
         } else {
             self.graphics.state.apply_on_screen_with_placeholders(
@@ -245,7 +246,7 @@ impl State {
     }
 
     pub(super) fn take_deferred_upload(&mut self) -> Option<KittyUpload> {
-        self.graphics.deferred.take()
+        self.graphics.deferred.take().map(|upload| *upload)
     }
 
     pub(super) fn commit_upload(&mut self, prepared: KittyPreparedUpload) {

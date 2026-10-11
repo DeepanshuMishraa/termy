@@ -13,15 +13,16 @@ impl Scalar {
     const FLAGS_SHIFT: u32 = 24;
 
     fn new(cell: &Cell) -> Self {
-        Self(u32::from(cell.character) | u32::from(cell.flags) << Self::FLAGS_SHIFT)
+        // Cell flags use the low three bits.
+        Self(u32::from(cell.character) | u32::from(cell.flags as u8) << Self::FLAGS_SHIFT)
     }
 
     fn character(self) -> char {
         char::from_u32(self.0 & ((1 << Self::FLAGS_SHIFT) - 1)).unwrap_or(' ')
     }
 
-    fn flags(self) -> u8 {
-        (self.0 >> Self::FLAGS_SHIFT) as u8
+    fn flags(self) -> u16 {
+        (self.0 >> Self::FLAGS_SHIFT) as u16
     }
 }
 

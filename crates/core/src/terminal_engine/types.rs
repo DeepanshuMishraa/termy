@@ -101,12 +101,15 @@ impl CellExtra {
 /// Plain cells allocate nothing. Uncommon combining text, OSC 8 metadata and
 /// underline colors live behind a shared pointer so row copies do not copy
 /// strings.
+/// `repr(C)` keeps every field naturally aligned with no padding, so the
+/// print loops store a cell in a few aligned writes.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[repr(C)]
 pub struct Cell {
-    pub character: char,
-    pub style: Style,
-    pub flags: u8,
     pub extra: Option<Arc<CellExtra>>,
+    pub style: Style,
+    pub flags: u16,
+    pub character: char,
 }
 
 const _: () = assert!(size_of::<Style>() == 10 && size_of::<Cell>() == 24);
@@ -123,9 +126,9 @@ impl Default for Cell {
 }
 
 impl Cell {
-    pub const WIDE: u8 = 1;
-    pub const WIDE_SPACER: u8 = 1 << 1;
-    pub const LEADING_WIDE_SPACER: u8 = 1 << 2;
+    pub const WIDE: u16 = 1;
+    pub const WIDE_SPACER: u16 = 1 << 1;
+    pub const LEADING_WIDE_SPACER: u16 = 1 << 2;
     pub fn combining(&self) -> &str {
         self.extra
             .as_ref()
@@ -155,26 +158,34 @@ impl Cell {
     }
     /// The right half of a wide character. It keeps the style and underline
     /// color so decorations span both columns, but no text or link.
+    #[inline]
     pub(super) fn wide_spacer(&self) -> Self {
-        let extra = self
-            .extra
-            .as_ref()
-            .filter(|extra| extra.underline_color != Color::DEFAULT)
-            .map(|extra| {
-                if extra.combining.is_empty() && extra.hyperlink.is_none() {
-                    Arc::clone(extra)
-                } else {
-                    Arc::new(CellExtra {
-                        underline_color: extra.underline_color,
-                        ..CellExtra::default()
-                    })
-                }
-            });
         Self {
             character: ' ',
             style: self.style,
             flags: Self::WIDE_SPACER,
-            extra,
+            extra: self.extra.as_ref().and_then(Self::spacer_extra),
+        }
+    }
+    /// [`Self::wide_spacer`] written in place, without a temporary cell.
+    #[inline]
+    pub(super) fn become_wide_spacer_of(&mut self, wide: &Cell) {
+        self.character = ' ';
+        self.style = wide.style;
+        self.flags = Self::WIDE_SPACER;
+        self.extra = wide.extra.as_ref().and_then(Self::spacer_extra);
+    }
+    #[cold]
+    fn spacer_extra(extra: &Arc<CellExtra>) -> Option<Arc<CellExtra>> {
+        if extra.underline_color == Color::DEFAULT {
+            None
+        } else if extra.combining.is_empty() && extra.hyperlink.is_none() {
+            Some(Arc::clone(extra))
+        } else {
+            Some(Arc::new(CellExtra {
+                underline_color: extra.underline_color,
+                ..CellExtra::default()
+            }))
         }
     }
     pub(super) fn push_combining(&mut self, character: char) {

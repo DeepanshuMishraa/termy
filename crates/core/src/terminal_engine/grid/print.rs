@@ -1,6 +1,7 @@
 //! Streaming graphemes and the ASCII output fast path.
 use super::super::types::MAX_COMBINING_BYTES;
 use super::{Cell, Grid};
+use std::sync::Arc;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -24,6 +25,7 @@ pub(super) fn cell_width(cell: &Cell) -> usize {
 // as do Hebrew, Arabic (minus prepend marks) and Thai consonants. Indic
 // consonants and independent vowels too: a virama between two consonants joins
 // them (GB9c), so appending one ends the fast path (`ends_ordinary_run`).
+#[inline(always)]
 fn ordinary_base(c: char) -> bool {
     // Branch on the block first so CJK and Hangul text, the common non-ASCII
     // case, tests only the ranges of its own plane.
@@ -43,7 +45,9 @@ fn ordinary_base(c: char) -> bool {
 }
 
 /// Consonants and independent vowels of the major Indic scripts, excluding
-/// prepend marks (e.g. Malayalam dot reph).
+/// prepend marks (e.g. Malayalam dot reph). Out of line so the common
+/// scripts keep `ordinary_base` small enough to inline.
+#[inline(never)]
 fn indic_base(c: char) -> bool {
     matches!(c,
         // Devanagari, Bengali, Gurmukhi
@@ -82,7 +86,8 @@ fn ends_ordinary_run(c: char) -> bool {
 
 /// These common character ranges have uniform scalar properties. Resolve both
 /// properties together instead of looking up width and classifying again.
-#[inline]
+/// Every printed scalar takes this path, so keep it inlined.
+#[inline(always)]
 fn scalar_properties(character: char) -> (usize, bool) {
     match character {
         '\u{300}'..='\u{36f}' => (0, false),
@@ -238,8 +243,12 @@ impl Grid {
             return;
         }
 
-        let mut cell = self.pen.clone();
-        cell.character = character;
+        let cell = Cell {
+            character,
+            style: self.pen.style,
+            flags: 0,
+            extra: self.pen.extra.clone(),
+        };
         self.grapheme_ordinary = ordinary;
         self.put_cell(cell, width);
     }
@@ -283,7 +292,8 @@ impl Grid {
 
         let row = self.cursor.row;
         let col = self.cursor.col;
-        let blank = self.blank();
+        // Built only for the rare wide-glyph repairs below.
+        let background = self.pen.style.background;
         cell.flags = if width == 2 { Cell::WIDE } else { 0 };
         let active = &mut self.screen_mut().rows[row];
         let mut start = col;
@@ -293,14 +303,14 @@ impl Grid {
         // would write/drop each cell twice on ordinary Unicode output.
         if active.cells[col].flags & Cell::WIDE_SPACER != 0 && col > 0 {
             start -= 1;
-            active.cells[start] = blank.clone();
+            active.cells[start] = Self::blank_on(background);
         }
         if active.cells[end - 1].flags & Cell::WIDE != 0 && end < active.cells.len() {
-            active.cells[end] = blank;
+            active.cells[end] = Self::blank_on(background);
             end += 1;
         }
         if width == 2 {
-            active.cells[col + 1] = cell.wide_spacer();
+            active.cells[col + 1].become_wide_spacer_of(&cell);
         }
         active.cells[col] = cell;
         active.occupied = active.occupied.max(end);
@@ -396,12 +406,29 @@ impl Grid {
                 text = &text[count..];
                 continue;
             }
-            let pen = self.pen.clone();
+            let style = self.pen.style;
+            let extra = self.pen.extra.clone();
             let active = &mut self.screen_mut().rows[row];
-            for (cell, &byte) in active.cells[col..col + count].iter_mut().zip(text) {
-                cell.clone_from(&pen);
-                cell.character = char::from(byte);
-                cell.flags = 0;
+            let cells = active.cells[col..col + count].iter_mut().zip(text);
+            // Build whole cells so a plain pen is stored without reloading it.
+            if let Some(extra) = extra {
+                for (cell, &byte) in cells {
+                    *cell = Cell {
+                        character: char::from(byte),
+                        style,
+                        flags: 0,
+                        extra: Some(Arc::clone(&extra)),
+                    };
+                }
+            } else {
+                for (cell, &byte) in cells {
+                    *cell = Cell {
+                        character: char::from(byte),
+                        style,
+                        flags: 0,
+                        extra: None,
+                    };
+                }
             }
             active.occupied = active.occupied.max(col + count);
             self.cursor.col += count;

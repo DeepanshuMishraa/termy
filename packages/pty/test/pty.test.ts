@@ -233,7 +233,7 @@ describe.skipIf(isWindows)('unix', () => {
     await new Promise((resolve) => setTimeout(resolve, 300))
     const whilePaused = received
     await new Promise((resolve) => setTimeout(resolve, 300))
-    // At most the chunks already queued for JavaScript arrive after pausing.
+    // Nothing arrives after pausing, not even an already queued flush.
     expect(received).toBe(whilePaused)
     counter.dispose()
     terminal.resume()

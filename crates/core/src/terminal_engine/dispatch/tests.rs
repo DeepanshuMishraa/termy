@@ -460,7 +460,9 @@ fn clamped_repeat_matches_writing_every_repetition() {
 #[test]
 fn repeating_grapheme_extenders_is_bounded() {
     let mut engine = engine(80, 24);
-    let input = "🇩\x1b[65535b".repeat(2_000);
+    // Unclamped, this repeats 13M non-ordinary scalars: far over the bound
+    // even in release builds. Clamped, it stays well under it in debug CI.
+    let input = "🇩\x1b[65535b".repeat(200);
     let started = std::time::Instant::now();
     engine.feed(input.as_bytes());
     assert!(started.elapsed() < std::time::Duration::from_secs(5));

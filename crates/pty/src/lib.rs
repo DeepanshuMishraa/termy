@@ -117,14 +117,18 @@ impl Output {
     }
 
     /// JavaScript thread: hand over everything buffered, then the exit.
+    /// A flush queued before `pause()` delivers nothing; `resume()` queues
+    /// another.
     fn take(&self) -> (u32, Option<Buffer>, Option<i64>, Option<i32>) {
         let mut state = self.lock();
         state.scheduled = false;
-        let bytes = std::mem::take(&mut state.bytes);
-        self.drained.notify_all();
-        let event = if !bytes.is_empty() {
+        let event = if state.paused {
+            (EVENT_NONE, None, None, None)
+        } else if !state.bytes.is_empty() {
+            let bytes = std::mem::take(&mut state.bytes);
+            self.drained.notify_all();
             (EVENT_DATA, Some(Buffer::from(bytes)), None, None)
-        } else if let Some(exit) = state.exit.take().filter(|_| !state.paused) {
+        } else if let Some(exit) = state.exit.take() {
             (EVENT_EXIT, None, exit.code, exit.signal)
         } else {
             (EVENT_NONE, None, None, None)

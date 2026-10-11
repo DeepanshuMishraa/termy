@@ -510,9 +510,13 @@ impl Grid {
     }
 
     fn blank(&self) -> Cell {
+        Self::blank_on(self.pen.style.background)
+    }
+
+    fn blank_on(background: Color) -> Cell {
         Cell {
             style: Style {
-                background: self.pen.style.background,
+                background,
                 ..Style::default()
             },
             ..Cell::default()
