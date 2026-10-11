@@ -123,8 +123,8 @@ control exactly what the child sees.
 
 On Unix, a normal exit reports `{ exitCode: n, signal: 0 }` and a program
 ended by a signal reports `{ exitCode: 0, signal: n }`. On Windows, `kill()`
-terminates the program (exit code `1`), passing a signal throws, and
-`onExit` reports only `exitCode`.
+closes the pseudoconsole, gives the program 250 ms to exit, then terminates it
+(exit code `1`). Passing a signal throws, and `onExit` reports only `exitCode`.
 
 ## Backpressure and pause
 

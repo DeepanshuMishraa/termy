@@ -302,7 +302,9 @@ describe.runIf(isWindows)('windows', () => {
     expect(() => terminal.kill('SIGTERM')).toThrow('Signals not supported on windows.')
     const done = collect(terminal)
     terminal.kill()
-    expect((await done).exit.exitCode).toBe(1)
+    // Closing the pseudoconsole may end cmd.exe before the fallback
+    // termination (exit code 1), so only a failure code is certain.
+    expect((await done).exit.exitCode).not.toBe(0)
   })
 
   test('writes input', async () => {
