@@ -2,14 +2,16 @@
 //!
 //! Parsing text and CSI sequences allocates nothing. String payloads share one
 //! reusable buffer and are delivered only after a complete terminator. The
-//! generic string limit is 64 KiB; protocols allowing larger transfers should
-//! introduce a separately bounded streaming interface instead of removing it.
+//! generic string limit is 64 KiB. Kitty graphics APCs and OSC 52 clipboard
+//! writes, chosen by their first bytes, get their own larger bounds.
 
 const MAX_PARAMS: usize = 32;
 const MAX_SUBPARAMS: usize = 8;
 const MAX_INTERMEDIATES: usize = 2;
 const MAX_STRING_BYTES: usize = 64 * 1024;
 pub(super) const MAX_APC_BYTES: usize = 256 * 1024 * 1024;
+// Base64 for about 6 MiB of copied text, enough for large editor yanks.
+const MAX_CLIPBOARD_OSC_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Param {
@@ -70,7 +72,8 @@ pub(super) trait Handler {
         self.osc(bytes);
     }
     fn dcs(&mut self, bytes: &[u8]);
-    fn apc(&mut self, bytes: &[u8]);
+    /// Large graphics payloads may be taken with `mem::take` instead of copied.
+    fn apc(&mut self, bytes: &mut Vec<u8>);
 
     /// Stop at a completed callback without consuming the following bytes.
     fn pause_requested(&self) -> bool {
@@ -109,6 +112,9 @@ pub(super) struct Parser {
     string_wire_len: usize,
     collect_strings: bool,
     apc_limit: usize,
+    // The current string's first bytes select its limit, even for scanners
+    // that do not collect it. Bytes past `string_len` are stale.
+    prefix: [u8; 3],
     utf8_value: u32,
     utf8_remaining: u8,
     utf8_min: u8,
@@ -130,6 +136,7 @@ impl Default for Parser {
             string_wire_len: 0,
             collect_strings: true,
             apc_limit: MAX_STRING_BYTES,
+            prefix: [0; 3],
             utf8_value: 0,
             utf8_remaining: 0,
             utf8_min: 0x80,
@@ -250,9 +257,12 @@ impl Parser {
             State::StringEscape(kind) => {
                 if byte == b'\\' {
                     self.finish_string(handler, kind, false);
-                } else if self.discarded {
+                } else if self.discarded && !matches!(byte, b'c' | b'[') {
                     // Keep oversized payloads isolated until termination or
-                    // explicit cancellation, including embedded escapes.
+                    // explicit cancellation, including embedded escapes. A
+                    // full reset (ESC c, sent by `reset`) or a CSI still
+                    // recovers: graphics and clipboard payloads never contain
+                    // ESC [, but the text after a stray `ESC P` usually does.
                     self.state = State::String(kind);
                     if Self::string_control(kind, byte) {
                         self.advance_byte(handler, byte);
@@ -361,7 +371,12 @@ impl Parser {
                 }
                 handler.escape(&self.intermediates[..self.intermediate_len], byte);
             }
-            _ => self.discarded = true,
+            // No escape sequence contains a non-ASCII byte. Abandon it and
+            // print the text instead of discarding it up to some final byte.
+            _ => {
+                self.state = State::Ground;
+                self.ground(handler, byte);
+            }
         }
     }
 
@@ -437,10 +452,16 @@ impl Parser {
         if self.discarded || kind == StringKind::Ignore {
             return;
         }
-        let limit = if kind == StringKind::Apc {
-            self.apc_limit
-        } else {
-            MAX_STRING_BYTES
+        if let Some(missing) = self.prefix.get_mut(self.string_len..) {
+            let count = missing.len().min(bytes.len());
+            missing[..count].copy_from_slice(&bytes[..count]);
+        }
+        // Until the prefix is complete the string is far below every limit,
+        // so stale prefix bytes cannot affect the check.
+        let limit = match kind {
+            StringKind::Apc if self.prefix[0] == b'G' => self.apc_limit,
+            StringKind::Osc if self.prefix == *b"52;" => MAX_CLIPBOARD_OSC_BYTES,
+            _ => MAX_STRING_BYTES,
         };
         if bytes.len() > limit - self.string_len {
             self.discarded = true;
@@ -454,8 +475,10 @@ impl Parser {
         let required = self.string_len;
         if required > self.string.capacity() {
             // Control geometric growth explicitly so a large chunk cannot
-            // double capacity beyond the payload limit.
-            let capacity = required.next_power_of_two().min(limit);
+            // double capacity beyond the payload limit. A 1.5x step keeps
+            // amortized appends without reserving up to twice the payload.
+            let grown = self.string.capacity() + self.string.capacity() / 2;
+            let capacity = required.max(grown).min(limit);
             self.string.reserve_exact(capacity - self.string.len());
         }
         self.string.extend_from_slice(bytes);
@@ -490,7 +513,7 @@ impl Parser {
             match kind {
                 StringKind::Osc => handler.osc_terminated(&self.string, bell),
                 StringKind::Dcs => handler.dcs(&self.string),
-                StringKind::Apc => handler.apc(&self.string),
+                StringKind::Apc => handler.apc(&mut self.string),
                 StringKind::Ignore => {}
             }
         }

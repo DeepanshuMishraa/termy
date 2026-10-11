@@ -12,16 +12,18 @@ mod animation;
 mod deletion;
 mod image;
 use image::normalize_image;
+mod upload;
+pub(crate) use upload::{KittyPreparedUpload, KittyUpload};
+use upload::{UploadData, validate_dimensions};
+#[cfg(test)]
+use upload::{decompress_zlib, temporary_path_can_be_removed};
 #[cfg(test)]
 mod conformance;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
-use flate2::read::ZlibDecoder;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
-    fs::File,
-    io::{Cursor, Read, Seek, SeekFrom},
-    path::{Path, PathBuf},
+    io::Cursor,
     sync::Arc,
 };
 
@@ -49,6 +51,9 @@ struct StoredImage {
     height: u32,
     generation: u64,
     number: Option<u32>,
+    // Transmitted with neither `i` nor `I`: no command can refer to it again,
+    // so it lives only as long as its placements.
+    anonymous: bool,
     animation: Option<crate::terminal_engine::media::GraphicsAnimation>,
 }
 
@@ -269,9 +274,14 @@ pub struct KittyGraphicsState {
     pending: Option<PendingUpload>,
     next_anonymous_id: u32,
     stored_bytes: usize,
+    anonymous_images: usize,
     next_generation: u64,
     next_placement_serial: u64,
     viewport_rows: u16,
+    // Set by `apply_deferring_upload`: completed uploads are handed back
+    // undecoded instead of being decoded here.
+    defer_uploads: bool,
+    deferred: Option<KittyUpload>,
 }
 
 impl KittyGraphicsState {
@@ -424,8 +434,26 @@ impl KittyGraphicsState {
         }
 
         let encoded = std::mem::take(&mut command.payload);
-        let decoded = match BASE64.decode(encoded) {
-            Ok(decoded) if decoded.len() <= MAX_IMAGE_BYTES => decoded,
+        // Reject before decoding: base64 yields at least len/4*3 - 2 bytes.
+        let pending = self
+            .pending
+            .as_ref()
+            .map_or(0, |pending| pending.decoded.len());
+        let oversized = encoded.len() / 4 * 3 > MAX_IMAGE_BYTES.saturating_sub(pending) + 2;
+        let more = command.u32_value('m').unwrap_or(0) == 1;
+        if self.pending.is_none() && !more && !oversized {
+            // A single-chunk upload decodes its payload with the image.
+            return self.finish_upload(
+                command,
+                UploadData::Base64(encoded),
+                (cursor_col, cursor_row),
+                history_size,
+                size,
+                screen,
+            );
+        }
+        let decoded = match BASE64.decode(if oversized { Vec::new() } else { encoded }) {
+            Ok(decoded) if decoded.len() <= MAX_IMAGE_BYTES && !oversized => decoded,
             Ok(_) => {
                 let response_command = self
                     .pending
@@ -445,45 +473,53 @@ impl KittyGraphicsState {
             }
         };
 
-        let more = command.u32_value('m').unwrap_or(0) == 1;
         if let Some(mut pending) = self.pending.take() {
-            if command.control.iter().any(|(key, _)| {
+            let foreign = command.control.iter().any(|(key, _)| {
                 !(matches!(key, 'm' | 'q')
                     || *key == 'a'
                         && command.char_value('a') == Some('f')
                         && pending.command.char_value('a') == Some('f'))
-            }) {
+            });
+            // A client killed mid-upload never sends the final chunk. A new
+            // transmission abandons that upload instead of failing itself.
+            let restarts = foreign
+                && command
+                    .control
+                    .iter()
+                    .any(|(key, _)| matches!(key, 'a' | 'i' | 'I' | 'f' | 's' | 'v' | 't'));
+            if foreign && !restarts {
                 return self.failure(
                     &pending.command,
                     "EINVAL:continuation contains unsupported control data",
                 );
             }
-            if pending.decoded.len().saturating_add(decoded.len()) > MAX_IMAGE_BYTES {
-                return self.failure(
-                    &pending.command,
-                    "EFBIG:image payload exceeds storage limit",
+            if !foreign {
+                if pending.decoded.len().saturating_add(decoded.len()) > MAX_IMAGE_BYTES {
+                    return self.failure(
+                        &pending.command,
+                        "EFBIG:image payload exceeds storage limit",
+                    );
+                }
+                pending.decoded.extend_from_slice(&decoded);
+                if more {
+                    self.pending = Some(pending);
+                    return KittyGraphicsApplyResult::default();
+                }
+                let mut first = pending.command;
+                for (key, value) in command.control {
+                    if key == 'q' {
+                        first.control.push((key, value));
+                    }
+                }
+                return self.finish_upload(
+                    first,
+                    UploadData::Decoded(pending.decoded),
+                    (cursor_col, cursor_row),
+                    history_size,
+                    size,
+                    screen,
                 );
             }
-            pending.decoded.extend_from_slice(&decoded);
-            if more {
-                self.pending = Some(pending);
-                return KittyGraphicsApplyResult::default();
-            }
-            let mut first = pending.command;
-            for (key, value) in command.control {
-                if key == 'q' {
-                    first.control.push((key, value));
-                }
-            }
-            return self.finish_upload(
-                first,
-                pending.decoded,
-                cursor_col,
-                cursor_row,
-                history_size,
-                size,
-                screen,
-            );
         }
 
         if more {
@@ -496,9 +532,8 @@ impl KittyGraphicsState {
         }
         self.finish_upload(
             command,
-            decoded,
-            cursor_col,
-            cursor_row,
+            UploadData::Decoded(decoded),
+            (cursor_col, cursor_row),
             history_size,
             size,
             screen,
@@ -613,6 +648,19 @@ impl KittyGraphicsState {
                 });
             };
             if matches!(placement.location, PlacementLocation::Virtual) {
+                // A zero underline color selects one prototype, never every
+                // placement. That prototype depends only on the image, so look
+                // it up once instead of once per placeholder cell.
+                let prototype = self
+                    .placements
+                    .iter()
+                    .rev()
+                    .find(|p| {
+                        p.screen == screen
+                            && p.image_id == placement.image_id
+                            && matches!(p.location, PlacementLocation::Virtual)
+                    })
+                    .is_none_or(|p| p.placement_serial == placement.placement_serial);
                 for cell in placeholders {
                     if cell.image_id != placement.image_id
                         || (cell.placement_id != 0 && cell.placement_id != placement.placement_id)
@@ -623,19 +671,7 @@ impl KittyGraphicsState {
                     {
                         continue;
                     }
-                    // A zero underline color selects one prototype, never every placement.
-                    if cell.placement_id == 0
-                        && self
-                            .placements
-                            .iter()
-                            .rev()
-                            .find(|p| {
-                                p.screen == screen
-                                    && p.image_id == cell.image_id
-                                    && matches!(p.location, PlacementLocation::Virtual)
-                            })
-                            .is_some_and(|p| p.placement_serial != placement.placement_serial)
-                    {
+                    if cell.placement_id == 0 && !prototype {
                         continue;
                     }
                     emit(
@@ -692,6 +728,7 @@ impl KittyGraphicsState {
         self.placements.clear();
         self.virtual_placements = [0; 2];
         self.pending = None;
+        self.release_unplaced_anonymous_images();
         changed
     }
 
@@ -880,27 +917,65 @@ impl KittyGraphicsState {
 
     fn finish_upload(
         &mut self,
-        mut command: KittyGraphicsCommand,
-        decoded: Vec<u8>,
-        cursor_col: usize,
-        cursor_row: usize,
+        command: KittyGraphicsCommand,
+        data: UploadData,
+        cursor: (usize, usize),
         history_size: usize,
         size: TerminalSize,
         screen: KittyGraphicsScreen,
     ) -> KittyGraphicsApplyResult {
-        let data = match self.resolve_transmission_data(&command, decoded) {
-            Ok(data) => data,
-            Err(error) => return self.failure(&command, &error),
+        let upload = KittyUpload {
+            command,
+            data,
+            screen,
         };
-        let data = match command.char_value('o') {
-            None => data,
-            Some('z') => match decompress_zlib(&data) {
-                Ok(data) => data,
-                Err(error) => return self.failure(&command, &error),
-            },
-            Some(_) => return self.failure(&command, "EINVAL:unsupported compression"),
-        };
-        let (image, width, height) = match normalize_image(&command, data) {
+        if self.defer_uploads {
+            self.deferred = Some(upload);
+            return KittyGraphicsApplyResult::default();
+        }
+        self.commit_upload(upload.prepare(), cursor, history_size, size)
+    }
+
+    /// Like [`Self::apply_on_screen_with_placeholders`], but a completed
+    /// upload is returned undecoded. Decode it with [`KittyUpload::prepare`]
+    /// (which needs no state) and pass the result to [`Self::commit_upload`]
+    /// before applying any later command.
+    pub(crate) fn apply_deferring_upload(
+        &mut self,
+        command: KittyGraphicsCommand,
+        cursor: (usize, usize),
+        history_size: usize,
+        size: TerminalSize,
+        screen: KittyGraphicsScreen,
+        placeholders: &[KittyGraphicsPlaceholder],
+    ) -> (KittyGraphicsApplyResult, Option<KittyUpload>) {
+        self.defer_uploads = true;
+        let result = self.apply_on_screen_with_placeholders(
+            command,
+            cursor,
+            history_size,
+            size,
+            screen,
+            placeholders,
+        );
+        self.defer_uploads = false;
+        (result, self.deferred.take())
+    }
+
+    pub(crate) fn commit_upload(
+        &mut self,
+        prepared: KittyPreparedUpload,
+        cursor: (usize, usize),
+        history_size: usize,
+        size: TerminalSize,
+    ) -> KittyGraphicsApplyResult {
+        let KittyPreparedUpload {
+            mut command,
+            image,
+            screen,
+        } = prepared;
+        self.viewport_rows = size.rows;
+        let (image, width, height) = match image {
             Ok(image) => image,
             Err(error) => return self.failure(&command, &error),
         };
@@ -937,6 +1012,7 @@ impl KittyGraphicsState {
             height,
             generation: next_generation,
             number,
+            anonymous: requested_id == 0 && number.is_none(),
             animation: None,
         };
         let byte_len = image.byte_len();
@@ -948,7 +1024,7 @@ impl KittyGraphicsState {
                 &image,
                 image_id,
                 &command,
-                (cursor_col, cursor_row),
+                cursor,
                 history_size,
                 size,
                 screen,
@@ -964,6 +1040,7 @@ impl KittyGraphicsState {
         }
         self.remove_image(image_id);
         self.next_generation = next_generation;
+        self.anonymous_images += usize::from(image.anonymous);
         self.images.insert(image_id, image);
         self.insertion_order.push_back(image_id);
         self.stored_bytes = self.stored_bytes.saturating_add(byte_len);
@@ -1192,44 +1269,6 @@ impl KittyGraphicsState {
         }
     }
 
-    fn resolve_transmission_data(
-        &self,
-        command: &KittyGraphicsCommand,
-        decoded: Vec<u8>,
-    ) -> Result<Vec<u8>, String> {
-        match command.char_value('t').unwrap_or('d') {
-            'd' => Ok(decoded),
-            'f' | 't' => {
-                let temporary = command.char_value('t') == Some('t');
-                let path = PathBuf::from(
-                    std::str::from_utf8(&decoded).map_err(|_| "EINVAL:file path is not UTF-8")?,
-                );
-                let result = read_regular_file(
-                    &path,
-                    command.u32_value('O').unwrap_or(0) as u64,
-                    command
-                        .u32_value('S')
-                        .filter(|size| *size > 0)
-                        .map(u64::from),
-                );
-                if temporary && result.is_ok() && temporary_path_can_be_removed(&path) {
-                    let _ = std::fs::remove_file(&path);
-                }
-                result
-            }
-            's' => crate::terminal_engine::media::read_graphics_shared_memory(
-                &decoded,
-                u64::from(command.u32_value('O').unwrap_or(0)),
-                command
-                    .u32_value('S')
-                    .filter(|size| *size > 0)
-                    .map(u64::from),
-                MAX_IMAGE_BYTES,
-            ),
-            _ => Err("EINVAL:unsupported transmission medium".into()),
-        }
-    }
-
     fn resolve_image_id(&self, command: &KittyGraphicsCommand) -> Option<u32> {
         command.u32_value('i').or_else(|| {
             let number = command.u32_value('I')?;
@@ -1301,12 +1340,40 @@ impl KittyGraphicsState {
     }
 
     fn remove_image(&mut self, image_id: u32) {
-        if let Some(image) = self.images.remove(&image_id) {
-            self.stored_bytes = self.stored_bytes.saturating_sub(image.byte_len());
-        }
+        self.forget_image(image_id);
         self.retain_placements(|placement| placement.image_id != image_id);
         self.remove_orphaned_relative_placements();
-        self.insertion_order.retain(|id| *id != image_id);
+    }
+
+    /// Drop stored data only; the caller owns any placement cleanup.
+    fn forget_image(&mut self, image_id: u32) {
+        if let Some(image) = self.images.remove(&image_id) {
+            self.stored_bytes = self.stored_bytes.saturating_sub(image.byte_len());
+            self.anonymous_images -= usize::from(image.anonymous);
+            self.insertion_order.retain(|id| *id != image_id);
+        }
+    }
+
+    /// Free id-less images whose last placement is gone, as kitty does,
+    /// rather than holding them until a later upload exceeds the quota.
+    fn release_unplaced_anonymous_images(&mut self) {
+        if self.anonymous_images == 0 {
+            return;
+        }
+        let placed = self
+            .placements
+            .iter()
+            .map(|placement| placement.image_id)
+            .collect::<HashSet<_>>();
+        let unplaced = self
+            .images
+            .iter()
+            .filter(|(id, image)| image.anonymous && !placed.contains(id))
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>();
+        for id in unplaced {
+            self.forget_image(id);
+        }
     }
 
     fn success(
@@ -1364,124 +1431,6 @@ fn response(command: &KittyGraphicsCommand, success: bool, message: &str) -> Opt
         control.push_str(&format!(",p={placement_id}"));
     }
     Some(format!("\x1b_G{control};{message}\x1b\\").into_bytes())
-}
-
-fn validate_dimensions(width: u32, height: u32, channels: usize) -> Result<usize, String> {
-    if width == 0 || height == 0 || width > MAX_DIMENSION || height > MAX_DIMENSION {
-        return Err("EINVAL:invalid image dimensions".into());
-    }
-    let pixels = u64::from(width) * u64::from(height);
-    if pixels > MAX_PIXELS {
-        return Err("EFBIG:image dimensions exceed storage limit".into());
-    }
-    usize::try_from(pixels)
-        .ok()
-        .and_then(|pixels| pixels.checked_mul(channels))
-        .ok_or_else(|| "EFBIG:image dimensions overflow".into())
-}
-
-fn decompress_zlib(data: &[u8]) -> Result<Vec<u8>, String> {
-    let mut output = Vec::new();
-    ZlibDecoder::new(data)
-        .take(MAX_IMAGE_BYTES as u64 + 1)
-        .read_to_end(&mut output)
-        .map_err(|_| "EINVAL:invalid zlib payload".to_string())?;
-    if output.len() > MAX_IMAGE_BYTES {
-        return Err("EFBIG:decompressed image exceeds storage limit".into());
-    }
-    Ok(output)
-}
-
-fn read_regular_file(path: &Path, offset: u64, size: Option<u64>) -> Result<Vec<u8>, String> {
-    // Reject FIFOs and devices before opening: a child controls this path and a
-    // blocking FIFO open would otherwise stall the parser thread indefinitely.
-    let initial_metadata =
-        std::fs::metadata(path).map_err(|_| "ENOENT:unable to open image file".to_string())?;
-    if !initial_metadata.is_file() {
-        return Err("EINVAL:invalid image file".into());
-    }
-    let mut file = open_image_file(path)?;
-    let metadata = file
-        .metadata()
-        .map_err(|_| "EIO:unable to inspect image file".to_string())?;
-    if !metadata.is_file() || offset > metadata.len() {
-        return Err("EINVAL:invalid image file".into());
-    }
-    let length = size
-        .unwrap_or(metadata.len() - offset)
-        .min(metadata.len() - offset);
-    if length > MAX_IMAGE_BYTES as u64 {
-        return Err("EFBIG:image file exceeds storage limit".into());
-    }
-    file.seek(SeekFrom::Start(offset))
-        .map_err(|_| "EIO:unable to seek image file".to_string())?;
-    let mut output = Vec::with_capacity(length as usize);
-    file.take(length)
-        .read_to_end(&mut output)
-        .map_err(|_| "EIO:unable to read image file".to_string())?;
-    Ok(output)
-}
-
-fn open_image_file(path: &Path) -> Result<File, String> {
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    const NONBLOCK: i32 = 0o4000;
-    #[cfg(any(
-        target_os = "macos",
-        target_os = "ios",
-        target_os = "freebsd",
-        target_os = "openbsd",
-        target_os = "netbsd",
-        target_os = "dragonfly"
-    ))]
-    const NONBLOCK: i32 = 0x0004;
-
-    #[cfg(any(
-        target_os = "linux",
-        target_os = "android",
-        target_os = "macos",
-        target_os = "ios",
-        target_os = "freebsd",
-        target_os = "openbsd",
-        target_os = "netbsd",
-        target_os = "dragonfly"
-    ))]
-    {
-        use std::{fs::OpenOptions, os::unix::fs::OpenOptionsExt};
-
-        OpenOptions::new()
-            .read(true)
-            .custom_flags(NONBLOCK)
-            .open(path)
-            .map_err(|_| "ENOENT:unable to open image file".to_string())
-    }
-
-    #[cfg(not(any(
-        target_os = "linux",
-        target_os = "android",
-        target_os = "macos",
-        target_os = "ios",
-        target_os = "freebsd",
-        target_os = "openbsd",
-        target_os = "netbsd",
-        target_os = "dragonfly"
-    )))]
-    File::open(path).map_err(|_| "ENOENT:unable to open image file".to_string())
-}
-
-fn temporary_path_can_be_removed(path: &Path) -> bool {
-    let path_text = path.to_string_lossy();
-    if !path_text.contains("tty-graphics-protocol") {
-        return false;
-    }
-    let Ok(canonical) = path.canonicalize() else {
-        return false;
-    };
-    let mut roots = vec![PathBuf::from("/tmp"), PathBuf::from("/private/tmp")];
-    roots.push(std::env::temp_dir());
-    roots.into_iter().any(|root| {
-        root.canonicalize()
-            .is_ok_and(|root| canonical.starts_with(root))
-    })
 }
 
 #[cfg(test)]

@@ -133,6 +133,8 @@ pane_focus_strength = 0.6
 copy_on_select = false
 # Show a toast when text is copied on select
 copy_on_select_toast = true
+# Whether programs may read the clipboard with OSC 52 (ask, allow, or deny)
+clipboard_read = ask
 # Show shortcut badges in command palette rows
 command_palette_show_keybinds = true
 # Enable OSC 133 shell integration for command lifecycle tracking

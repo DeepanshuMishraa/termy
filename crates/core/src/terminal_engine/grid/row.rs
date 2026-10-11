@@ -5,10 +5,24 @@ use super::super::types::CellExtra;
 use super::{Cell, Color, Row, Style};
 use std::sync::{Arc, OnceLock};
 
+/// A character (21 bits) and its cell flags (top byte) in four bytes.
 #[derive(Clone, Copy, Debug)]
-struct Scalar {
-    character: char,
-    flags: u16,
+struct Scalar(u32);
+
+impl Scalar {
+    const FLAGS_SHIFT: u32 = 24;
+
+    fn new(cell: &Cell) -> Self {
+        Self(u32::from(cell.character) | u32::from(cell.flags) << Self::FLAGS_SHIFT)
+    }
+
+    fn character(self) -> char {
+        char::from_u32(self.0 & ((1 << Self::FLAGS_SHIFT) - 1)).unwrap_or(' ')
+    }
+
+    fn flags(self) -> u8 {
+        (self.0 >> Self::FLAGS_SHIFT) as u8
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -29,13 +43,14 @@ impl PackedCells {
         self.scalars.clear();
         self.styles.clear();
         self.extras.clear();
+        // Buffers recycled from a longer row must not keep its capacity.
+        if self.scalars.capacity() > 2 * cells.len() {
+            self.scalars.shrink_to(cells.len());
+        }
         if self.scalars.capacity() < cells.len() {
             self.scalars.reserve_exact(cells.len() - self.scalars.len());
         }
-        self.scalars.extend(cells.iter().map(|cell| Scalar {
-            character: cell.character,
-            flags: cell.flags,
-        }));
+        self.scalars.extend(cells.iter().map(Scalar::new));
         let fixed_bytes = self.scalars.capacity() * size_of::<Scalar>();
         let budget = cols * size_of::<Cell>() / 2;
         if fixed_bytes >= budget {
@@ -70,6 +85,13 @@ impl PackedCells {
                 }
             }
         }
+        // Bounded slack keeps reuse cheap without retaining a wide row's runs.
+        if self.styles.capacity() > 2 * self.styles.len() + 4 {
+            self.styles.shrink_to(self.styles.len());
+        }
+        if self.extras.capacity() > 2 * self.extras.len() + 4 {
+            self.extras.shrink_to(self.extras.len());
+        }
         true
     }
 
@@ -84,8 +106,8 @@ impl PackedCells {
         cells.clear();
         cells.resize(self.cols, blank);
         for (cell, scalar) in cells.iter_mut().zip(&self.scalars) {
-            cell.character = scalar.character;
-            cell.flags = scalar.flags;
+            cell.character = scalar.character();
+            cell.flags = scalar.flags();
         }
         let mut start = 0;
         for &(end, style) in &self.styles {
@@ -101,6 +123,11 @@ impl PackedCells {
 }
 
 impl Row {
+    #[cfg(test)]
+    pub(in crate::terminal_engine) fn is_packed(&self) -> bool {
+        self.packed.is_some()
+    }
+
     pub(in crate::terminal_engine) fn with_cells<T>(
         &self,
         scratch: &mut Vec<Cell>,
@@ -137,6 +164,62 @@ impl Row {
                 packed.decode(&mut self.cells);
             }
         }
+    }
+
+    /// Drop packed contents without decoding them, keeping a decoded read
+    /// cache's allocation (but not its cells) when one exists.
+    pub(super) fn discard_packed(&mut self) -> bool {
+        let Some(mut packed) = self.packed.take() else {
+            return false;
+        };
+        self.cells = packed.decoded.take().unwrap_or_default();
+        self.cells.clear();
+        true
+    }
+
+    /// Fit a hard-terminated row to `cols` without rewrapping it, keeping
+    /// packed history packed. The result matches the logical-line path:
+    /// content up to its last non-default cell, then default blanks. Returns
+    /// false when the row needs that path (it would wrap, or a cell's width
+    /// could be recomputed there).
+    pub(super) fn reflow_in_place(&mut self, cols: usize) -> bool {
+        let default = Cell::default();
+        if self.wrapped || cols < 2 || self.clear_background != default.style.background {
+            return false;
+        }
+        if let Some(packed) = &mut self.packed {
+            let recomputed = |col: usize, extra: &CellExtra| {
+                packed.scalars[col].flags() & Cell::WIDE == 0 && !extra.combining.is_empty()
+            };
+            if packed.scalars.len() > cols
+                || packed
+                    .scalars
+                    .iter()
+                    .any(|scalar| scalar.flags() & Cell::LEADING_WIDE_SPACER != 0)
+                || packed
+                    .extras
+                    .iter()
+                    .any(|(col, extra)| recomputed(*col, extra))
+            {
+                return false;
+            }
+            packed.decoded.take();
+            packed.cols = cols;
+            return true;
+        }
+        let len = self.content_len();
+        if len > cols
+            || self.cells[..len].iter().any(|cell| {
+                cell.flags & Cell::LEADING_WIDE_SPACER != 0
+                    || (cell.flags & Cell::WIDE == 0 && !cell.combining().is_empty())
+            })
+        {
+            return false;
+        }
+        self.cells.truncate(len);
+        self.cells.resize(cols, default);
+        self.occupied = len;
+        true
     }
 
     pub(super) fn release_read_cache(&mut self) {
@@ -218,6 +301,7 @@ mod tests {
                 id: "id".into(),
                 uri: "https://example.test".into(),
             })),
+            ..CellExtra::default()
         }));
         row.cells[1].flags = Cell::WIDE_SPACER;
         row.cells[2].character = 'x';

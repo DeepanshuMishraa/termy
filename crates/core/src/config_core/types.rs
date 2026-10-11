@@ -313,6 +313,39 @@ impl PaneFocusEffect {
     }
 }
 
+/// Policy for OSC 52 clipboard reads, which any program (including one on
+/// a remote host) can request by writing `ESC ] 52 ; c ; ? ST`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ClipboardReadPolicy {
+    #[default]
+    Ask,
+    Allow,
+    Deny,
+}
+
+impl std::str::FromStr for ClipboardReadPolicy {
+    type Err = ();
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "ask" => Ok(Self::Ask),
+            "allow" | "true" => Ok(Self::Allow),
+            "deny" | "false" => Ok(Self::Deny),
+            _ => Err(()),
+        }
+    }
+}
+
+impl ClipboardReadPolicy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ask => "ask",
+            Self::Allow => "allow",
+            Self::Deny => "deny",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct CustomColors {
     pub foreground: Option<Rgb8>,
@@ -385,6 +418,7 @@ pub struct AppConfig {
     pub pane_focus_strength: f32,
     pub copy_on_select: bool,
     pub copy_on_select_toast: bool,
+    pub clipboard_read: ClipboardReadPolicy,
     pub command_palette_show_keybinds: bool,
     pub simple_mode: bool,
     pub onboarding_complete: bool,
@@ -483,6 +517,7 @@ impl Default for AppConfig {
             pane_focus_strength: DEFAULT_PANE_FOCUS_STRENGTH,
             copy_on_select: false,
             copy_on_select_toast: true,
+            clipboard_read: ClipboardReadPolicy::default(),
             command_palette_show_keybinds: true,
             simple_mode: false,
             onboarding_complete: true,

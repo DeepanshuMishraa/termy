@@ -203,6 +203,11 @@ Platform note: the Agent Sidebar/Workspace is currently unavailable on Windows b
 - Show a toast when text is copied on select
 - Group: `CLIPBOARD`
 
+`clipboard_read`
+- Default: `ask`
+- Whether programs may read the clipboard with OSC 52 (ask, allow, or deny)
+- Group: `CLIPBOARD`
+
 `command_palette_show_keybinds`
 - Default: `true`
 - Show shortcut badges in command palette rows

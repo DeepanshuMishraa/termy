@@ -1,4 +1,5 @@
 use super::{Cell, Engine, Options, Size};
+use unicode_segmentation::UnicodeSegmentation;
 
 fn engine(cols: usize) -> Engine {
     Engine::new(Size { cols, rows: 4 }, Options::default())
@@ -197,5 +198,50 @@ fn text_presentation_damages_the_erased_wide_spacer_with_a_hidden_cursor() {
                 "erased spacer omitted from {damage:?}, visible={visible}, prefix={prefix:?}"
             );
         }
+    }
+}
+
+#[test]
+fn longest_standard_emoji_sequences_fit_the_combining_limit() {
+    for emoji in ["👩🏽‍❤️‍💋‍👨🏻", "👨‍👩‍👧‍👦", "🏴󠁧󠁢󠁳󠁣󠁴󠁿", "🧑🏿‍🤝‍🧑🏻"]
+    {
+        let mut term = engine(10);
+        term.feed(emoji.as_bytes());
+        let row = term.viewport_row(0).unwrap();
+        let cluster = format!("{}{}", row[0].character, row[0].combining());
+        assert_eq!(cluster, emoji);
+    }
+}
+
+#[test]
+fn indic_text_matches_grapheme_segmentation() {
+    let alphabet: Vec<char> = "कषतरजञनमसदव़्ािीुेोंँः\u{200d}\u{200c} ক্ষত্রযর্ািে த்தமிழ் క్షత్రి ಕ್ಷ ക്ഷ"
+        .chars()
+        .collect();
+    let mut state = 0x2545_f491_u32;
+    for _ in 0..400 {
+        // A mark at the start of a line has no base and is dropped.
+        let mut text = String::from("क");
+        for _ in 0..24 {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            text.push(alphabet[state as usize % alphabet.len()]);
+        }
+        let mut term = engine(80);
+        term.feed(text.as_bytes());
+        let cells: Vec<String> = term
+            .viewport_row(0)
+            .unwrap()
+            .iter()
+            .filter(|cell| cell.flags & Cell::WIDE_SPACER == 0)
+            .map(cell_text)
+            .collect();
+        let expected: Vec<&str> = text.graphemes(true).collect();
+        assert_eq!(cells[..expected.len()], expected[..], "{text:?}");
+        assert!(
+            cells[expected.len()..].iter().all(|cell| cell == " "),
+            "{text:?}"
+        );
     }
 }

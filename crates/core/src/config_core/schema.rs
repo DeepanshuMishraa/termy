@@ -333,6 +333,21 @@ pub const WINDOWS_SHELL_ENUM_CHOICES: &[EnumChoice] = &[
     },
 ];
 
+pub const CLIPBOARD_READ_ENUM_CHOICES: &[EnumChoice] = &[
+    EnumChoice {
+        value: "ask",
+        label: "Ask",
+    },
+    EnumChoice {
+        value: "allow",
+        label: "Allow",
+    },
+    EnumChoice {
+        value: "deny",
+        label: "Deny",
+    },
+];
+
 pub const PANE_FOCUS_EFFECT_ENUM_CHOICES: &[EnumChoice] = &[
     EnumChoice {
         value: "off",
@@ -420,6 +435,7 @@ define_root_settings! {
     (PaneFocusStrength, "pane_focus_strength", [], Terminal, "UI", "Pane Focus Strength", "Strength of active pane emphasis (0.0 to 2.0)", ["pane", "focus", "strength", "dimming"], RootSettingValueKind::Numeric, false),
     (CopyOnSelect, "copy_on_select", [], Terminal, "CLIPBOARD", "Copy On Select", "Automatically copy selected text to clipboard", ["copy", "select", "clipboard", "selection"], RootSettingValueKind::Boolean, false),
     (CopyOnSelectToast, "copy_on_select_toast", [], Terminal, "CLIPBOARD", "Copy On Select Toast", "Show a toast when text is copied on select", ["copy", "select", "toast"], RootSettingValueKind::Boolean, false),
+    (ClipboardRead, "clipboard_read", [], Terminal, "CLIPBOARD", "Clipboard Read Access", "Whether programs may read the clipboard with OSC 52 (ask, allow, or deny)", ["clipboard", "osc", "52", "paste", "read", "security"], RootSettingValueKind::Enum, false),
     (CommandPaletteShowKeybinds, "command_palette_show_keybinds", [], Terminal, "UI", "Show Keybindings In Palette", "Show shortcut badges in command palette rows", ["palette", "keybinds", "shortcuts"], RootSettingValueKind::Boolean, false),
     (ShellIntegrationEnabled, "shell_integration_enabled", [], Terminal, "SHELL", "Shell Integration", "Enable OSC 133 shell integration for command lifecycle tracking", ["shell", "integration", "osc", "133", "prompt", "command"], RootSettingValueKind::Boolean, false),
     (ProgressIndicatorEnabled, "progress_indicator_enabled", [], Terminal, "UI", "Progress Indicators", "Show progress from OSC 9;4 sequences in tab badges", ["progress", "indicator", "tab", "badge", "osc"], RootSettingValueKind::Boolean, false),
@@ -474,6 +490,7 @@ pub fn root_setting_enum_choices(id: RootSettingId) -> Option<&'static [EnumChoi
         RootSettingId::ScrollbarVisibility => Some(SCROLLBAR_VISIBILITY_ENUM_CHOICES),
         RootSettingId::ScrollbarStyle => Some(SCROLLBAR_STYLE_ENUM_CHOICES),
         RootSettingId::PaneFocusEffect => Some(PANE_FOCUS_EFFECT_ENUM_CHOICES),
+        RootSettingId::ClipboardRead => Some(CLIPBOARD_READ_ENUM_CHOICES),
 
         _ => None,
     }
@@ -620,6 +637,7 @@ pub fn root_setting_default_value(config: &AppConfig, id: RootSettingId) -> Opti
         RootSettingId::PaneFocusStrength => Some(config.pane_focus_strength.to_string()),
         RootSettingId::CopyOnSelect => Some(config.copy_on_select.to_string()),
         RootSettingId::CopyOnSelectToast => Some(config.copy_on_select_toast.to_string()),
+        RootSettingId::ClipboardRead => Some(config.clipboard_read.as_str().to_string()),
         RootSettingId::CommandPaletteShowKeybinds => {
             Some(config.command_palette_show_keybinds.to_string())
         }
@@ -726,6 +744,11 @@ mod tests {
         assert_eq!(
             enum_choice_values(RootSettingId::PaneFocusEffect),
             vec!["off", "soft_spotlight", "cinematic", "minimal"]
+        );
+
+        assert_eq!(
+            enum_choice_values(RootSettingId::ClipboardRead),
+            vec!["ask", "allow", "deny"]
         );
 
         assert_eq!(

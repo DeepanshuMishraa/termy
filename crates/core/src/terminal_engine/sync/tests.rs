@@ -50,15 +50,15 @@ fn malformed_and_cancelled_markers_do_not_end_buffering() {
 }
 
 #[test]
-fn oversized_string_embedded_marker_is_discarded_until_st() {
+fn oversized_string_isolates_escapes_until_a_csi_end_marker() {
     for introducer in [b"\x1b]", b"\x1bP"] {
         let now = Instant::now();
         let mut update = SynchronizedUpdate::default();
         update.begin(now, None);
         assert!(!update.push(introducer, now).commit);
         assert!(!update.push(&vec![b'x'; 64 * 1024 + 1], now).commit);
-        assert!(!update.push(b"\x1b[?2026l", now).commit);
-        assert!(update.push(b"\x1b\\\x1b[?2026l", now).commit);
+        assert!(!update.push(b"\x1b]\x1bP\x1b\n", now).commit);
+        assert!(update.push(b"\x1b[?2026l", now).commit);
     }
 }
 
@@ -114,7 +114,7 @@ mod engine {
         for split in 0..=ending.len() {
             let now = Instant::now();
             let mut engine = engine();
-            engine.feed_at(b"old\x1b[?2026h\r\x1b_", now);
+            engine.feed_at(b"old\x1b[?2026h\r\x1b_G", now);
             engine.feed_at(&vec![b'x'; 64 * 1024 + 1], now);
             assert_eq!(text(&engine, 0), "old             ");
             engine.feed_at(&ending[..split], now);
@@ -229,6 +229,19 @@ mod engine {
             }
             assert_eq!(replies(&mut fragmented), expected_replies, "split {split}");
         }
+    }
+
+    #[test]
+    fn repeated_begin_markers_cannot_hold_output_past_the_maximum() {
+        let mut engine = engine();
+        let start = Instant::now();
+        engine.feed_at(b"\x1b[?2026hframe", start);
+        let mut now = start;
+        while now < start + SYNC_MAX_HOLD + SYNC_TIMEOUT {
+            now += Duration::from_millis(100);
+            engine.feed_at(b"\x1b[?2026h", now);
+        }
+        assert_eq!(text(&engine, 0), "frame           ");
     }
 
     #[test]

@@ -20,20 +20,64 @@ pub(super) fn cell_width(cell: &Cell) -> usize {
 // after a suffix without a trailing ZWJ. Hangul Jamo, Indic scripts, prepend
 // marks, regional indicators, and emoji modifiers use the segmentation tables.
 // Box drawing, braille, arrows, private-use (Powerline/Nerd Font) glyphs, CJK
-// punctuation and fullwidth forms are common in TUIs, so they stay on this path.
+// punctuation and fullwidth forms are common in TUIs, so they stay on this path,
+// as do Hebrew, Arabic (minus prepend marks) and Thai consonants. Indic
+// consonants and independent vowels too: a virama between two consonants joins
+// them (GB9c), so appending one ends the fast path (`ends_ordinary_run`).
 fn ordinary_base(c: char) -> bool {
     // Branch on the block first so CJK and Hangul text, the common non-ASCII
     // case, tests only the ranges of its own plane.
     match c {
         '\u{3400}'..='\u{9fff}' | '\u{ac00}'..='\u{d7a3}' => true,
+        '\u{900}'..='\u{dff}' => indic_base(c),
         '\u{0}'..='\u{2fff}' => {
-            matches!(c, '\u{20}'..='\u{2ff}' | '\u{370}'..='\u{482}' | '\u{48a}'..='\u{52f}' | '\u{2010}'..='\u{2027}' | '\u{2030}'..='\u{205e}' | '\u{20a0}'..='\u{20cf}' | '\u{2100}'..='\u{2bff}')
+            matches!(c, '\u{20}'..='\u{2ff}' | '\u{370}'..='\u{482}' | '\u{48a}'..='\u{52f}' | '\u{5d0}'..='\u{5f2}' | '\u{620}'..='\u{64a}' | '\u{660}'..='\u{66f}' | '\u{671}'..='\u{6d3}' | '\u{6d5}' | '\u{6ee}'..='\u{6ff}' | '\u{e01}'..='\u{e2e}' | '\u{2010}'..='\u{2027}' | '\u{2030}'..='\u{205e}' | '\u{20a0}'..='\u{20cf}' | '\u{2100}'..='\u{2bff}')
         }
         '\u{3000}'..='\u{ffff}' => {
             matches!(c, '\u{3000}'..='\u{3029}' | '\u{3030}'..='\u{303f}' | '\u{3041}'..='\u{3096}' | '\u{309b}'..='\u{30ff}' | '\u{e000}'..='\u{f8ff}' | '\u{ff01}'..='\u{ff9d}' | '\u{ffa0}'..='\u{ffef}')
         }
-        _ => matches!(c, '\u{1f300}'..='\u{1f3fa}' | '\u{1f400}'..='\u{1faff}'),
+        _ => {
+            matches!(c, '\u{1f300}'..='\u{1f3fa}' | '\u{1f400}'..='\u{1faff}' | '\u{f0000}'..='\u{10fffd}')
+        }
     }
+}
+
+/// Consonants and independent vowels of the major Indic scripts, excluding
+/// prepend marks (e.g. Malayalam dot reph).
+fn indic_base(c: char) -> bool {
+    matches!(c,
+        // Devanagari, Bengali, Gurmukhi
+        '\u{904}'..='\u{939}' | '\u{958}'..='\u{961}' | '\u{972}'..='\u{97f}'
+        | '\u{985}'..='\u{98c}' | '\u{98f}'..='\u{990}' | '\u{993}'..='\u{9a8}' | '\u{9aa}'..='\u{9b0}' | '\u{9b2}' | '\u{9b6}'..='\u{9b9}' | '\u{9dc}'..='\u{9dd}' | '\u{9df}'..='\u{9e1}' | '\u{9f0}'..='\u{9f1}'
+        | '\u{a05}'..='\u{a0a}' | '\u{a0f}'..='\u{a10}' | '\u{a13}'..='\u{a28}' | '\u{a2a}'..='\u{a30}' | '\u{a32}'..='\u{a33}' | '\u{a35}'..='\u{a36}' | '\u{a38}'..='\u{a39}' | '\u{a59}'..='\u{a5c}' | '\u{a5e}'
+        // Gujarati, Oriya, Tamil
+        | '\u{a85}'..='\u{a8d}' | '\u{a8f}'..='\u{a91}' | '\u{a93}'..='\u{aa8}' | '\u{aaa}'..='\u{ab0}' | '\u{ab2}'..='\u{ab3}' | '\u{ab5}'..='\u{ab9}' | '\u{ae0}'..='\u{ae1}' | '\u{af9}'
+        | '\u{b05}'..='\u{b0c}' | '\u{b0f}'..='\u{b10}' | '\u{b13}'..='\u{b28}' | '\u{b2a}'..='\u{b30}' | '\u{b32}'..='\u{b33}' | '\u{b35}'..='\u{b39}' | '\u{b5c}'..='\u{b5d}' | '\u{b5f}'..='\u{b61}' | '\u{b71}'
+        | '\u{b85}'..='\u{b8a}' | '\u{b8e}'..='\u{b90}' | '\u{b92}'..='\u{b95}' | '\u{b99}'..='\u{b9a}' | '\u{b9c}' | '\u{b9e}'..='\u{b9f}' | '\u{ba3}'..='\u{ba4}' | '\u{ba8}'..='\u{baa}' | '\u{bae}'..='\u{bb9}'
+        // Telugu, Kannada, Malayalam
+        | '\u{c05}'..='\u{c0c}' | '\u{c0e}'..='\u{c10}' | '\u{c12}'..='\u{c28}' | '\u{c2a}'..='\u{c39}' | '\u{c58}'..='\u{c5a}' | '\u{c60}'..='\u{c61}'
+        | '\u{c85}'..='\u{c8c}' | '\u{c8e}'..='\u{c90}' | '\u{c92}'..='\u{ca8}' | '\u{caa}'..='\u{cb3}' | '\u{cb5}'..='\u{cb9}' | '\u{ce0}'..='\u{ce1}'
+        | '\u{d05}'..='\u{d0c}' | '\u{d0e}'..='\u{d10}' | '\u{d12}'..='\u{d3a}' | '\u{d60}'..='\u{d61}')
+}
+
+/// Indic viramas (canonical combining class 9). One may join the next
+/// consonant to the current cluster, so ordinary bases must be segmented.
+fn ends_ordinary_run(c: char) -> bool {
+    matches!(
+        c,
+        '\u{94d}'
+            | '\u{9cd}'
+            | '\u{a4d}'
+            | '\u{acd}'
+            | '\u{b4d}'
+            | '\u{bcd}'
+            | '\u{c4d}'
+            | '\u{ccd}'
+            | '\u{d3b}'
+            | '\u{d3c}'
+            | '\u{d4d}'
+            | '\u{dca}'
+    )
 }
 
 /// These common character ranges have uniform scalar properties. Resolve both
@@ -152,9 +196,10 @@ impl Grid {
             return;
         }
         if width == 0 {
-            // A ZWJ can connect the next pictograph to this cell. Other
-            // zero-width marks do not turn ordinary base pairs into a cluster.
-            if character == '\u{200d}' {
+            // A ZWJ can connect the next pictograph, and a virama the next
+            // consonant (GB9c), to this cell. Other zero-width marks do not
+            // turn ordinary base pairs into a cluster.
+            if character == '\u{200d}' || ends_ordinary_run(character) {
                 self.grapheme_ordinary = false;
             }
             let mut row = self.cursor.row;
@@ -255,12 +300,7 @@ impl Grid {
             end += 1;
         }
         if width == 2 {
-            active.cells[col + 1] = Cell {
-                character: ' ',
-                style: cell.style,
-                flags: Cell::WIDE_SPACER,
-                extra: None,
-            };
+            active.cells[col + 1] = cell.wide_spacer();
         }
         active.cells[col] = cell;
         active.occupied = active.occupied.max(end);
@@ -286,6 +326,37 @@ impl Grid {
         self.mark(row, start, end);
     }
 
+    /// REP output beyond one screen and a row only scrolls identical rows, so
+    /// an untrusted count is clamped. Ordinary bases keep the count modulo a
+    /// row, which leaves the same screen and cursor as the full repetition.
+    pub(in crate::terminal_engine) fn repeat_char(&mut self, character: char, count: usize) {
+        let (width, ordinary) = scalar_properties(character);
+        let count = if width == 0 {
+            count.min(MAX_COMBINING_BYTES)
+        } else {
+            let per_row = (self.size.cols / width.min(self.size.cols)).max(1);
+            let limit = per_row * (self.size.rows + 1);
+            match count {
+                count if count <= limit => count,
+                count if ordinary => limit + count % per_row,
+                _ => limit,
+            }
+        };
+        if character.is_ascii() && !character.is_ascii_control() {
+            let run = [character as u8; 256];
+            let mut remaining = count;
+            while remaining > 0 {
+                let len = remaining.min(run.len());
+                self.write_ascii(&run[..len]);
+                remaining -= len;
+            }
+            return;
+        }
+        for _ in 0..count {
+            self.put_char(character);
+        }
+    }
+
     /// Ordinary ASCII uses one bounds/damage update per row-local run.
     #[inline]
     pub(in crate::terminal_engine) fn write_ascii(&mut self, mut text: &[u8]) {
@@ -300,10 +371,15 @@ impl Grid {
         }
         while !text.is_empty() {
             self.observe_output();
-            if self.pending_wrap || self.insert_mode || !self.autowrap {
+            if self.pending_wrap || self.insert_mode {
                 self.put_char(char::from(text[0]));
                 text = &text[1..];
                 continue;
+            }
+            // Without autowrap, each byte at the margin replaces the last one,
+            // so only the final byte of the run is visible there.
+            if !self.autowrap && self.cursor.col + 1 == self.size.cols && text.len() > 1 {
+                text = &text[text.len() - 1..];
             }
             let row = self.cursor.row;
             let col = self.cursor.col;
@@ -329,13 +405,14 @@ impl Grid {
             }
             active.occupied = active.occupied.max(col + count);
             self.cursor.col += count;
-            if self.cursor.col == self.size.cols {
+            let at_margin = self.cursor.col == self.size.cols;
+            if at_margin {
                 self.cursor.col -= 1;
-                self.pending_wrap = true;
+                self.pending_wrap = self.autowrap;
             }
             self.grapheme_open = true;
             self.grapheme_ordinary = true;
-            self.grapheme_at_margin = self.pending_wrap;
+            self.grapheme_at_margin = at_margin;
             self.mark(row, col, (col + count + 1).min(self.size.cols));
             text = &text[count..];
         }
@@ -369,6 +446,25 @@ mod tests {
             }
             for text in [format!("a{c}"), format!("{c}a"), format!("{c}{c}")] {
                 assert_eq!(text.graphemes(true).count(), 2, "U+{:04X}", c as u32);
+            }
+        }
+    }
+
+    // After a mark that can join the next Indic base to the cluster, the fast
+    // path must give way to segmentation.
+    #[test]
+    fn marks_that_join_indic_bases_end_the_ordinary_run() {
+        let bases: Vec<_> = ('\u{900}'..='\u{dff}').filter(|c| indic_base(*c)).collect();
+        let marks = ('\u{900}'..='\u{dff}').filter(|c| c.width() == Some(0));
+        for mark in marks {
+            for base in &bases {
+                let joined = format!("{base}{mark}{base}").graphemes(true).count() == 1;
+                assert!(
+                    !joined || ends_ordinary_run(mark),
+                    "U+{:04X} joins U+{:04X}",
+                    mark as u32,
+                    *base as u32
+                );
             }
         }
     }

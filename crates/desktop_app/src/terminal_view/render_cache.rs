@@ -4,7 +4,6 @@ use crate::terminal_ui::{TerminalGridPaintCacheHandle, TerminalGridRows};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::terminal_view) struct KittyGraphicsRenderCacheKey {
     pub(in crate::terminal_view) graphics_revision: u64,
-    pub(in crate::terminal_view) terminal_generation: Option<u64>,
     pub(in crate::terminal_view) cols: usize,
     pub(in crate::terminal_view) rows: usize,
     pub(in crate::terminal_view) display_offset: usize,

@@ -613,6 +613,71 @@ fn accepts_zlib_compressed_raw_pixels() {
 }
 
 #[test]
+fn a_new_transmission_abandons_an_unfinished_chunked_upload() {
+    let mut state = KittyGraphicsState::default();
+    let first = state.apply(
+        command("a=t,f=32,s=1,v=1,i=1,m=1", &[1, 2]),
+        0,
+        0,
+        0,
+        size(),
+    );
+    assert!(first.response.is_none());
+    let next = state.apply(
+        command("a=T,f=32,s=1,v=1,i=2", &[12, 34, 56, 255]),
+        0,
+        0,
+        0,
+        size(),
+    );
+    assert!(next.changed);
+    assert_eq!(state.render_placements(0, 0, 24, 80).len(), 1);
+    // The abandoned upload is gone: a continuation now starts nothing.
+    assert!(
+        !state
+            .apply(command("m=0", &[3, 4]), 0, 0, 0, size())
+            .changed
+    );
+}
+
+#[test]
+fn zlib_inflation_stops_at_the_declared_raw_size() {
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+    encoder.write_all(&vec![0; 16 * 1024 * 1024]).unwrap();
+    let compressed = encoder.finish().unwrap();
+    assert!(decompress_zlib(&compressed, Some(4)).is_err());
+    let mut state = KittyGraphicsState::default();
+    let result = state.apply(
+        command("a=T,f=32,s=1,v=1,o=z,i=12", &compressed),
+        0,
+        0,
+        0,
+        size(),
+    );
+    assert!(!result.changed);
+    assert!(
+        String::from_utf8_lossy(&result.response.unwrap()).contains("EINVAL:pixel data length")
+    );
+}
+
+#[test]
+fn temporary_file_marker_must_be_in_the_resolved_file_name() {
+    let marker_dir = tempfile::Builder::new()
+        .prefix("tty-graphics-protocol-")
+        .tempdir()
+        .unwrap();
+    let victim = tempfile::NamedTempFile::new_in(marker_dir.path().parent().unwrap()).unwrap();
+    let escape = marker_dir
+        .path()
+        .join("..")
+        .join(victim.path().file_name().unwrap());
+    assert!(escape.exists());
+    assert!(!temporary_path_can_be_removed(&escape));
+    #[cfg(target_os = "linux")]
+    assert!(is_pseudo_file(Path::new("/proc/self/status")));
+}
+
+#[test]
 fn reads_and_removes_safe_temporary_file_transfers() {
     let png = one_pixel_png();
     let mut file = tempfile::Builder::new()
@@ -714,4 +779,27 @@ fn evicted_virtual_placements_stop_requiring_placeholder_scans() {
     state.remove_image(1);
     assert!(!state.has_virtual_placements());
     assert!(!state.has_placements());
+}
+
+#[test]
+fn id_less_images_are_freed_with_their_last_placement() {
+    let png = one_pixel_png();
+    let mut state = KittyGraphicsState::default();
+    state.apply(command("a=T,f=100,c=1,r=1,q=1", &png), 0, 0, 0, size());
+    state.apply(command("a=T,f=100,i=5,c=1,r=1,q=1", &png), 0, 1, 0, size());
+    state.apply(command("a=T,f=100,I=6,c=1,r=1,q=1", &png), 0, 2, 0, size());
+    assert_eq!((state.images.len(), state.anonymous_images), (3, 1));
+    assert!(state.clear_visible());
+    // Images a later command can still name survive their placements.
+    assert_eq!(state.images.len(), 2);
+    assert!(state.images.values().all(|image| !image.anonymous));
+    assert_eq!(state.anonymous_images, 0);
+    let expected: usize = state.images.values().map(StoredImage::byte_len).sum();
+    assert_eq!(state.stored_bytes, expected);
+
+    state.apply(command("a=T,f=100,c=1,r=1,q=1", &png), 0, 0, 0, size());
+    assert_eq!(state.anonymous_images, 1);
+    state.reset();
+    assert_eq!((state.images.len(), state.anonymous_images), (2, 0));
+    assert_eq!(state.insertion_order.len(), 2);
 }

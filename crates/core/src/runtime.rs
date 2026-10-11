@@ -687,6 +687,50 @@ pub enum TerminalDamageSnapshot {
     Partial(Vec<TerminalDirtySpan>),
 }
 
+/// Visits viewport cells as `(row, display_offset, line, col, cell)`.
+pub(crate) type DamageCellVisitor<'v> =
+    dyn FnMut(usize, usize, i32, usize, &crate::TerminalRenderCell) + 'v;
+
+/// Viewport cells read under the lock that took their damage; see
+/// [`Terminal::with_render_damage`].
+pub struct TerminalDamageCells<'a> {
+    display_offset: usize,
+    line_bounds: (i32, i32),
+    visit: &'a mut dyn FnMut(&[TerminalDirtySpan], &mut DamageCellVisitor<'_>) -> bool,
+}
+
+impl<'a> TerminalDamageCells<'a> {
+    pub(crate) fn new(
+        display_offset: usize,
+        line_bounds: (i32, i32),
+        visit: &'a mut dyn FnMut(&[TerminalDirtySpan], &mut DamageCellVisitor<'_>) -> bool,
+    ) -> Self {
+        Self {
+            display_offset,
+            line_bounds,
+            visit,
+        }
+    }
+
+    pub fn display_offset(&self) -> usize {
+        self.display_offset
+    }
+
+    pub fn line_bounds(&self) -> (i32, i32) {
+        self.line_bounds
+    }
+
+    /// Visit the cells covered by `spans`, span by span. Returns false,
+    /// without visiting, when a span lies outside the viewport.
+    pub fn visit(
+        &mut self,
+        spans: &[TerminalDirtySpan],
+        mut visitor: impl FnMut(usize, usize, i32, usize, &crate::TerminalRenderCell),
+    ) -> bool {
+        (self.visit)(spans, &mut visitor)
+    }
+}
+
 pub use crate::terminal_types::TerminalSize;
 
 impl TerminalSize {
@@ -913,6 +957,20 @@ impl Terminal {
 
     pub fn take_render_damage_snapshot(&self) -> TerminalRenderDamageSnapshot {
         self.backend.take_render_damage_snapshot()
+    }
+
+    /// Take render damage and read its dirty cells under one backend lock.
+    ///
+    /// Taking damage and then calling
+    /// [`Self::visit_viewport_ranges_locked_at_generation`] fails whenever
+    /// output lands in between, which forces a full read. Here output waits
+    /// until `read` returns. `read` runs under the backend lock and must not
+    /// call back into this terminal.
+    pub fn with_render_damage<R>(
+        &self,
+        read: impl FnOnce(TerminalRenderDamageSnapshot, TerminalDamageCells<'_>) -> R,
+    ) -> R {
+        self.backend.with_render_damage(read)
     }
 
     pub(crate) fn render_read_with_screen(&self, force_full: bool) -> (TerminalRenderRead, bool) {

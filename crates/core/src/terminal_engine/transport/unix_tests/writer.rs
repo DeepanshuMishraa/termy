@@ -295,7 +295,7 @@ fn protocol_reply_lane_survives_normal_saturation_and_is_bounded() {
 }
 
 #[test]
-fn unqueueable_reader_reply_closes_instead_of_being_dropped() {
+fn unqueueable_reader_reply_is_dropped_and_keeps_the_writer_open() {
     let (writer, _receiver) = WriterHandle::channel_with_all_limits(
         WriterLimits {
             max_bytes: 1,
@@ -306,9 +306,11 @@ fn unqueueable_reader_reply_closes_instead_of_being_dropped() {
             max_entries: 0,
         },
     );
-    assert!(!queue_reader_protocol_reply(&writer, b"reply".to_vec()));
-    assert!(writer.control.is_closed());
+    assert!(queue_reader_protocol_reply(&writer, b"reply".to_vec()));
+    assert!(!writer.control.is_closed());
     assert_eq!(writer.control.protocol_reply_backlog(), (0, 0));
+    writer.close();
+    assert!(!queue_reader_protocol_reply(&writer, b"reply".to_vec()));
 }
 
 #[test]
@@ -481,7 +483,7 @@ fn protocol_reply_preempts_a_blocked_normal_write_then_normal_fifo_resumes() {
 }
 
 #[test]
-fn protocol_reply_preempts_at_a_bounded_partial_write_boundary() {
+fn protocol_reply_waits_for_a_partial_write_to_finish() {
     let (writer, receiver) = WriterHandle::channel();
     writer
         .write_owned(b"normal-one".to_vec())
@@ -511,16 +513,17 @@ fn protocol_reply_preempts_at_a_bounded_partial_write_boundary() {
         |_, _| Ok(()),
     );
 
-    assert_eq!(sink.bytes, b"noreplyrmal-onenormal-two");
+    assert_eq!(sink.bytes, b"normal-onereplynormal-two");
     assert_eq!(control.backlog(), (0, 0));
     assert_eq!(control.protocol_reply_backlog(), (0, 0));
 }
 
 #[test]
-fn oversized_live_reader_reply_forces_a_bounded_session_shutdown() {
+fn unqueueable_live_reader_reply_is_dropped_without_ending_the_session() {
     const MARKER: &[u8] = b"TERMY_NATIVE_OVERSIZED_REPLY_READY";
 
     let (exit_tx, exit_rx) = mpsc::sync_channel(1);
+    let (echo_tx, echo_rx) = mpsc::sync_channel(1);
     let mut output = Vec::new();
     let mut replied = false;
     let terminal = Transport::spawn(
@@ -528,7 +531,8 @@ fn oversized_live_reader_reply_forces_a_bounded_session_shutdown() {
             program: "/bin/sh".to_string(),
             args: vec![
                 "-c".to_string(),
-                "trap '' HUP; printf TERMY_NATIVE_OVERSIZED_REPLY_READY; exec sleep 30".to_string(),
+                "printf TERMY_NATIVE_OVERSIZED_REPLY_READY; read line; printf \"got:$line\""
+                    .to_string(),
             ],
             working_directory: None,
             environment: Vec::new(),
@@ -536,6 +540,9 @@ fn oversized_live_reader_reply_forces_a_bounded_session_shutdown() {
         test_size(),
         move |bytes| {
             output.extend_from_slice(bytes);
+            if output.windows(4).any(|part| part == b"got:") {
+                let _ = echo_tx.try_send(());
+            }
             if !replied && output.windows(MARKER.len()).any(|part| part == MARKER) {
                 replied = true;
                 vec![b'x'; MAX_PROTOCOL_REPLY_BACKLOG_BYTES + 1]
@@ -549,8 +556,18 @@ fn oversized_live_reader_reply_forces_a_bounded_session_shutdown() {
     )
     .expect("PTY should start before the oversized reply is generated");
 
+    assert!(
+        exit_rx.recv_timeout(Duration::from_millis(500)).is_err(),
+        "an unqueueable reply must not end the session"
+    );
+    terminal
+        .write_owned(b"still-alive\n".to_vec())
+        .expect("input should still reach the child");
+    echo_rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("child should keep reading input");
     exit_rx
         .recv_timeout(Duration::from_secs(3))
-        .expect("unqueueable live reply should force child exit without deadlocking");
+        .expect("child should exit normally");
     drop(terminal);
 }

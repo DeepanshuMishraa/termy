@@ -466,10 +466,10 @@ fn protocol_reply_lane_survives_normal_saturation_and_is_bounded() {
 }
 
 #[test]
-fn unqueueable_reader_reply_closes_instead_of_being_dropped() {
+fn unqueueable_reader_reply_is_dropped_and_keeps_the_writer_open() {
     let (writer, _receiver) = writer_harness_with_limits(1, 1, 0, 0);
-    assert!(!queue_reader_protocol_reply(&writer, b"reply".to_vec()));
-    assert!(writer.control.state.is_closed());
+    assert!(queue_reader_protocol_reply(&writer, b"reply".to_vec()));
+    assert!(!writer.control.state.is_closed());
     assert_eq!(writer.protocol_replies.budget.usage(), (0, 0));
 }
 

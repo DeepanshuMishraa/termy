@@ -244,7 +244,7 @@ fn parse_file_url(url: &str) -> Option<String> {
     if let Some(rest) = url.strip_prefix("file://") {
         // Skip hostname (everything up to first / after hostname)
         if let Some(slash_pos) = rest.find('/') {
-            return Some(rest[slash_pos..].to_string());
+            return crate::terminal_engine::percent_decode(&rest[slash_pos..]);
         }
     }
     None
@@ -382,14 +382,14 @@ mod tests {
     }
 
     #[test]
-    fn parse_osc_7_preserves_percent_escaped_paths() {
+    fn parse_osc_7_decodes_percent_escaped_paths() {
         let mut interceptor = OscInterceptor::new();
         let (output, events) = process_str(&mut interceptor, "\x1b]7;file://host/tmp/a%20b\x1b\\");
 
         assert!(output.is_empty());
         assert_eq!(
             events,
-            vec![OscEvent::WorkingDirectory("/tmp/a%20b".to_string())]
+            vec![OscEvent::WorkingDirectory("/tmp/a b".to_string())]
         );
     }
 

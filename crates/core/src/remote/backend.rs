@@ -1,4 +1,5 @@
 use super::*;
+use crate::runtime::{DamageCellVisitor, TerminalDamageCells};
 use std::sync::Mutex;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -320,31 +321,30 @@ impl RemoteBackend {
         mut visitor: impl FnMut(usize, usize, i32, usize, &TerminalRenderCell),
     ) -> bool {
         let state = self.transport.state();
-        let metadata = state.render.metadata;
-        if metadata.generation != generation {
-            return false;
-        }
-        let cols = usize::from(metadata.cols);
-        for span in spans {
-            if span.row >= usize::from(metadata.rows)
-                || span.left_col > span.right_col
-                || span.right_col >= cols
-            {
-                return false;
-            }
-        }
-        for span in spans {
-            for col in span.left_col..=span.right_col {
-                visitor(
-                    span.row,
-                    metadata.display_offset,
-                    span.row as i32 - metadata.display_offset as i32,
-                    col,
-                    &state.render.cells[span.row * cols + col],
-                );
-            }
-        }
-        true
+        state.render.metadata.generation == generation && visit_ranges(&state, spans, &mut visitor)
+    }
+
+    pub(crate) fn with_render_damage<R>(
+        &self,
+        read: impl FnOnce(TerminalRenderDamageSnapshot, TerminalDamageCells<'_>) -> R,
+    ) -> R {
+        let state = self.transport.state();
+        let damage = self.damage(&state, false);
+        let line_bounds = (
+            -(state.render.metadata.history_size as i32),
+            i32::from(state.size.rows) - 1,
+        );
+        let mut visit = |spans: &[TerminalDirtySpan], visitor: &mut DamageCellVisitor<'_>| {
+            visit_ranges(&state, spans, visitor)
+        };
+        read(
+            damage,
+            TerminalDamageCells::new(
+                state.render.metadata.display_offset,
+                line_bounds,
+                &mut visit,
+            ),
+        )
     }
 
     pub(crate) fn line_bounds(&self) -> (i32, i32) {
@@ -505,4 +505,34 @@ impl RemoteBackend {
             damage: TerminalDamageSnapshot::Full,
         }
     }
+}
+
+/// Visit `spans` of the mirrored viewport; false if any span is out of range.
+fn visit_ranges(
+    state: &RemoteState,
+    spans: &[TerminalDirtySpan],
+    visitor: &mut DamageCellVisitor<'_>,
+) -> bool {
+    let metadata = state.render.metadata;
+    let cols = usize::from(metadata.cols);
+    for span in spans {
+        if span.row >= usize::from(metadata.rows)
+            || span.left_col > span.right_col
+            || span.right_col >= cols
+        {
+            return false;
+        }
+    }
+    for span in spans {
+        for col in span.left_col..=span.right_col {
+            visitor(
+                span.row,
+                metadata.display_offset,
+                span.row as i32 - metadata.display_offset as i32,
+                col,
+                &state.render.cells[span.row * cols + col],
+            );
+        }
+    }
+    true
 }

@@ -11,11 +11,15 @@ use super::parser::{Handler, MAX_APC_BYTES, Param, Parser};
 
 pub(super) const MAX_SYNC_BYTES: usize = 2 * 1024 * 1024;
 pub(super) const SYNC_TIMEOUT: Duration = Duration::from_millis(150);
+/// Repeated begin markers extend the timeout, but never past this hold time
+/// from the first one, so a program cannot keep the screen frozen.
+pub(super) const SYNC_MAX_HOLD: Duration = Duration::from_secs(1);
 
 pub(super) struct SynchronizedUpdate {
     scanner: Parser,
     bytes: Vec<u8>,
     deadline: Option<Instant>,
+    started: Option<Instant>,
     saved_mode: Option<bool>,
 }
 
@@ -25,6 +29,7 @@ impl Default for SynchronizedUpdate {
             scanner: Parser::scanner(MAX_APC_BYTES),
             bytes: Vec::new(),
             deadline: None,
+            started: None,
             saved_mode: None,
         }
     }
@@ -44,6 +49,7 @@ impl SynchronizedUpdate {
         self.bytes.clear();
         self.scanner.reset();
         self.deadline = Some(now + SYNC_TIMEOUT);
+        self.started = Some(now);
         self.saved_mode = saved_mode;
     }
 
@@ -63,7 +69,8 @@ impl SynchronizedUpdate {
         }
         self.bytes.extend_from_slice(&bytes[..consumed]);
         if marker.refreshed {
-            self.deadline = Some(now + SYNC_TIMEOUT);
+            let limit = self.started.map_or(now, |started| started + SYNC_MAX_HOLD);
+            self.deadline = Some((now + SYNC_TIMEOUT).min(limit.max(now)));
         }
         Buffered {
             consumed,
@@ -102,7 +109,7 @@ impl Handler for Marker {
     }
     fn osc(&mut self, _bytes: &[u8]) {}
     fn dcs(&mut self, _bytes: &[u8]) {}
-    fn apc(&mut self, _bytes: &[u8]) {}
+    fn apc(&mut self, _bytes: &mut Vec<u8>) {}
 
     fn csi(&mut self, params: &[Param], private: Option<u8>, intermediates: &[u8], final_byte: u8) {
         if private != Some(b'?') || !intermediates.is_empty() {

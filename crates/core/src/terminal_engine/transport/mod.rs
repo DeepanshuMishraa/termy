@@ -161,3 +161,43 @@ mod tests {
             .expect("shell should finish after final output");
     }
 }
+
+/// Variables describing the terminal or multiplexer that launched Termy (for
+/// example from an IDE or tmux). A shell inside Termy is in neither, and tools
+/// such as tmux and editors misbehave when they believe otherwise.
+pub(crate) fn belongs_to_parent_terminal(name: &std::ffi::OsStr) -> bool {
+    const NAMES: &[&str] = &[
+        "TMUX",
+        "TMUX_PANE",
+        "STY",
+        "WINDOW",
+        "ZELLIJ",
+        "ZELLIJ_SESSION_NAME",
+        "ZELLIJ_PANE_ID",
+        "KITTY_WINDOW_ID",
+        "KITTY_PID",
+        "KITTY_LISTEN_ON",
+        "KITTY_PUBLIC_KEY",
+        "ITERM_SESSION_ID",
+        "ITERM_PROFILE",
+        "TERM_SESSION_ID",
+        "WT_SESSION",
+        "WT_PROFILE_ID",
+        "ALACRITTY_WINDOW_ID",
+        "ALACRITTY_SOCKET",
+        "ALACRITTY_LOG",
+        "WEZTERM_PANE",
+        "WEZTERM_UNIX_SOCKET",
+        "GHOSTTY_RESOURCES_DIR",
+        "GHOSTTY_BIN_DIR",
+        "GHOSTTY_SHELL_FEATURES",
+        "VTE_VERSION",
+        "KONSOLE_VERSION",
+        "KONSOLE_DBUS_SESSION",
+        "TERMINAL_EMULATOR",
+        "COLUMNS",
+        "LINES",
+    ];
+    name.to_str()
+        .is_some_and(|name| NAMES.contains(&name) || name.starts_with("VSCODE_"))
+}

@@ -360,7 +360,9 @@ fn child_environment(
     inherit: bool,
 ) -> io::Result<Vec<u16>> {
     let inherited = if inherit {
-        std::env::vars_os().collect()
+        std::env::vars_os()
+            .filter(|(name, _)| !crate::terminal_engine::transport::belongs_to_parent_terminal(name))
+            .collect()
     } else {
         Vec::new()
     };

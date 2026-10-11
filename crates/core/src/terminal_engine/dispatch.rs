@@ -1,8 +1,8 @@
 use std::{collections::VecDeque, sync::Arc};
 
 use super::{
-    CellExtra, Color, CursorShape, Event, Hyperlink, MAX_REPLY_BYTES, Modes, MouseEncoding,
-    MouseTracking, Options, Size, Style, UnderlineStyle, enqueue,
+    CellExtra, Color, CursorShape, Event, MAX_REPLY_BYTES, Modes, MouseEncoding, MouseTracking,
+    Options, Size, Style, UnderlineStyle, enqueue,
     grid::Grid,
     parser::{Handler, Param},
 };
@@ -38,6 +38,7 @@ pub(super) struct State {
     saved_charsets: [([bool; 2], usize); 2],
     saved_private_modes: Vec<(u16, bool)>,
     last_printed: Option<char>,
+    hyperlinks: super::hyperlinks::Hyperlinks,
 }
 
 impl State {
@@ -70,6 +71,7 @@ impl State {
             saved_charsets: [([false; 2], 0); 2],
             saved_private_modes: Vec::new(),
             last_printed: None,
+            hyperlinks: super::hyperlinks::Hyperlinks::default(),
         }
     }
 
@@ -109,6 +111,7 @@ impl State {
             attributes: protected,
             ..Style::default()
         };
+        self.grid.pen.set_underline_color(Color::DEFAULT);
     }
 
     fn soft_reset(&mut self) {
@@ -287,13 +290,13 @@ impl State {
                 }
                 39 => self.grid.pen.style.foreground = Color::DEFAULT,
                 49 => self.grid.pen.style.background = Color::DEFAULT,
-                59 => self.grid.pen.style.underline_color = Color::DEFAULT,
+                59 => self.grid.pen.set_underline_color(Color::DEFAULT),
                 38 | 48 | 58 => {
                     if let Some(color) = extended_color(params, &mut index) {
                         match value {
                             38 => self.grid.pen.style.foreground = color,
                             48 => self.grid.pen.style.background = color,
-                            _ => self.grid.pen.style.underline_color = color,
+                            _ => self.grid.pen.set_underline_color(color),
                         }
                     }
                 }
@@ -404,7 +407,7 @@ impl State {
 
 impl Handler for State {
     fn pause_requested(&self) -> bool {
-        self.modes.synchronized_update
+        self.modes.synchronized_update || self.has_deferred_upload()
     }
 
     fn print(&mut self, character: char) {
@@ -602,9 +605,7 @@ impl Handler for State {
             (None, b'T') => self.grid.scroll_down(count),
             (None, b'b') => {
                 if let Some(character) = self.last_printed {
-                    for _ in 0..count {
-                        self.grid.put_char(character);
-                    }
+                    self.grid.repeat_char(character, count);
                 }
             }
             (Some(b'?'), b's' | b'r') => {
@@ -735,11 +736,16 @@ impl Handler for State {
                 self.palette_revision = self.palette_revision.wrapping_add(1);
             }
             7 => {
-                let path = rest
-                    .strip_prefix("file://")
-                    .and_then(|rest| rest.find('/').map(|offset| &rest[offset..]))
-                    .unwrap_or(rest);
-                self.event(Event::WorkingDirectory(path.to_owned()));
+                let path = match rest.strip_prefix("file://") {
+                    // vte.sh and fish percent-encode the path of a file URL.
+                    Some(url) => url
+                        .find('/')
+                        .and_then(|offset| percent_decode(&url[offset..])),
+                    None => Some(rest.to_owned()),
+                };
+                if let Some(path) = path {
+                    self.event(Event::WorkingDirectory(path));
+                }
             }
             9 => {
                 if let Some(rest) = rest.strip_prefix("4;") {
@@ -761,26 +767,35 @@ impl Handler for State {
                 let Some((params, uri)) = rest.split_once(';') else {
                     return;
                 };
-                if uri.is_empty() {
-                    self.grid.pen.extra = None;
-                } else {
-                    let id = params
-                        .split(':')
-                        .find_map(|param| param.strip_prefix("id="))
-                        .unwrap_or("");
-                    self.grid.pen.extra = Some(Arc::new(CellExtra {
-                        combining: String::new(),
-                        hyperlink: Some(Arc::new(Hyperlink {
-                            id: id.to_owned(),
-                            uri: uri.to_owned(),
-                        })),
-                    }));
-                }
+                let id = params
+                    .split(':')
+                    .find_map(|param| param.strip_prefix("id="))
+                    .unwrap_or("");
+                // Oversized links, or links past the table budget, print as text.
+                let link = (!uri.is_empty())
+                    .then(|| self.hyperlinks.intern(id, uri))
+                    .flatten();
+                let underline_color = self.grid.pen.underline_color();
+                self.grid.pen.extra = link.map(|link| {
+                    Arc::new(CellExtra {
+                        hyperlink: Some(link),
+                        ..CellExtra::default()
+                    })
+                });
+                self.grid.pen.set_underline_color(underline_color);
             }
             52 => {
                 if let Some((selection, data)) = rest.split_once(';') {
+                    // Replies echo the selection, so keep only xterm's target
+                    // letters, once each, instead of program-chosen text.
+                    let mut targets = String::new();
+                    for target in selection.chars().filter(|c| "cpqs01234567".contains(*c)) {
+                        if !targets.contains(target) {
+                            targets.push(target);
+                        }
+                    }
                     self.event(Event::Clipboard {
-                        selection: selection.to_owned(),
+                        selection: targets,
                         data: data.to_owned(),
                     });
                 }
@@ -803,9 +818,27 @@ impl Handler for State {
     fn dcs(&mut self, bytes: &[u8]) {
         self.device_control_query(bytes);
     }
-    fn apc(&mut self, bytes: &[u8]) {
+    fn apc(&mut self, bytes: &mut Vec<u8>) {
         self.apply_graphics(bytes);
     }
+}
+
+/// Decode `%XX` escapes; `None` for malformed escapes or non-UTF-8 results.
+pub(crate) fn percent_decode(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let hex = std::str::from_utf8(bytes.get(index + 1..index + 3)?).ok()?;
+            decoded.push(u8::from_str_radix(hex, 16).ok()?);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded).ok()
 }
 
 fn value(params: &[Param], index: usize, default: u16) -> u16 {

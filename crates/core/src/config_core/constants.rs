@@ -34,8 +34,9 @@ pub const MIN_LINE_HEIGHT: f32 = 0.8;
 /// unusably sparse.
 pub const MAX_LINE_HEIGHT: f32 = 2.5;
 pub(crate) const DEFAULT_SCROLLBACK_HISTORY: usize = 1000;
-/// Upper clamp for scrollback lines. Each pane eagerly grows toward
-/// `lines × cols × ~24 bytes` of grid memory, so at 200 columns this cap
+/// Upper clamp for scrollback lines. Each pane grows toward at most
+/// `lines × cols × 24 bytes` of grid memory (dense cells; packed history
+/// rows use less), so at 200 columns this cap
 /// bounds a pane to roughly 100 MB; the previous 100k cap allowed ~480 MB
 /// from a single config line.
 pub(crate) const MAX_SCROLLBACK_HISTORY: usize = 20_000;

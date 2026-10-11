@@ -945,6 +945,7 @@ impl Transport {
     pub(crate) fn write_protocol_reply_owned(&self, input: Vec<u8>) -> io::Result<()> {
         match self.writer.write_protocol_reply_owned(input) {
             Ok(()) => Ok(()),
+            Err(error) if error.kind() == ErrorKind::WouldBlock => Err(error),
             Err(error) => {
                 self.writer.close();
                 Err(error)
@@ -1018,13 +1019,19 @@ fn queue_reader_protocol_reply(writer: &WriterHandle, reply: Vec<u8>) -> bool {
     if reply.is_empty() {
         return true;
     }
-    if writer.write_protocol_reply_owned(reply).is_ok() {
-        true
-    } else {
-        // The control thread terminates the child and closes the pseudoconsole;
-        // continuing without the reply could leave the child waiting forever.
-        writer.close();
-        false
+    match writer.write_protocol_reply_owned(reply) {
+        Ok(()) => true,
+        // A full backlog means the child is not reading its input, e.g. `cat`
+        // of a file full of queries. Drop the reply instead of the session.
+        Err(error) if error.kind() == ErrorKind::WouldBlock => {
+            log::warn!("dropping terminal protocol reply: {error}");
+            true
+        }
+        Err(_) => {
+            // The control thread terminates the child and closes the pseudoconsole.
+            writer.close();
+            false
+        }
     }
 }
 
@@ -1042,7 +1049,11 @@ fn run_writer(
     let mut current_write: Option<ReservedWrite> = None;
     let mut current_protocol_reply: Option<ReservedWrite> = None;
     while !control.state.is_closed() {
-        if current_protocol_reply.is_none() {
+        // Replies go between writes, never inside one: a write is a whole
+        // key sequence or bracketed paste that must reach the child intact.
+        if current_protocol_reply.is_none()
+            && current_write.as_ref().is_none_or(|write| write.offset == 0)
+        {
             current_protocol_reply = protocol_replies.pop();
         }
         if current_protocol_reply.is_none() && current_write.is_none() {
@@ -1057,7 +1068,9 @@ fn run_writer(
         }
 
         // The wake that released recv may correspond to a priority reply.
-        if current_protocol_reply.is_none() {
+        if current_protocol_reply.is_none()
+            && current_write.as_ref().is_none_or(|write| write.offset == 0)
+        {
             current_protocol_reply = protocol_replies.pop();
         }
         let writing_protocol_reply = current_protocol_reply.is_some();

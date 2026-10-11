@@ -2,30 +2,34 @@
 
 use std::sync::Arc;
 
-pub(super) const MAX_COMBINING_BYTES: usize = 256;
+/// Marks retained per cell. The longest standard emoji ZWJ suffix is about
+/// 31 bytes; a larger cap only lets hostile output grow every cell (and makes
+/// each append, which copies the suffix, quadratic in the cap).
+pub(super) const MAX_COMBINING_BYTES: usize = 64;
 
-/// A color occupies four bytes, including its default/indexed/RGB tag.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Color(u32);
+/// A color occupies four bytes, including its default/indexed/RGB tag. Bytes
+/// rather than a `u32` keep [`Style`] 1-aligned and free of padding.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Color([u8; 4]);
 
 impl Color {
-    pub const DEFAULT: Self = Self(0);
+    pub const DEFAULT: Self = Self([0; 4]);
     pub const fn indexed(index: u8) -> Self {
-        Self(0x0100_0000 | index as u32)
+        Self([1, 0, 0, index])
     }
     pub const fn rgb(r: u8, g: u8, b: u8) -> Self {
-        Self(0x0200_0000 | ((r as u32) << 16) | ((g as u32) << 8) | b as u32)
+        Self([2, r, g, b])
     }
     pub const fn as_indexed(self) -> Option<u8> {
-        if self.0 >> 24 == 1 {
-            Some(self.0 as u8)
+        if self.0[0] == 1 {
+            Some(self.0[3])
         } else {
             None
         }
     }
     pub const fn as_rgb(self) -> Option<(u8, u8, u8)> {
-        if self.0 >> 24 == 2 {
-            Some(((self.0 >> 16) as u8, (self.0 >> 8) as u8, self.0 as u8))
+        if self.0[0] == 2 {
+            Some((self.0[1], self.0[2], self.0[3]))
         } else {
             None
         }
@@ -44,26 +48,26 @@ pub enum UnderlineStyle {
     Dashed,
 }
 
+/// Ten 1-aligned bytes, so a cell with its flags and extra pointer is 24 B.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Style {
     pub foreground: Color,
     pub background: Color,
-    pub underline_color: Color,
-    pub attributes: u16,
+    pub attributes: u8,
     pub underline: UnderlineStyle,
 }
 
 impl Style {
-    pub const BOLD: u16 = 1;
-    pub const DIM: u16 = 1 << 1;
-    pub const ITALIC: u16 = 1 << 2;
-    pub const INVERSE: u16 = 1 << 3;
-    pub const HIDDEN: u16 = 1 << 4;
-    pub const STRIKE: u16 = 1 << 5;
-    pub const BLINK: u16 = 1 << 6;
-    pub const PROTECTED: u16 = 1 << 7;
+    pub const BOLD: u8 = 1;
+    pub const DIM: u8 = 1 << 1;
+    pub const ITALIC: u8 = 1 << 2;
+    pub const INVERSE: u8 = 1 << 3;
+    pub const HIDDEN: u8 = 1 << 4;
+    pub const STRIKE: u8 = 1 << 5;
+    pub const BLINK: u8 = 1 << 6;
+    pub const PROTECTED: u8 = 1 << 7;
 
-    pub fn set(&mut self, flags: u16, enabled: bool) {
+    pub fn set(&mut self, flags: u8, enabled: bool) {
         if enabled {
             self.attributes |= flags;
         } else {
@@ -82,17 +86,30 @@ pub struct Hyperlink {
 pub struct CellExtra {
     pub combining: String,
     pub hyperlink: Option<Arc<Hyperlink>>,
+    /// SGR 58. Rare, so it lives here instead of on every cell's style.
+    pub underline_color: Color,
 }
 
-/// Plain cells allocate nothing. Uncommon combining text and OSC 8 metadata
-/// live behind a shared pointer so row copies do not copy strings.
+impl CellExtra {
+    fn is_empty(&self) -> bool {
+        self.combining.is_empty()
+            && self.hyperlink.is_none()
+            && self.underline_color == Color::DEFAULT
+    }
+}
+
+/// Plain cells allocate nothing. Uncommon combining text, OSC 8 metadata and
+/// underline colors live behind a shared pointer so row copies do not copy
+/// strings.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Cell {
     pub character: char,
     pub style: Style,
-    pub flags: u16,
+    pub flags: u8,
     pub extra: Option<Arc<CellExtra>>,
 }
+
+const _: () = assert!(size_of::<Style>() == 10 && size_of::<Cell>() == 24);
 
 impl Default for Cell {
     fn default() -> Self {
@@ -106,9 +123,9 @@ impl Default for Cell {
 }
 
 impl Cell {
-    pub const WIDE: u16 = 1;
-    pub const WIDE_SPACER: u16 = 1 << 1;
-    pub const LEADING_WIDE_SPACER: u16 = 1 << 2;
+    pub const WIDE: u8 = 1;
+    pub const WIDE_SPACER: u8 = 1 << 1;
+    pub const LEADING_WIDE_SPACER: u8 = 1 << 2;
     pub fn combining(&self) -> &str {
         self.extra
             .as_ref()
@@ -118,6 +135,47 @@ impl Cell {
         self.extra
             .as_ref()
             .and_then(|extra| extra.hyperlink.as_ref())
+    }
+    pub fn underline_color(&self) -> Color {
+        self.extra
+            .as_ref()
+            .map_or(Color::DEFAULT, |extra| extra.underline_color)
+    }
+    pub(super) fn set_underline_color(&mut self, color: Color) {
+        if self.underline_color() == color {
+            return;
+        }
+        let extra = self
+            .extra
+            .get_or_insert_with(|| Arc::new(CellExtra::default()));
+        Arc::make_mut(extra).underline_color = color;
+        if extra.is_empty() {
+            self.extra = None;
+        }
+    }
+    /// The right half of a wide character. It keeps the style and underline
+    /// color so decorations span both columns, but no text or link.
+    pub(super) fn wide_spacer(&self) -> Self {
+        let extra = self
+            .extra
+            .as_ref()
+            .filter(|extra| extra.underline_color != Color::DEFAULT)
+            .map(|extra| {
+                if extra.combining.is_empty() && extra.hyperlink.is_none() {
+                    Arc::clone(extra)
+                } else {
+                    Arc::new(CellExtra {
+                        underline_color: extra.underline_color,
+                        ..CellExtra::default()
+                    })
+                }
+            });
+        Self {
+            character: ' ',
+            style: self.style,
+            flags: Self::WIDE_SPACER,
+            extra,
+        }
     }
     pub(super) fn push_combining(&mut self, character: char) {
         // Bound a hostile stream of combining marks attached to a single cell.

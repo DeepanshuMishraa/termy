@@ -83,7 +83,7 @@ impl CellBuffer {
         };
         out[1] = raw_color(cell.style.foreground);
         out[2] = raw_color(cell.style.background);
-        out[3] = raw_color(cell.style.underline_color);
+        out[3] = raw_color(cell.underline_color());
         out[4] = u32::from(cell.style.attributes)
             | (u32::from(cell.flags & 0x7) << 16)
             | (underline_code(cell.style.underline) << 20);

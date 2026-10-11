@@ -14,20 +14,27 @@ impl KittyGraphicsCommand {
         self.char_value('a').unwrap_or('t')
     }
 
-    pub(crate) fn parse(mut bytes: Vec<u8>, oversized: bool) -> Self {
+    pub(crate) fn parse(bytes: Vec<u8>, oversized: bool) -> Self {
+        Self::parse_after(bytes, 0, oversized)
+    }
+
+    /// Parse the command that starts at `start`, keeping the payload in the
+    /// given allocation instead of copying it past a prefix.
+    pub(crate) fn parse_after(mut bytes: Vec<u8>, start: usize, oversized: bool) -> Self {
+        let body = &bytes[start.min(bytes.len())..];
         // A missing separator must not turn a payload-sized command into a control string.
         // Inspect one byte past the limit so a separator at the exact boundary is accepted.
-        let separator = bytes[..bytes.len().min(MAX_CONTROL_BYTES + 1)]
+        let separator = body[..body.len().min(MAX_CONTROL_BYTES + 1)]
             .iter()
             .position(|byte| *byte == b';');
-        let control_oversized = separator.is_none() && bytes.len() > MAX_CONTROL_BYTES;
-        let control_end = separator.unwrap_or(bytes.len().min(MAX_CONTROL_BYTES));
-        let field_count = bytes[..control_end]
+        let control_oversized = separator.is_none() && body.len() > MAX_CONTROL_BYTES;
+        let control_end = separator.unwrap_or(body.len().min(MAX_CONTROL_BYTES));
+        let field_count = body[..control_end]
             .split(|byte| *byte == b',')
             .take(MAX_CONTROL_FIELDS + 1)
             .count();
         let fields_oversized = field_count > MAX_CONTROL_FIELDS;
-        let control = bytes[..control_end]
+        let control = body[..control_end]
             .split(|byte| *byte == b',')
             .take(MAX_CONTROL_FIELDS)
             .filter_map(|field| {
@@ -48,7 +55,7 @@ impl KittyGraphicsCommand {
         } else if let Some(index) = separator {
             // Keep the potentially large payload in the parser's allocation. Draining the
             // small control prefix moves it in place instead of cloning it into another Vec.
-            bytes.drain(..=index);
+            bytes.drain(..=start + index);
             bytes
         } else {
             Vec::new()

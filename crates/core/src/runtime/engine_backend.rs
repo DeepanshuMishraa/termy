@@ -271,6 +271,16 @@ impl Backend {
         }
     }
 
+    pub(super) fn with_render_damage<R>(
+        &self,
+        read: impl FnOnce(TerminalRenderDamageSnapshot, TerminalDamageCells<'_>) -> R,
+    ) -> R {
+        match self {
+            Self::Custom(backend) => backend.with_render_damage(read),
+            Self::Remote(backend) => backend.with_render_damage(read),
+        }
+    }
+
     pub(super) fn render_read(&self, force_full: bool) -> TerminalRenderRead {
         match self {
             Self::Custom(backend) => backend.render_read(force_full),

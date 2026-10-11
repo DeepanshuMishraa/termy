@@ -6,8 +6,10 @@
 //! status and the remaining integration gates.
 
 mod dispatch;
+pub(crate) use dispatch::percent_decode;
 mod graphics;
 mod grid;
+mod hyperlinks;
 pub mod media;
 mod parser;
 mod queries;
@@ -29,6 +31,8 @@ pub use types::{
 use dispatch::State;
 use parser::Parser;
 use sync::SynchronizedUpdate;
+
+use crate::kitty_graphics::{KittyPreparedUpload, KittyUpload};
 
 const MAX_EVENTS: usize = 1024;
 const MAX_REPLY_BYTES: usize = 64 * 1024;
@@ -116,7 +120,38 @@ impl Engine {
         self.feed_at(bytes, Instant::now());
     }
 
+    /// Like [`Self::feed`], but stops right after a kitty image upload
+    /// completes, without decoding it, and returns the bytes consumed. The
+    /// caller decodes [`Self::take_deferred_upload`] (e.g. without holding a
+    /// lock), passes the result to [`Self::commit_upload`], then feeds the
+    /// rest. Uploads inside a synchronized update are still applied inline.
+    pub(crate) fn feed_deferring_uploads(&mut self, bytes: &[u8]) -> usize {
+        self.feed_impl(bytes, Instant::now(), true)
+    }
+
+    pub(crate) fn has_deferred_upload(&self) -> bool {
+        self.state.has_deferred_upload()
+    }
+
+    pub(crate) fn take_deferred_upload(&mut self) -> Option<KittyUpload> {
+        self.state.take_deferred_upload()
+    }
+
+    pub(crate) fn commit_upload(&mut self, prepared: KittyPreparedUpload) {
+        self.state.commit_upload(prepared);
+        self.state.flush_graphics_effects();
+        self.generation = self.generation.wrapping_add(1);
+    }
+
     fn feed_at(&mut self, bytes: &[u8], now: Instant) {
+        self.feed_impl(bytes, now, false);
+    }
+
+    fn feed_impl(&mut self, bytes: &[u8], now: Instant, defer_uploads: bool) -> usize {
+        // An upload nobody took must not keep pausing the parser.
+        if let Some(upload) = self.state.take_deferred_upload() {
+            self.commit_upload(upload.prepare());
+        }
         self.state.grid.prepare_output(bytes.len());
         if self
             .synchronized_update_deadline()
@@ -134,7 +169,9 @@ impl Engine {
                 }
             } else {
                 let end = offset.saturating_add(PARSE_CHUNK).min(bytes.len());
+                self.state.set_defer_uploads(defer_uploads);
                 let consumed = self.parser.advance(&mut self.state, &bytes[offset..end]);
+                self.state.set_defer_uploads(false);
                 offset += consumed;
                 self.state.flush_graphics_effects();
                 self.generation = self.generation.wrapping_add(1);
@@ -142,8 +179,12 @@ impl Engine {
                     self.synchronized_update
                         .begin(now, self.state.saved_private_mode(2026));
                 }
+                if self.state.has_deferred_upload() {
+                    break;
+                }
             }
         }
+        offset
     }
 
     /// The runtime can schedule a watchdog without polling or copying a frame.

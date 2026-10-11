@@ -73,25 +73,24 @@ impl KittyGraphicsState {
                     });
                 }
                 PlacementLocation::Virtual => {
+                    // Whether `current` is the image's prototype is the same
+                    // for every placeholder, so resolve it once.
+                    let prototype = self
+                        .placements
+                        .iter()
+                        .rev()
+                        .find(|candidate| {
+                            candidate.screen == current.screen
+                                && candidate.image_id == current.image_id
+                                && matches!(candidate.location, PlacementLocation::Virtual)
+                        })
+                        .is_some_and(|candidate| {
+                            candidate.placement_serial == current.placement_serial
+                        });
                     let matching = placeholders.iter().filter(|placeholder| {
                         placeholder.image_id == current.image_id
                             && (placeholder.placement_id == current.placement_id
-                                || (placeholder.placement_id == 0
-                                    && self
-                                        .placements
-                                        .iter()
-                                        .rev()
-                                        .find(|candidate| {
-                                            candidate.screen == current.screen
-                                                && candidate.image_id == current.image_id
-                                                && matches!(
-                                                    candidate.location,
-                                                    PlacementLocation::Virtual
-                                                )
-                                        })
-                                        .is_some_and(|candidate| {
-                                            candidate.placement_serial == current.placement_serial
-                                        })))
+                                || (placeholder.placement_id == 0 && prototype))
                     });
                     let (row, col) = if relative {
                         matching.fold(None, |origin, placeholder| {
@@ -178,11 +177,9 @@ impl KittyGraphicsState {
         }
         for id in removed_images {
             if !self.placements.iter().any(|p| p.image_id == id) {
-                if let Some(image) = self.images.remove(&id) {
-                    self.stored_bytes = self.stored_bytes.saturating_sub(image.byte_len());
-                }
-                self.insertion_order.retain(|candidate| *candidate != id);
+                self.forget_image(id);
             }
         }
+        self.release_unplaced_anonymous_images();
     }
 }

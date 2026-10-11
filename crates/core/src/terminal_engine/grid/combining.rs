@@ -88,6 +88,7 @@ impl CombiningCache {
         }
 
         let link_pointer = hyperlink.map_or(std::ptr::null(), Arc::as_ptr);
+        let underline_color = cell.underline_color();
         // Use the full resulting byte string as the key; grouping does not
         // affect identity when a value was built over different feed chunks.
         let bucket = bucket_for(suffix.as_bytes(), encoded, link_pointer as usize);
@@ -98,6 +99,7 @@ impl CombiningCache {
                 .map_or(std::ptr::null(), Arc::as_ptr)
                 == link_pointer;
             if same_link
+                && entry.underline_color == underline_color
                 && entry.combining.len() == len
                 && bytes_equal(
                     &entry.combining.as_bytes()[..suffix.len()],
@@ -116,6 +118,7 @@ impl CombiningCache {
         let extra = Arc::new(CellExtra {
             combining,
             hyperlink: hyperlink.cloned(),
+            underline_color,
         });
         let slot = usize::from(self.next[bucket]);
         self.next[bucket] = ((slot + 1) % WAYS) as u8;
@@ -218,6 +221,7 @@ mod tests {
                     id: "first".into(),
                     uri: "https://one.test".into(),
                 })),
+                ..CellExtra::default()
             })),
             ..Cell::default()
         };
@@ -228,6 +232,7 @@ mod tests {
                     id: "second".into(),
                     uri: "https://two.test".into(),
                 })),
+                ..CellExtra::default()
             })),
             ..Cell::default()
         };
@@ -292,6 +297,7 @@ mod tests {
             extra: Some(Arc::new(CellExtra {
                 combining: String::new(),
                 hyperlink: Some(Arc::clone(&link)),
+                ..CellExtra::default()
             })),
             ..Cell::default()
         };

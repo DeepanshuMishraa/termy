@@ -34,6 +34,7 @@ pub(super) enum EditableField {
     ScrollbarStyle,
     PaneFocusEffect,
     PaneFocusStrength,
+    ClipboardRead,
     TabFallbackTitle,
     TabTitlePriority,
     TabTitleMode,
@@ -433,7 +434,8 @@ impl SettingsWindow {
             | EditableField::ScrollbarVisibility
             | EditableField::ScrollbarStyle
             | EditableField::PaneFocusEffect
-            | EditableField::PaneFocusStrength => Self::terminal_field_spec(field),
+            | EditableField::PaneFocusStrength
+            | EditableField::ClipboardRead => Self::terminal_field_spec(field),
             EditableField::TabFallbackTitle
             | EditableField::TabTitlePriority
             | EditableField::TabTitleMode
@@ -585,6 +587,7 @@ impl SettingsWindow {
             }
             EditableField::ScrollbarStyle => Self::enum_field_spec(RootSettingId::ScrollbarStyle),
             EditableField::PaneFocusEffect => Self::enum_field_spec(RootSettingId::PaneFocusEffect),
+            EditableField::ClipboardRead => Self::enum_field_spec(RootSettingId::ClipboardRead),
             EditableField::PaneFocusStrength => Self::numeric_field_spec(
                 RootSettingId::PaneFocusStrength,
                 NumericStepSpec {
@@ -942,6 +945,7 @@ impl SettingsWindow {
                 termy_core::config_core::TerminalScrollbarStyle::Theme => "theme",
             }
             .to_string(),
+            EditableField::ClipboardRead => self.config.clipboard_read.as_str().to_string(),
             EditableField::PaneFocusEffect => match self.config.pane_focus_effect {
                 termy_core::config_core::PaneFocusEffect::Off => "off",
                 termy_core::config_core::PaneFocusEffect::SoftSpotlight => "soft_spotlight",
@@ -1292,6 +1296,7 @@ mod tests {
             EditableField::ScrollbarStyle,
             EditableField::PaneFocusEffect,
             EditableField::PaneFocusStrength,
+            EditableField::ClipboardRead,
             EditableField::TabFallbackTitle,
             EditableField::TabTitlePriority,
             EditableField::TabTitleMode,
@@ -1328,6 +1333,7 @@ mod tests {
             EditableField::ScrollbarVisibility,
             EditableField::ScrollbarStyle,
             EditableField::PaneFocusEffect,
+            EditableField::ClipboardRead,
             EditableField::AppIcon,
             EditableField::TabTitleMode,
             EditableField::TabCloseVisibility,

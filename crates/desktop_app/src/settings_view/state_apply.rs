@@ -33,7 +33,8 @@ impl SettingsWindow {
             | EditableField::ScrollbarVisibility
             | EditableField::ScrollbarStyle
             | EditableField::PaneFocusEffect
-            | EditableField::PaneFocusStrength => self.apply_terminal_field(field, value),
+            | EditableField::PaneFocusStrength
+            | EditableField::ClipboardRead => self.apply_terminal_field(field, value),
             EditableField::TabFallbackTitle
             | EditableField::TabTitlePriority
             | EditableField::TabTitleMode
@@ -419,6 +420,18 @@ impl SettingsWindow {
                 config::set_root_setting(
                     termy_core::config_core::RootSettingId::ScrollbarStyle,
                     canonical,
+                )
+            }
+            EditableField::ClipboardRead => {
+                let parsed = value
+                    .parse::<termy_core::config_core::ClipboardReadPolicy>()
+                    .map_err(|()| {
+                        "Clipboard read access must be ask, allow, or deny".to_string()
+                    })?;
+                self.config.clipboard_read = parsed;
+                config::set_root_setting(
+                    termy_core::config_core::RootSettingId::ClipboardRead,
+                    parsed.as_str(),
                 )
             }
             EditableField::PaneFocusEffect => {

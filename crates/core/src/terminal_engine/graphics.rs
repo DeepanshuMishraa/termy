@@ -8,8 +8,9 @@ use web_time::Instant;
 
 use super::{Color, dispatch::State, types::GridEffect};
 use crate::{
-    KittyGraphicsCommand, KittyGraphicsPlaceholder, KittyGraphicsRenderPlacement,
-    KittyGraphicsScreen, KittyGraphicsState, TerminalSize,
+    KittyGraphicsApplyResult, KittyGraphicsCommand, KittyGraphicsPlaceholder,
+    KittyGraphicsRenderPlacement, KittyGraphicsScreen, KittyGraphicsState, TerminalSize,
+    kitty_graphics::{KittyPreparedUpload, KittyUpload},
 };
 
 #[derive(Default)]
@@ -20,6 +21,10 @@ pub(super) struct Graphics {
     placeholders: Vec<KittyGraphicsPlaceholder>,
     last_view: Option<(bool, usize, usize, usize, usize)>,
     size: Option<TerminalSize>,
+    // While set, a completed upload stops the parser undecoded (see
+    // `Engine::feed_deferring_uploads`) and waits in `deferred`.
+    defer_uploads: bool,
+    deferred: Option<KittyUpload>,
     #[cfg(test)]
     placeholder_scans: usize,
 }
@@ -84,7 +89,7 @@ impl State {
                         row as i64,
                         col,
                         placeholder_id(cell.style.foreground),
-                        placeholder_id(cell.style.underline_color),
+                        placeholder_id(cell.underline_color()),
                         diacritics,
                         previous,
                     );
@@ -188,13 +193,14 @@ impl State {
             .set_effect_tracking(self.graphics.state.needs_grid_effects());
     }
 
-    pub(super) fn apply_graphics(&mut self, bytes: &[u8]) {
-        let Some(body) = bytes.strip_prefix(b"G") else {
+    pub(super) fn apply_graphics(&mut self, bytes: &mut Vec<u8>) {
+        if bytes.first() != Some(&b'G') {
             return;
-        };
+        }
         self.flush_graphics_effects();
         self.resize_graphics();
-        let command = KittyGraphicsCommand::parse(body.to_vec(), false);
+        // Take the parser's buffer: payloads reach hundreds of MiB.
+        let command = KittyGraphicsCommand::parse_after(std::mem::take(bytes), 1, false);
         // Only placement deletion resolves positions from placeholder cells.
         // In particular, upload continuations must not scan the whole viewport.
         if command.needs_placeholder_positions() {
@@ -203,14 +209,63 @@ impl State {
             self.graphics.placeholders.clear();
         }
         let screen = KittyGraphicsScreen::from_alternate_screen(self.alternate_screen);
-        let result = self.graphics.state.apply_on_screen_with_placeholders(
-            command,
+        let cursor = (self.grid.cursor.col, self.grid.cursor.row);
+        let (history_size, size) = (self.grid.history_size(), self.graphics_size());
+        let placeholders = &self.graphics.placeholders;
+        let result = if self.graphics.defer_uploads {
+            let (result, upload) = self.graphics.state.apply_deferring_upload(
+                command,
+                cursor,
+                history_size,
+                size,
+                screen,
+                placeholders,
+            );
+            self.graphics.deferred = upload;
+            result
+        } else {
+            self.graphics.state.apply_on_screen_with_placeholders(
+                command,
+                cursor,
+                history_size,
+                size,
+                screen,
+                placeholders,
+            )
+        };
+        self.finish_graphics_command(result, screen);
+    }
+
+    pub(super) fn set_defer_uploads(&mut self, defer: bool) {
+        self.graphics.defer_uploads = defer;
+    }
+
+    pub(super) fn has_deferred_upload(&self) -> bool {
+        self.graphics.deferred.is_some()
+    }
+
+    pub(super) fn take_deferred_upload(&mut self) -> Option<KittyUpload> {
+        self.graphics.deferred.take()
+    }
+
+    pub(super) fn commit_upload(&mut self, prepared: KittyPreparedUpload) {
+        self.flush_graphics_effects();
+        self.resize_graphics();
+        let screen = KittyGraphicsScreen::from_alternate_screen(self.alternate_screen);
+        let result = self.graphics.state.commit_upload(
+            prepared,
             (self.grid.cursor.col, self.grid.cursor.row),
             self.grid.history_size(),
             self.graphics_size(),
-            screen,
-            &self.graphics.placeholders,
         );
+        self.finish_graphics_command(result, screen);
+    }
+
+    fn finish_graphics_command(
+        &mut self,
+        result: KittyGraphicsApplyResult,
+        screen: KittyGraphicsScreen,
+    ) {
         if let Some(reply) = result.response {
             self.reply(&reply);
         }
@@ -512,5 +567,107 @@ mod tests {
             engine.state.graphics.effects.capacity() * size_of::<super::GridEffect>()
                 < 4 * 1024 * 1024
         );
+    }
+
+    fn row_text(engine: &Engine, row: usize) -> String {
+        engine
+            .viewport_row(row)
+            .unwrap()
+            .iter()
+            .map(|cell| cell.character)
+            .collect::<String>()
+            .trim_end()
+            .to_string()
+    }
+
+    fn drain(engine: &mut Engine) -> Vec<u8> {
+        let mut replies = Vec::new();
+        engine.drain_replies(&mut replies);
+        replies
+    }
+
+    #[test]
+    fn deferred_uploads_pause_the_parser_and_commit_in_stream_order() {
+        let upload = b"\x1b_Ga=T,f=32,s=1,v=1,i=7,c=2,r=1;AQID/w==\x1b\\".as_slice();
+        let chunked = b"\x1b_Ga=T,f=32,s=1,v=1,i=7,c=2,r=1,m=1;AQID\x1b\\\x1b_Gm=0;/w==\x1b\\";
+        for upload in [upload, chunked.as_slice()] {
+            let input = [b"before\x1b[6n".as_slice(), upload, b"after\x1b[6n"].concat();
+            let size = Size { cols: 20, rows: 4 };
+            let mut expected = Engine::new(size, Options::default());
+            expected.feed(&input);
+
+            let mut engine = Engine::new(size, Options::default());
+            let consumed = engine.feed_deferring_uploads(&input);
+            assert_eq!(consumed, b"before\x1b[6n".len() + upload.len());
+            assert_eq!(row_text(&engine, 0), "before");
+            let deferred = engine.take_deferred_upload().expect("upload is deferred");
+            assert!(engine.take_deferred_upload().is_none());
+            assert!(engine.graphics_placements().is_empty());
+            let mut replies = drain(&mut engine);
+            assert_eq!(replies, b"\x1b[1;7R");
+
+            engine.commit_upload(deferred.prepare());
+            assert_eq!(engine.graphics_placements().len(), 1);
+            assert_eq!(
+                engine.feed_deferring_uploads(&input[consumed..]),
+                input.len() - consumed
+            );
+            assert!(engine.take_deferred_upload().is_none());
+            replies.extend(drain(&mut engine));
+            assert_eq!(replies, drain(&mut expected));
+            assert_eq!(row_text(&engine, 0), row_text(&expected, 0));
+            assert_eq!(row_text(&engine, 1), row_text(&expected, 1));
+            assert!(row_text(&engine, 1).ends_with("after"));
+            assert_eq!(engine.cursor(), expected.cursor());
+            assert_eq!(
+                engine.graphics_placements().len(),
+                expected.graphics_placements().len()
+            );
+        }
+    }
+
+    #[test]
+    fn deferred_upload_failures_reply_at_commit() {
+        let mut engine = Engine::new(Size { cols: 20, rows: 4 }, Options::default());
+        let input = b"\x1b_Ga=t,f=100,i=3;AQID/w==\x1b\\\x1b_Ga=t,f=32,s=1,v=1,i=4;!!\x1b\\";
+        let consumed = engine.feed_deferring_uploads(input);
+        let png = engine.take_deferred_upload().unwrap().prepare();
+        assert!(drain(&mut engine).is_empty());
+        engine.commit_upload(png);
+        assert_eq!(
+            drain(&mut engine),
+            b"\x1b_Gi=3;EINVAL:invalid PNG image\x1b\\"
+        );
+
+        assert_eq!(
+            engine.feed_deferring_uploads(&input[consumed..]),
+            input.len() - consumed
+        );
+        let invalid = engine.take_deferred_upload().unwrap().prepare();
+        engine.commit_upload(invalid);
+        assert_eq!(
+            drain(&mut engine),
+            b"\x1b_Gi=4;EINVAL:invalid base64 payload\x1b\\"
+        );
+    }
+
+    #[test]
+    fn synchronized_updates_apply_uploads_atomically() {
+        let mut engine = Engine::new(Size { cols: 20, rows: 4 }, Options::default());
+        let input = b"\x1b[?2026h\x1b_Ga=T,f=32,s=1,v=1,i=7,q=2;AQID/w==\x1b\\after\x1b[?2026l";
+        assert_eq!(engine.feed_deferring_uploads(input), input.len());
+        assert!(engine.take_deferred_upload().is_none());
+        assert_eq!(engine.graphics_placements().len(), 1);
+        assert_eq!(row_text(&engine, 1).trim_start(), "after");
+    }
+
+    #[test]
+    fn an_untaken_deferred_upload_commits_before_more_output() {
+        let mut engine = Engine::new(Size { cols: 20, rows: 4 }, Options::default());
+        let input = b"\x1b_Ga=T,f=32,s=1,v=1,i=7,q=2;AQID/w==\x1b\\after";
+        let consumed = engine.feed_deferring_uploads(input);
+        engine.feed(&input[consumed..]);
+        assert_eq!(engine.graphics_placements().len(), 1);
+        assert_eq!(row_text(&engine, 1).trim_start(), "after");
     }
 }
