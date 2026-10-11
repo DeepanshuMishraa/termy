@@ -1,5 +1,5 @@
 <p align="center">
-  <img alt="Termy — The terminal, at full speed" src="./assets/termy-readme-hero.png" width="900" />
+  <img alt="Termy — The terminal, at full speed" src="./assets/termy-readme-hero-v2.png" width="900" />
 </p>
 
 <p align="center">
