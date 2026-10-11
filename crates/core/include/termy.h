@@ -38,6 +38,8 @@ typedef enum {
   TERMY_FFI_EVENT_WORKING_DIRECTORY = 12,
   /* UTF-8 JSON array of OSC 7501 records in payload; replaces the prior snapshot. */
   TERMY_FFI_EVENT_PROGRAM_STATUS = 13,
+  /* Keys or a paste were dropped because the program's input backlog is full. */
+  TERMY_FFI_EVENT_INPUT_DROPPED = 14,
 } TermyFfiEventKind;
 
 typedef enum {

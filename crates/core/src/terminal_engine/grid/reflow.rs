@@ -1,4 +1,5 @@
 //! Width-change reflow: rewraps logical lines into a bounded output window.
+use super::history::HISTORY_BYTE_BUDGET;
 use super::{Cell, Grid, Row, Size, print};
 use std::collections::VecDeque;
 
@@ -7,6 +8,9 @@ use std::collections::VecDeque;
 /// viewport anchors can be remapped without materializing the entire result.
 struct ReflowWindow {
     rows: VecDeque<Row>,
+    // Heap bytes of `rows`, and the oldest row not yet packed for the budget.
+    bytes: usize,
+    next_pack: usize,
     spare: Vec<Row>,
     size: Size,
     limit: usize,
@@ -23,6 +27,8 @@ impl ReflowWindow {
     fn new(size: Size, history_limit: usize) -> Self {
         Self {
             rows: VecDeque::new(),
+            bytes: 0,
+            next_pack: 0,
             spare: Vec::new(),
             size,
             limit: history_limit + size.rows,
@@ -80,12 +86,39 @@ impl ReflowWindow {
             return;
         }
         if self.rows.len() == self.limit {
-            if let Some(evicted) = self.rows.pop_front() {
-                self.recycle(evicted);
-            }
-            self.first += 1;
+            self.evict();
         }
+        self.bytes += row.heap_bytes();
         self.rows.push_back(row);
+        self.fit_byte_budget();
+    }
+
+    /// Rewrapped rows are dense at the new width. Pack the oldest rows above
+    /// the last screenful first, so a wide resize stays within the history
+    /// byte budget instead of evicting history that fits packed. Each row is
+    /// packed at most once.
+    fn fit_byte_budget(&mut self) {
+        let budget = HISTORY_BYTE_BUDGET + self.size.rows * self.size.cols * size_of::<Cell>();
+        let packable = self.rows.len().saturating_sub(self.size.rows);
+        while self.bytes > budget && self.next_pack < packable {
+            let row = &mut self.rows[self.next_pack];
+            let before = row.heap_bytes();
+            row.compact();
+            self.bytes = self.bytes - before + row.heap_bytes();
+            self.next_pack += 1;
+        }
+        while self.bytes > budget && self.rows.len() > self.size.rows {
+            self.evict();
+        }
+    }
+
+    fn evict(&mut self) {
+        if let Some(evicted) = self.rows.pop_front() {
+            self.bytes -= evicted.heap_bytes();
+            self.next_pack = self.next_pack.saturating_sub(1);
+            self.recycle(evicted);
+        }
+        self.first += 1;
     }
 }
 
@@ -108,10 +141,8 @@ impl Grid {
             self.primary.rows.pop_back();
         }
         let source = self.history.drain(..).chain(self.primary.rows.drain(..));
-        let mut output = ReflowWindow::new(
-            size,
-            Self::bounded_history(size, self.requested_history_limit),
-        );
+        let mut output =
+            ReflowWindow::new(size, Self::bounded_history(self.requested_history_limit));
         let mut logical = Vec::new();
         let mut logical_cursor = None;
         let mut logical_boundary = None;
@@ -196,6 +227,7 @@ impl Grid {
         }
         self.primary.rows = output.rows.split_off(split - output.first);
         self.history = output.rows;
+        self.recount_history_bytes();
         // Rows kept in place may still be packed; the live screen is dense.
         for row in &mut self.primary.rows {
             row.make_dense();

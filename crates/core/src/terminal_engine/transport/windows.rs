@@ -421,6 +421,19 @@ impl WriterHandle {
         self.enqueue_reserved(bytes, reservation)
     }
 
+    fn write_motion_owned(&self, bytes: Vec<u8>) -> io::Result<()> {
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        if self.control.state.is_closed() {
+            return Err(pty_closed_error());
+        }
+        let Some(reservation) = self.budget.reserve_motion(bytes.capacity()) else {
+            return Err(writer_full_error());
+        };
+        self.enqueue_reserved(bytes, reservation)
+    }
+
     fn write(&self, bytes: &[u8]) -> io::Result<()> {
         let Some(reservation) = self.reserve_write(bytes.len())? else {
             return Ok(());
@@ -552,18 +565,33 @@ impl WriteBudget {
     }
 
     fn reserve(self: &Arc<Self>, bytes: usize) -> Option<WriteReservation> {
-        if bytes == 0 || bytes > self.max_bytes {
+        self.reserve_within(bytes, self.max_bytes, self.max_entries)
+    }
+
+    /// Mouse motion may fill only half of the budget, so reports to a stalled
+    /// program leave room for keys and pastes.
+    fn reserve_motion(self: &Arc<Self>, bytes: usize) -> Option<WriteReservation> {
+        self.reserve_within(bytes, self.max_bytes / 2, self.max_entries / 2)
+    }
+
+    fn reserve_within(
+        self: &Arc<Self>,
+        bytes: usize,
+        max_bytes: usize,
+        max_entries: usize,
+    ) -> Option<WriteReservation> {
+        if bytes == 0 || bytes > max_bytes {
             return None;
         }
         self.entries
             .try_update(Ordering::AcqRel, Ordering::Acquire, |entries| {
-                (entries < self.max_entries).then_some(entries + 1)
+                (entries < max_entries).then_some(entries + 1)
             })
             .ok()?;
         if self
             .bytes
             .try_update(Ordering::AcqRel, Ordering::Acquire, |reserved| {
-                (reserved <= self.max_bytes - bytes).then_some(reserved + bytes)
+                (reserved <= max_bytes - bytes).then_some(reserved + bytes)
             })
             .is_err()
         {
@@ -942,6 +970,10 @@ impl Transport {
         self.writer.write_owned(input)
     }
 
+    pub(crate) fn write_motion_owned(&self, input: Vec<u8>) -> io::Result<()> {
+        self.writer.write_motion_owned(input)
+    }
+
     pub(crate) fn write_protocol_reply_owned(&self, input: Vec<u8>) -> io::Result<()> {
         match self.writer.write_protocol_reply_owned(input) {
             Ok(()) => Ok(()),
@@ -1140,6 +1172,11 @@ fn run_control(
     }
 
     if !resources.process_exited {
+        // Closing the pseudoconsole sends its clients CTRL_CLOSE_EVENT, as
+        // closing a console window does, so a shell can save its history
+        // before the fallback termination (Unix allows the same after SIGHUP).
+        resources.close_pseudo_console();
+        resources.wait_for_exit(CLOSE_GRACE_MS);
         let _ = resources.terminate_and_wait();
     }
     *exit_status

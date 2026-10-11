@@ -1003,6 +1003,10 @@ fn ffi_event_from_event(event: TerminalEvent) -> TermyFfiEvent {
             kind: 5,
             ..TermyFfiEvent::default()
         },
+        TerminalEvent::InputDropped => TermyFfiEvent {
+            kind: 14,
+            ..TermyFfiEvent::default()
+        },
         TerminalEvent::ClipboardStore(text) => TermyFfiEvent {
             kind: 6,
             payload: ffi_bytes_from_string(text),

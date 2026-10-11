@@ -571,3 +571,21 @@ fn unqueueable_live_reader_reply_is_dropped_without_ending_the_session() {
         .expect("child should exit normally");
     drop(terminal);
 }
+
+#[test]
+fn mouse_motion_fills_only_half_the_backlog_and_leaves_room_for_keys() {
+    let (writer, _receiver) = WriterHandle::channel_with_limits(WriterLimits {
+        max_bytes: 8,
+        max_entries: 4,
+    });
+    writer.write_motion_owned(b"m1".to_vec()).unwrap();
+    writer.write_motion_owned(b"m2".to_vec()).unwrap();
+    let dropped = writer
+        .write_motion_owned(b"m3".to_vec())
+        .expect_err("motion past half the backlog is dropped");
+    assert_eq!(dropped.kind(), ErrorKind::WouldBlock);
+    assert_eq!(writer.control.backlog(), (4, 2));
+    writer.write_owned(b"k1".to_vec()).unwrap();
+    writer.write_owned(b"k2".to_vec()).unwrap();
+    assert_eq!(writer.control.backlog(), (8, 4));
+}

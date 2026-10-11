@@ -449,6 +449,20 @@ fn native_write_error(
     }
 }
 
+/// Tell the user once every few seconds that typed or pasted input was lost
+/// because the program stopped reading it.
+pub(super) fn warn_input_dropped() {
+    static LAST_WARNING: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+    let mut last = LAST_WARNING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if last.is_some_and(|last| last.elapsed() < std::time::Duration::from_secs(5)) {
+        return;
+    }
+    *last = Some(std::time::Instant::now());
+    crate::ui::toast::warning("Input was dropped: the program isn't reading it");
+}
+
 #[cfg(test)]
 mod tests {
     use super::TerminalCellRef;

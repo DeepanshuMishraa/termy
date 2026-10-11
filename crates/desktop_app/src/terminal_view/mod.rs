@@ -641,6 +641,17 @@ impl Terminal {
         }
     }
 
+    fn write_mouse_motion(&self, input: Vec<u8>) {
+        match self {
+            Self::Native(terminal) => {
+                if let Ok(terminal) = terminal.lock() {
+                    terminal.write_mouse_motion(input);
+                }
+            }
+            Self::Tmux(_) => {}
+        }
+    }
+
     fn set_wakeup_enabled(&self, enabled: bool) {
         match self {
             Self::Native(terminal) => {
@@ -4098,6 +4109,7 @@ impl TerminalView {
                                 should_redraw = true;
                             }
                         }
+                        TerminalEvent::InputDropped => backend::warn_input_dropped(),
                         TerminalEvent::Bell => {
                             if tab_index == active_tab {
                                 should_redraw = true;

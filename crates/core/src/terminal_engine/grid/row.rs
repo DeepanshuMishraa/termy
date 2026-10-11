@@ -31,7 +31,8 @@ pub(super) struct PackedCells {
     cols: usize,
     background: Color,
     scalars: Vec<Scalar>,
-    styles: Vec<(usize, Style)>,
+    // Run ends (exclusive column) and styles; `u32` keeps a run at 16 bytes.
+    styles: Vec<(u32, Style)>,
     extras: Vec<(usize, Arc<CellExtra>)>,
 }
 
@@ -63,11 +64,14 @@ impl PackedCells {
                 .is_none_or(|(_, style)| *style != cell.style)
             {
                 if let Some((end, _)) = self.styles.last_mut() {
-                    *end = col;
+                    *end = col as u32;
+                } else {
+                    // Most rows have one run; don't reserve room for four.
+                    self.styles.reserve_exact(1);
                 }
-                self.styles.push((cells.len(), cell.style));
+                self.styles.push((cells.len() as u32, cell.style));
                 if fixed_bytes
-                    + self.styles.capacity() * size_of::<(usize, Style)>()
+                    + self.styles.capacity() * size_of::<(u32, Style)>()
                     + self.extras.capacity() * size_of::<(usize, Arc<CellExtra>)>()
                     >= budget
                 {
@@ -77,7 +81,7 @@ impl PackedCells {
             if let Some(extra) = &cell.extra {
                 self.extras.push((col, Arc::clone(extra)));
                 if fixed_bytes
-                    + self.styles.capacity() * size_of::<(usize, Style)>()
+                    + self.styles.capacity() * size_of::<(u32, Style)>()
                     + self.extras.capacity() * size_of::<(usize, Arc<CellExtra>)>()
                     >= budget
                 {
@@ -111,6 +115,7 @@ impl PackedCells {
         }
         let mut start = 0;
         for &(end, style) in &self.styles {
+            let end = end as usize;
             for cell in &mut cells[start..end] {
                 cell.style = style;
             }
@@ -123,6 +128,18 @@ impl PackedCells {
 }
 
 impl Row {
+    /// Heap bytes of the stored form (dense cells or packed runs), excluding
+    /// a transient decoded read cache.
+    pub(super) fn heap_bytes(&self) -> usize {
+        self.cells.capacity() * size_of::<Cell>()
+            + self.packed.as_ref().map_or(0, |packed| {
+                size_of::<PackedCells>()
+                    + packed.scalars.capacity() * size_of::<Scalar>()
+                    + packed.styles.capacity() * size_of::<(u32, Style)>()
+                    + packed.extras.capacity() * size_of::<(usize, Arc<CellExtra>)>()
+            })
+    }
+
     #[cfg(test)]
     pub(in crate::terminal_engine) fn is_packed(&self) -> bool {
         self.packed.is_some()
@@ -282,6 +299,21 @@ impl Row {
 mod tests {
     use super::*;
     use crate::terminal_engine::Hyperlink;
+
+    #[test]
+    fn plain_packed_rows_store_one_tight_style_run() {
+        assert_eq!(size_of::<(u32, Style)>(), 16);
+        assert_eq!(size_of::<Scalar>(), 4);
+        let mut row = Row::new(120, &Cell::default());
+        for (cell, character) in row.cells.iter_mut().zip("plain text".chars()) {
+            cell.character = character;
+        }
+        row.occupied = 10;
+        row.compact();
+        let packed = row.packed.as_ref().unwrap();
+        assert_eq!((packed.styles.len(), packed.styles.capacity()), (1, 1));
+        assert_eq!(packed.scalars.capacity(), 10);
+    }
 
     #[test]
     fn packed_rows_roundtrip_wide_flags_styles_and_shared_metadata() {

@@ -254,6 +254,9 @@ struct ProtocolReplyQueue {
 enum WriteClass {
     Normal,
     ProtocolReply,
+    /// Mouse motion shares the normal budget but may fill only half of it, so
+    /// reports to a stalled program leave room for keys and pastes.
+    Motion,
 }
 
 struct WriteReservation {
@@ -322,6 +325,19 @@ impl WriterHandle {
         let reservation = self
             .control
             .reserve_write(bytes.capacity(), WriteClass::Normal)?;
+        self.send_reserved(bytes, reservation)
+    }
+
+    fn write_motion_owned(&self, bytes: Vec<u8>) -> io::Result<()> {
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        if self.control.is_closed() {
+            return Err(writer_closed_error());
+        }
+        let reservation = self
+            .control
+            .reserve_write(bytes.capacity(), WriteClass::Motion)?;
         self.send_reserved(bytes, reservation)
     }
 
@@ -483,6 +499,14 @@ impl WriterControl {
     fn write_budget(&self, class: WriteClass) -> (&AtomicUsize, &AtomicUsize, WriterLimits) {
         match class {
             WriteClass::Normal => (&self.write_bytes, &self.write_entries, self.limits),
+            WriteClass::Motion => (
+                &self.write_bytes,
+                &self.write_entries,
+                WriterLimits {
+                    max_bytes: self.limits.max_bytes / 2,
+                    max_entries: self.limits.max_entries / 2,
+                },
+            ),
             WriteClass::ProtocolReply => (
                 &self.protocol_reply_bytes,
                 &self.protocol_reply_entries,
@@ -523,7 +547,7 @@ impl WriterControl {
         let bytes = byte_counter.load(Ordering::Acquire);
         let entries = entry_counter.load(Ordering::Acquire);
         let label = match class {
-            WriteClass::Normal => "writer",
+            WriteClass::Normal | WriteClass::Motion => "writer",
             WriteClass::ProtocolReply => "protocol-reply",
         };
         io::Error::new(
@@ -932,6 +956,13 @@ impl Transport {
         self.writer.write_owned(input)
     }
 
+    /// Queue a mouse-motion report only while the input backlog is at most
+    /// half full; `WouldBlock` means it was dropped (the next report carries
+    /// the newer position).
+    pub(crate) fn write_motion_owned(&self, input: Vec<u8>) -> io::Result<()> {
+        self.writer.write_motion_owned(input)
+    }
+
     pub(crate) fn write_protocol_reply_owned(&self, input: Vec<u8>) -> io::Result<()> {
         match self.writer.write_protocol_reply_owned(input) {
             Ok(()) => Ok(()),
@@ -1326,6 +1357,10 @@ fn queue_reader_protocol_reply(writer: &WriterHandle, reply: Vec<u8>) -> bool {
     }
 }
 
+/// A hint only: the macOS master always reports 0, and Linux counts just the
+/// line-discipline buffer. The exit drain stays correct through its time
+/// budget, and macOS blocks the exiting child in `close()` until its output is
+/// read, so nothing is lost.
 fn readable_byte_count(reader: &File) -> Option<usize> {
     let mut readable: c_int = 0;
     // SAFETY: `reader` owns a live descriptor and `readable` is writable for

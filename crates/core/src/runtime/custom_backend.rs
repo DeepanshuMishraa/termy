@@ -65,6 +65,8 @@ struct Shared {
     transport: Mutex<Weak<Transport>>,
     sync_signal: Arc<SyncSignal>,
     sync_watchdog_started: AtomicBool,
+    // Set when keys or a paste could not queue; drained as one event.
+    input_dropped: AtomicBool,
 }
 
 #[derive(Default)]
@@ -687,6 +689,7 @@ impl CustomBackend {
                 transport: Mutex::new(Weak::new()),
                 sync_signal: Arc::new(SyncSignal::default()),
                 sync_watchdog_started: AtomicBool::new(false),
+                input_dropped: AtomicBool::new(false),
             }),
             transport: None,
         }
@@ -712,17 +715,34 @@ impl CustomBackend {
         }
     }
     pub(super) fn write(&self, input: &[u8]) {
+        if let Some(transport) = &self.transport {
+            self.input_result(transport.write(input));
+        }
+    }
+    pub(super) fn write_owned(&self, input: Vec<u8>) {
+        if let Some(transport) = &self.transport {
+            self.input_result(transport.write_owned(input));
+        }
+    }
+    /// Motion reports may use only half the input backlog; when it is fuller
+    /// they are dropped, and the next report carries the newer position.
+    pub(super) fn write_mouse_motion(&self, input: Vec<u8>) {
         if let Some(transport) = &self.transport
-            && let Err(error) = transport.write(input)
+            && let Err(error) = transport.write_motion_owned(input)
+            && error.kind() != std::io::ErrorKind::WouldBlock
         {
             log::warn!("terminal input failed: {error}");
         }
     }
-    pub(super) fn write_owned(&self, input: Vec<u8>) {
-        if let Some(transport) = &self.transport
-            && let Err(error) = transport.write_owned(input)
+    fn input_result(&self, result: std::io::Result<()>) {
+        let Err(error) = result else {
+            return;
+        };
+        log::warn!("terminal input failed: {error}");
+        if error.kind() == std::io::ErrorKind::WouldBlock
+            && !self.shared.input_dropped.swap(true, Ordering::AcqRel)
         {
-            log::warn!("terminal input failed: {error}");
+            self.shared.notify();
         }
     }
     pub(super) fn write_str(&self, input: &str) {
@@ -844,6 +864,9 @@ impl CustomBackend {
         if wakeup {
             events.push(TerminalEvent::Wakeup);
         }
+        if self.shared.input_dropped.swap(false, Ordering::AcqRel) {
+            events.push(TerminalEvent::InputDropped);
+        }
         // Deliver current state before Exit; it is not subject to queue overflow.
         if let Some(records) = program_status {
             events.push(TerminalEvent::ProgramStatus(records));
@@ -910,6 +933,7 @@ impl CustomBackend {
     pub(super) fn has_pending_events(&self) -> bool {
         let state = self.shared.state();
         self.shared.wakeup_queued.load(Ordering::Acquire)
+            || self.shared.input_dropped.load(Ordering::Acquire)
             || !state.events.is_empty()
             || !state.replies.is_empty()
             || state.engine.has_program_status_changes()

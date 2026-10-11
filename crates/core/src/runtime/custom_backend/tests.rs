@@ -403,6 +403,43 @@ fn native_exit_commits_synchronized_tail_before_exit_event() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn unqueueable_input_reports_one_dropped_input_event() {
+    let terminal = CustomBackend::new_with_launch_and_wakeup_notifier(
+        TerminalSize::default(),
+        None,
+        None,
+        None,
+        None,
+        Some(&TerminalLaunch::Program {
+            program: "/bin/sleep".to_owned(),
+            args: vec!["5".to_owned()],
+        }),
+    )
+    .unwrap();
+    terminal.drain_events(&mut |_| None);
+    // Larger than the whole input backlog, so it can never queue.
+    let paste = vec![b'x'; 9 * 1024 * 1024];
+    terminal.write(&paste);
+    terminal.write_owned(paste);
+    // Motion is dropped silently.
+    terminal.write_mouse_motion(vec![b'm'; 9 * 1024 * 1024]);
+    assert!(terminal.has_pending_events());
+    let (events, _) = terminal.drain_events(&mut |_| None);
+    let dropped = events
+        .iter()
+        .filter(|event| matches!(event, TerminalEvent::InputDropped))
+        .count();
+    assert_eq!(dropped, 1);
+    let (events, _) = terminal.drain_events(&mut |_| None);
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, TerminalEvent::InputDropped))
+    );
+}
+
 #[test]
 fn render_damage_reads_stay_coherent_while_output_streams() {
     fn replay(rows: &mut [Vec<TerminalRenderCell>], scrolls: &[TerminalViewportScroll]) -> bool {

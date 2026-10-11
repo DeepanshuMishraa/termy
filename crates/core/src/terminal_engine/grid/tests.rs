@@ -624,7 +624,7 @@ fn height_resize_keeps_cursor_visible_and_recovers_history_on_growth() {
 fn limits_bound_dimensions_and_scrollback_storage() {
     let grid = grid(usize::MAX, usize::MAX, usize::MAX);
     assert!(grid.size.cols * grid.size.rows <= Size::MAX_CELLS);
-    assert!(grid.history_limit * grid.size.cols <= Size::MAX_CELLS);
+    // History memory is bounded by `HISTORY_BYTE_BUDGET`, independent of width.
     assert!(grid.history_limit <= MAX_HISTORY_ROWS);
 }
 
@@ -674,6 +674,9 @@ fn mixed_edit_sequence_preserves_grid_invariants(mut seed: u32) {
         assert!(grid.cursor.row < grid.size.rows);
         assert_eq!(grid.screen().rows.len(), grid.size.rows);
         assert!(grid.history.len() <= grid.history_limit);
+        let bytes: usize = grid.history.iter().map(Row::heap_bytes).sum();
+        assert_eq!(grid.history_bytes, bytes);
+        assert!(bytes <= history::HISTORY_BYTE_BUDGET);
         for row in grid
             .history
             .iter()

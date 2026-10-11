@@ -37,6 +37,9 @@ impl Transport {
     pub(crate) fn write_owned(&self, _input: Vec<u8>) -> io::Result<()> {
         Err(unsupported())
     }
+    pub(crate) fn write_motion_owned(&self, _input: Vec<u8>) -> io::Result<()> {
+        Err(unsupported())
+    }
     pub(crate) fn write_protocol_reply_owned(&self, _input: Vec<u8>) -> io::Result<()> {
         Err(unsupported())
     }

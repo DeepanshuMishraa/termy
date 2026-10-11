@@ -627,6 +627,9 @@ pub enum TerminalEvent {
     Bell,
     /// Terminal exited
     Exit,
+    /// Keys or a paste were dropped: the program isn't reading its input and
+    /// the write backlog is full. Coalesced to one event per drain.
+    InputDropped,
     /// OSC 52 clipboard store request
     ClipboardStore(String),
 
@@ -875,6 +878,13 @@ impl Terminal {
 
     pub fn write_owned(&self, input: Vec<u8>) {
         self.backend.write_owned(input);
+    }
+
+    /// Write a mouse-motion report. Motion may fill only half of the input
+    /// backlog, so a program that stops reading cannot starve later keys;
+    /// excess reports are dropped and the next one carries the newer position.
+    pub fn write_mouse_motion(&self, input: Vec<u8>) {
+        self.backend.write_mouse_motion(input);
     }
 
     pub fn hydrate_output(&self, bytes: &[u8]) {

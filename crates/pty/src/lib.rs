@@ -1,14 +1,14 @@
 //! Node-API bindings for `termy_core::pty`, published as `@termysh/pty`.
 //!
 //! The JavaScript wrapper in `packages/pty` provides the node-pty-compatible
-//! API; this crate exposes one small native class. Output and exit events go
-//! through a single bounded threadsafe function, so they reach JavaScript in
-//! order, and a full queue blocks the PTY reader instead of buffering without
-//! limit.
+//! API; this crate exposes one small native class. Reads collect in a bounded
+//! buffer that one threadsafe-function call drains, so a burst of 1 KiB reads
+//! reaches JavaScript as one Buffer, output always precedes the exit event,
+//! and a full buffer blocks the PTY reader instead of growing without limit.
 
 use std::{
     path::PathBuf,
-    sync::{Arc, Condvar, Mutex},
+    sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak},
 };
 
 use napi::{
@@ -18,21 +18,23 @@ use napi::{
 use napi_derive::napi;
 use termy_core::pty::{Pty, PtyCommand, PtyDimensions, PtyExit};
 
-/// Output chunks waiting for JavaScript before the reader stops reading.
-const EVENT_QUEUE_SIZE: usize = 64;
+/// At most one flush is queued at a time; the bound is only a safety net.
+const EVENT_QUEUE_SIZE: usize = 4;
+/// Output buffered for JavaScript before the reader stops reading.
+const MAX_BUFFERED_OUTPUT: usize = 1024 * 1024;
 
 const EVENT_DATA: u32 = 0;
 const EVENT_EXIT: u32 = 1;
+/// A flush that found nothing to deliver (after a pause); JavaScript ignores it.
+const EVENT_NONE: u32 = 2;
 
-enum Event {
-    Data(Vec<u8>),
-    Exit(PtyExit),
-}
+/// Deliver buffered output, or the exit once the output is gone.
+struct Flush;
 
 /// `(event, data, exitCode, signal)`, as the JavaScript callback receives it.
 type EventArgs = FnArgs<(u32, Option<Buffer>, Option<i64>, Option<i32>)>;
 type EventCallback =
-    ThreadsafeFunction<Event, (), EventArgs, napi::Status, false, false, EVENT_QUEUE_SIZE>;
+    ThreadsafeFunction<Flush, (), EventArgs, napi::Status, false, false, EVENT_QUEUE_SIZE>;
 
 #[napi(object)]
 pub struct NativeSpawnOptions {
@@ -45,62 +47,143 @@ pub struct NativeSpawnOptions {
     pub rows: u32,
 }
 
-/// Pauses the reader thread while JavaScript has asked for no more output.
 #[derive(Default)]
-struct Flow {
-    paused: Mutex<bool>,
-    resumed: Condvar,
+struct OutputState {
+    bytes: Vec<u8>,
+    exit: Option<PtyExit>,
+    /// A flush is queued for JavaScript.
+    scheduled: bool,
+    paused: bool,
+    closed: bool,
 }
 
-impl Flow {
-    fn set_paused(&self, paused: bool) {
-        *self
-            .paused
+/// Output and exit waiting for JavaScript.
+#[derive(Default)]
+struct Output {
+    state: Mutex<OutputState>,
+    drained: Condvar,
+    events: OnceLock<Weak<EventCallback>>,
+}
+
+impl Output {
+    fn lock(&self) -> MutexGuard<'_, OutputState> {
+        self.state
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = paused;
-        if !paused {
-            self.resumed.notify_all();
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Claim the single queued flush if there is something to deliver.
+    fn claim_flush(state: &mut OutputState) -> bool {
+        let claim = !state.scheduled
+            && !state.paused
+            && !state.closed
+            && (!state.bytes.is_empty() || state.exit.is_some());
+        state.scheduled |= claim;
+        claim
+    }
+
+    fn flush(&self, mode: ThreadsafeFunctionCallMode) {
+        if let Some(events) = self.events.get().and_then(Weak::upgrade) {
+            events.call(Flush, mode);
         }
     }
 
-    fn wait_while_paused(&self) {
-        let paused = self
-            .paused
-            .lock()
+    /// Reader thread: buffer output, blocking while the buffer is full.
+    fn push(&self, bytes: &[u8]) {
+        let state = self.lock();
+        let mut state = self
+            .drained
+            .wait_while(state, |state| {
+                state.bytes.len() >= MAX_BUFFERED_OUTPUT && !state.closed
+            })
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let _resumed = self
-            .resumed
-            .wait_while(paused, |paused| *paused)
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.closed {
+            return;
+        }
+        state.bytes.extend_from_slice(bytes);
+        if Self::claim_flush(&mut state) {
+            drop(state);
+            self.flush(ThreadsafeFunctionCallMode::Blocking);
+        }
+    }
+
+    fn exit(&self, exit: PtyExit) {
+        let mut state = self.lock();
+        state.exit = Some(exit);
+        if Self::claim_flush(&mut state) {
+            drop(state);
+            self.flush(ThreadsafeFunctionCallMode::Blocking);
+        }
+    }
+
+    /// JavaScript thread: hand over everything buffered, then the exit.
+    fn take(&self) -> (u32, Option<Buffer>, Option<i64>, Option<i32>) {
+        let mut state = self.lock();
+        state.scheduled = false;
+        let bytes = std::mem::take(&mut state.bytes);
+        self.drained.notify_all();
+        let event = if !bytes.is_empty() {
+            (EVENT_DATA, Some(Buffer::from(bytes)), None, None)
+        } else if let Some(exit) = state.exit.take().filter(|_| !state.paused) {
+            (EVENT_EXIT, None, exit.code, exit.signal)
+        } else {
+            (EVENT_NONE, None, None, None)
+        };
+        // An exit that arrived with this output follows in the next flush.
+        if Self::claim_flush(&mut state) {
+            drop(state);
+            self.flush(ThreadsafeFunctionCallMode::NonBlocking);
+        }
+        event
+    }
+
+    /// JavaScript thread.
+    fn set_paused(&self, paused: bool) {
+        let mut state = self.lock();
+        state.paused = paused;
+        if Self::claim_flush(&mut state) {
+            drop(state);
+            self.flush(ThreadsafeFunctionCallMode::NonBlocking);
+        }
+    }
+
+    /// Stop buffering and release a reader waiting for room.
+    fn close(&self) {
+        self.lock().closed = true;
+        self.drained.notify_all();
     }
 }
 
 #[napi]
 pub struct NativePty {
     pty: Option<Pty>,
-    flow: Arc<Flow>,
+    output: Arc<Output>,
+    // Kept until `destroy` so a `resume` after the child exited can still
+    // deliver the buffered output and the exit.
+    events: Option<Arc<EventCallback>>,
     pid: u32,
 }
 
 #[napi]
 impl NativePty {
     /// Start a program. `callback(event, data, exitCode, signal)` receives
-    /// `0` with a Buffer of output, then `1` once with the exit status.
+    /// `0` with a Buffer of output, then `1` once with the exit status; `2`
+    /// carries nothing and is ignored.
     #[napi(constructor)]
     pub fn new(
         options: NativeSpawnOptions,
         callback: Function<'_, EventArgs, ()>,
     ) -> napi::Result<Self> {
+        let output = Arc::new(Output::default());
+        let flushed = output.clone();
         let events: EventCallback = callback
-            .build_threadsafe_function::<Event>()
+            .build_threadsafe_function::<Flush>()
             .max_queue_size::<EVENT_QUEUE_SIZE>()
-            .build_callback(|context| {
-                Ok(match context.value {
-                    Event::Data(bytes) => (EVENT_DATA, Some(Buffer::from(bytes)), None, None),
-                    Event::Exit(exit) => (EVENT_EXIT, None, exit.code, exit.signal),
-                }
-                .into())
-            })?;
+            .build_callback(move |_| Ok(flushed.take().into()))?;
+        // `Output` holds the function weakly; `destroy` releases the last
+        // owner, so it stops keeping the event loop alive.
+        let events = Arc::new(events);
+        let _ = output.events.set(Arc::downgrade(&events));
 
         let dimensions = dimensions(options.cols, options.rows, 0, 0)?;
         let (pairs, remainder) = options.env.as_chunks::<2>();
@@ -121,30 +204,19 @@ impl NativePty {
             inherit_environment: false,
         };
 
-        let flow = Arc::new(Flow::default());
-        let reader_flow = flow.clone();
-        let output_events = Arc::new(events);
-        let exit_events = output_events.clone();
+        let (reader_output, exit_output) = (output.clone(), output.clone());
         let pty = Pty::spawn(
             command,
             dimensions,
-            move |bytes| {
-                reader_flow.wait_while_paused();
-                // Blocking applies backpressure: a full queue stops the reader.
-                output_events.call(
-                    Event::Data(bytes.to_vec()),
-                    ThreadsafeFunctionCallMode::Blocking,
-                );
-            },
-            move |exit| {
-                exit_events.call(Event::Exit(exit), ThreadsafeFunctionCallMode::Blocking);
-            },
+            move |bytes| reader_output.push(bytes),
+            move |exit| exit_output.exit(exit),
         )
         .map_err(|error| napi::Error::from_reason(error.to_string()))?;
         let pid = pty.pid();
         Ok(Self {
             pty: Some(pty),
-            flow,
+            output,
+            events: Some(events),
             pid,
         })
     }
@@ -160,18 +232,20 @@ impl NativePty {
         self.pty.as_ref()?.foreground_process_name()
     }
 
-    /// Queue input. Input after the program has exited is dropped, as with a
-    /// closed terminal; a full 8 MiB input backlog is an error.
+    /// Queue input. Returns false, without queueing, while the 8 MiB input
+    /// backlog is full; the JavaScript wrapper retries later. Input after the
+    /// program has exited is dropped, as with a closed terminal.
     #[napi]
-    pub fn write(&self, data: Buffer) -> napi::Result<()> {
+    pub fn write(&self, data: Buffer) -> napi::Result<bool> {
         let Some(pty) = &self.pty else {
-            return Ok(());
+            return Ok(true);
         };
         match pty.write(&data) {
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(false),
             Err(error) if error.kind() != std::io::ErrorKind::BrokenPipe => {
                 Err(napi::Error::from_reason(error.to_string()))
             }
-            _ => Ok(()),
+            _ => Ok(true),
         }
     }
 
@@ -206,7 +280,7 @@ impl NativePty {
         let Some(pty) = &self.pty else {
             return Ok(());
         };
-        self.flow.set_paused(false);
+        self.output.set_paused(false);
         #[cfg(not(windows))]
         let result = match signal {
             Some(signal) => pty.signal(signal),
@@ -220,28 +294,31 @@ impl NativePty {
         result.map_err(|error| napi::Error::from_reason(error.to_string()))
     }
 
+    /// Stop delivering output. The reader keeps buffering up to 1 MiB, then
+    /// waits; an exit is delivered after the buffered output, on `resume`.
     #[napi]
     pub fn pause(&self) {
-        self.flow.set_paused(true);
+        self.output.set_paused(true);
     }
 
     #[napi]
     pub fn resume(&self) {
-        self.flow.set_paused(false);
+        self.output.set_paused(false);
     }
 
     /// Hang up and release the PTY. Output that is still queued is delivered;
     /// the exit event follows.
     #[napi]
     pub fn destroy(&mut self) {
-        self.flow.set_paused(false);
+        self.output.set_paused(false);
         self.pty.take();
+        self.events.take();
     }
 }
 
 impl Drop for NativePty {
     fn drop(&mut self) {
-        self.flow.set_paused(false);
+        self.output.close();
     }
 }
 

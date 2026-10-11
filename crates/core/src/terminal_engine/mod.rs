@@ -6,6 +6,7 @@
 //! status and the remaining integration gates.
 
 mod dispatch;
+#[cfg(feature = "native")]
 pub(crate) use dispatch::percent_decode;
 mod graphics;
 mod grid;

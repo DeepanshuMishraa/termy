@@ -1,3 +1,4 @@
+use super::super::history::HISTORY_BYTE_BUDGET;
 use super::super::tests::{assert_history_compacted, grid, print, text};
 use super::super::*;
 
@@ -91,7 +92,7 @@ fn scrolled_viewport_tracks_its_logical_anchor_through_reflow() {
 }
 
 #[test]
-fn widening_history_bounds_intermediate_rows_and_clamps_evicted_viewport_anchor() {
+fn widening_packs_rewrapped_history_instead_of_evicting_it() {
     let mut grid = grid(1, 3, 2048);
     for index in 0..1024 {
         grid.put_char(char::from(b'a' + (index % 26) as u8));
@@ -104,19 +105,40 @@ fn widening_history_bounds_intermediate_rows_and_clamps_evicted_viewport_anchor(
         cols: 4096,
         rows: 3,
     });
-    let limit = Size::MAX_CELLS / 4096;
-    assert_eq!(grid.history_size(), limit);
-    assert_eq!(grid.display_offset(), limit);
-    assert!(grid.last_reflow_row_allocations <= limit + 3 + 1);
+    // At 4096 columns the old cell cap kept only 256 rows.
+    assert_eq!(grid.history_size(), 1022);
+    assert_eq!(grid.display_offset(), 400);
+    assert!(grid.history_bytes <= HISTORY_BYTE_BUDGET);
     assert_eq!(
         grid.row(-1).unwrap().cells()[0].character,
         char::from(b'a' + (1021 % 26) as u8)
     );
-    assert_eq!(
-        grid.visible_row(0).unwrap().cells()[0].character,
-        char::from(b'a' + (766 % 26) as u8)
-    );
     assert_eq!((grid.cursor.row, grid.cursor.col), (2, 0));
+    grid.resize(Size { cols: 1, rows: 3 });
+    assert_eq!(grid.history_size(), 1022);
+}
+
+#[test]
+fn a_transient_widen_keeps_the_requested_scrollback() {
+    let mut grid = grid(120, 40, 10_000);
+    for index in 0..12_000 {
+        print(&mut grid, &format!("{index:05} a short history line\r\n"));
+    }
+    grid.compact_history(usize::MAX);
+    assert_eq!(grid.history_size(), 10_000);
+    // The cell cap allowed 8738 rows at 120 columns and 2621 at 400.
+    grid.resize(Size {
+        cols: 400,
+        rows: 40,
+    });
+    assert_eq!(grid.history_size(), 10_000);
+    grid.resize(Size {
+        cols: 120,
+        rows: 40,
+    });
+    assert_eq!(grid.history_size(), 10_000);
+    assert!(grid.history_bytes <= HISTORY_BYTE_BUDGET);
+    assert!(text(&grid, 0).starts_with("11961"), "{}", text(&grid, 0));
 }
 
 #[test]

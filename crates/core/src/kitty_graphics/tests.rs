@@ -674,7 +674,9 @@ fn temporary_file_marker_must_be_in_the_resolved_file_name() {
     assert!(escape.exists());
     assert!(!temporary_path_can_be_removed(&escape));
     #[cfg(target_os = "linux")]
-    assert!(is_pseudo_file(Path::new("/proc/self/status")));
+    assert!(upload::is_pseudo_file(std::path::Path::new(
+        "/proc/self/status"
+    )));
 }
 
 #[test]

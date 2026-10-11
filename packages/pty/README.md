@@ -8,9 +8,10 @@ same `spawn` API, same events, same types.
 - **Prebuilt binaries**, no `node-gyp`, no compiler, no install scripts:
   macOS (arm64, x64), Linux glibc 2.17+ and musl (x64, arm64), Windows 10
   1809+ (x64, arm64).
-- **Backpressure.** Output waits for JavaScript instead of piling up in
-  memory, and `pause()` really stops reading, so a fast program blocks rather
-  than flooding your process.
+- **Backpressure.** Output waits for JavaScript (at most 1 MiB is buffered,
+  delivered in as few callbacks as your code can keep up with) instead of
+  piling up in memory, and `pause()` stops delivery, so a fast program blocks
+  rather than flooding your process.
 - **Ordered exit.** `onExit` fires once, after the last byte of output, with
   the exit code and the terminating signal.
 - **Node.js 18+ and Bun**, ESM and CommonJS.
@@ -68,8 +69,9 @@ node-pty. Differences:
 - `open()` (a PTY pair without a process) is not provided.
 - Windows always uses ConPTY. winpty is not supported, so `useConpty`,
   `useConptyDll` and `conptyInheritCursor` are accepted and ignored.
-- `write` after the program has exited is dropped silently, and more than
-  8 MiB of unwritten input throws.
+- `write` after the program has exited is dropped silently. Input the program
+  has not read yet is queued without limit, as with node-pty; past the 8 MiB
+  native backlog it waits in JavaScript.
 
 ## API
 

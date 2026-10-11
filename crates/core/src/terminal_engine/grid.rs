@@ -10,6 +10,7 @@ use super::types::{
 };
 
 mod combining;
+mod history;
 mod print;
 mod reflow;
 mod row;
@@ -112,6 +113,8 @@ pub(super) struct Grid {
     alternate: Option<Screen>,
     alternate_active: bool,
     history: VecDeque<Row>,
+    // Heap bytes of `history` rows; see `history.rs`.
+    history_bytes: usize,
     requested_history_limit: usize,
     history_limit: usize,
     pending_compaction: usize,
@@ -175,18 +178,6 @@ impl Grid {
         self.output_since_compaction = 0;
     }
 
-    /// Pack queued history without switching scrolling rows to immediate
-    /// packing, for steps forced while output is still arriving.
-    pub(super) fn compact_pending_history(&mut self, limit: usize) {
-        self.pending_compaction = self.pending_compaction.min(self.history.len());
-        let start = self.history.len() - self.pending_compaction;
-        let count = limit.min(self.pending_compaction);
-        for row in self.history.iter_mut().skip(start).take(count) {
-            row.compact();
-        }
-        self.pending_compaction -= count;
-    }
-
     pub(super) fn release_history_read_cache(&mut self) {
         if *self.history_read_end.get_mut() == 0 {
             return;
@@ -208,8 +199,9 @@ impl Grid {
             alternate: None,
             alternate_active: false,
             history: VecDeque::new(),
+            history_bytes: 0,
             requested_history_limit: history_limit.min(MAX_HISTORY_ROWS),
-            history_limit: Self::bounded_history(size, history_limit),
+            history_limit: Self::bounded_history(history_limit),
             pending_compaction: 0,
             compact_on_scroll: false,
             output_since_compaction: 0,
@@ -243,10 +235,9 @@ impl Grid {
         }
     }
 
-    fn bounded_history(size: Size, requested: usize) -> usize {
-        requested
-            .min(MAX_HISTORY_ROWS)
-            .min(Size::MAX_CELLS / size.cols)
+    /// Memory is bounded by `HISTORY_BYTE_BUDGET`, not by rows × width.
+    fn bounded_history(requested: usize) -> usize {
+        requested.min(MAX_HISTORY_ROWS)
     }
 
     fn default_tabs(cols: usize) -> Vec<bool> {
@@ -849,7 +840,7 @@ impl Grid {
                 .expect("scroll region row");
             let mut recycled = if retain_history && self.history_limit != 0 {
                 let recycled = if self.history.len() == self.history_limit {
-                    self.history.pop_front()
+                    self.pop_history_front()
                 } else {
                     None
                 };
@@ -858,7 +849,7 @@ impl Grid {
                 } else {
                     (removed, recycled.unwrap_or_else(|| Row::new(cols, &blank)))
                 };
-                self.history.push_back(retained);
+                self.push_history(retained);
                 self.history_activity = true;
                 self.pending_compaction = (self.pending_compaction + 1).min(self.history.len());
                 if self.display_offset != 0 {
@@ -882,6 +873,7 @@ impl Grid {
                 history_before,
                 history_after: self.history_size(),
             });
+            self.enforce_history_bytes();
         }
     }
 
@@ -1049,8 +1041,7 @@ impl Grid {
         self.clear_anchor = false;
         let removed = self.history.len();
         let changed = removed != 0 || self.display_offset != 0;
-        self.history.clear();
-        self.history.shrink_to_fit();
+        self.clear_history_rows();
         self.pending_compaction = 0;
         self.display_offset = 0;
         if changed {
@@ -1065,7 +1056,7 @@ impl Grid {
     pub(super) fn set_history_limit(&mut self, limit: usize) {
         self.release_history_read_cache();
         self.requested_history_limit = limit.min(MAX_HISTORY_ROWS);
-        self.history_limit = Self::bounded_history(self.size, limit);
+        self.history_limit = Self::bounded_history(limit);
         self.trim_history();
         self.mark_full_damage();
     }
@@ -1073,7 +1064,7 @@ impl Grid {
     fn trim_history(&mut self) {
         let removed = self.history.len().saturating_sub(self.history_limit);
         while self.history.len() > self.history_limit {
-            self.history.pop_front();
+            self.pop_history_front();
         }
         if self.history.capacity() > 2 * self.history_limit.max(64) {
             self.history.shrink_to(self.history_limit);
@@ -1117,8 +1108,7 @@ impl Grid {
         self.release_history_read_cache();
         self.alternate_active = false;
         self.alternate = None;
-        self.history.clear();
-        self.history.shrink_to_fit();
+        self.clear_history_rows();
         self.pending_compaction = 0;
         self.display_offset = 0;
         self.cursor = Cursor::default();
@@ -1189,8 +1179,10 @@ impl Grid {
             self.primary.saved.pending_wrap = self.primary.pending_wrap;
         }
         self.size = size;
-        self.history_limit = Self::bounded_history(size, self.requested_history_limit);
+        self.history_limit = Self::bounded_history(self.requested_history_limit);
+        self.recount_history_bytes();
         self.trim_history();
+        self.enforce_history_bytes();
         self.pending_compaction = self.pending_compaction.min(self.history.len());
         if self.pending_compaction != 0 {
             self.history_activity = true;
@@ -1221,7 +1213,7 @@ impl Grid {
                     // Compaction walks the newest `pending_compaction` rows,
                     // so new history joins that window instead of being packed
                     // here and hiding older dense rows from the idle steps.
-                    self.history.push_back(row);
+                    self.push_history(row);
                     self.pending_compaction += 1;
                 }
             }
@@ -1230,7 +1222,7 @@ impl Grid {
         } else if self.primary.rows.len() < size.rows {
             if !self.clear_anchor {
                 while self.primary.rows.len() < size.rows {
-                    let Some(mut row) = self.history.pop_back() else {
+                    let Some(mut row) = self.pop_history_back() else {
                         break;
                     };
                     self.pending_compaction = self.pending_compaction.saturating_sub(1);
