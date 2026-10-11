@@ -47,6 +47,22 @@ fn wait_until(mut condition: impl FnMut() -> bool) {
     }
 }
 
+/// Drains events until the terminal stays quiet for a full window, so late
+/// frames from earlier output or scrolls on a slow host are not mistaken for
+/// wakeups caused by whatever the test does next.
+#[track_caller]
+fn wait_until_quiet(terminal: &Terminal) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        terminal.drain_events(&mut |_| None);
+        std::thread::sleep(Duration::from_millis(100));
+        if !terminal.has_pending_events() {
+            return;
+        }
+        assert!(Instant::now() < deadline, "terminal did not go quiet");
+    }
+}
+
 #[test]
 fn scrolling_reply_updates_viewport_before_selection_reads() {
     assert_scrolling_reply_updates_viewport(&[]);
@@ -106,8 +122,7 @@ fn assert_scrolling_reply_updates_viewport(missing_capabilities: &[&str]) {
     );
     // Once output and scrolling stop, read-only RPCs must not keep publishing
     // identical frames and waking the desktop (including legacy image reads).
-    std::thread::sleep(Duration::from_millis(50));
-    terminal.drain_events(&mut |_| None);
+    wait_until_quiet(&terminal);
     terminal.snapshot();
     terminal.search("line");
     std::thread::sleep(Duration::from_millis(50));
