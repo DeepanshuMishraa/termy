@@ -29,6 +29,7 @@ scorecard, testing strategy, and decomposition plans.
 - [libtermy](libtermy.md)
 - [Program status (OSC 7501)](program-status.md): reporting task state, desktop indicators, and embedding APIs.
 - [Plugin runtime](plugins.md)
+- [Terminal protocols](../website/content/docs/reference/terminal-protocols.mdx): supported escape sequences, modes, queries, and extensions. Update it when the engine's dispatch or queries change.
 
 Repository benchmarks should be reproducible from the commands in
 [Development](development.md); do not add standalone result snapshots without

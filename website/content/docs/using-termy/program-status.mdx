@@ -4,14 +4,15 @@ description: See when terminal programs are working, waiting for you, finished, 
 ---
 
 Termy supports the [OSC 7501 Program Status Protocol](https://www.superlogical.com/rex/docs/build/program-status).
-Programs that emit these reports can show a status badge in their tab and a
-message on their pane, including progress and requests for approval, an answer,
-or sign-in.
+Programs that emit these reports show a status badge in their tab: a dot while
+working, a question mark when waiting for you (such as approval, an answer, or
+sign-in), a checkmark when done, or an exclamation mark on failure.
 
 The **Progress Indicators** setting (`progress_indicator_enabled = true`)
-controls these indicators. Blocked tasks take priority, followed by failures,
-completed tasks, and work in progress. Idle tasks have no badge. These reports
-do not trigger system notifications or sounds.
+controls these badges. Blocked tasks take priority, followed by failures,
+completed tasks, and work in progress. Idle tasks have no badge. Messages,
+titles, and percentages are not drawn, and progress bars come only from
+OSC 9;4. These reports do not trigger system notifications or sounds.
 
 ## Report status from a script
 

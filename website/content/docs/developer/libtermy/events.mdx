@@ -42,6 +42,7 @@ help when implementing generated bindings or inspecting traces.
 | `11` | Progress | Read `progress_state` and `progress_value` |
 | `12` | Working directory | Update host metadata from UTF-8 `payload` |
 | `13` | Program status | Replace the previous snapshot with the JSON array in `payload` |
+| `14` | Input dropped | Tell the user that keys or a paste were discarded because the program's input backlog is full |
 
 Shell lifecycle events require the application/shell to emit the corresponding
 integration sequences; do not infer that every session will produce them.

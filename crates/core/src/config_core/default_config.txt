@@ -139,7 +139,7 @@ clipboard_read = ask
 command_palette_show_keybinds = true
 # Enable OSC 133 shell integration for command lifecycle tracking
 shell_integration_enabled = true
-# Show progress from OSC 9;4 sequences in tab badges
+# Show OSC 9;4 progress bars and OSC 7501 program status badges
 progress_indicator_enabled = true
 
 # Keybindings (repeatable)

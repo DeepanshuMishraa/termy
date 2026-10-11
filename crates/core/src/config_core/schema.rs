@@ -438,7 +438,7 @@ define_root_settings! {
     (ClipboardRead, "clipboard_read", [], Terminal, "CLIPBOARD", "Clipboard Read Access", "Whether programs may read the clipboard with OSC 52 (ask, allow, or deny)", ["clipboard", "osc", "52", "paste", "read", "security"], RootSettingValueKind::Enum, false),
     (CommandPaletteShowKeybinds, "command_palette_show_keybinds", [], Terminal, "UI", "Show Keybindings In Palette", "Show shortcut badges in command palette rows", ["palette", "keybinds", "shortcuts"], RootSettingValueKind::Boolean, false),
     (ShellIntegrationEnabled, "shell_integration_enabled", [], Terminal, "SHELL", "Shell Integration", "Enable OSC 133 shell integration for command lifecycle tracking", ["shell", "integration", "osc", "133", "prompt", "command"], RootSettingValueKind::Boolean, false),
-    (ProgressIndicatorEnabled, "progress_indicator_enabled", [], Terminal, "UI", "Progress Indicators", "Show progress from OSC 9;4 sequences in tab badges", ["progress", "indicator", "tab", "badge", "osc"], RootSettingValueKind::Boolean, false),
+    (ProgressIndicatorEnabled, "progress_indicator_enabled", [], Terminal, "UI", "Progress Indicators", "Show OSC 9;4 progress bars and OSC 7501 program status badges", ["progress", "indicator", "tab", "badge", "osc", "status"], RootSettingValueKind::Boolean, false),
     (Keybind, "keybind", [], Keybindings, "KEYBINDS", "Keyboard shortcuts", "Customize shortcuts for tabs, panes, and app commands", ["keybind", "shortcut", "command", "tab", "switch", "cycle", "keyboard"], RootSettingValueKind::Special, true),
 }
 

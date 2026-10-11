@@ -192,6 +192,7 @@ Event kind values:
 - `11`: progress
 - `12`: working directory
 - `13`: [OSC 7501 program status](program-status.md), a UTF-8 JSON record snapshot in `payload`
+- `14`: input dropped; keys or a paste were discarded because the program's input backlog is full
 
 Progress state values:
 

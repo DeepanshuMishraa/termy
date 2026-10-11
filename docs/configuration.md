@@ -220,7 +220,7 @@ Platform note: the Agent Sidebar/Workspace is currently unavailable on Windows b
 
 `progress_indicator_enabled`
 - Default: `true`
-- Show progress from OSC 9;4 sequences in tab badges
+- Show OSC 9;4 progress bars and OSC 7501 program status badges
 - Group: `UI`
 
 ## Tabs
