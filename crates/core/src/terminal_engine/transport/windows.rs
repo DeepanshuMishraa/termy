@@ -421,6 +421,19 @@ impl WriterHandle {
         self.enqueue_reserved(bytes, reservation)
     }
 
+    fn write_motion_owned(&self, bytes: Vec<u8>) -> io::Result<()> {
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        if self.control.state.is_closed() {
+            return Err(pty_closed_error());
+        }
+        let Some(reservation) = self.budget.reserve_motion(bytes.capacity()) else {
+            return Err(writer_full_error());
+        };
+        self.enqueue_reserved(bytes, reservation)
+    }
+
     fn write(&self, bytes: &[u8]) -> io::Result<()> {
         let Some(reservation) = self.reserve_write(bytes.len())? else {
             return Ok(());
@@ -552,18 +565,33 @@ impl WriteBudget {
     }
 
     fn reserve(self: &Arc<Self>, bytes: usize) -> Option<WriteReservation> {
-        if bytes == 0 || bytes > self.max_bytes {
+        self.reserve_within(bytes, self.max_bytes, self.max_entries)
+    }
+
+    /// Mouse motion may fill only half of the budget, so reports to a stalled
+    /// program leave room for keys and pastes.
+    fn reserve_motion(self: &Arc<Self>, bytes: usize) -> Option<WriteReservation> {
+        self.reserve_within(bytes, self.max_bytes / 2, self.max_entries / 2)
+    }
+
+    fn reserve_within(
+        self: &Arc<Self>,
+        bytes: usize,
+        max_bytes: usize,
+        max_entries: usize,
+    ) -> Option<WriteReservation> {
+        if bytes == 0 || bytes > max_bytes {
             return None;
         }
         self.entries
             .try_update(Ordering::AcqRel, Ordering::Acquire, |entries| {
-                (entries < self.max_entries).then_some(entries + 1)
+                (entries < max_entries).then_some(entries + 1)
             })
             .ok()?;
         if self
             .bytes
             .try_update(Ordering::AcqRel, Ordering::Acquire, |reserved| {
-                (reserved <= self.max_bytes - bytes).then_some(reserved + bytes)
+                (reserved <= max_bytes - bytes).then_some(reserved + bytes)
             })
             .is_err()
         {
@@ -942,9 +970,14 @@ impl Transport {
         self.writer.write_owned(input)
     }
 
+    pub(crate) fn write_motion_owned(&self, input: Vec<u8>) -> io::Result<()> {
+        self.writer.write_motion_owned(input)
+    }
+
     pub(crate) fn write_protocol_reply_owned(&self, input: Vec<u8>) -> io::Result<()> {
         match self.writer.write_protocol_reply_owned(input) {
             Ok(()) => Ok(()),
+            Err(error) if error.kind() == ErrorKind::WouldBlock => Err(error),
             Err(error) => {
                 self.writer.close();
                 Err(error)
@@ -1018,13 +1051,19 @@ fn queue_reader_protocol_reply(writer: &WriterHandle, reply: Vec<u8>) -> bool {
     if reply.is_empty() {
         return true;
     }
-    if writer.write_protocol_reply_owned(reply).is_ok() {
-        true
-    } else {
-        // The control thread terminates the child and closes the pseudoconsole;
-        // continuing without the reply could leave the child waiting forever.
-        writer.close();
-        false
+    match writer.write_protocol_reply_owned(reply) {
+        Ok(()) => true,
+        // A full backlog means the child is not reading its input, e.g. `cat`
+        // of a file full of queries. Drop the reply instead of the session.
+        Err(error) if error.kind() == ErrorKind::WouldBlock => {
+            log::warn!("dropping terminal protocol reply: {error}");
+            true
+        }
+        Err(_) => {
+            // The control thread terminates the child and closes the pseudoconsole.
+            writer.close();
+            false
+        }
     }
 }
 
@@ -1042,7 +1081,11 @@ fn run_writer(
     let mut current_write: Option<ReservedWrite> = None;
     let mut current_protocol_reply: Option<ReservedWrite> = None;
     while !control.state.is_closed() {
-        if current_protocol_reply.is_none() {
+        // Replies go between writes, never inside one: a write is a whole
+        // key sequence or bracketed paste that must reach the child intact.
+        if current_protocol_reply.is_none()
+            && current_write.as_ref().is_none_or(|write| write.offset == 0)
+        {
             current_protocol_reply = protocol_replies.pop();
         }
         if current_protocol_reply.is_none() && current_write.is_none() {
@@ -1057,7 +1100,9 @@ fn run_writer(
         }
 
         // The wake that released recv may correspond to a priority reply.
-        if current_protocol_reply.is_none() {
+        if current_protocol_reply.is_none()
+            && current_write.as_ref().is_none_or(|write| write.offset == 0)
+        {
             current_protocol_reply = protocol_replies.pop();
         }
         let writing_protocol_reply = current_protocol_reply.is_some();
@@ -1127,6 +1172,11 @@ fn run_control(
     }
 
     if !resources.process_exited {
+        // Closing the pseudoconsole sends its clients CTRL_CLOSE_EVENT, as
+        // closing a console window does, so a shell can save its history
+        // before the fallback termination (Unix allows the same after SIGHUP).
+        resources.close_pseudo_console();
+        resources.wait_for_exit(CLOSE_GRACE_MS);
         let _ = resources.terminate_and_wait();
     }
     *exit_status

@@ -27,10 +27,11 @@ pub use preview::{
     synced_background_opacity_preview,
 };
 pub use termy_core::config_core::{
-    AppConfig, AppearanceMode, ConfigDiagnostic, ConfigDiagnosticKind, CursorStyle, CustomColors,
-    PaneFocusEffect, SHELL_DECIDE_THEME_ID, SystemAppearance, TabBarPosition, TabCloseVisibility,
-    TabTitleConfig, TabTitleSource, TabWidthMode, TaskConfig, TerminalScrollbarStyle,
-    TerminalScrollbarVisibility, WindowsShell, WorkingDirFallback, resolve_active_theme,
+    AppConfig, AppearanceMode, ClipboardReadPolicy, ConfigDiagnostic, ConfigDiagnosticKind,
+    CursorStyle, CustomColors, PaneFocusEffect, SHELL_DECIDE_THEME_ID, SystemAppearance,
+    TabBarPosition, TabCloseVisibility, TabTitleConfig, TabTitleSource, TabWidthMode, TaskConfig,
+    TerminalScrollbarStyle, TerminalScrollbarVisibility, WindowsShell, WorkingDirFallback,
+    resolve_active_theme,
 };
 
 pub fn system_appearance_from_window(appearance: gpui_kit::WindowAppearance) -> SystemAppearance {

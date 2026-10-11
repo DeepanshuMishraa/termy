@@ -42,15 +42,6 @@ impl TerminalRenderDamageSnapshot {
             palette_revision: Some(update.palette_revision),
         }
     }
-
-    pub(super) fn from_damage(damage: TerminalDamageSnapshot) -> Self {
-        Self {
-            damage,
-            scrolls: Vec::new(),
-            generation: None,
-            palette_revision: None,
-        }
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -116,9 +107,30 @@ pub(super) struct ClipboardTextCache {
     // Outer `Option` records whether GPUI has been queried; the inner value is
     // the clipboard result, which can legitimately be empty.
     value: Option<Option<String>>,
+    policy: ClipboardReadPolicy,
+    // One prompt answers every OSC 52 read in a drain pass, so a burst of
+    // requests cannot stack modal dialogs.
+    read_permitted: Option<bool>,
 }
 
 impl ClipboardTextCache {
+    pub(super) fn new(policy: ClipboardReadPolicy) -> Self {
+        Self {
+            policy,
+            ..Self::default()
+        }
+    }
+
+    /// OSC 52 reads come from untrusted program output (including remote
+    /// hosts), so they follow `clipboard_read` instead of always answering.
+    pub(super) fn read_permitted(&mut self, ask: impl FnOnce() -> bool) -> bool {
+        match self.policy {
+            ClipboardReadPolicy::Allow => true,
+            ClipboardReadPolicy::Deny => false,
+            ClipboardReadPolicy::Ask => *self.read_permitted.get_or_insert_with(ask),
+        }
+    }
+
     pub(super) fn get_or_read(&mut self, read: impl FnOnce() -> Option<String>) -> Option<String> {
         if let Some(value) = &self.value {
             return value.clone();
@@ -146,6 +158,21 @@ impl<'host, 'cx> GpuiClipboardReplyHost<'host, 'cx> {
 
 impl TerminalReplyHost for GpuiClipboardReplyHost<'_, '_> {
     fn load_clipboard(&mut self, _target: TerminalClipboardTarget) -> Option<String> {
+        let permitted = self.clipboard_text.read_permitted(|| {
+            !matches!(
+                crate::native_sdk::request_clipboard_permission(
+                    "Allow clipboard access?",
+                    "A terminal application wants to read your clipboard. Set \
+                     clipboard_read = allow or deny in the config to stop asking.",
+                    false,
+                ),
+                crate::native_sdk::ClipboardPermission::Deny
+            )
+        });
+        if !permitted {
+            // An empty reply lets the requesting program stop waiting.
+            return Some(String::new());
+        }
         // GPUI exposes a single host clipboard source here, so both OSC 52
         // targets resolve through the same adapter.
         self.clipboard_text
@@ -159,8 +186,22 @@ impl TerminalReplyHost for GpuiClipboardReplyHost<'_, '_> {
         let remember_permission = if request.permission_granted || request.mime_types.is_empty() {
             false
         } else {
-            let name = request.name.as_deref().unwrap_or("A terminal application");
-            let formats = request.mime_types.join(", ");
+            // The name comes from the requesting program, so it is quoted and
+            // stripped of controls instead of read as Termy's own text.
+            let name = request.name.as_deref().map_or_else(
+                || "A terminal application".to_string(),
+                |name| {
+                    let name: String = name.chars().filter(|c| !c.is_control()).take(64).collect();
+                    format!("A terminal application calling itself \u{201c}{name}\u{201d}")
+                },
+            );
+            let formats: String = request
+                .mime_types
+                .join(", ")
+                .chars()
+                .filter(|c| !c.is_control())
+                .take(256)
+                .collect();
             let message = format!(
                 "{name} wants to read {formats} from your {}.",
                 clipboard_location_name(request.location)
@@ -406,6 +447,20 @@ fn native_write_error(
             TerminalClipboardWriteResult::IoError
         }
     }
+}
+
+/// Tell the user once every few seconds that typed or pasted input was lost
+/// because the program stopped reading it.
+pub(super) fn warn_input_dropped() {
+    static LAST_WARNING: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+    let mut last = LAST_WARNING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if last.is_some_and(|last| last.elapsed() < std::time::Duration::from_secs(5)) {
+        return;
+    }
+    *last = Some(std::time::Instant::now());
+    crate::ui::toast::warning("Input was dropped: the program isn't reading it");
 }
 
 #[cfg(test)]

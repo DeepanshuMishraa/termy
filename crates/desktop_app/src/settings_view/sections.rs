@@ -506,6 +506,7 @@ impl SettingsWindow {
     pub(super) fn render_terminal_clipboard_group(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let copy_on_select = self.config.copy_on_select;
         let copy_on_select_toast = self.config.copy_on_select_toast;
+        let clipboard_read_meta = Self::setting_metadata_or_fallback("clipboard_read");
 
         let rows = vec![
             self.render_root_bool_setting_row(
@@ -520,6 +521,14 @@ impl SettingsWindow {
                 "copy_on_select_toast-toggle",
                 RootSettingId::CopyOnSelectToast,
                 copy_on_select_toast,
+                cx,
+            ),
+            self.render_editable_row(
+                "clipboard_read",
+                EditableField::ClipboardRead,
+                clipboard_read_meta.title,
+                clipboard_read_meta.description,
+                self.editable_field_value(EditableField::ClipboardRead),
                 cx,
             ),
         ];

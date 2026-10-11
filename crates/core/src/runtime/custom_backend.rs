@@ -16,6 +16,7 @@ use crate::{
     TerminalUnderlineStyle, TerminalViewportMetadata, TerminalViewportScroll,
     TerminalViewportScrollDirection, TermyCell, TermyColor, TermyFrame, TermyFrameUpdate,
     TermySearchMatch, TermySearchOptions, TermySharedSearchMatch,
+    kitty_graphics::KittyPreparedUpload,
     search::search_lines_shared,
     search_engine::SearchLineMapping,
     terminal_engine::transport::{PtySize, SpawnConfig, Transport},
@@ -35,7 +36,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod lock;
 mod maintenance;
+mod viewport;
 
 const EVENT_BATCH: usize = 2048;
 const MAX_EVENTS: usize = 65_536;
@@ -54,6 +57,7 @@ pub(super) struct CustomBackend {
 
 struct Shared {
     state: Mutex<State>,
+    lock_waiters: lock::LockWaiters,
     clipboard: Mutex<KittyClipboardHostState>,
     notifier: Option<TerminalWakeupNotifier>,
     wakeup_enabled: AtomicBool,
@@ -61,6 +65,8 @@ struct Shared {
     transport: Mutex<Weak<Transport>>,
     sync_signal: Arc<SyncSignal>,
     sync_watchdog_started: AtomicBool,
+    // Set when keys or a paste could not queue; drained as one event.
+    input_dropped: AtomicBool,
 }
 
 #[derive(Default)]
@@ -141,12 +147,6 @@ impl PendingEvent {
 }
 
 impl Shared {
-    fn state(&self) -> MutexGuard<'_, State> {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
     fn notify(&self) {
         if self.wakeup_enabled.load(Ordering::Acquire) {
             self.queue_wakeup();
@@ -166,34 +166,6 @@ impl Shared {
                 notifier.notify();
             }
         }
-    }
-
-    fn feed(self: &Arc<Self>, bytes: &[u8], hydrate: bool, buffer_replies: bool) -> Vec<u8> {
-        if bytes.is_empty() {
-            return Vec::new();
-        }
-        let mut state = self.state();
-        let mut replies = state.feed(bytes, hydrate);
-        if buffer_replies {
-            state.append_replies(&replies);
-            replies.clear();
-        }
-        if state.engine.take_history_activity() {
-            state.defer_history_compaction(Instant::now());
-        }
-        let should_notify = !state.engine.modes().synchronized_update || !state.events.is_empty();
-        let tab_chrome_changed = state.take_tab_chrome_changed();
-        // Publish while the engine lock still protects this deadline: a later
-        // feed must not have its timer replaced by an earlier feed's deadline.
-        self.schedule_maintenance(&state);
-        drop(state);
-        if should_notify {
-            self.notify();
-        }
-        if tab_chrome_changed {
-            self.notify_tab_chrome();
-        }
-        replies
     }
 }
 
@@ -332,11 +304,21 @@ impl State {
         }
     }
 
-    fn feed(&mut self, bytes: &[u8], hydrate: bool) -> Vec<u8> {
+    /// Returns replies and the number of bytes consumed. Outside hydration,
+    /// parsing stops after a completed image upload, which the caller decodes
+    /// and passes to `commit_upload` before feeding the rest.
+    fn feed(&mut self, bytes: &[u8], hydrate: bool) -> (Vec<u8>, usize) {
         let before_generation = self.engine.generation();
         let mut replies = Vec::new();
-        for bytes in bytes.chunks(PARSE_BATCH) {
-            self.engine.feed(bytes);
+        let mut consumed = 0;
+        while consumed < bytes.len() {
+            let chunk = &bytes[consumed..bytes.len().min(consumed + PARSE_BATCH)];
+            if hydrate {
+                self.engine.feed(chunk);
+                consumed += chunk.len();
+            } else {
+                consumed += self.engine.feed_deferring_uploads(chunk);
+            }
             while let Some(event) = self.engine.pop_event() {
                 if !hydrate {
                     self.engine_event(event);
@@ -345,6 +327,9 @@ impl State {
             self.engine.drain_replies(&mut replies);
             if hydrate {
                 replies.clear();
+            }
+            if self.engine.has_deferred_upload() {
+                break;
             }
         }
         if hydrate {
@@ -356,6 +341,17 @@ impl State {
         if self.engine.generation() != before_generation {
             self.generation = self.generation.wrapping_add(1);
         }
+        (replies, consumed)
+    }
+
+    fn commit_upload(&mut self, prepared: KittyPreparedUpload) -> Vec<u8> {
+        self.engine.commit_upload(prepared);
+        while let Some(event) = self.engine.pop_event() {
+            self.engine_event(event);
+        }
+        let mut replies = Vec::new();
+        self.engine.drain_replies(&mut replies);
+        self.generation = self.generation.wrapping_add(1);
         replies
     }
 
@@ -685,6 +681,7 @@ impl CustomBackend {
         Self {
             shared: Arc::new(Shared {
                 state: Mutex::new(State::new(size, &config.cloned().unwrap_or_default())),
+                lock_waiters: lock::LockWaiters::default(),
                 clipboard: Mutex::new(KittyClipboardHostState::new()),
                 notifier,
                 wakeup_enabled: AtomicBool::new(true),
@@ -692,6 +689,7 @@ impl CustomBackend {
                 transport: Mutex::new(Weak::new()),
                 sync_signal: Arc::new(SyncSignal::default()),
                 sync_watchdog_started: AtomicBool::new(false),
+                input_dropped: AtomicBool::new(false),
             }),
             transport: None,
         }
@@ -717,17 +715,34 @@ impl CustomBackend {
         }
     }
     pub(super) fn write(&self, input: &[u8]) {
+        if let Some(transport) = &self.transport {
+            self.input_result(transport.write(input));
+        }
+    }
+    pub(super) fn write_owned(&self, input: Vec<u8>) {
+        if let Some(transport) = &self.transport {
+            self.input_result(transport.write_owned(input));
+        }
+    }
+    /// Motion reports may use only half the input backlog; when it is fuller
+    /// they are dropped, and the next report carries the newer position.
+    pub(super) fn write_mouse_motion(&self, input: Vec<u8>) {
         if let Some(transport) = &self.transport
-            && let Err(error) = transport.write(input)
+            && let Err(error) = transport.write_motion_owned(input)
+            && error.kind() != std::io::ErrorKind::WouldBlock
         {
             log::warn!("terminal input failed: {error}");
         }
     }
-    pub(super) fn write_owned(&self, input: Vec<u8>) {
-        if let Some(transport) = &self.transport
-            && let Err(error) = transport.write_owned(input)
+    fn input_result(&self, result: std::io::Result<()>) {
+        let Err(error) = result else {
+            return;
+        };
+        log::warn!("terminal input failed: {error}");
+        if error.kind() == std::io::ErrorKind::WouldBlock
+            && !self.shared.input_dropped.swap(true, Ordering::AcqRel)
         {
-            log::warn!("terminal input failed: {error}");
+            self.shared.notify();
         }
     }
     pub(super) fn write_str(&self, input: &str) {
@@ -849,6 +864,9 @@ impl CustomBackend {
         if wakeup {
             events.push(TerminalEvent::Wakeup);
         }
+        if self.shared.input_dropped.swap(false, Ordering::AcqRel) {
+            events.push(TerminalEvent::InputDropped);
+        }
         // Deliver current state before Exit; it is not subject to queue overflow.
         if let Some(records) = program_status {
             events.push(TerminalEvent::ProgramStatus(records));
@@ -915,6 +933,7 @@ impl CustomBackend {
     pub(super) fn has_pending_events(&self) -> bool {
         let state = self.shared.state();
         self.shared.wakeup_queued.load(Ordering::Acquire)
+            || self.shared.input_dropped.load(Ordering::Acquire)
             || !state.events.is_empty()
             || !state.replies.is_empty()
             || state.engine.has_program_status_changes()
@@ -1018,132 +1037,6 @@ impl CustomBackend {
         let mut state = self.shared.state();
         let alternate = state.engine.alternate_screen();
         (state.render_read(force_full), alternate)
-    }
-    pub(super) fn visit_viewport_cells(
-        &self,
-        mut visitor: impl FnMut(usize, i32, usize, &TerminalRenderCell),
-    ) -> TerminalViewportMetadata {
-        // Preserve reentrant callbacks at the public snapshot boundary. The
-        // desktop renderer uses the explicit locked variant below instead.
-        let mut cells = Vec::new();
-        let metadata = self.visit_viewport_cells_locked(|_, _, _, cell| cells.push(cell.clone()));
-        let cols = usize::from(metadata.cols);
-        for (index, cell) in cells.iter().enumerate() {
-            visitor(
-                metadata.display_offset,
-                (index / cols) as i32 - metadata.display_offset as i32,
-                index % cols,
-                cell,
-            );
-        }
-        metadata
-    }
-    pub(super) fn visit_viewport_cells_locked(
-        &self,
-        mut visitor: impl FnMut(usize, i32, usize, &TerminalRenderCell),
-    ) -> TerminalViewportMetadata {
-        let state = self.shared.state();
-        let offset = state.engine.display_offset();
-        let mut scratch = Vec::new();
-        for row in 0..usize::from(state.size.rows) {
-            let wrapped = state.engine.viewport_row_wrapped(row);
-            state.engine.with_viewport_row(row, &mut scratch, |line| {
-                for (col, cell) in line.iter().enumerate() {
-                    visitor(
-                        offset,
-                        row as i32 - offset as i32,
-                        col,
-                        &render_cell(cell, wrapped && col + 1 == line.len()),
-                    );
-                }
-            });
-        }
-        state.metadata()
-    }
-    pub(super) fn visit_viewport_ranges_at_generation(
-        &self,
-        generation: u64,
-        spans: &[TerminalDirtySpan],
-        mut visitor: impl FnMut(usize, usize, i32, usize, &TerminalRenderCell),
-    ) -> bool {
-        let mut cells = Vec::new();
-        if !self.visit_viewport_ranges_locked_at_generation(
-            generation,
-            spans,
-            |row, offset, line, col, cell| cells.push((row, offset, line, col, cell.clone())),
-        ) {
-            return false;
-        }
-        for (row, offset, line, col, cell) in cells {
-            visitor(row, offset, line, col, &cell);
-        }
-        true
-    }
-    pub(super) fn visit_viewport_ranges_locked_at_generation(
-        &self,
-        generation: u64,
-        spans: &[TerminalDirtySpan],
-        mut visitor: impl FnMut(usize, usize, i32, usize, &TerminalRenderCell),
-    ) -> bool {
-        let state = self.shared.state();
-        if state.generation != generation {
-            return false;
-        }
-        let offset = state.engine.display_offset();
-        let mut scratch = Vec::new();
-        for span in spans {
-            let wrapped = state.engine.viewport_row_wrapped(span.row);
-            state
-                .engine
-                .with_viewport_row(span.row, &mut scratch, |line| {
-                    let end = span.right_col.saturating_add(1).min(line.len());
-                    for col in span.left_col.min(end)..end {
-                        visitor(
-                            span.row,
-                            offset,
-                            span.row as i32 - offset as i32,
-                            col,
-                            &render_cell(&line[col], wrapped && col + 1 == line.len()),
-                        );
-                    }
-                });
-        }
-        true
-    }
-    pub(super) fn line_bounds(&self) -> (i32, i32) {
-        let state = self.shared.state();
-        (
-            -(state.engine.history_size() as i32),
-            i32::from(state.size.rows) - 1,
-        )
-    }
-    pub(super) fn visit_line_cells(
-        &self,
-        requested_first: i32,
-        requested_last: i32,
-        mut visitor: impl FnMut((i32, i32, usize), i32, usize, &TerminalRenderCell),
-    ) -> (i32, i32, usize) {
-        let state = self.shared.state();
-        let range = (
-            -(state.engine.history_size() as i32),
-            i32::from(state.size.rows) - 1,
-            usize::from(state.size.cols),
-        );
-        let mut scratch = Vec::new();
-        for line in requested_first.max(range.0)..=requested_last.min(range.1) {
-            let wrapped = state.engine.line_wrapped(line);
-            state.engine.with_line(line, &mut scratch, |cells| {
-                for (col, cell) in cells.iter().enumerate() {
-                    visitor(
-                        range,
-                        line,
-                        col,
-                        &render_cell(cell, wrapped && col + 1 == cells.len()),
-                    );
-                }
-            });
-        }
-        range
     }
     pub(super) fn search(&self, query: &str) -> Vec<TermySearchMatch> {
         self.search_with_options(query, TermySearchOptions::default())
@@ -1342,8 +1235,8 @@ fn render_cell(cell: &engine::Cell, wrapped: bool) -> TerminalRenderCell {
         text: TerminalRenderText::from_cell_suffix(cell.character, Some(cell.combining())),
         foreground: render_color(style.foreground, true),
         background: render_color(style.background, false),
-        underline_color: (style.underline_color != engine::Color::DEFAULT)
-            .then(|| render_color(style.underline_color, true)),
+        underline_color: (cell.underline_color() != engine::Color::DEFAULT)
+            .then(|| render_color(cell.underline_color(), true)),
         bold: attr & engine::Style::BOLD != 0,
         dim: attr & engine::Style::DIM != 0,
         italic: attr & engine::Style::ITALIC != 0,

@@ -68,6 +68,16 @@ impl KittyImageCache {
         } else {
             placement.image.byte_len()
         };
+        // A retransmitted id gets a newer generation; older ones can never be
+        // requested again, so don't let them wait for LRU eviction.
+        let freed = &mut self.bytes;
+        self.entries.retain(|(id, generation), (texture, _)| {
+            let stale = *id == key.0 && *generation != key.1;
+            if stale {
+                *freed = freed.saturating_sub(texture.bytes);
+            }
+            !stale
+        });
         self.entries.insert(
             key,
             (

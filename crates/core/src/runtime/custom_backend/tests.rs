@@ -106,6 +106,53 @@ fn display_routes_cursor_and_clipboard_queries() {
 }
 
 #[test]
+fn image_uploads_decoded_outside_the_lock_keep_stream_order() {
+    struct Host {
+        replies: Vec<u8>,
+    }
+    impl TerminalReplyHost for Host {
+        fn load_clipboard(&mut self, _: TerminalClipboardTarget) -> Option<String> {
+            None
+        }
+        fn protocol_reply(&mut self, bytes: &[u8]) {
+            self.replies.extend_from_slice(bytes);
+        }
+    }
+    let terminal = display(20, 4);
+    terminal.feed_output(
+        b"hi\x1b[6n\x1b_Ga=t,f=32,s=1,v=1,i=5;AQID/w==\x1b\\\x1b_Ga=p,i=5,q=2\x1b\\\x1b[6n",
+    );
+    let mut host = Host {
+        replies: Vec::new(),
+    };
+    terminal.drain_events(&mut host);
+    assert_eq!(host.replies, b"\x1b[1;3R\x1b_Gi=5;OK\x1b\\\x1b[2;4R");
+    assert_eq!(terminal.kitty_graphics_placements().len(), 1);
+}
+
+#[test]
+fn clipboard_reply_echoes_only_known_selection_targets() {
+    struct Host {
+        replies: Vec<u8>,
+    }
+    impl TerminalReplyHost for Host {
+        fn load_clipboard(&mut self, _: TerminalClipboardTarget) -> Option<String> {
+            Some("hello".to_owned())
+        }
+        fn protocol_reply(&mut self, bytes: &[u8]) {
+            self.replies.extend_from_slice(bytes);
+        }
+    }
+    let terminal = display(6, 2);
+    terminal.feed_output("\x1b]52;zc\u{e9}31mcp;?\x1b\\".as_bytes());
+    let mut host = Host {
+        replies: Vec::new(),
+    };
+    terminal.drain_events(&mut host);
+    assert_eq!(host.replies, b"\x1b]52;c31p;aGVsbG8=\x1b\\");
+}
+
+#[test]
 fn event_payload_budget_counts_all_osc_payloads_and_reopens_after_drain() {
     const PAYLOAD_BYTES: usize = 64 * 1024;
     let terminal = display(6, 2);
@@ -354,4 +401,116 @@ fn native_exit_commits_synchronized_tail_before_exit_event() {
         assert!(Instant::now() < deadline, "child exited");
         std::thread::sleep(Duration::from_millis(5));
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn unqueueable_input_reports_one_dropped_input_event() {
+    let terminal = CustomBackend::new_with_launch_and_wakeup_notifier(
+        TerminalSize::default(),
+        None,
+        None,
+        None,
+        None,
+        Some(&TerminalLaunch::Program {
+            program: "/bin/sleep".to_owned(),
+            args: vec!["5".to_owned()],
+        }),
+    )
+    .unwrap();
+    terminal.drain_events(&mut |_| None);
+    // Larger than the whole input backlog, so it can never queue.
+    let paste = vec![b'x'; 9 * 1024 * 1024];
+    terminal.write(&paste);
+    terminal.write_owned(paste);
+    // Motion is dropped silently.
+    terminal.write_mouse_motion(vec![b'm'; 9 * 1024 * 1024]);
+    assert!(terminal.has_pending_events());
+    let (events, _) = terminal.drain_events(&mut |_| None);
+    let dropped = events
+        .iter()
+        .filter(|event| matches!(event, TerminalEvent::InputDropped))
+        .count();
+    assert_eq!(dropped, 1);
+    let (events, _) = terminal.drain_events(&mut |_| None);
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, TerminalEvent::InputDropped))
+    );
+}
+
+#[test]
+fn render_damage_reads_stay_coherent_while_output_streams() {
+    fn replay(rows: &mut [Vec<TerminalRenderCell>], scrolls: &[TerminalViewportScroll]) -> bool {
+        scrolls.iter().all(|scroll| {
+            let valid = scroll.top <= scroll.bottom
+                && scroll.bottom < rows.len()
+                && (1..=scroll.bottom - scroll.top + 1).contains(&scroll.count);
+            if valid {
+                let region = &mut rows[scroll.top..=scroll.bottom];
+                match scroll.direction {
+                    TerminalViewportScrollDirection::Up => region.rotate_left(scroll.count),
+                    TerminalViewportScrollDirection::Down => region.rotate_right(scroll.count),
+                }
+            }
+            valid
+        })
+    }
+    // A full read takes the damage with the cells, like the desktop's rebuild.
+    fn full_rows(terminal: &CustomBackend) -> Vec<Vec<TerminalRenderCell>> {
+        let read = terminal.render_read(true);
+        read.cells
+            .chunks(usize::from(read.metadata.cols))
+            .map(<[TerminalRenderCell]>::to_vec)
+            .collect()
+    }
+
+    let terminal = Arc::new(display(40, 8));
+    let mut incremental = full_rows(&terminal);
+    let feeder = {
+        let terminal = Arc::clone(&terminal);
+        std::thread::spawn(move || {
+            for line in 0..1500 {
+                // Pace the output so reads interleave with it.
+                if line % 4 == 0 {
+                    std::thread::sleep(Duration::from_micros(100));
+                }
+                let edit = if line % 7 == 0 {
+                    "\x1b[3;1Hedit\x1b[8;1H"
+                } else {
+                    ""
+                };
+                terminal.feed_output(
+                    format!("{edit}line {line} {}\r\n", "x".repeat(line % 30)).as_bytes(),
+                );
+            }
+        })
+    };
+    let mut partial_reads = 0;
+    loop {
+        let finished = feeder.is_finished();
+        let full = terminal.with_render_damage(|update, mut cells| match update.damage {
+            TerminalDamageSnapshot::Full => true,
+            TerminalDamageSnapshot::Partial(spans) => {
+                assert!(replay(&mut incremental, &update.scrolls));
+                assert!(cells.visit(&spans, |row, _, _, col, cell| {
+                    incremental[row][col] = cell.clone();
+                }));
+                partial_reads += 1;
+                false
+            }
+        });
+        if full {
+            incremental = full_rows(&terminal);
+        }
+        if finished {
+            break;
+        }
+    }
+    feeder.join().unwrap();
+    assert!(partial_reads > 0);
+    let mut fresh = Vec::new();
+    terminal.visit_viewport_cells(|_, _, _, cell| fresh.push(cell.clone()));
+    assert_eq!(incremental.concat(), fresh);
 }

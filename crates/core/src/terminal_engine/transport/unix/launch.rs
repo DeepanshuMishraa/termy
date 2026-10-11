@@ -25,7 +25,9 @@ fn child_environment(
     inherit: bool,
 ) -> io::Result<Vec<CString>> {
     let mut environment = if inherit {
-        std::env::vars_os().collect::<BTreeMap<OsString, OsString>>()
+        std::env::vars_os()
+            .filter(|(name, _)| !super::belongs_to_parent_terminal(name))
+            .collect::<BTreeMap<OsString, OsString>>()
     } else {
         BTreeMap::new()
     };

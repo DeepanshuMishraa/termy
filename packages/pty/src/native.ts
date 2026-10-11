@@ -5,6 +5,8 @@ import { fileURLToPath } from 'node:url'
 /** Event codes passed to the native callback. */
 export const EVENT_DATA = 0
 export const EVENT_EXIT = 1
+/** A flush with nothing to deliver; ignored. */
+export const EVENT_NONE = 2
 
 export interface NativeSpawnOptions {
   file: string
@@ -26,7 +28,8 @@ export type NativeCallback = (
 export interface NativePty {
   readonly pid: number
   readonly process: string | null
-  write(data: Buffer): void
+  /** False, without queueing, while the native input backlog is full. */
+  write(data: Buffer): boolean
   resize(cols: number, rows: number, pixelWidth?: number, pixelHeight?: number): void
   kill(signal?: number): void
   pause(): void

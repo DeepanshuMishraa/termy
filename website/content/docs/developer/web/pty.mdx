@@ -87,8 +87,9 @@ Differences:
 - `open()`, which creates a PTY pair without a process, is not provided.
 - Windows always uses ConPTY. winpty is not supported; `useConpty`,
   `useConptyDll` and `conptyInheritCursor` are accepted and ignored.
-- `write` after the program exits is dropped silently. More than 8 MiB of
-  input that the program has not read yet throws.
+- `write` after the program exits is dropped silently. Input the program has
+  not read yet is queued, as with node-pty; past the 8 MiB native backlog it
+  waits in JavaScript.
 
 ## Options
 

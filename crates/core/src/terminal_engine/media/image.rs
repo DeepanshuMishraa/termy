@@ -6,7 +6,8 @@ use std::sync::{Arc, Mutex, Weak};
 pub struct GraphicsImage {
     pub width: u32,
     pub height: u32,
-    rgba: Option<Arc<[u8]>>,
+    // `Arc<Vec>` adopts the decoded buffer; `Arc<[u8]>` would copy it.
+    rgba: Option<Arc<Vec<u8>>>,
     png: Option<Arc<Vec<u8>>>,
     png_export: Mutex<Weak<Vec<u8>>>,
     encoded_source_bytes: usize,
@@ -30,7 +31,7 @@ impl GraphicsImage {
         Self {
             width,
             height,
-            rgba: Some(rgba.into()),
+            rgba: Some(Arc::new(rgba)),
             png: None,
             png_export: Mutex::new(Weak::new()),
             encoded_source_bytes: 0,
@@ -54,7 +55,7 @@ impl GraphicsImage {
     }
 
     pub fn rgba(&self) -> Option<&[u8]> {
-        self.rgba.as_deref()
+        self.rgba.as_deref().map(Vec::as_slice)
     }
 
     /// Decoded size is charged even for compressed PNGs, bounding texture memory.

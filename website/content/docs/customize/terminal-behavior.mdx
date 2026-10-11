@@ -42,6 +42,7 @@ description: Shell, cursor, scrolling, clipboard, and terminal UI behavior.
 | --- | ------- | ----------- |
 | `copy_on_select` | `false` | Auto-copy selected text. |
 | `copy_on_select_toast` | `true` | Show toast when text is copied on select. |
+| `clipboard_read` | `ask` | Whether programs may read the clipboard with OSC 52: `ask` prompts each time, `allow` answers silently, `deny` refuses. Writes are always allowed. |
 
 Termy supports the Kitty clipboard protocol (OSC 5522) out of the box. Terminal
 applications can list, read, and write multiple clipboard formats—including

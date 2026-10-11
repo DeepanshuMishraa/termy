@@ -10,7 +10,9 @@ use super::types::{
 };
 
 mod combining;
+mod history;
 mod print;
+mod reflow;
 mod row;
 use combining::CombiningCache;
 use row::PackedCells;
@@ -45,7 +47,11 @@ impl Row {
     }
 
     fn clear(&mut self, cols: usize, blank: &Cell) {
-        self.make_dense();
+        // Recycled history rows are usually packed. Their contents are about
+        // to be blanked, so reuse a decoded cache if any but skip decoding.
+        if self.discard_packed() {
+            self.occupied = 0;
+        }
         let end = if self.clear_background == blank.style.background {
             self.occupied.min(cols)
         } else {
@@ -85,73 +91,6 @@ struct Screen {
     pending_wrap: bool,
 }
 
-/// Keep only the rows a resized viewport and its bounded history can retain.
-/// Row positions remain absolute while old rows are evicted, so cursor and
-/// viewport anchors can be remapped without materializing the entire result.
-struct ReflowWindow {
-    rows: VecDeque<Row>,
-    spare: Option<Row>,
-    size: Size,
-    limit: usize,
-    first: usize,
-    produced: usize,
-    cursor: Option<(usize, usize, bool)>,
-    boundary: Option<usize>,
-    viewport: Option<usize>,
-    #[cfg(test)]
-    row_allocations: usize,
-}
-
-impl ReflowWindow {
-    fn new(size: Size, history_limit: usize) -> Self {
-        Self {
-            rows: VecDeque::new(),
-            spare: None,
-            size,
-            limit: history_limit + size.rows,
-            first: 0,
-            produced: 0,
-            cursor: None,
-            boundary: None,
-            viewport: None,
-            #[cfg(test)]
-            row_allocations: 0,
-        }
-    }
-
-    fn new_row(&mut self) -> Row {
-        if let Some(mut row) = self.spare.take() {
-            row.clear(self.size.cols, &Cell::default());
-            row
-        } else {
-            #[cfg(test)]
-            {
-                self.row_allocations += 1;
-            }
-            Row::new(self.size.cols, &Cell::default())
-        }
-    }
-
-    fn push(&mut self, row: Row) {
-        let index = self.produced;
-        self.produced += 1;
-        if self
-            .cursor
-            .is_some_and(|(cursor, _, _)| index >= cursor + self.size.rows)
-        {
-            // Resize discards rows below the cursor's final visible screen.
-            // Continue counting them, but reuse their single scratch buffer.
-            self.spare = Some(row);
-            return;
-        }
-        if self.rows.len() == self.limit {
-            self.spare = self.rows.pop_front();
-            self.first += 1;
-        }
-        self.rows.push_back(row);
-    }
-}
-
 impl Screen {
     fn new(size: Size) -> Self {
         Self {
@@ -174,6 +113,8 @@ pub(super) struct Grid {
     alternate: Option<Screen>,
     alternate_active: bool,
     history: VecDeque<Row>,
+    // Heap bytes of `history` rows; see `history.rs`.
+    history_bytes: usize,
     requested_history_limit: usize,
     history_limit: usize,
     pending_compaction: usize,
@@ -237,18 +178,6 @@ impl Grid {
         self.output_since_compaction = 0;
     }
 
-    /// Pack queued history without switching scrolling rows to immediate
-    /// packing, for steps forced while output is still arriving.
-    pub(super) fn compact_pending_history(&mut self, limit: usize) {
-        self.pending_compaction = self.pending_compaction.min(self.history.len());
-        let start = self.history.len() - self.pending_compaction;
-        let count = limit.min(self.pending_compaction);
-        for row in self.history.iter_mut().skip(start).take(count) {
-            row.compact();
-        }
-        self.pending_compaction -= count;
-    }
-
     pub(super) fn release_history_read_cache(&mut self) {
         if *self.history_read_end.get_mut() == 0 {
             return;
@@ -270,8 +199,9 @@ impl Grid {
             alternate: None,
             alternate_active: false,
             history: VecDeque::new(),
+            history_bytes: 0,
             requested_history_limit: history_limit.min(MAX_HISTORY_ROWS),
-            history_limit: Self::bounded_history(size, history_limit),
+            history_limit: Self::bounded_history(history_limit),
             pending_compaction: 0,
             compact_on_scroll: false,
             output_since_compaction: 0,
@@ -305,10 +235,9 @@ impl Grid {
         }
     }
 
-    fn bounded_history(size: Size, requested: usize) -> usize {
-        requested
-            .min(MAX_HISTORY_ROWS)
-            .min(Size::MAX_CELLS / size.cols)
+    /// Memory is bounded by `HISTORY_BYTE_BUDGET`, not by rows × width.
+    fn bounded_history(requested: usize) -> usize {
+        requested.min(MAX_HISTORY_ROWS)
     }
 
     fn default_tabs(cols: usize) -> Vec<bool> {
@@ -410,6 +339,17 @@ impl Grid {
         }
         let count = lines.unsigned_abs() as usize;
         debug_assert!(count != 0 && count <= bottom - top);
+        // Once a pending scroll exposed the whole region, every row in it is
+        // fully dirty, so rotating again (per line of a flood) changes nothing.
+        if self.pending_scrolls.last().is_some_and(|previous| {
+            previous.top == top
+                && previous.bottom == bottom
+                && previous.lines.signum() == lines.signum()
+                && previous.lines.unsigned_abs() as usize == bottom - top
+        }) {
+            self.mark_cursor(self.cursor);
+            return;
+        }
         // The renderer may have painted the old cursor into a cached row. Its
         // old mark must travel with that row before marking its new position.
         self.mark_cursor(self.cursor);
@@ -570,9 +510,13 @@ impl Grid {
     }
 
     fn blank(&self) -> Cell {
+        Self::blank_on(self.pen.style.background)
+    }
+
+    fn blank_on(background: Color) -> Cell {
         Cell {
             style: Style {
-                background: self.pen.style.background,
+                background,
                 ..Style::default()
             },
             ..Cell::default()
@@ -703,11 +647,21 @@ impl Grid {
         let blank = self.blank();
         let active = &mut self.screen_mut().rows[row];
         if !selective {
+            let occupied = active.occupied;
+            let background = blank.style.background;
             let (first_left, first_right) = Self::clear_wide_at(active, start, &blank);
             let (last_left, last_right) = Self::clear_wide_at(active, end - 1, &blank);
             active.cells[start..end].fill(blank);
             if end == active.cells.len() {
                 active.wrapped = false;
+                // Every cell from the erase start is now this blank, so the
+                // clean suffix starts there instead of spanning the row.
+                active.occupied = if active.clear_background == background {
+                    occupied.min(first_left)
+                } else {
+                    first_left
+                };
+                active.clear_background = background;
             }
             self.mark(row, first_left.min(last_left), first_right.max(last_right));
             return;
@@ -793,22 +747,37 @@ impl Grid {
     }
 
     fn repair_wide(row: &mut Row, blank: &Cell) {
-        // Editing and alternate-screen resize can move or replace any cell.
-        // Those uncommon paths conservatively invalidate the entire prefix.
+        // Alternate-screen resize can move or replace any cell. That uncommon
+        // path conservatively invalidates the entire prefix.
         row.occupied = row.cells.len();
         for col in 0..row.cells.len() {
-            let flags = row.cells[col].flags;
-            let invalid = (flags & Cell::WIDE != 0
-                && (col + 1 == row.cells.len()
-                    || row.cells[col + 1].flags & Cell::WIDE_SPACER == 0))
-                || (flags & Cell::WIDE_SPACER != 0
-                    && (col == 0 || row.cells[col - 1].flags & Cell::WIDE == 0))
-                || (flags & Cell::LEADING_WIDE_SPACER != 0
-                    && (!row.wrapped || col + 1 != row.cells.len()));
-            if invalid {
-                row.cells[col] = blank.clone();
-            }
+            Self::repair_wide_at(row, col, blank);
         }
+    }
+
+    /// Blank `col` if it is half of a broken wide pair. Blanking never breaks
+    /// another pair, so callers only need to check the columns they disturbed.
+    fn repair_wide_at(row: &mut Row, col: usize, blank: &Cell) {
+        let flags = row.cells[col].flags;
+        let invalid = (flags & Cell::WIDE != 0
+            && (col + 1 == row.cells.len() || row.cells[col + 1].flags & Cell::WIDE_SPACER == 0))
+            || (flags & Cell::WIDE_SPACER != 0
+                && (col == 0 || row.cells[col - 1].flags & Cell::WIDE == 0))
+            || (flags & Cell::LEADING_WIDE_SPACER != 0
+                && (!row.wrapped || col + 1 != row.cells.len()));
+        if invalid {
+            row.cells[col] = blank.clone();
+        }
+    }
+
+    /// Account for pen blanks ending at `end` after cells shifted right by
+    /// `shift`; matching erase blanks leave the occupied bound valid.
+    fn edited_occupied(row: &mut Row, shift: usize, end: usize, blank: &Cell) {
+        let mut occupied = (row.occupied + shift).min(row.cells.len());
+        if blank.style.background != row.clear_background {
+            occupied = occupied.max(end);
+        }
+        row.occupied = occupied;
     }
 
     pub(super) fn insert_chars(&mut self, count: usize) {
@@ -828,7 +797,10 @@ impl Grid {
         active.cells[col..].rotate_right(count);
         active.cells[col..col + count].fill(blank.clone());
         active.wrapped = false;
-        Self::repair_wide(active, &blank);
+        // Only a wide glyph pushed against the margin can lose its spacer,
+        // and a leading spacer there no longer ends a wrapped row.
+        Self::repair_wide_at(active, cols - 1, &blank);
+        Self::edited_occupied(active, count, col + count, &blank);
         self.mark(row, col.saturating_sub(1), cols);
     }
 
@@ -849,7 +821,13 @@ impl Grid {
         active.cells[col..].rotate_left(count);
         active.cells[cols - count..].fill(blank.clone());
         active.wrapped = false;
-        Self::repair_wide(active, &blank);
+        // A spacer whose glyph was deleted lands at the cursor, and a former
+        // last-column leading spacer lands just before the new blanks.
+        Self::repair_wide_at(active, col, &blank);
+        if count < cols - col {
+            Self::repair_wide_at(active, cols - count - 1, &blank);
+        }
+        Self::edited_occupied(active, 0, cols, &blank);
         self.mark(row, col.saturating_sub(1), cols);
     }
 
@@ -866,7 +844,7 @@ impl Grid {
                 .expect("scroll region row");
             let mut recycled = if retain_history && self.history_limit != 0 {
                 let recycled = if self.history.len() == self.history_limit {
-                    self.history.pop_front()
+                    self.pop_history_front()
                 } else {
                     None
                 };
@@ -875,7 +853,7 @@ impl Grid {
                 } else {
                     (removed, recycled.unwrap_or_else(|| Row::new(cols, &blank)))
                 };
-                self.history.push_back(retained);
+                self.push_history(retained);
                 self.history_activity = true;
                 self.pending_compaction = (self.pending_compaction + 1).min(self.history.len());
                 if self.display_offset != 0 {
@@ -899,6 +877,7 @@ impl Grid {
                 history_before,
                 history_after: self.history_size(),
             });
+            self.enforce_history_bytes();
         }
     }
 
@@ -941,12 +920,15 @@ impl Grid {
         self.pending_wrap = false;
         if self.cursor.row >= self.scroll_top && self.cursor.row < self.scroll_bottom {
             self.scroll_region_down(self.cursor.row, self.scroll_bottom, count);
+            // Like xterm and the VT510, IL leaves the cursor at the left margin.
+            self.carriage_return();
         }
     }
     pub(super) fn delete_lines(&mut self, count: usize) {
         self.pending_wrap = false;
         if self.cursor.row >= self.scroll_top && self.cursor.row < self.scroll_bottom {
             self.scroll_region_up(self.cursor.row, self.scroll_bottom, count, false);
+            self.carriage_return();
         }
     }
     pub(super) fn set_scroll_region(&mut self, top: usize, bottom: usize) {
@@ -1024,6 +1006,11 @@ impl Grid {
         if !enabled && save_cursor {
             self.restore_cursor();
         }
+        if !enabled && clear {
+            // 1049 clears the alternate screen on every entry, so its rows
+            // are dead weight until then.
+            self.alternate = None;
+        }
         self.scroll_top = 0;
         self.scroll_bottom = self.size.rows;
         self.mark_full_damage();
@@ -1058,7 +1045,7 @@ impl Grid {
         self.clear_anchor = false;
         let removed = self.history.len();
         let changed = removed != 0 || self.display_offset != 0;
-        self.history.clear();
+        self.clear_history_rows();
         self.pending_compaction = 0;
         self.display_offset = 0;
         if changed {
@@ -1073,7 +1060,7 @@ impl Grid {
     pub(super) fn set_history_limit(&mut self, limit: usize) {
         self.release_history_read_cache();
         self.requested_history_limit = limit.min(MAX_HISTORY_ROWS);
-        self.history_limit = Self::bounded_history(self.size, limit);
+        self.history_limit = Self::bounded_history(limit);
         self.trim_history();
         self.mark_full_damage();
     }
@@ -1081,7 +1068,10 @@ impl Grid {
     fn trim_history(&mut self) {
         let removed = self.history.len().saturating_sub(self.history_limit);
         while self.history.len() > self.history_limit {
-            self.history.pop_front();
+            self.pop_history_front();
+        }
+        if self.history.capacity() > 2 * self.history_limit.max(64) {
+            self.history.shrink_to(self.history_limit);
         }
         self.display_offset = self.display_offset.min(self.history.len());
         if removed != 0 {
@@ -1122,7 +1112,7 @@ impl Grid {
         self.release_history_read_cache();
         self.alternate_active = false;
         self.alternate = None;
-        self.history.clear();
+        self.clear_history_rows();
         self.pending_compaction = 0;
         self.display_offset = 0;
         self.cursor = Cursor::default();
@@ -1193,8 +1183,10 @@ impl Grid {
             self.primary.saved.pending_wrap = self.primary.pending_wrap;
         }
         self.size = size;
-        self.history_limit = Self::bounded_history(size, self.requested_history_limit);
+        self.history_limit = Self::bounded_history(self.requested_history_limit);
+        self.recount_history_bytes();
         self.trim_history();
+        self.enforce_history_bytes();
         self.pending_compaction = self.pending_compaction.min(self.history.len());
         if self.pending_compaction != 0 {
             self.history_activity = true;
@@ -1225,7 +1217,7 @@ impl Grid {
                     // Compaction walks the newest `pending_compaction` rows,
                     // so new history joins that window instead of being packed
                     // here and hiding older dense rows from the idle steps.
-                    self.history.push_back(row);
+                    self.push_history(row);
                     self.pending_compaction += 1;
                 }
             }
@@ -1234,7 +1226,7 @@ impl Grid {
         } else if self.primary.rows.len() < size.rows {
             if !self.clear_anchor {
                 while self.primary.rows.len() < size.rows {
-                    let Some(mut row) = self.history.pop_back() else {
+                    let Some(mut row) = self.pop_history_back() else {
                         break;
                     };
                     self.pending_compaction = self.pending_compaction.saturating_sub(1);
@@ -1267,207 +1259,6 @@ impl Grid {
                     .saturating_sub(history_before - self.history.len())
             };
         }
-    }
-
-    fn reflow_primary(&mut self, size: Size) {
-        let old_history = self.history.len();
-        let cursor_source = old_history + self.primary.cursor.row;
-        let cursor_col = self.primary.cursor.col;
-        let cursor_pending = self.primary.pending_wrap;
-        let viewport_source =
-            (self.display_offset != 0).then_some(old_history - self.display_offset);
-        // Unused bottom rows do not become logical history during reflow.
-        while self.primary.rows.len() > self.primary.cursor.row + 1
-            && self
-                .primary
-                .rows
-                .back()
-                .is_some_and(|row| row.content_len() == 0)
-        {
-            self.primary.rows.pop_back();
-        }
-        let source = self.history.drain(..).chain(self.primary.rows.drain(..));
-        let mut output = ReflowWindow::new(
-            size,
-            Self::bounded_history(size, self.requested_history_limit),
-        );
-        let mut logical = Vec::new();
-        let mut logical_cursor = None;
-        let mut logical_boundary = None;
-        let mut logical_viewport = None;
-        for (index, mut row) in source.enumerate() {
-            row.make_dense();
-            if index == old_history {
-                logical_boundary = Some(logical.len());
-            }
-            if Some(index) == viewport_source {
-                logical_viewport = Some(logical.len());
-            }
-            if index == cursor_source {
-                let removed = row.cells[..cursor_col]
-                    .iter()
-                    .filter(|cell| cell.flags & Cell::LEADING_WIDE_SPACER != 0)
-                    .count();
-                logical_cursor =
-                    Some(logical.len() + cursor_col - removed + usize::from(cursor_pending));
-            }
-            let required = if index == cursor_source {
-                cursor_col + usize::from(cursor_pending)
-            } else {
-                0
-            };
-            let len = row.content_len().max(required).min(row.cells.len());
-            logical.extend(
-                row.cells
-                    .into_iter()
-                    .take(len)
-                    .filter(|cell| cell.flags & Cell::LEADING_WIDE_SPACER == 0),
-            );
-            if !row.wrapped {
-                Self::wrap_logical(
-                    std::mem::take(&mut logical),
-                    &mut output,
-                    logical_cursor.take(),
-                    logical_boundary.take(),
-                    logical_viewport.take(),
-                    cursor_pending,
-                );
-            }
-        }
-        if !logical.is_empty()
-            || logical_cursor.is_some()
-            || logical_boundary.is_some()
-            || logical_viewport.is_some()
-        {
-            Self::wrap_logical(
-                logical,
-                &mut output,
-                logical_cursor,
-                logical_boundary,
-                logical_viewport,
-                cursor_pending,
-            );
-        }
-        let cursor = output.cursor.expect("reflow maps the live cursor");
-        let mut split = output.produced.saturating_sub(size.rows).min(cursor.0);
-        if self.clear_anchor {
-            split = split.max(output.boundary.unwrap_or(0).min(cursor.0));
-        }
-        #[cfg(test)]
-        {
-            self.last_reflow_row_allocations = output.row_allocations;
-        }
-        self.primary.rows = output.rows.split_off(split - output.first);
-        self.history = output.rows;
-        // Reflow leaves every history row dense. Repack them in the bounded
-        // idle steps rather than all at once on the resize path.
-        self.pending_compaction = self.history.len();
-        self.primary.cursor.row = cursor.0 - split;
-        self.primary.cursor.col = cursor.1;
-        self.primary.pending_wrap = cursor.2;
-        if let Some(viewport) = output.viewport {
-            self.display_offset = split.saturating_sub(viewport.max(output.first));
-        }
-    }
-
-    fn wrap_logical(
-        cells: Vec<Cell>,
-        output: &mut ReflowWindow,
-        cursor: Option<usize>,
-        boundary: Option<usize>,
-        viewport: Option<usize>,
-        cursor_pending: bool,
-    ) {
-        let cols = output.size.cols;
-        let mut row = output.new_row();
-        let mut col = 0;
-        let mut cursor_mapped = false;
-        let mut boundary_mapped = false;
-        let mut viewport_mapped = false;
-        let mut input = cells.into_iter().enumerate().peekable();
-        while let Some((index, mut cell)) = input.next() {
-            // A one-column screen must keep making progress, so wide glyphs
-            // temporarily occupy one cell there. Recover their second cell
-            // when the viewport grows again rather than permanently narrowing
-            // the saved text.
-            let expanded_wide =
-                cols > 1 && cell.flags & Cell::WIDE == 0 && print::cell_width(&cell) == 2;
-            let wide = cell.flags & Cell::WIDE != 0 || expanded_wide;
-            if col == cols || (wide && cols > 1 && col + 1 == cols) {
-                if col < cols {
-                    row.cells[col].flags = Cell::LEADING_WIDE_SPACER;
-                }
-                row.occupied = cols;
-                row.wrapped = true;
-                output.push(row);
-                row = output.new_row();
-                col = 0;
-            }
-            if cursor == Some(index) {
-                output.cursor = Some((output.produced, col, false));
-                cursor_mapped = true;
-            }
-            if boundary == Some(index) {
-                output.boundary = Some(output.produced);
-                boundary_mapped = true;
-            }
-            if viewport == Some(index) {
-                output.viewport = Some(output.produced);
-                viewport_mapped = true;
-            }
-            if wide && cols == 1 {
-                cell.flags &= !Cell::WIDE;
-                if input
-                    .peek()
-                    .is_some_and(|(_, spacer)| spacer.flags & Cell::WIDE_SPACER != 0)
-                {
-                    let spacer_index = input.next().expect("peeked wide spacer").0;
-                    if cursor == Some(spacer_index) {
-                        output.cursor = Some((output.produced, col, false));
-                        cursor_mapped = true;
-                    }
-                    if boundary == Some(spacer_index) {
-                        output.boundary = Some(output.produced);
-                        boundary_mapped = true;
-                    }
-                    if viewport == Some(spacer_index) {
-                        output.viewport = Some(output.produced);
-                        viewport_mapped = true;
-                    }
-                }
-            }
-            if expanded_wide {
-                cell.flags |= Cell::WIDE;
-                row.cells[col + 1] = Cell {
-                    character: ' ',
-                    style: cell.style,
-                    flags: Cell::WIDE_SPACER,
-                    extra: None,
-                };
-            }
-            row.cells[col] = cell;
-            col += if expanded_wide { 2 } else { 1 };
-            row.occupied = col;
-        }
-        if !cursor_mapped && cursor.is_some() {
-            if col == cols && cursor_pending {
-                output.cursor = Some((output.produced, cols - 1, true));
-            } else if col == cols {
-                row.wrapped = true;
-                output.push(row);
-                row = output.new_row();
-                output.cursor = Some((output.produced, 0, false));
-            } else {
-                output.cursor = Some((output.produced, col, false));
-            }
-        }
-        if !boundary_mapped && boundary.is_some() {
-            output.boundary = Some(output.produced);
-        }
-        if !viewport_mapped && viewport.is_some() {
-            output.viewport = Some(output.produced);
-        }
-        output.push(row);
     }
 }
 

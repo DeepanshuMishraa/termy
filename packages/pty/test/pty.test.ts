@@ -178,6 +178,49 @@ describe.skipIf(isWindows)('unix', () => {
     expect(lines.at(-1)).toBe('line 19999')
   })
 
+  test('coalesces output reads into few callbacks', async () => {
+    const terminal = sh("head -c 2000000 /dev/zero | tr '\\0' x", { encoding: null })
+    let callbacks = 0
+    let bytes = 0
+    terminal.onData((data) => {
+      callbacks++
+      bytes += (data as unknown as Buffer).length
+      // A busy consumer: reads arriving meanwhile join the next callback.
+      const until = Date.now() + 2
+      while (Date.now() < until) {}
+    })
+    await collect(terminal, 30_000)
+    expect(bytes).toBe(2_000_000)
+    // One callback per read would be about 2000 (macOS reads at most 1 KiB).
+    expect(callbacks).toBeLessThan(500)
+  }, 30_000)
+
+  test('queues input beyond the native backlog instead of throwing', async () => {
+    const size = 10 * 1024 * 1024
+    // Raw mode first: canonical input discards lines over 1 KiB.
+    const terminal = sh(`stty raw -echo; echo ready; head -c ${size} | wc -c`)
+    const done = collect(terminal, 60_000)
+    await waitFor(terminal, 'ready')
+    expect(() => terminal.write(Buffer.alloc(size, 0x61))).not.toThrow()
+    const { output } = await done
+    expect(output.replace('ready', '').trim()).toBe(String(size))
+  }, 60_000)
+
+  test('delivers the exit after buffered output, also while paused', async () => {
+    const terminal = sh('printf done')
+    terminal.pause()
+    const events: string[] = []
+    terminal.onData((data) => events.push(data))
+    terminal.onExit(() => events.push('exit'))
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    expect(events).toEqual([])
+    const done = collect(terminal)
+    terminal.resume()
+    await done
+    expect(events.join('')).toBe('doneexit')
+    expect(events.at(-1)).toBe('exit')
+  })
+
   test('pause stops output and resume continues it', async () => {
     const terminal = sh('i=0; while [ $i -lt 3000 ]; do echo "line $i"; i=$((i+1)); done')
     const done = collect(terminal, 30_000)
@@ -190,7 +233,7 @@ describe.skipIf(isWindows)('unix', () => {
     await new Promise((resolve) => setTimeout(resolve, 300))
     const whilePaused = received
     await new Promise((resolve) => setTimeout(resolve, 300))
-    // At most the chunks already queued for JavaScript arrive after pausing.
+    // Nothing arrives after pausing, not even an already queued flush.
     expect(received).toBe(whilePaused)
     counter.dispose()
     terminal.resume()

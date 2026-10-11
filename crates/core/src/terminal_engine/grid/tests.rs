@@ -1,11 +1,11 @@
 use super::super::types::{Color, CursorShape};
 use super::*;
 
-fn grid(cols: usize, rows: usize, history: usize) -> Grid {
+pub(super) fn grid(cols: usize, rows: usize, history: usize) -> Grid {
     Grid::new(Size { cols, rows }, history)
 }
 
-fn text(grid: &Grid, row: usize) -> String {
+pub(super) fn text(grid: &Grid, row: usize) -> String {
     grid.visible_row(row)
         .unwrap()
         .cells()
@@ -14,7 +14,7 @@ fn text(grid: &Grid, row: usize) -> String {
         .collect()
 }
 
-fn print(grid: &mut Grid, text: &str) {
+pub(super) fn print(grid: &mut Grid, text: &str) {
     for character in text.chars() {
         match character {
             '\r' => grid.carriage_return(),
@@ -104,6 +104,7 @@ fn recycled_rows_clear_metadata_and_repaint_the_entire_background() {
             id: "retained snapshot".into(),
             uri: "https://example.test".into(),
         })),
+        ..CellExtra::default()
     }));
     grid.write_ascii(b"e");
     grid.put_char('\u{301}');
@@ -343,36 +344,6 @@ fn single_column_wide_input_always_makes_progress() {
 }
 
 #[test]
-fn wide_glyphs_recover_their_spacers_after_single_column_resize() {
-    let mut grid = grid(4, 3, 8);
-    print(&mut grid, "界e\u{301}");
-    assert_eq!((grid.cursor.row, grid.cursor.col), (0, 3));
-    grid.resize(Size { cols: 1, rows: 3 });
-    grid.resize(Size { cols: 4, rows: 3 });
-    let row = grid.row(0).unwrap().cells();
-    assert_eq!(row[0].character, '界');
-    assert_eq!(row[0].flags, Cell::WIDE);
-    assert_eq!(row[1].flags, Cell::WIDE_SPACER);
-    assert_eq!(row[2].character, 'e');
-    assert_eq!(row[2].combining(), "\u{301}");
-    assert_eq!((grid.cursor.row, grid.cursor.col), (0, 3));
-}
-
-#[test]
-fn squeezed_wide_glyph_preserves_pending_wrap_and_spacer_cursor_mapping() {
-    let mut grid = grid(2, 2, 4);
-    grid.put_char('界');
-    grid.resize(Size { cols: 1, rows: 2 });
-    grid.resize(Size { cols: 2, rows: 2 });
-    assert_eq!((grid.cursor.row, grid.cursor.col), (0, 1));
-    assert!(grid.pending_wrap);
-    grid.goto(0, 1);
-    grid.resize(Size { cols: 1, rows: 2 });
-    assert_eq!((grid.cursor.row, grid.cursor.col), (0, 0));
-    assert!(!grid.pending_wrap);
-}
-
-#[test]
 fn editing_repairs_cut_wide_glyphs_and_preserves_other_cells() {
     let mut grid = grid(8, 2, 0);
     print(&mut grid, "ab界cd");
@@ -386,6 +357,36 @@ fn editing_repairs_cut_wide_glyphs_and_preserves_other_cells() {
         grid.row(0)
             .unwrap()
             .cells()
+            .iter()
+            .all(|cell| cell.flags == 0)
+    );
+}
+
+#[test]
+fn editing_a_wrapped_row_drops_its_leading_wide_spacer_and_edge_glyph() {
+    let mut grid = grid(4, 2, 0);
+    print(&mut grid, "abc界");
+    assert_ne!(
+        grid.screen().rows[0].cells[3].flags & Cell::LEADING_WIDE_SPACER,
+        0
+    );
+    // The leading spacer lands mid-row and the row stops wrapping.
+    grid.goto(0, 0);
+    grid.delete_chars(1);
+    assert_eq!(text(&grid, 0), "bc  ");
+    assert!(
+        grid.screen().rows[0]
+            .cells
+            .iter()
+            .all(|cell| cell.flags == 0)
+    );
+    // A glyph pushed into the last column loses its spacer.
+    grid.goto(1, 0);
+    grid.insert_chars(3);
+    assert_eq!(text(&grid, 1), "    ");
+    assert!(
+        grid.screen().rows[1]
+            .cells
             .iter()
             .all(|cell| cell.flags == 0)
     );
@@ -529,6 +530,37 @@ fn alternate_screen_restores_primary_and_never_retains_history() {
 }
 
 #[test]
+fn leaving_the_1049_alternate_screen_releases_it() {
+    let mut grid = grid(6, 3, 5);
+    grid.set_alternate(true, false, false);
+    print(&mut grid, "kept");
+    grid.set_alternate(false, false, false);
+    assert!(grid.alternate.is_some());
+    grid.set_alternate(true, false, false);
+    assert_eq!(text(&grid, 0), "kept  ");
+    grid.set_alternate(false, true, true);
+    assert!(grid.alternate.is_none());
+    grid.set_alternate(true, true, true);
+    assert_eq!(text(&grid, 0), "      ");
+}
+
+#[test]
+fn clearing_and_trimming_history_release_its_capacity() {
+    let mut grid = grid(4, 2, 5000);
+    for _ in 0..5000 {
+        print(&mut grid, "x\r\n");
+    }
+    grid.set_history_limit(10);
+    assert!(grid.history.capacity() <= 2 * 64);
+    grid.set_history_limit(5000);
+    for _ in 0..5000 {
+        print(&mut grid, "x\r\n");
+    }
+    assert!(grid.clear_scrollback());
+    assert_eq!(grid.history.capacity(), 0);
+}
+
+#[test]
 fn saved_cursor_restores_style_wrap_and_origin() {
     let mut grid = grid(4, 3, 0);
     grid.pen.style.foreground = Color::indexed(1);
@@ -571,48 +603,6 @@ fn tabs_origin_and_relative_motion_use_the_configured_region() {
 }
 
 #[test]
-fn width_reflow_preserves_hard_breaks_soft_wraps_cursor_and_style() {
-    let mut grid = grid(10, 6, 10);
-    grid.pen.style.attributes = Style::BOLD;
-    print(&mut grid, "abcdefghijklm\r\n$ ");
-    grid.resize(Size { cols: 6, rows: 6 });
-    assert_eq!(text(&grid, 0), "abcdef");
-    assert_eq!(text(&grid, 1), "ghijkl");
-    assert_eq!(text(&grid, 2), "m     ");
-    assert_eq!(text(&grid, 3), "$     ");
-    assert_eq!((grid.cursor.row, grid.cursor.col), (3, 2));
-    assert_eq!(
-        grid.row(1).unwrap().cells()[0].style.attributes,
-        Style::BOLD
-    );
-    assert!(grid.row(0).unwrap().wrapped);
-    assert!(!grid.row(2).unwrap().wrapped);
-    grid.resize(Size { cols: 10, rows: 6 });
-    assert_eq!(text(&grid, 0), "abcdefghij");
-    assert_eq!(text(&grid, 1), "klm       ");
-    assert_eq!(text(&grid, 2), "$         ");
-    assert_eq!((grid.cursor.row, grid.cursor.col), (2, 2));
-}
-
-#[test]
-fn cleared_scrollback_remains_hidden_across_width_reflow() {
-    let mut grid = grid(20, 6, 40);
-    for index in 0..18 {
-        print(&mut grid, &format!("HISTORY-{index:02}-abcdefghijk\r\n"));
-    }
-    grid.goto(0, 0);
-    grid.erase_display(2, false);
-    print(&mut grid, "$ ");
-    for cols in [10, 20, 10, 20] {
-        grid.resize(Size { cols, rows: 6 });
-        assert!((0..6).all(|row| !text(&grid, row).contains("HISTORY")));
-        assert!(grid.history_size() > 0);
-    }
-    grid.scroll_display(i32::MAX);
-    assert!((0..6).any(|row| text(&grid, row).contains("HISTORY")));
-}
-
-#[test]
 fn height_resize_keeps_cursor_visible_and_recovers_history_on_growth() {
     let mut grid = grid(6, 4, 10);
     print(&mut grid, "one\r\ntwo\r\nthree\r\nfour");
@@ -631,34 +621,22 @@ fn height_resize_keeps_cursor_visible_and_recovers_history_on_growth() {
 }
 
 #[test]
-fn scrolled_viewport_tracks_its_logical_anchor_through_reflow() {
-    let mut grid = grid(12, 3, 40);
-    for index in 0..12 {
-        print(&mut grid, &format!("row-{index:02}-abcdefgh\r\n"));
-    }
-    grid.scroll_display(i32::MAX);
-    let prefix = text(&grid, 0)[..6].to_owned();
-    grid.resize(Size { cols: 6, rows: 3 });
-    assert_eq!(text(&grid, 0), prefix);
-    grid.resize(Size { cols: 12, rows: 3 });
-    assert!(text(&grid, 0).starts_with(&prefix));
-    let before = text(&grid, 0);
-    grid.resize(Size { cols: 12, rows: 2 });
-    assert_eq!(text(&grid, 0), before);
-}
-
-#[test]
 fn limits_bound_dimensions_and_scrollback_storage() {
     let grid = grid(usize::MAX, usize::MAX, usize::MAX);
     assert!(grid.size.cols * grid.size.rows <= Size::MAX_CELLS);
-    assert!(grid.history_limit * grid.size.cols <= Size::MAX_CELLS);
+    // History memory is bounded by `HISTORY_BYTE_BUDGET`, independent of width.
     assert!(grid.history_limit <= MAX_HISTORY_ROWS);
 }
 
 #[test]
 fn mixed_edit_resize_and_scroll_sequences_preserve_grid_invariants() {
+    for initial in [0xd9a3_4871_u32, 0x1234_5678, 0x9e37_79b9, 0x0bad_f00d] {
+        mixed_edit_sequence_preserves_grid_invariants(initial);
+    }
+}
+
+fn mixed_edit_sequence_preserves_grid_invariants(mut seed: u32) {
     let mut grid = grid(13, 5, 11);
-    let mut seed = 0xd9a3_4871_u32;
     for _ in 0..3000 {
         seed ^= seed << 13;
         seed ^= seed >> 17;
@@ -669,6 +647,7 @@ fn mixed_edit_resize_and_scroll_sequences_preserve_grid_invariants() {
         } else {
             Color::DEFAULT
         };
+        grid.insert_mode = seed & 0x0100_0000 != 0;
         match seed % 15 {
             0 => grid.put_char('界'),
             1 => grid.put_char('\u{301}'),
@@ -695,6 +674,9 @@ fn mixed_edit_resize_and_scroll_sequences_preserve_grid_invariants() {
         assert!(grid.cursor.row < grid.size.rows);
         assert_eq!(grid.screen().rows.len(), grid.size.rows);
         assert!(grid.history.len() <= grid.history_limit);
+        let bytes: usize = grid.history.iter().map(Row::heap_bytes).sum();
+        assert_eq!(grid.history_bytes, bytes);
+        assert!(bytes <= history::HISTORY_BYTE_BUDGET);
         for row in grid
             .history
             .iter()
@@ -908,15 +890,17 @@ fn invalid_scroll_margins_preserve_the_previous_region_and_cursor() {
 }
 
 #[test]
-fn inserting_and_deleting_lines_preserve_the_cursor_column() {
+fn inserting_and_deleting_lines_return_to_the_left_margin() {
+    // VT510: "The cursor is reset to the first column" (xterm, kitty, Ghostty).
     let mut grid = grid(8, 5, 8);
     print(&mut grid, "first\r\nsecond\r\nthird");
     grid.goto(1, 4);
     grid.insert_lines(1);
-    assert_eq!((grid.cursor.row, grid.cursor.col), (1, 4));
+    assert_eq!((grid.cursor.row, grid.cursor.col), (1, 0));
     assert_eq!(text(&grid, 1), "        ");
+    grid.goto(1, 4);
     grid.delete_lines(1);
-    assert_eq!((grid.cursor.row, grid.cursor.col), (1, 4));
+    assert_eq!((grid.cursor.row, grid.cursor.col), (1, 0));
     assert_eq!(text(&grid, 1), "second  ");
 }
 
@@ -1087,65 +1071,6 @@ fn randomized_scroll_damage_reconstructs_cell_and_wrap_metadata() {
 }
 
 #[test]
-fn widening_history_bounds_intermediate_rows_and_clamps_evicted_viewport_anchor() {
-    let mut grid = grid(1, 3, 2048);
-    for index in 0..1024 {
-        grid.put_char(char::from(b'a' + (index % 26) as u8));
-        grid.carriage_return();
-        grid.linefeed();
-    }
-    assert_eq!(grid.history_size(), 1022);
-    assert!(grid.scroll_display(400));
-    grid.resize(Size {
-        cols: 4096,
-        rows: 3,
-    });
-    let limit = Size::MAX_CELLS / 4096;
-    assert_eq!(grid.history_size(), limit);
-    assert_eq!(grid.display_offset(), limit);
-    assert!(grid.last_reflow_row_allocations <= limit + 3 + 1);
-    assert_eq!(
-        grid.row(-1).unwrap().cells()[0].character,
-        char::from(b'a' + (1021 % 26) as u8)
-    );
-    assert_eq!(
-        grid.visible_row(0).unwrap().cells()[0].character,
-        char::from(b'a' + (766 % 26) as u8)
-    );
-    assert_eq!((grid.cursor.row, grid.cursor.col), (2, 0));
-}
-
-#[test]
-fn narrowing_one_long_logical_line_recycles_rows_and_preserves_its_tail() {
-    let mut grid = grid(80, 3, 1000);
-    let pattern = "abcdefghijklmnopqrstuvwxyz";
-    let input = pattern.repeat(3000);
-    grid.write_ascii(input.as_bytes());
-    grid.resize(Size { cols: 1, rows: 3 });
-    assert_eq!(grid.history_size(), 1000);
-    assert!(grid.last_reflow_row_allocations <= 1000 + 3 + 1);
-    assert_eq!(grid.primary.rows.len(), 3);
-    assert_eq!(text(&grid, 0), "x");
-    assert_eq!(text(&grid, 1), "y");
-    assert_eq!(text(&grid, 2), "z");
-    assert_eq!((grid.cursor.row, grid.cursor.col), (2, 0));
-    assert!(grid.pending_wrap);
-    assert_eq!(grid.row(-1).unwrap().cells()[0].character, 'w');
-}
-
-#[test]
-fn reflow_drops_below_cursor_rows_without_losing_the_cursor_window() {
-    let mut grid = grid(80, 4, 5);
-    grid.write_ascii(&vec![b'x'; 320]);
-    grid.goto(0, 1);
-    grid.resize(Size { cols: 1, rows: 4 });
-    assert_eq!(grid.history_size(), 1);
-    assert_eq!((grid.cursor.row, grid.cursor.col), (0, 0));
-    assert!(grid.last_reflow_row_allocations <= 5 + 4 + 1);
-    assert!((0..4).all(|row| text(&grid, row) == "x"));
-}
-
-#[test]
 fn alternate_width_growth_and_height_shrink_preserve_only_surviving_rows() {
     let mut grid = grid(1, 4096, 0);
     grid.set_alternate(true, true, true);
@@ -1245,7 +1170,7 @@ fn alternate_resize_preserves_a_separately_saved_primary_cursor() {
     assert_eq!(text(&grid, 1), "ef  ");
 }
 
-fn assert_history_compacted(grid: &mut Grid) {
+pub(super) fn assert_history_compacted(grid: &mut Grid) {
     while grid.needs_compaction() {
         grid.compact_history(256);
     }
@@ -1273,21 +1198,6 @@ fn height_shrink_keeps_older_history_in_the_compaction_window() {
     assert_history_compacted(&mut grid);
     grid.resize(Size { cols: 120, rows: 8 });
     grid.resize(Size { cols: 120, rows: 3 });
-    assert_history_compacted(&mut grid);
-}
-
-#[test]
-fn width_resize_defers_history_compaction_to_idle_steps() {
-    let mut grid = grid(120, 4, 100);
-    for line in 0..60 {
-        print(&mut grid, &format!("line {line}\r\n"));
-    }
-    assert_history_compacted(&mut grid);
-    grid.history_activity = false;
-    grid.resize(Size { cols: 100, rows: 4 });
-    assert!(grid.history.iter().all(|row| row.packed.is_none()));
-    assert!(grid.history_activity);
-    assert!(grid.needs_compaction());
     assert_history_compacted(&mut grid);
 }
 
@@ -1414,4 +1324,53 @@ fn history_cache_tracking_survives_sparse_reads_resize_and_reset() {
     grid.prepare_output(1);
     assert_eq!(grid.history_size(), 0);
     assert_eq!(text(&grid, 0), " ".repeat(80));
+}
+
+#[test]
+fn erase_to_end_of_line_shrinks_the_occupied_prefix() {
+    let mut grid = grid(200, 2, 4);
+    print(&mut grid, "abc");
+    grid.erase_line(0, false);
+    assert_eq!(grid.primary.rows[0].occupied, 3);
+
+    // A different erase background becomes the clean suffix's background.
+    grid.pen.style.background = Color::rgb(1, 2, 3);
+    grid.carriage_return();
+    grid.move_cursor(0, 1);
+    grid.erase_line(0, false);
+    let row = &grid.primary.rows[0];
+    assert_eq!(row.occupied, 1);
+    assert_eq!(row.clear_background, Color::rgb(1, 2, 3));
+    assert_eq!(row.cells()[0].character, 'a');
+    assert!(
+        row.cells()[1..]
+            .iter()
+            .all(|cell| cell.style.background == Color::rgb(1, 2, 3))
+    );
+}
+
+#[test]
+fn ascii_runs_without_autowrap_match_scalar_output() {
+    for prefix in ["", "ab", "中"] {
+        for text in ["xyz", "0123456789", "0123456789abcdef"] {
+            let mut fast = grid(8, 2, 4);
+            let mut scalar = grid(8, 2, 4);
+            for grid in [&mut fast, &mut scalar] {
+                grid.autowrap = false;
+                print(grid, prefix);
+            }
+            fast.write_ascii(text.as_bytes());
+            print(&mut scalar, text);
+            assert_eq!(text_of(&fast), text_of(&scalar), "{prefix:?} {text:?}");
+            assert_eq!(fast.cursor, scalar.cursor);
+            assert_eq!(fast.pending_wrap, scalar.pending_wrap);
+            fast.write_ascii(b"Q");
+            scalar.put_char('Q');
+            assert_eq!(text_of(&fast), text_of(&scalar), "{prefix:?} {text:?}");
+        }
+    }
+}
+
+pub(super) fn text_of(grid: &Grid) -> Vec<String> {
+    (0..grid.size.rows).map(|row| text(grid, row)).collect()
 }

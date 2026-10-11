@@ -3,10 +3,10 @@ use crate::chrome_style::ChromeContrastProfile;
 use crate::colors::TerminalColors;
 use crate::commands::{self, CommandAction};
 use crate::config::{
-    self, AppConfig, CursorStyle as AppCursorStyle, PaneFocusEffect, SystemAppearance,
-    TabBarPosition, TabCloseVisibility, TabTitleConfig, TabTitleSource, TabWidthMode, TaskConfig,
-    TerminalScrollbarStyle, TerminalScrollbarVisibility, resolve_active_theme,
-    system_appearance_from_window,
+    self, AppConfig, ClipboardReadPolicy, CursorStyle as AppCursorStyle, PaneFocusEffect,
+    SystemAppearance, TabBarPosition, TabCloseVisibility, TabTitleConfig, TabTitleSource,
+    TabWidthMode, TaskConfig, TerminalScrollbarStyle, TerminalScrollbarVisibility,
+    resolve_active_theme, system_appearance_from_window,
 };
 use crate::keybindings;
 use crate::terminal_ui::{
@@ -641,6 +641,17 @@ impl Terminal {
         }
     }
 
+    fn write_mouse_motion(&self, input: Vec<u8>) {
+        match self {
+            Self::Native(terminal) => {
+                if let Ok(terminal) = terminal.lock() {
+                    terminal.write_mouse_motion(input);
+                }
+            }
+            Self::Tmux(_) => {}
+        }
+    }
+
     fn set_wakeup_enabled(&self, enabled: bool) {
         match self {
             Self::Native(terminal) => {
@@ -856,20 +867,6 @@ impl Terminal {
         }
     }
 
-    fn take_render_damage_snapshot(&self) -> TerminalRenderDamageSnapshot {
-        match self {
-            Self::Tmux(terminal) => {
-                TerminalRenderDamageSnapshot::from_core(terminal.take_render_damage_snapshot())
-            }
-            Self::Native(terminal) => terminal.lock().map_or_else(
-                |_| TerminalRenderDamageSnapshot::from_damage(TerminalDamageSnapshot::Full),
-                |terminal| {
-                    TerminalRenderDamageSnapshot::from_core(terminal.take_render_damage_snapshot())
-                },
-            ),
-        }
-    }
-
     fn try_kitty_graphics_placements(&self) -> Option<Vec<KittyGraphicsRenderPlacement>> {
         self.try_kitty_graphics_snapshot()
             .map(|(_, placements)| placements)
@@ -960,25 +957,18 @@ impl Terminal {
         Some(display_offset)
     }
 
-    fn for_each_damage_cell(
+    /// Take render damage and read the cells it names under one core lock;
+    /// see `termy_core::Terminal::with_render_damage`. `read` must not call
+    /// back into this terminal.
+    fn with_render_damage<R>(
         &self,
-        spans: &[TerminalDirtySpan],
-        generation: Option<u64>,
-        mut visitor: impl FnMut(usize, usize, i32, usize, TerminalCellRef<'_>),
-    ) -> bool {
-        let Some(generation) = generation else {
-            return false;
-        };
+        read: impl FnOnce(TerminalRenderDamageSnapshot, termy_core::TerminalDamageCells<'_>) -> R,
+    ) -> Option<R> {
         self.with_core_terminal(|terminal| {
-            terminal.visit_viewport_ranges_locked_at_generation(
-                generation,
-                spans,
-                |row, offset, line, col, cell| {
-                    visitor(row, offset, line, col, TerminalCellRef(cell));
-                },
-            )
+            terminal.with_render_damage(|damage, cells| {
+                read(TerminalRenderDamageSnapshot::from_core(damage), cells)
+            })
         })
-        .unwrap_or(false)
     }
 
     fn line_bounds(&self) -> Option<(i32, i32)> {
@@ -1319,6 +1309,7 @@ pub struct TerminalView {
     line_height: f32,
     copy_on_select: bool,
     copy_on_select_toast: bool,
+    clipboard_read: ClipboardReadPolicy,
     last_terminal_modifiers: gpui_kit::Modifiers,
     pending_key_releases: HashMap<String, PendingKeyRelease>,
     deferred_ime_key_releases: HashSet<String>,
@@ -3290,6 +3281,7 @@ impl TerminalView {
             line_height: config.line_height.clamp(MIN_LINE_HEIGHT, MAX_LINE_HEIGHT),
             copy_on_select: config.copy_on_select,
             copy_on_select_toast: config.copy_on_select_toast,
+            clipboard_read: config.clipboard_read,
             last_terminal_modifiers: gpui_kit::Modifiers::default(),
             pending_key_releases: HashMap::default(),
             deferred_ime_key_releases: HashSet::default(),
@@ -3818,6 +3810,7 @@ impl TerminalView {
         self.padding_y = config.padding_y.max(0.0);
         self.copy_on_select = config.copy_on_select;
         self.copy_on_select_toast = config.copy_on_select_toast;
+        self.clipboard_read = config.clipboard_read;
         self.mouse_scroll_multiplier = config.mouse_scroll_multiplier;
         self.pane_focus_effect = config.pane_focus_effect;
         self.pane_focus_strength = config.pane_focus_strength;
@@ -4056,7 +4049,7 @@ impl TerminalView {
         let mut should_redraw = false;
         let mut should_quit = false;
         let active_tab = self.session.active_tab;
-        let mut clipboard_text = ClipboardTextCache::default();
+        let mut clipboard_text = ClipboardTextCache::new(self.clipboard_read);
         self.record_benchmark_terminal_event_drain_pass();
 
         let mut pending_tab_closures: HashSet<TabId> = HashSet::new();
@@ -4116,6 +4109,7 @@ impl TerminalView {
                                 should_redraw = true;
                             }
                         }
+                        TerminalEvent::InputDropped => backend::warn_input_dropped(),
                         TerminalEvent::Bell => {
                             if tab_index == active_tab {
                                 should_redraw = true;
@@ -4492,6 +4486,23 @@ mod tests {
         assert_eq!(first.as_deref(), Some("clipboard"));
         assert_eq!(second.as_deref(), Some("clipboard"));
         assert_eq!(reads.get(), 1);
+    }
+
+    #[test]
+    fn clipboard_reads_follow_the_configured_policy_and_ask_once_per_drain() {
+        let asks = Cell::new(0);
+        let ask = |answer| {
+            asks.set(asks.get() + 1);
+            answer
+        };
+        assert!(!ClipboardTextCache::new(ClipboardReadPolicy::Deny).read_permitted(|| ask(true)));
+        assert!(ClipboardTextCache::new(ClipboardReadPolicy::Allow).read_permitted(|| ask(false)));
+        assert_eq!(asks.get(), 0);
+
+        let mut cache = ClipboardTextCache::new(ClipboardReadPolicy::Ask);
+        assert!(!cache.read_permitted(|| ask(false)));
+        assert!(!cache.read_permitted(|| ask(true)));
+        assert_eq!(asks.get(), 1);
     }
 
     #[test]

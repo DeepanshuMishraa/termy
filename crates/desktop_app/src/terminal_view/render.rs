@@ -372,17 +372,6 @@ fn pane_cache_update_strategy(
     }
 }
 
-fn finalized_cache_update_strategy(
-    planned: PaneCacheUpdateStrategy,
-    did_full_rebuild: bool,
-) -> PaneCacheUpdateStrategy {
-    if planned == PaneCacheUpdateStrategy::Partial && did_full_rebuild {
-        PaneCacheUpdateStrategy::Full
-    } else {
-        planned
-    }
-}
-
 thread_local! {
     static DIRTY_SPAN_RANGES: std::cell::RefCell<Vec<(usize, usize, usize)>> =
         std::cell::RefCell::new(Vec::with_capacity(128));
@@ -1061,64 +1050,52 @@ impl TerminalView {
         Arc::new(rows_cache.into_iter().map(Arc::new).collect())
     }
 
+    /// Patch dirty spans with cells read under the damage lock. `None` means
+    /// the cache must be rebuilt instead.
     #[allow(clippy::too_many_arguments)]
     fn patch_pane_render_cache(
         &self,
-        terminal: &Terminal,
+        damage_cells: &mut termy_core::TerminalDamageCells<'_>,
         cols: usize,
         rows: usize,
         display_offset: usize,
         cells: &mut PaneRenderCells,
         spans: &[TerminalDirtySpan],
-        generation: Option<u64>,
         context: PaneCellBuildContext<'_>,
-    ) -> (usize, bool) {
+    ) -> Option<usize> {
         if !pane_render_cells_match_dimensions(cells, cols, rows) {
-            *cells = self.rebuild_pane_render_cache(terminal, cols, rows, display_offset, context);
-            return (0, true);
+            return None;
         }
-
-        let Some((min_line, max_line)) = terminal.line_bounds() else {
-            *cells = self.rebuild_pane_render_cache(terminal, cols, rows, display_offset, context);
-            return (0, true);
-        };
+        let (min_line, max_line) = damage_cells.line_bounds();
         let mut patched_cell_count = 0usize;
-        let visited = {
-            // Clone the outer row table at most once for this partial update. Each
-            // dirty row is then made mutable once before all cells in its span are
-            // patched, instead of checking both Arcs for every individual cell.
-            let rows_cache: &mut Vec<_> = Arc::make_mut(cells);
-            for span in spans {
-                if span.row < rows {
-                    let _ = Arc::make_mut(&mut rows_cache[span.row]);
-                }
+        // Clone the outer row table at most once for this partial update. Each
+        // dirty row is then made mutable once before all cells in its span are
+        // patched, instead of checking both Arcs for every individual cell.
+        let rows_cache: &mut Vec<_> = Arc::make_mut(cells);
+        for span in spans {
+            if span.row < rows {
+                let _ = Arc::make_mut(&mut rows_cache[span.row]);
             }
-            terminal.for_each_damage_cell(
-                spans,
-                generation,
-                |row, cell_offset, term_line, col, cell| {
-                    if row >= rows
-                        || col >= cols
-                        || cell_offset != display_offset
-                        || term_line < min_line
-                        || term_line > max_line
-                    {
-                        return;
-                    }
-                    Arc::make_mut(&mut rows_cache[row])[col] =
-                        self.build_cell_render_info(col, term_line, cell, context);
-                    patched_cell_count = patched_cell_count.saturating_add(1);
-                },
-            )
-        };
-        if !visited {
-            *cells = self.rebuild_pane_render_cache(terminal, cols, rows, display_offset, context);
-            return (0, true);
         }
-
-        (patched_cell_count, false)
+        let visited = damage_cells.visit(spans, |row, cell_offset, term_line, col, cell| {
+            if row >= rows
+                || col >= cols
+                || cell_offset != display_offset
+                || term_line < min_line
+                || term_line > max_line
+            {
+                return;
+            }
+            Arc::make_mut(&mut rows_cache[row])[col] =
+                self.build_cell_render_info(col, term_line, TerminalCellRef(cell), context);
+            patched_cell_count = patched_cell_count.saturating_add(1);
+        });
+        visited.then_some(patched_cell_count)
     }
 
+    /// Bring the pane cache up to date. Damage and the cells it names are read
+    /// under one core lock, so output arriving between them cannot force a
+    /// full rebuild; a planned or fallback full rebuild runs after the lock.
     #[allow(clippy::too_many_arguments)]
     fn update_pane_render_cache(
         &self,
@@ -1126,7 +1103,6 @@ impl TerminalView {
         cols: usize,
         rows: usize,
         display_offset: usize,
-        damage: TerminalRenderDamageSnapshot,
         cache: &mut TerminalPaneRenderCache,
         cache_key: TerminalPaneRenderCacheKey,
         context: PaneCellBuildContext<'_>,
@@ -1136,110 +1112,83 @@ impl TerminalView {
         PaneCacheUpdateStrategy,
         TerminalGridPaintDamage,
     ) {
-        let palette_matches =
-            render_damage_palette_matches(damage.palette_revision, cache_key.palette_revision);
-        let mut strategy = pane_cache_update_strategy(
-            !cache.cells.is_empty(),
-            cache.cols == cols && cache.rows == rows,
-            cache.display_offset == display_offset,
-            cache.key.as_ref() == Some(&cache_key),
-            &damage.damage,
-        );
-        if !palette_matches {
-            strategy = PaneCacheUpdateStrategy::Full;
-        } else if strategy == PaneCacheUpdateStrategy::Reuse && !damage.scrolls.is_empty() {
-            strategy = PaneCacheUpdateStrategy::Partial;
-        }
-        if strategy == PaneCacheUpdateStrategy::Partial
-            && !damage.scrolls.is_empty()
-            && (cache_key.selection_range.is_some() || cache_key.search_results_revision.is_some())
-        {
-            strategy = PaneCacheUpdateStrategy::Full;
-        }
-        if strategy == PaneCacheUpdateStrategy::Partial
-            && let TerminalDamageSnapshot::Partial(spans) = &damage.damage
-            && partial_damage_should_rebuild_full(spans, rows, cols)
-        {
-            strategy = PaneCacheUpdateStrategy::Full;
-        }
-        let mut paint_damage = match strategy {
-            PaneCacheUpdateStrategy::Reuse => TerminalGridPaintDamage::None,
-            PaneCacheUpdateStrategy::Full => TerminalGridPaintDamage::Full,
-            PaneCacheUpdateStrategy::Partial => match &damage.damage {
-                TerminalDamageSnapshot::Partial(spans) => {
-                    paint_damage_from_scrolls_and_spans(&damage.scrolls, spans, rows)
-                }
-                TerminalDamageSnapshot::Full => TerminalGridPaintDamage::Full,
-            },
-        };
-
-        match strategy {
-            PaneCacheUpdateStrategy::Reuse => {}
-            PaneCacheUpdateStrategy::Full => {
-                cache.cells =
-                    self.rebuild_pane_render_cache(terminal, cols, rows, display_offset, context);
+        let planned = terminal.with_render_damage(|damage, mut damage_cells| {
+            let palette_matches =
+                render_damage_palette_matches(damage.palette_revision, cache_key.palette_revision);
+            let mut strategy = pane_cache_update_strategy(
+                !cache.cells.is_empty(),
+                cache.cols == cols && cache.rows == rows,
+                cache.display_offset == display_offset,
+                cache.key.as_ref() == Some(&cache_key),
+                &damage.damage,
+            );
+            if !palette_matches {
+                strategy = PaneCacheUpdateStrategy::Full;
+            } else if strategy == PaneCacheUpdateStrategy::Reuse && !damage.scrolls.is_empty() {
+                strategy = PaneCacheUpdateStrategy::Partial;
             }
-            PaneCacheUpdateStrategy::Partial => {
-                let TerminalRenderDamageSnapshot {
-                    damage: TerminalDamageSnapshot::Partial(spans),
-                    scrolls,
-                    generation,
-                    palette_revision: _,
-                } = damage
-                else {
-                    cache.cells = self.rebuild_pane_render_cache(
-                        terminal,
-                        cols,
-                        rows,
-                        display_offset,
-                        context,
-                    );
-                    cache.cols = cols;
-                    cache.rows = rows;
-                    cache.display_offset = display_offset;
-                    cache.key = Some(cache_key);
-                    return (
-                        cache.cells.clone(),
-                        PaneCacheUpdateStrategy::Full,
-                        TerminalGridPaintDamage::Full,
-                    );
+            if strategy == PaneCacheUpdateStrategy::Partial
+                && !damage.scrolls.is_empty()
+                && (cache_key.selection_range.is_some()
+                    || cache_key.search_results_revision.is_some())
+            {
+                strategy = PaneCacheUpdateStrategy::Full;
+            }
+            if strategy == PaneCacheUpdateStrategy::Partial
+                && let TerminalDamageSnapshot::Partial(spans) = &damage.damage
+                && partial_damage_should_rebuild_full(spans, rows, cols)
+            {
+                strategy = PaneCacheUpdateStrategy::Full;
+            }
+            if strategy != PaneCacheUpdateStrategy::Partial {
+                let paint_damage = match strategy {
+                    PaneCacheUpdateStrategy::Reuse => TerminalGridPaintDamage::None,
+                    _ => TerminalGridPaintDamage::Full,
                 };
-                #[cfg_attr(not(debug_assertions), allow(unused_variables))]
-                let rows_cache: &mut Vec<_> = Arc::make_mut(&mut cache.cells);
-                #[cfg_attr(not(debug_assertions), allow(unused_variables))]
-                let (patched_cell_count, did_full_rebuild) =
-                    if replay_viewport_scrolls(rows_cache.as_mut_slice(), &scrolls) {
-                        self.patch_pane_render_cache(
-                            terminal,
-                            cols,
-                            rows,
-                            display_offset,
-                            &mut cache.cells,
-                            &spans,
-                            generation,
-                            context,
-                        )
-                    } else {
-                        cache.cells = self.rebuild_pane_render_cache(
-                            terminal,
-                            cols,
-                            rows,
-                            display_offset,
-                            context,
-                        );
-                        (0, true)
-                    };
-                strategy = finalized_cache_update_strategy(strategy, did_full_rebuild);
-                if strategy == PaneCacheUpdateStrategy::Full {
-                    paint_damage = TerminalGridPaintDamage::Full;
-                } else {
-                    #[cfg(debug_assertions)]
-                    if patched_cell_count > 0 {
-                        render_pass_cache_counts
-                            .record_partial_work(spans.len(), patched_cell_count);
-                    }
-                }
+                return (strategy, paint_damage);
             }
+            let TerminalRenderDamageSnapshot {
+                damage: TerminalDamageSnapshot::Partial(spans),
+                scrolls,
+                ..
+            } = damage
+            else {
+                return (PaneCacheUpdateStrategy::Full, TerminalGridPaintDamage::Full);
+            };
+            let patched = if damage_cells.display_offset() == display_offset
+                && replay_viewport_scrolls(Arc::make_mut(&mut cache.cells).as_mut_slice(), &scrolls)
+            {
+                self.patch_pane_render_cache(
+                    &mut damage_cells,
+                    cols,
+                    rows,
+                    display_offset,
+                    &mut cache.cells,
+                    &spans,
+                    context,
+                )
+            } else {
+                None
+            };
+            let Some(patched_cell_count) = patched else {
+                return (PaneCacheUpdateStrategy::Full, TerminalGridPaintDamage::Full);
+            };
+            #[cfg(debug_assertions)]
+            if patched_cell_count > 0 {
+                render_pass_cache_counts.record_partial_work(spans.len(), patched_cell_count);
+            }
+            #[cfg(not(debug_assertions))]
+            let _ = patched_cell_count;
+            (
+                strategy,
+                paint_damage_from_scrolls_and_spans(&scrolls, &spans, rows),
+            )
+        });
+        let (strategy, paint_damage) =
+            planned.unwrap_or((PaneCacheUpdateStrategy::Full, TerminalGridPaintDamage::Full));
+        if strategy == PaneCacheUpdateStrategy::Full {
+            cache.cells =
+                self.rebuild_pane_render_cache(terminal, cols, rows, display_offset, context);
         }
 
         cache.cols = cols;
@@ -2994,8 +2943,6 @@ impl Render for TerminalView {
                 // the start of the render pass, avoiding another nested pair
                 // of terminal locks here.
                 let alternate_screen_mode = pane.last_alternate_screen.get();
-                let damage = terminal.take_render_damage_snapshot();
-                let terminal_generation = damage.generation;
                 let core_palette = terminal.core_palette();
                 let palette_revision = core_palette.as_ref().map(|palette| palette.revision);
                 let pane_cache_key = self.pane_render_cache_key(
@@ -3032,7 +2979,6 @@ impl Render for TerminalView {
                         cols,
                         rows,
                         pane_display_offset,
-                        damage,
                         &mut pane_render_cache,
                         pane_cache_key.clone(),
                         pane_build_context,
@@ -3137,9 +3083,11 @@ impl Render for TerminalView {
                 let (kitty_below_background, kitty_below_text, kitty_above_text) = {
                     let mut pane_render_cache = pane.render_cache.borrow_mut();
                     let graphics_revision = terminal.kitty_graphics_revision().unwrap_or(0);
+                    // The engine bumps the graphics revision for every scroll,
+                    // view or placeholder edit that moves an image, so ordinary
+                    // text output does not force a fresh snapshot each frame.
                     let mut graphics_cache_key = KittyGraphicsRenderCacheKey {
                         graphics_revision,
-                        terminal_generation,
                         cols,
                         rows,
                         display_offset: pane_display_offset,
@@ -4685,20 +4633,19 @@ mod tests {
             b"\x1b[2S\x1b[1T",
         ] {
             terminal.feed_output(output);
-            let update =
-                TerminalRenderDamageSnapshot::from_core(terminal.take_render_damage_snapshot());
-            match update.damage {
-                TerminalDamageSnapshot::Full => incremental = snapshot_rows(&terminal),
+            let full = terminal.with_render_damage(|update, mut cells| match update.damage {
+                TerminalDamageSnapshot::Full => true,
                 TerminalDamageSnapshot::Partial(spans) => {
                     replayed_scrolls = replayed_scrolls.saturating_add(update.scrolls.len());
                     assert!(replay_viewport_scrolls(&mut incremental, &update.scrolls));
-                    let generation = update.generation.expect("core render generation");
-                    assert!(terminal.visit_viewport_ranges_at_generation(
-                        generation,
-                        &spans,
-                        |row, _, _, col, cell| incremental[row][col] = cell.clone(),
-                    ));
+                    assert!(cells.visit(&spans, |row, _, _, col, cell| {
+                        incremental[row][col] = cell.clone();
+                    }));
+                    false
                 }
+            });
+            if full {
+                incremental = snapshot_rows(&terminal);
             }
             assert_eq!(incremental, snapshot_rows(&terminal), "output {output:?}");
         }
@@ -5318,28 +5265,6 @@ mod tests {
             }]),
         );
         assert_eq!(strategy, PaneCacheUpdateStrategy::Full);
-    }
-
-    #[test]
-    fn finalized_cache_update_strategy_upgrades_partial_when_fallback_rebuilds() {
-        let strategy = finalized_cache_update_strategy(PaneCacheUpdateStrategy::Partial, true);
-        assert_eq!(strategy, PaneCacheUpdateStrategy::Full);
-    }
-
-    #[test]
-    fn finalized_cache_update_strategy_keeps_planned_strategy_without_fallback() {
-        assert_eq!(
-            finalized_cache_update_strategy(PaneCacheUpdateStrategy::Reuse, false),
-            PaneCacheUpdateStrategy::Reuse
-        );
-        assert_eq!(
-            finalized_cache_update_strategy(PaneCacheUpdateStrategy::Partial, false),
-            PaneCacheUpdateStrategy::Partial
-        );
-        assert_eq!(
-            finalized_cache_update_strategy(PaneCacheUpdateStrategy::Full, true),
-            PaneCacheUpdateStrategy::Full
-        );
     }
 
     #[test]

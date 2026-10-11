@@ -134,6 +134,13 @@ impl Backend {
         }
     }
 
+    pub(super) fn write_mouse_motion(&self, input: Vec<u8>) {
+        match self {
+            Self::Custom(backend) => backend.write_mouse_motion(input),
+            Self::Remote(backend) => backend.write_owned(input),
+        }
+    }
+
     pub(super) fn hydrate_output(&self, bytes: &[u8]) {
         match self {
             Self::Custom(backend) => backend.hydrate_output(bytes),
@@ -268,6 +275,16 @@ impl Backend {
         match self {
             Self::Custom(backend) => backend.take_render_damage_snapshot(),
             Self::Remote(backend) => backend.take_render_damage_snapshot(),
+        }
+    }
+
+    pub(super) fn with_render_damage<R>(
+        &self,
+        read: impl FnOnce(TerminalRenderDamageSnapshot, TerminalDamageCells<'_>) -> R,
+    ) -> R {
+        match self {
+            Self::Custom(backend) => backend.with_render_damage(read),
+            Self::Remote(backend) => backend.with_render_damage(read),
         }
     }
 

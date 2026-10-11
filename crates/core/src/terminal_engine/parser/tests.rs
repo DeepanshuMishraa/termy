@@ -64,8 +64,8 @@ impl Handler for Recorder {
         self.events.push(Event::Dcs(bytes.to_vec()));
     }
 
-    fn apc(&mut self, bytes: &[u8]) {
-        self.events.push(Event::Apc(bytes.to_vec()));
+    fn apc(&mut self, bytes: &mut Vec<u8>) {
+        self.events.push(Event::Apc(bytes.clone()));
     }
 }
 
@@ -472,7 +472,7 @@ fn oversized_strings_discard_embedded_escapes_until_termination() {
         parser.advance(&mut recorder, &vec![b'x'; MAX_STRING_BYTES + 1]);
         parser.advance(
             &mut recorder,
-            b"\x1b[31mhidden\x1b\nmore hidden\x1b\x1b\\OK",
+            b"\x1b]hidden\x1bP\x1b\nmore hidden\x1b\x1b\\OK",
         );
         assert_eq!(recorder.events, vec![Event::Print('O'), Event::Print('K')]);
     }
@@ -483,8 +483,8 @@ fn configured_apc_limit_does_not_expand_osc_or_dcs_limits() {
     for introducer in *b"]P_" {
         let mut parser = Parser::with_apc_limit(MAX_STRING_BYTES * 2);
         let mut recorder = Recorder::default();
-        parser.advance(&mut recorder, &[0x1b, introducer]);
-        parser.advance(&mut recorder, &vec![b'x'; MAX_STRING_BYTES + 1]);
+        parser.advance(&mut recorder, &[0x1b, introducer, b'G']);
+        parser.advance(&mut recorder, &vec![b'x'; MAX_STRING_BYTES]);
         parser.advance(&mut recorder, b"\x1b\\");
         if introducer == b'_' {
             assert!(
@@ -498,12 +498,53 @@ fn configured_apc_limit_does_not_expand_osc_or_dcs_limits() {
 }
 
 #[test]
+fn clipboard_osc_has_its_own_larger_limit() {
+    let data = vec![b'Q'; MAX_STRING_BYTES * 2];
+    for scanner in [false, true] {
+        let mut parser = if scanner {
+            Parser::scanner(MAX_STRING_BYTES)
+        } else {
+            Parser::default()
+        };
+        let mut recorder = Recorder::default();
+        // The selecting prefix may arrive split across reads.
+        parser.advance(&mut recorder, b"\x1b]5");
+        parser.advance(&mut recorder, b"2;c;");
+        for chunk in data.chunks(3000) {
+            parser.advance(&mut recorder, chunk);
+        }
+        assert!(!parser.discarded);
+        parser.advance(&mut recorder, b"\x07");
+        if !scanner {
+            assert!(
+                matches!(recorder.events.as_slice(), [Event::Osc(bytes)] if bytes.len() == data.len() + 5)
+            );
+            assert_eq!(parser.string.capacity(), 0);
+        }
+    }
+
+    let mut parser = Parser::default();
+    let mut recorder = Recorder::default();
+    parser.advance(&mut recorder, b"\x1b]52;c;");
+    parser.advance(&mut recorder, &vec![b'Q'; MAX_CLIPBOARD_OSC_BYTES]);
+    assert!(parser.discarded);
+    parser.advance(&mut recorder, b"\x07OK");
+    assert_eq!(printed(&recorder.events), "OK");
+
+    // Other OSCs keep the generic bound.
+    let mut parser = Parser::default();
+    parser.advance(&mut recorder, b"\x1b]2;");
+    parser.advance(&mut recorder, &data);
+    assert!(parser.discarded);
+}
+
+#[test]
 fn large_apc_storage_is_released_after_completion_or_interruption() {
     for ending in [b"\x1b\\".as_slice(), b"\x18", b"\x1a", b"\x1b[2J", b"\x1bc"] {
         let mut parser = Parser::with_apc_limit(MAX_STRING_BYTES * 2);
         let mut recorder = Recorder::default();
-        parser.advance(&mut recorder, b"\x1b_");
-        parser.advance(&mut recorder, &vec![b'x'; MAX_STRING_BYTES + 1]);
+        parser.advance(&mut recorder, b"\x1b_G");
+        parser.advance(&mut recorder, &vec![b'x'; MAX_STRING_BYTES]);
         assert!(parser.string.capacity() > MAX_STRING_BYTES);
         parser.advance(&mut recorder, ending);
         assert_eq!(parser.string.capacity(), 0, "ending {ending:?}");
@@ -517,8 +558,8 @@ fn large_apc_storage_is_released_on_overflow_and_parser_reset() {
     for overflow in [false, true] {
         let mut parser = Parser::with_apc_limit(MAX_STRING_BYTES * 2);
         let mut recorder = Recorder::default();
-        parser.advance(&mut recorder, b"\x1b_");
-        parser.advance(&mut recorder, &vec![b'x'; MAX_STRING_BYTES + 1]);
+        parser.advance(&mut recorder, b"\x1b_G");
+        parser.advance(&mut recorder, &vec![b'x'; MAX_STRING_BYTES]);
         assert!(parser.string.capacity() > MAX_STRING_BYTES);
         if overflow {
             parser.advance(&mut recorder, &vec![b'x'; MAX_STRING_BYTES]);
@@ -539,14 +580,73 @@ fn scanner_tracks_large_string_limits_without_allocating_payloads() {
     for introducer in *b"]P_" {
         let mut parser = Parser::scanner(MAX_STRING_BYTES * 2);
         let mut recorder = Recorder::default();
+        parser.advance(&mut recorder, &[0x1b, introducer, b'G']);
+        parser.advance(&mut recorder, &vec![b'x'; MAX_STRING_BYTES]);
+        assert_eq!(parser.string.capacity(), 0);
+        // The APC fits the larger limit; oversized OSC/DCS recover at CSI.
+        parser.advance(&mut recorder, b"\x1b[?2026lEND");
+        assert_eq!(printed(&recorder.events), "END");
+    }
+}
+
+#[test]
+fn only_graphics_apcs_use_the_larger_apc_limit() {
+    for (introducer, delivered) in [(b'G', true), (b'Z', false)] {
+        let mut parser = Parser::with_apc_limit(MAX_APC_BYTES);
+        let mut recorder = Recorder::default();
+        parser.advance(&mut recorder, &[0x1b, b'_', introducer]);
+        parser.advance(&mut recorder, &vec![b'x'; MAX_STRING_BYTES]);
+        assert_eq!(parser.string.capacity() > MAX_STRING_BYTES, delivered);
+        parser.advance(&mut recorder, b"\x1b\\");
+        assert_eq!(
+            matches!(recorder.events.as_slice(), [Event::Apc(bytes)] if bytes.len() == MAX_STRING_BYTES + 1),
+            delivered
+        );
+    }
+}
+
+#[test]
+fn escape_followed_by_non_ascii_text_prints_the_text() {
+    for input in ["A\x1bé!BC", "A\x1b(é!BC"] {
+        assert_eq!(printed(&parse(input.as_bytes())), "Aé!BC", "{input:?}");
+        // Fragmented input reaches the same state.
+        let mut parser = Parser::default();
+        let mut recorder = Recorder::default();
+        for byte in input.as_bytes() {
+            parser.advance(&mut recorder, std::slice::from_ref(byte));
+        }
+        assert_eq!(printed(&recorder.events), "Aé!BC", "{input:?}");
+    }
+}
+
+#[test]
+fn csi_recovers_from_an_oversized_string() {
+    for introducer in *b"]P_" {
+        let mut parser = Parser::default();
+        let mut recorder = Recorder::default();
         parser.advance(&mut recorder, &[0x1b, introducer]);
         parser.advance(&mut recorder, &vec![b'x'; MAX_STRING_BYTES + 1]);
-        assert_eq!(parser.string.capacity(), 0);
-        parser.advance(&mut recorder, b"\x1b[?2026lEND");
-        if introducer == b'_' {
-            assert_eq!(printed(&recorder.events), "END");
-        } else {
-            assert!(recorder.events.is_empty());
-        }
+        parser.advance(&mut recorder, b"hidden\x1b[mOK");
+        assert_eq!(recorder.events[1..], [Event::Print('O'), Event::Print('K')]);
+        assert!(matches!(recorder.events[0], Event::Csi(_, None, _, b'm')));
+    }
+}
+
+#[test]
+fn full_reset_recovers_from_an_oversized_string() {
+    for introducer in *b"]P_" {
+        let mut parser = Parser::default();
+        let mut recorder = Recorder::default();
+        parser.advance(&mut recorder, &[0x1b, introducer]);
+        parser.advance(&mut recorder, &vec![b'x'; MAX_STRING_BYTES + 1]);
+        parser.advance(&mut recorder, b"\x1b]hidden\x1bcOK");
+        assert_eq!(
+            recorder.events,
+            vec![
+                Event::Escape(Vec::new(), b'c'),
+                Event::Print('O'),
+                Event::Print('K')
+            ]
+        );
     }
 }

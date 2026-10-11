@@ -1,0 +1,343 @@
+//! Width-change reflow: rewraps logical lines into a bounded output window.
+use super::history::HISTORY_BYTE_BUDGET;
+use super::{Cell, Grid, Row, Size, print};
+use std::collections::VecDeque;
+
+/// Keep only the rows a resized viewport and its bounded history can retain.
+/// Row positions remain absolute while old rows are evicted, so cursor and
+/// viewport anchors can be remapped without materializing the entire result.
+struct ReflowWindow {
+    rows: VecDeque<Row>,
+    // Heap bytes of `rows`, and the oldest row not yet packed for the budget.
+    bytes: usize,
+    next_pack: usize,
+    spare: Vec<Row>,
+    size: Size,
+    limit: usize,
+    first: usize,
+    produced: usize,
+    cursor: Option<(usize, usize, bool)>,
+    boundary: Option<usize>,
+    viewport: Option<usize>,
+    #[cfg(test)]
+    row_allocations: usize,
+}
+
+impl ReflowWindow {
+    fn new(size: Size, history_limit: usize) -> Self {
+        Self {
+            rows: VecDeque::new(),
+            bytes: 0,
+            next_pack: 0,
+            spare: Vec::new(),
+            size,
+            limit: history_limit + size.rows,
+            first: 0,
+            produced: 0,
+            cursor: None,
+            boundary: None,
+            viewport: None,
+            #[cfg(test)]
+            row_allocations: 0,
+        }
+    }
+
+    // Enough recycled rows to cover the joins of a widening reflow.
+    const MAX_SPARE: usize = 8;
+
+    fn new_row(&mut self) -> Row {
+        if let Some(mut row) = self.spare.pop() {
+            // A row recycled from a much wider screen must not keep its width.
+            if row.cells.capacity() > 2 * self.size.cols {
+                row.cells = Vec::new();
+            }
+            row.clear(self.size.cols, &Cell::default());
+            row
+        } else {
+            #[cfg(test)]
+            {
+                self.row_allocations += 1;
+            }
+            Row::new(self.size.cols, &Cell::default())
+        }
+    }
+
+    /// Keep a consumed source row's buffer for a later output row.
+    fn recycle(&mut self, mut row: Row) {
+        if self.spare.len() < Self::MAX_SPARE {
+            // Its remaining cells are not known to be blank.
+            row.cells.clear();
+            row.occupied = 0;
+            row.clear_background = Cell::default().style.background;
+            self.spare.push(row);
+        }
+    }
+
+    fn push(&mut self, row: Row) {
+        let index = self.produced;
+        self.produced += 1;
+        if self
+            .cursor
+            .is_some_and(|(cursor, _, _)| index >= cursor + self.size.rows)
+        {
+            // Resize discards rows below the cursor's final visible screen.
+            // Continue counting them, but reuse their buffers.
+            self.recycle(row);
+            return;
+        }
+        if self.rows.len() == self.limit {
+            self.evict();
+        }
+        self.bytes += row.heap_bytes();
+        self.rows.push_back(row);
+        self.fit_byte_budget();
+    }
+
+    /// Rewrapped rows are dense at the new width. Pack the oldest rows above
+    /// the last screenful first, so a wide resize stays within the history
+    /// byte budget instead of evicting history that fits packed. Each row is
+    /// packed at most once.
+    fn fit_byte_budget(&mut self) {
+        let budget = HISTORY_BYTE_BUDGET + self.size.rows * self.size.cols * size_of::<Cell>();
+        let packable = self.rows.len().saturating_sub(self.size.rows);
+        while self.bytes > budget && self.next_pack < packable {
+            let row = &mut self.rows[self.next_pack];
+            let before = row.heap_bytes();
+            row.compact();
+            self.bytes = self.bytes - before + row.heap_bytes();
+            self.next_pack += 1;
+        }
+        while self.bytes > budget && self.rows.len() > self.size.rows {
+            self.evict();
+        }
+    }
+
+    fn evict(&mut self) {
+        if let Some(evicted) = self.rows.pop_front() {
+            self.bytes -= evicted.heap_bytes();
+            self.next_pack = self.next_pack.saturating_sub(1);
+            self.recycle(evicted);
+        }
+        self.first += 1;
+    }
+}
+
+impl Grid {
+    pub(super) fn reflow_primary(&mut self, size: Size) {
+        let old_history = self.history.len();
+        let cursor_source = old_history + self.primary.cursor.row;
+        let cursor_col = self.primary.cursor.col;
+        let cursor_pending = self.primary.pending_wrap;
+        let viewport_source =
+            (self.display_offset != 0).then_some(old_history - self.display_offset);
+        // Unused bottom rows do not become logical history during reflow.
+        while self.primary.rows.len() > self.primary.cursor.row + 1
+            && self
+                .primary
+                .rows
+                .back()
+                .is_some_and(|row| row.content_len() == 0)
+        {
+            self.primary.rows.pop_back();
+        }
+        let source = self.history.drain(..).chain(self.primary.rows.drain(..));
+        let mut output =
+            ReflowWindow::new(size, Self::bounded_history(self.requested_history_limit));
+        let mut logical = Vec::new();
+        let mut logical_cursor = None;
+        let mut logical_boundary = None;
+        let mut logical_viewport = None;
+        // Rows printed on a one-column screen hold narrowed wide glyphs that
+        // only the logical-line path restores.
+        let in_place = self.size.cols > 1;
+        let mut joining = false;
+        for (index, mut row) in source.enumerate() {
+            if in_place && !joining && index != cursor_source && row.reflow_in_place(size.cols) {
+                if index == old_history {
+                    output.boundary = Some(output.produced);
+                }
+                if Some(index) == viewport_source {
+                    output.viewport = Some(output.produced);
+                }
+                output.push(row);
+                continue;
+            }
+            joining = row.wrapped;
+            row.make_dense();
+            if index == old_history {
+                logical_boundary = Some(logical.len());
+            }
+            if Some(index) == viewport_source {
+                logical_viewport = Some(logical.len());
+            }
+            if index == cursor_source {
+                let removed = row.cells[..cursor_col]
+                    .iter()
+                    .filter(|cell| cell.flags & Cell::LEADING_WIDE_SPACER != 0)
+                    .count();
+                logical_cursor =
+                    Some(logical.len() + cursor_col - removed + usize::from(cursor_pending));
+            }
+            let required = if index == cursor_source {
+                cursor_col + usize::from(cursor_pending)
+            } else {
+                0
+            };
+            let len = row.content_len().max(required).min(row.cells.len());
+            logical.reserve(len);
+            logical.extend(
+                row.cells
+                    .drain(..len)
+                    .filter(|cell| cell.flags & Cell::LEADING_WIDE_SPACER == 0),
+            );
+            output.recycle(row);
+            if !joining {
+                Self::wrap_logical(
+                    &mut logical,
+                    &mut output,
+                    logical_cursor.take(),
+                    logical_boundary.take(),
+                    logical_viewport.take(),
+                    cursor_pending,
+                );
+            }
+        }
+        if !logical.is_empty()
+            || logical_cursor.is_some()
+            || logical_boundary.is_some()
+            || logical_viewport.is_some()
+        {
+            Self::wrap_logical(
+                &mut logical,
+                &mut output,
+                logical_cursor,
+                logical_boundary,
+                logical_viewport,
+                cursor_pending,
+            );
+        }
+        let cursor = output.cursor.expect("reflow maps the live cursor");
+        let mut split = output.produced.saturating_sub(size.rows).min(cursor.0);
+        if self.clear_anchor {
+            split = split.max(output.boundary.unwrap_or(0).min(cursor.0));
+        }
+        #[cfg(test)]
+        {
+            self.last_reflow_row_allocations = output.row_allocations;
+        }
+        self.primary.rows = output.rows.split_off(split - output.first);
+        self.history = output.rows;
+        self.recount_history_bytes();
+        // Rows kept in place may still be packed; the live screen is dense.
+        for row in &mut self.primary.rows {
+            row.make_dense();
+        }
+        // Reflow leaves every history row dense. Repack them in the bounded
+        // idle steps rather than all at once on the resize path.
+        self.pending_compaction = self.history.len();
+        self.primary.cursor.row = cursor.0 - split;
+        self.primary.cursor.col = cursor.1;
+        self.primary.pending_wrap = cursor.2;
+        if let Some(viewport) = output.viewport {
+            self.display_offset = split.saturating_sub(viewport.max(output.first));
+        }
+    }
+
+    fn wrap_logical(
+        cells: &mut Vec<Cell>,
+        output: &mut ReflowWindow,
+        cursor: Option<usize>,
+        boundary: Option<usize>,
+        viewport: Option<usize>,
+        cursor_pending: bool,
+    ) {
+        let cols = output.size.cols;
+        let mut row = output.new_row();
+        let mut col = 0;
+        let mut cursor_mapped = false;
+        let mut boundary_mapped = false;
+        let mut viewport_mapped = false;
+        let mut input = cells.drain(..).enumerate().peekable();
+        while let Some((index, mut cell)) = input.next() {
+            // A one-column screen must keep making progress, so wide glyphs
+            // temporarily occupy one cell there. Recover their second cell
+            // when the viewport grows again rather than permanently narrowing
+            // the saved text.
+            let expanded_wide =
+                cols > 1 && cell.flags & Cell::WIDE == 0 && print::cell_width(&cell) == 2;
+            let wide = cell.flags & Cell::WIDE != 0 || expanded_wide;
+            if col == cols || (wide && cols > 1 && col + 1 == cols) {
+                if col < cols {
+                    row.cells[col].flags = Cell::LEADING_WIDE_SPACER;
+                }
+                row.occupied = cols;
+                row.wrapped = true;
+                output.push(row);
+                row = output.new_row();
+                col = 0;
+            }
+            if cursor == Some(index) {
+                output.cursor = Some((output.produced, col, false));
+                cursor_mapped = true;
+            }
+            if boundary == Some(index) {
+                output.boundary = Some(output.produced);
+                boundary_mapped = true;
+            }
+            if viewport == Some(index) {
+                output.viewport = Some(output.produced);
+                viewport_mapped = true;
+            }
+            if wide && cols == 1 {
+                cell.flags &= !Cell::WIDE;
+                if input
+                    .peek()
+                    .is_some_and(|(_, spacer)| spacer.flags & Cell::WIDE_SPACER != 0)
+                {
+                    let spacer_index = input.next().expect("peeked wide spacer").0;
+                    if cursor == Some(spacer_index) {
+                        output.cursor = Some((output.produced, col, false));
+                        cursor_mapped = true;
+                    }
+                    if boundary == Some(spacer_index) {
+                        output.boundary = Some(output.produced);
+                        boundary_mapped = true;
+                    }
+                    if viewport == Some(spacer_index) {
+                        output.viewport = Some(output.produced);
+                        viewport_mapped = true;
+                    }
+                }
+            }
+            if expanded_wide {
+                cell.flags |= Cell::WIDE;
+                row.cells[col + 1] = cell.wide_spacer();
+            }
+            row.cells[col] = cell;
+            col += if expanded_wide { 2 } else { 1 };
+            row.occupied = col;
+        }
+        if !cursor_mapped && cursor.is_some() {
+            if col == cols && cursor_pending {
+                output.cursor = Some((output.produced, cols - 1, true));
+            } else if col == cols {
+                row.wrapped = true;
+                output.push(row);
+                row = output.new_row();
+                output.cursor = Some((output.produced, 0, false));
+            } else {
+                output.cursor = Some((output.produced, col, false));
+            }
+        }
+        if !boundary_mapped && boundary.is_some() {
+            output.boundary = Some(output.produced);
+        }
+        if !viewport_mapped && viewport.is_some() {
+            output.viewport = Some(output.produced);
+        }
+        output.push(row);
+    }
+}
+
+#[cfg(test)]
+mod tests;

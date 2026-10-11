@@ -6,8 +6,11 @@
 //! status and the remaining integration gates.
 
 mod dispatch;
+#[cfg(feature = "native")]
+pub(crate) use dispatch::percent_decode;
 mod graphics;
 mod grid;
+mod hyperlinks;
 pub mod media;
 mod parser;
 mod queries;
@@ -29,6 +32,8 @@ pub use types::{
 use dispatch::State;
 use parser::Parser;
 use sync::SynchronizedUpdate;
+
+use crate::kitty_graphics::{KittyPreparedUpload, KittyUpload};
 
 const MAX_EVENTS: usize = 1024;
 const MAX_REPLY_BYTES: usize = 64 * 1024;
@@ -113,37 +118,81 @@ impl Engine {
     }
 
     pub fn feed(&mut self, bytes: &[u8]) {
-        self.feed_at(bytes, Instant::now());
+        self.feed_impl(bytes, None, false);
     }
 
+    /// Like [`Self::feed`], but stops right after a kitty image upload
+    /// completes, without decoding it, and returns the bytes consumed. The
+    /// caller decodes [`Self::take_deferred_upload`] (e.g. without holding a
+    /// lock), passes the result to [`Self::commit_upload`], then feeds the
+    /// rest. Uploads inside a synchronized update are still applied inline.
+    pub(crate) fn feed_deferring_uploads(&mut self, bytes: &[u8]) -> usize {
+        self.feed_impl(bytes, None, true)
+    }
+
+    pub(crate) fn has_deferred_upload(&self) -> bool {
+        self.state.has_deferred_upload()
+    }
+
+    pub(crate) fn take_deferred_upload(&mut self) -> Option<KittyUpload> {
+        self.state.take_deferred_upload()
+    }
+
+    pub(crate) fn commit_upload(&mut self, prepared: KittyPreparedUpload) {
+        self.state.commit_upload(prepared);
+        self.state.flush_graphics_effects();
+        self.generation = self.generation.wrapping_add(1);
+    }
+
+    #[cfg(test)]
     fn feed_at(&mut self, bytes: &[u8], now: Instant) {
+        self.feed_impl(bytes, Some(now), false);
+    }
+
+    /// Only synchronized updates need the time, and reading the clock would
+    /// dominate small PTY reads, so `now` is read when first needed.
+    fn feed_impl(&mut self, bytes: &[u8], now: Option<Instant>, defer_uploads: bool) -> usize {
+        let mut now = now;
+        let mut now = move || *now.get_or_insert_with(Instant::now);
+        // An upload nobody took must not keep pausing the parser.
+        if self.state.has_deferred_upload()
+            && let Some(upload) = self.state.take_deferred_upload()
+        {
+            self.commit_upload(upload.prepare());
+        }
         self.state.grid.prepare_output(bytes.len());
         if self
             .synchronized_update_deadline()
-            .is_some_and(|deadline| deadline <= now)
+            .is_some_and(|deadline| deadline <= now())
         {
             self.stop_synchronized_update();
         }
         let mut offset = 0;
         while offset < bytes.len() {
             if self.synchronized_update_deadline().is_some() {
-                let buffered = self.synchronized_update.push(&bytes[offset..], now);
+                let buffered = self.synchronized_update.push(&bytes[offset..], now());
                 offset += buffered.consumed;
                 if buffered.commit {
                     self.stop_synchronized_update();
                 }
             } else {
                 let end = offset.saturating_add(PARSE_CHUNK).min(bytes.len());
+                self.state.set_defer_uploads(defer_uploads);
                 let consumed = self.parser.advance(&mut self.state, &bytes[offset..end]);
+                self.state.set_defer_uploads(false);
                 offset += consumed;
                 self.state.flush_graphics_effects();
                 self.generation = self.generation.wrapping_add(1);
                 if self.state.modes.synchronized_update {
                     self.synchronized_update
-                        .begin(now, self.state.saved_private_mode(2026));
+                        .begin(now(), self.state.saved_private_mode(2026));
+                }
+                if self.state.has_deferred_upload() {
+                    break;
                 }
             }
         }
+        offset
     }
 
     /// The runtime can schedule a watchdog without polling or copying a frame.

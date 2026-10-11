@@ -49,7 +49,7 @@ impl State {
     pub(super) fn device_control_query(&mut self, bytes: &[u8]) {
         if let Some(query) = bytes.strip_prefix(b"$q") {
             let response = match query {
-                b"m" => Some(sgr(self.grid.pen.style)),
+                b"m" => Some(sgr(self.grid.pen.style, self.grid.pen.underline_color())),
                 b"r" => {
                     let (top, bottom) = self.grid.scroll_region();
                     Some(format!("{};{bottom}r", top + 1))
@@ -123,7 +123,7 @@ fn decode_hex(bytes: &[u8]) -> Option<Vec<u8>> {
         .collect()
 }
 
-fn sgr(style: Style) -> String {
+fn sgr(style: Style, underline_color: Color) -> String {
     let mut output = String::from("0");
     for (flag, code) in [
         (Style::BOLD, 1),
@@ -152,7 +152,7 @@ fn sgr(style: Style) -> String {
     for (code, color) in [
         (38, style.foreground),
         (48, style.background),
-        (58, style.underline_color),
+        (58, underline_color),
     ] {
         if color == Color::DEFAULT {
             continue;

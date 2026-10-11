@@ -4,7 +4,7 @@ use std::{
     ffi::{OsStr, OsString},
     fs::File,
     io::{self, ErrorKind, Read, Write},
-    os::fd::{AsRawFd, FromRawFd},
+    os::fd::AsRawFd,
     os::unix::net::UnixStream,
     os::unix::{ffi::OsStrExt, fs::PermissionsExt},
     path::{Path, PathBuf},
@@ -26,50 +26,46 @@ use super::limits::{
 };
 use super::{ChildExit, PtySize, SpawnConfig};
 
-const F_GETFL: c_int = 3;
-const F_SETFD: c_int = 2;
-const F_SETFL: c_int = 4;
-const FD_CLOEXEC: c_int = 1;
-#[cfg(any(target_os = "linux", target_os = "android"))]
-const O_NONBLOCK: c_int = 0x0800;
-#[cfg(target_os = "macos")]
-const O_NONBLOCK: c_int = 0x0004;
-const EINTR: c_int = 4;
-const SIGHUP: c_int = 1;
-const SIGKILL: c_int = 9;
+// Platform values come from libc: several differ across Linux architectures
+// (for example O_NONBLOCK and SIGCHLD on MIPS).
+const F_GETFL: c_int = libc::F_GETFL;
+const F_SETFD: c_int = libc::F_SETFD;
+const F_SETFL: c_int = libc::F_SETFL;
+const FD_CLOEXEC: c_int = libc::FD_CLOEXEC;
+const O_NONBLOCK: c_int = libc::O_NONBLOCK;
+const EINTR: c_int = libc::EINTR;
+const SIGHUP: c_int = libc::SIGHUP;
+const SIGKILL: c_int = libc::SIGKILL;
 #[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
-const SIGINT: c_int = 2;
+const SIGINT: c_int = libc::SIGINT;
 #[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
-const SIGQUIT: c_int = 3;
+const SIGQUIT: c_int = libc::SIGQUIT;
 #[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
-const SIGPIPE: c_int = 13;
+const SIGPIPE: c_int = libc::SIGPIPE;
 #[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
-const SIGALRM: c_int = 14;
+const SIGALRM: c_int = libc::SIGALRM;
 #[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
-const SIGTERM: c_int = 15;
-#[cfg(any(target_os = "linux", target_os = "android"))]
-const SIGCHLD: c_int = 17;
-#[cfg(target_os = "macos")]
-const SIGCHLD: c_int = 20;
+const SIGTERM: c_int = libc::SIGTERM;
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
+const SIGCHLD: c_int = libc::SIGCHLD;
 #[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
 const SIGNAL_DEFAULT: usize = 0;
-const POLLIN: c_short = 0x0001;
-const POLLOUT: c_short = 0x0004;
-const POLLERR: c_short = 0x0008;
-const POLLHUP: c_short = 0x0010;
-const POLLNVAL: c_short = 0x0020;
+const POLLIN: c_short = libc::POLLIN;
+const POLLOUT: c_short = libc::POLLOUT;
+const POLLERR: c_short = libc::POLLERR;
+const POLLHUP: c_short = libc::POLLHUP;
+const POLLNVAL: c_short = libc::POLLNVAL;
 const CHILD_SPAWN_ERROR_LENGTH: usize = 5;
 const EXIT_DRAIN_TIME_BUDGET: Duration = Duration::from_millis(25);
 // Give conventional terminal shutdown handlers a brief chance to flush and exit
 // before escalating. The watcher remains responsible for reaping the child and
 // waking the reader so final output keeps its normal ordering.
 const DROP_SHUTDOWN_GRACE: Duration = Duration::from_millis(250);
-const WRITER_POLL_TIMEOUT_MS: c_int = 10;
+// Resize, close and protocol replies wake a blocked writer through a socket;
+// the timeout is only a backstop against a lost wake.
+const WRITER_POLL_TIMEOUT_MS: c_int = 1000;
 
-#[cfg(any(target_os = "linux", target_os = "android"))]
-const FIONREAD: c_ulong = 0x541b;
-#[cfg(target_os = "macos")]
-const FIONREAD: c_ulong = 0x4004_667f;
+const FIONREAD: c_ulong = libc::FIONREAD as c_ulong;
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
 type PollCount = c_ulong;
@@ -89,7 +85,7 @@ type TerminalInputFlags = u32;
 type TerminalInputFlags = c_ulong;
 
 #[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
-const IUTF8: TerminalInputFlags = 0x0000_4000;
+const IUTF8: TerminalInputFlags = libc::IUTF8 as TerminalInputFlags;
 #[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
 const TCSANOW: c_int = 0;
 #[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
@@ -107,10 +103,7 @@ struct TermiosStorage {
     opaque: [u8; 256],
 }
 
-#[cfg(any(target_os = "linux", target_os = "android"))]
-const TIOCSWINSZ: c_ulong = 0x5414;
-#[cfg(not(any(target_os = "linux", target_os = "android")))]
-const TIOCSWINSZ: c_ulong = 0x8008_7467;
+const TIOCSWINSZ: c_ulong = libc::TIOCSWINSZ as c_ulong;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -141,16 +134,6 @@ fn window_pixels(cell: f32, cells: u16) -> u16 {
     } else {
         0
     }
-}
-
-#[cfg_attr(not(target_os = "android"), link(name = "util"))]
-unsafe extern "C" {
-    fn forkpty(
-        master: *mut c_int,
-        name: *mut c_char,
-        termios: *const c_void,
-        size: *const WinSize,
-    ) -> c_int;
 }
 
 unsafe extern "C" {
@@ -190,6 +173,7 @@ unsafe extern "C" {
 enum ChildSpawnStage {
     ChangeDirectory = 1,
     Execute = 2,
+    ControllingTerminal = 3,
 }
 
 impl ChildSpawnStage {
@@ -197,6 +181,7 @@ impl ChildSpawnStage {
         match value {
             1 => Some(Self::ChangeDirectory),
             2 => Some(Self::Execute),
+            3 => Some(Self::ControllingTerminal),
             _ => None,
         }
     }
@@ -205,6 +190,7 @@ impl ChildSpawnStage {
         match self {
             Self::ChangeDirectory => "change terminal working directory",
             Self::Execute => "execute terminal program",
+            Self::ControllingTerminal => "attach terminal as controlling tty",
         }
     }
 }
@@ -239,6 +225,8 @@ struct WriterControl {
     protocol_reply_entries: AtomicUsize,
     protocol_reply_limits: WriterLimits,
     pending_resize: Mutex<Option<WinSize>>,
+    // Write end of the socket a writer blocked on POLLOUT also polls.
+    poll_wake: std::sync::OnceLock<UnixStream>,
 }
 
 #[derive(Clone, Copy)]
@@ -266,6 +254,9 @@ struct ProtocolReplyQueue {
 enum WriteClass {
     Normal,
     ProtocolReply,
+    /// Mouse motion shares the normal budget but may fill only half of it, so
+    /// reports to a stalled program leave room for keys and pastes.
+    Motion,
 }
 
 struct WriteReservation {
@@ -314,6 +305,7 @@ impl WriterHandle {
                     protocol_reply_entries: AtomicUsize::new(0),
                     protocol_reply_limits,
                     pending_resize: Mutex::new(None),
+                    poll_wake: std::sync::OnceLock::new(),
                 }),
                 protocol_replies: Arc::new(ProtocolReplyQueue {
                     pending: Mutex::new(VecDeque::new()),
@@ -333,6 +325,19 @@ impl WriterHandle {
         let reservation = self
             .control
             .reserve_write(bytes.capacity(), WriteClass::Normal)?;
+        self.send_reserved(bytes, reservation)
+    }
+
+    fn write_motion_owned(&self, bytes: Vec<u8>) -> io::Result<()> {
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        if self.control.is_closed() {
+            return Err(writer_closed_error());
+        }
+        let reservation = self
+            .control
+            .reserve_write(bytes.capacity(), WriteClass::Motion)?;
         self.send_reserved(bytes, reservation)
     }
 
@@ -408,6 +413,11 @@ impl WriterHandle {
     }
 
     fn wake(&self) -> io::Result<()> {
+        // A writer blocked on a full PTY is not in recv, so its queued Wake
+        // stays pending; the socket interrupts its poll for every request.
+        if let Some(stream) = self.control.poll_wake.get() {
+            let _ = (&*stream).write(&[1]);
+        }
         let Some(reservation) = self.control.reserve_wake() else {
             return Ok(());
         };
@@ -489,6 +499,14 @@ impl WriterControl {
     fn write_budget(&self, class: WriteClass) -> (&AtomicUsize, &AtomicUsize, WriterLimits) {
         match class {
             WriteClass::Normal => (&self.write_bytes, &self.write_entries, self.limits),
+            WriteClass::Motion => (
+                &self.write_bytes,
+                &self.write_entries,
+                WriterLimits {
+                    max_bytes: self.limits.max_bytes / 2,
+                    max_entries: self.limits.max_entries / 2,
+                },
+            ),
             WriteClass::ProtocolReply => (
                 &self.protocol_reply_bytes,
                 &self.protocol_reply_entries,
@@ -529,7 +547,7 @@ impl WriterControl {
         let bytes = byte_counter.load(Ordering::Acquire);
         let entries = entry_counter.load(Ordering::Acquire);
         let label = match class {
-            WriteClass::Normal => "writer",
+            WriteClass::Normal | WriteClass::Motion => "writer",
             WriteClass::ProtocolReply => "protocol-reply",
         };
         io::Error::new(
@@ -683,11 +701,11 @@ impl Transport {
             return Err(io::Error::last_os_error());
         }
 
-        let mut master = -1;
-        let window_size = WinSize::from(size);
+        let (master_file, user) = open_pty_pair(WinSize::from(size))?;
+        let mut descriptors = InheritedDescriptors::new();
         // SAFETY: all pointers refer to parent-owned allocations that remain valid across
         // fork. The child only invokes libc functions before replacing its image.
-        let pid = unsafe { forkpty(&mut master, ptr::null_mut(), ptr::null(), &window_size) };
+        let pid = unsafe { libc::fork() };
         if pid < 0 {
             return Err(io::Error::last_os_error());
         }
@@ -697,15 +715,29 @@ impl Transport {
             unsafe {
                 let _ = close(child_status_reader.as_raw_fd());
             }
+            // SAFETY: the child owns these descriptors and only issues
+            // async-signal-safe syscalls before exec.
+            let status_fd = match unsafe {
+                attach_child_terminal(
+                    user.as_raw_fd(),
+                    child_status_writer.as_raw_fd(),
+                    &mut descriptors,
+                )
+            } {
+                Ok(fd) => fd,
+                Err(fd) => unsafe {
+                    if fd >= 0 {
+                        report_child_spawn_failure(fd, ChildSpawnStage::ControllingTerminal);
+                    }
+                    _exit(126);
+                },
+            };
             reset_child_process_state();
             if let Some(directory) = &working_directory {
                 // SAFETY: `directory` is a valid, NUL-terminated C string.
                 unsafe {
                     if chdir(directory.as_ptr()) < 0 {
-                        report_child_spawn_failure(
-                            child_status_writer.as_raw_fd(),
-                            ChildSpawnStage::ChangeDirectory,
-                        );
+                        report_child_spawn_failure(status_fd, ChildSpawnStage::ChangeDirectory);
                         _exit(126);
                     }
                 }
@@ -718,17 +750,13 @@ impl Transport {
                     argv.as_ptr(),
                     environment_pointers.as_ptr(),
                 );
-                report_child_spawn_failure(
-                    child_status_writer.as_raw_fd(),
-                    ChildSpawnStage::Execute,
-                );
+                report_child_spawn_failure(status_fd, ChildSpawnStage::Execute);
                 _exit(127);
             }
         }
 
         drop(child_status_writer);
-        // SAFETY: `master` is a new, owned file descriptor in the parent branch.
-        let master_file = unsafe { File::from_raw_fd(master) };
+        drop(user);
         match read_child_spawn_status(&mut child_status_reader) {
             Ok(None) => {}
             Ok(Some(failure)) => {
@@ -743,13 +771,6 @@ impl Transport {
             }
         }
         drop(child_status_reader);
-        // SAFETY: fcntl is called with an owned, valid descriptor and an integer flag.
-        if unsafe { fcntl(master, F_SETFD, FD_CLOEXEC) } < 0 {
-            let error = io::Error::last_os_error();
-            drop(master_file);
-            terminate_and_reap(pid);
-            return Err(error);
-        }
         if let Err(error) = set_nonblocking(&master_file) {
             drop(master_file);
             terminate_and_reap(pid);
@@ -769,6 +790,19 @@ impl Transport {
         let (writer, writer_rx) = WriterHandle::channel();
         let writer_control = writer.control.clone();
         let writer_protocol_replies = writer.protocol_replies.clone();
+        let (writer_wake, wake_sender) = match UnixStream::pair().and_then(|(reader, sender)| {
+            reader.set_nonblocking(true)?;
+            sender.set_nonblocking(true)?;
+            Ok((reader, sender))
+        }) {
+            Ok(pair) => pair,
+            Err(error) => {
+                drop(reader);
+                terminate_and_reap(pid);
+                return Err(error);
+            }
+        };
+        let _ = writer.control.poll_wake.set(wake_sender);
         let writer_thread = thread::Builder::new()
             .name("termy-native-pty-writer".to_string())
             .spawn(move || {
@@ -777,6 +811,7 @@ impl Transport {
                     writer_rx,
                     writer_control,
                     writer_protocol_replies,
+                    writer_wake,
                 );
             });
         if let Err(error) = writer_thread {
@@ -921,9 +956,17 @@ impl Transport {
         self.writer.write_owned(input)
     }
 
+    /// Queue a mouse-motion report only while the input backlog is at most
+    /// half full; `WouldBlock` means it was dropped (the next report carries
+    /// the newer position).
+    pub(crate) fn write_motion_owned(&self, input: Vec<u8>) -> io::Result<()> {
+        self.writer.write_motion_owned(input)
+    }
+
     pub(crate) fn write_protocol_reply_owned(&self, input: Vec<u8>) -> io::Result<()> {
         match self.writer.write_protocol_reply_owned(input) {
             Ok(()) => Ok(()),
+            Err(error) if error.kind() == ErrorKind::WouldBlock => Err(error),
             Err(error) => {
                 self.writer.close();
                 if self.alive.load(Ordering::Acquire) {
@@ -1025,13 +1068,14 @@ fn run_pty_writer(
     receiver: mpsc::Receiver<WriterCommand>,
     control: Arc<WriterControl>,
     protocol_replies: Arc<ProtocolReplyQueue>,
+    wake: UnixStream,
 ) {
     let _ = run_pty_writer_loop(
         master,
         receiver,
         control,
         protocol_replies,
-        wait_for_pty_writable,
+        |master: &File| wait_for_pty_writable(master, &wake),
         resize_pty_master,
     );
 }
@@ -1063,7 +1107,11 @@ where
             break;
         }
 
-        if current_protocol_reply.is_none() {
+        // Replies go between writes, never inside one: a write is a whole
+        // key sequence or bracketed paste that must reach the child intact.
+        if current_protocol_reply.is_none()
+            && current_write.as_ref().is_none_or(|write| write.offset == 0)
+        {
             current_protocol_reply = protocol_replies.pop();
         }
 
@@ -1092,7 +1140,9 @@ where
 
         // A reply is taken again after recv because the Wake that made the
         // receiver runnable can race with the first priority-queue check.
-        if current_protocol_reply.is_none() {
+        if current_protocol_reply.is_none()
+            && current_write.as_ref().is_none_or(|write| write.offset == 0)
+        {
             current_protocol_reply = protocol_replies.pop();
         }
         let writing_protocol_reply = current_protocol_reply.is_some();
@@ -1120,8 +1170,8 @@ where
                 if wait_writable(&writer).is_err() {
                     break;
                 }
-                // poll is capped at 10ms in production; service controls as
-                // soon as it returns, whether for readiness or timeout.
+                // poll returns for readiness, a wake, or its backstop timeout;
+                // service controls as soon as it does.
                 if !matches!(
                     service_writer_control(&writer, &control, &mut resize),
                     Ok(true)
@@ -1154,47 +1204,6 @@ fn service_writer_control<W>(
         resize(writer, window_size)?;
     }
     Ok(!control.is_closed())
-}
-
-fn wait_for_pty_writable(master: &File) -> io::Result<()> {
-    let mut descriptor = PollFd {
-        fd: master.as_raw_fd(),
-        events: POLLOUT,
-        revents: 0,
-    };
-    // The timeout bounds Resize/Close latency because std's channel and poll
-    // cannot be waited on together. Readiness still wakes immediately when the
-    // child drains input, avoiding a fixed delay between partial writes.
-    // SAFETY: `descriptor` contains the master's live fd and exactly one entry
-    // is passed to poll for the duration of the call.
-    let ready = unsafe { poll(&mut descriptor, 1 as PollCount, WRITER_POLL_TIMEOUT_MS) };
-    if ready < 0 {
-        let error = io::Error::last_os_error();
-        if error.kind() != ErrorKind::Interrupted {
-            return Err(error);
-        }
-    }
-    if descriptor.revents & POLLNVAL != 0 {
-        return Err(io::Error::new(
-            ErrorKind::BrokenPipe,
-            "Termy native PTY writer descriptor is invalid",
-        ));
-    }
-    Ok(())
-}
-
-fn resize_pty_master(master: &File, window_size: WinSize) -> io::Result<()> {
-    loop {
-        // SAFETY: `master` owns a live PTY descriptor and `window_size` has the
-        // platform winsize layout for the duration of the ioctl call.
-        if unsafe { ioctl(master.as_raw_fd(), TIOCSWINSZ, &window_size) } >= 0 {
-            return Ok(());
-        }
-        let error = io::Error::last_os_error();
-        if error.kind() != ErrorKind::Interrupted {
-            return Err(error);
-        }
-    }
 }
 
 impl ChildSpawnFailure {
@@ -1332,16 +1341,26 @@ fn queue_reader_protocol_reply(writer: &WriterHandle, reply: Vec<u8>) -> bool {
     if reply.is_empty() {
         return true;
     }
-    if writer.write_protocol_reply_owned(reply).is_ok() {
-        true
-    } else {
-        // A missing protocol response can leave a child waiting forever. The
-        // caller tears down the child after this sticky writer shutdown.
-        writer.close();
-        false
+    match writer.write_protocol_reply_owned(reply) {
+        Ok(()) => true,
+        // A full backlog means the child is not reading its input, e.g. `cat`
+        // of a file full of queries. Drop the reply instead of the session.
+        Err(error) if error.kind() == ErrorKind::WouldBlock => {
+            log::warn!("dropping terminal protocol reply: {error}");
+            true
+        }
+        Err(_) => {
+            // The writer is closed; the caller tears down the child.
+            writer.close();
+            false
+        }
     }
 }
 
+/// A hint only: the macOS master always reports 0, and Linux counts just the
+/// line-discipline buffer. The exit drain stays correct through its time
+/// budget, and macOS blocks the exiting child in `close()` until its output is
+/// read, so nothing is lost.
 fn readable_byte_count(reader: &File) -> Option<usize> {
     let mut readable: c_int = 0;
     // SAFETY: `reader` owns a live descriptor and `readable` is writable for
@@ -1362,6 +1381,10 @@ fn reset_child_process_state() {
         for signal_number in [SIGCHLD, SIGHUP, SIGINT, SIGQUIT, SIGPIPE, SIGTERM, SIGALRM] {
             let _ = signal(signal_number, SIGNAL_DEFAULT);
         }
+        // The forking thread's blocked mask survives exec; shells expect none.
+        let mut unblocked = std::mem::zeroed::<libc::sigset_t>();
+        libc::sigemptyset(&mut unblocked);
+        let _ = libc::sigprocmask(libc::SIG_SETMASK, &unblocked, ptr::null_mut());
 
         let mut termios = TermiosStorage {
             input_flags: 0,
@@ -1452,6 +1475,8 @@ impl Drop for Transport {
 }
 
 include!("unix/launch.rs");
+include!("unix/child.rs");
+include!("unix/master.rs");
 
 #[cfg(test)]
 #[path = "unix_tests/mod.rs"]

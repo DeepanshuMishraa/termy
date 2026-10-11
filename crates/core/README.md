@@ -44,6 +44,9 @@ The viewport visitor methods preserve reentrant callbacks by capturing a coheren
 read first. Renderers can opt into `visit_viewport_cells_locked` and
 `visit_viewport_ranges_locked_at_generation` to stream borrowed cells without an
 intermediate frame allocation; those callbacks must not reenter the terminal.
+Incremental renderers should prefer `Terminal::with_render_damage`, which takes
+the damage and reads the cells it names under one lock. Taking damage first and
+reading at a generation later fails whenever output lands in between.
 
 `terminal_glyph_plan` owns the terminal-specific rendering semantics for block
 elements, box drawing, sextants, long Braille runs, rounded corners, and

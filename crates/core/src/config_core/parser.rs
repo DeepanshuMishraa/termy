@@ -9,9 +9,10 @@ use crate::config_core::constants::{
 use crate::config_core::diagnostics::{ConfigDiagnostic, ConfigDiagnosticKind, ConfigParseReport};
 use crate::config_core::schema::{RootSettingId, root_setting_from_key, root_setting_spec};
 use crate::config_core::types::{
-    AppConfig, AppearanceMode, CursorStyle, KeybindConfigLine, PaneFocusEffect, TabBarPosition,
-    TabCloseVisibility, TabTitleMode, TabTitleSource, TabWidthMode, TaskConfig,
-    TerminalScrollbarStyle, TerminalScrollbarVisibility, ThemeId, WindowsShell, WorkingDirFallback,
+    AppConfig, AppearanceMode, ClipboardReadPolicy, CursorStyle, KeybindConfigLine,
+    PaneFocusEffect, TabBarPosition, TabCloseVisibility, TabTitleMode, TabTitleSource,
+    TabWidthMode, TaskConfig, TerminalScrollbarStyle, TerminalScrollbarVisibility, ThemeId,
+    WindowsShell, WorkingDirFallback,
 };
 
 #[derive(Default)]
@@ -820,6 +821,19 @@ impl AppConfig {
                         parse_usize_field(&mut diagnostics, line_number, key, value)
                     {
                         config.inactive_tab_scrollback = Some(parsed.min(MAX_SCROLLBACK_HISTORY));
+                    }
+                }
+                RootSettingId::ClipboardRead => {
+                    if let Ok(parsed) = value.parse::<ClipboardReadPolicy>() {
+                        config.clipboard_read = parsed;
+                    } else {
+                        push_invalid_value(
+                            &mut diagnostics,
+                            line_number,
+                            key,
+                            value,
+                            "one of: ask, allow, deny",
+                        );
                     }
                 }
                 RootSettingId::PaneFocusEffect => {

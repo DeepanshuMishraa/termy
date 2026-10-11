@@ -1,6 +1,9 @@
 // Ownership of the ConPTY child process and pseudoconsole handles.
 // Included into `windows.rs`, so it shares that module's imports and items.
 
+/// How long a closing shell may take to exit before it is terminated.
+const CLOSE_GRACE_MS: Dword = 250;
+
 struct ChildResources {
     process: Option<OwnedHandle>,
     pseudo_console: Option<PseudoConsole>,
@@ -66,6 +69,15 @@ impl ChildResources {
         }
         self.process_exited = true;
         Ok(())
+    }
+
+    /// Wait up to `timeout_ms` for the child to exit on its own.
+    fn wait_for_exit(&mut self, timeout_ms: Dword) {
+        // SAFETY: the control thread owns this live process handle; the
+        // bounded wait only observes its signal state.
+        if unsafe { WaitForSingleObject(self.process().raw(), timeout_ms) } == WAIT_OBJECT_0 {
+            self.process_exited = true;
+        }
     }
 
     fn close_pseudo_console(&mut self) {

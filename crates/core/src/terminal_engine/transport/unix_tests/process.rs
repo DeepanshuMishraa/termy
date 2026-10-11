@@ -925,3 +925,70 @@ fn foreground_process_name_reports_the_running_program() {
         std::thread::sleep(Duration::from_millis(20));
     }
 }
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn child_does_not_inherit_descriptors_without_close_on_exec() {
+    // Libraries in the GUI process can open descriptors without O_CLOEXEC;
+    // none of them may reach the shell or its descendants.
+    let leaked = File::open("/dev/null").expect("open /dev/null");
+    // SAFETY: clearing FD_CLOEXEC on an owned, valid descriptor.
+    assert_eq!(unsafe { fcntl(leaked.as_raw_fd(), F_SETFD, 0) }, 0);
+    let output = Arc::new(Mutex::new(Vec::new()));
+    let (exit_tx, exit_rx) = mpsc::sync_channel(1);
+    let terminal = Transport::spawn(
+        SpawnConfig {
+            program: "/bin/sh".to_string(),
+            args: vec![
+                "-c".to_string(),
+                format!(
+                    "[ -e /dev/fd/{0} ] && printf LEAKED || printf CLEAN",
+                    leaked.as_raw_fd()
+                ),
+            ],
+            working_directory: None,
+            environment: Vec::new(),
+        },
+        test_size(),
+        {
+            let output = output.clone();
+            move |bytes| {
+                output.lock().unwrap().extend_from_slice(bytes);
+                Vec::new()
+            }
+        },
+        move || {
+            let _ = exit_tx.send(());
+        },
+    )
+    .expect("PTY child should start");
+    exit_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("child should exit");
+    drop(terminal);
+    let output = String::from_utf8_lossy(&output.lock().unwrap()).into_owned();
+    assert!(output.contains("CLEAN"), "{output:?}");
+}
+
+#[test]
+fn child_environment_drops_the_parent_terminals_identity() {
+    for name in ["TMUX", "COLUMNS", "VSCODE_INJECTION", "KITTY_WINDOW_ID"] {
+        assert!(
+            crate::terminal_engine::transport::belongs_to_parent_terminal(OsStr::new(name)),
+            "{name}"
+        );
+    }
+    for name in ["HOME", "PATH", "TERM", "TERM_PROGRAM", "TMUX_TMPDIR"] {
+        assert!(
+            !crate::terminal_engine::transport::belongs_to_parent_terminal(OsStr::new(name)),
+            "{name}"
+        );
+    }
+    // Explicit overrides still win.
+    let environment = child_environment(&[("TMUX".into(), "kept".into())], None, true).unwrap();
+    assert!(
+        environment
+            .iter()
+            .any(|entry| entry.as_bytes() == b"TMUX=kept")
+    );
+}

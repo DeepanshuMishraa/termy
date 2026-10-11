@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events'
 import { constants } from 'node:os'
 import { basename } from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
-import { EVENT_DATA, type NativePty, loadNative } from './native.ts'
+import { EVENT_DATA, EVENT_EXIT, type NativePty, loadNative } from './native.ts'
 import type {
   IDisposable,
   IEvent,
@@ -16,6 +16,10 @@ const DEFAULT_COLS = 80
 const DEFAULT_ROWS = 24
 const DEFAULT_NAME = 'xterm'
 const isWindows = process.platform === 'win32'
+// Input is handed to the native backlog (8 MiB) in pieces it can accept, and
+// retried at this interval while the program isn't reading.
+const WRITE_CHUNK_BYTES = 1024 * 1024
+const WRITE_RETRY_MS = 10
 
 // EventEmitter's listener signature.
 type Listener = (...args: any[]) => void
@@ -38,6 +42,10 @@ export class Terminal implements IPty {
   #flowControlPause: string
   #flowControlResume: string
   #exited = false
+  // Input the native backlog could not take yet, oldest first. Like node-pty,
+  // writes never throw or drop while the program is alive.
+  #pendingWrites: Buffer[] = []
+  #writeRetry: ReturnType<typeof setTimeout> | undefined
 
   readonly onData: IEvent<string> = (listener) => this.#subscribe('data', listener)
   readonly onExit: IEvent<IExitEvent> = (listener) => this.#subscribe('exit', listener)
@@ -67,7 +75,7 @@ export class Terminal implements IPty {
       },
       (event, data, exitCode, signal) => {
         if (event === EVENT_DATA) this.#emitData(data!)
-        else this.#emitExit(exitCode, signal)
+        else if (event === EVENT_EXIT) this.#emitExit(exitCode, signal)
       },
     )
     this.pid = this.#native.pid
@@ -92,7 +100,32 @@ export class Terminal implements IPty {
       if (data === this.#flowControlResume) return this.resume()
     }
     if (this.#exited) return
-    this.#native.write(typeof data === 'string' ? Buffer.from(data, 'utf8') : data)
+    const bytes = typeof data === 'string' ? Buffer.from(data, 'utf8') : data
+    let added = 0
+    for (let offset = 0; offset < bytes.length; offset += WRITE_CHUNK_BYTES) {
+      this.#pendingWrites.push(bytes.subarray(offset, offset + WRITE_CHUNK_BYTES))
+      added++
+    }
+    // A scheduled retry flushes in order; writing now could jump the queue.
+    if (this.#writeRetry === undefined) this.#flushWrites()
+    if (typeof data !== 'string') {
+      // Chunks still waiting must not change if the caller reuses its Buffer.
+      const pending = this.#pendingWrites
+      for (let index = Math.max(0, pending.length - added); index < pending.length; index++) {
+        pending[index] = Buffer.from(pending[index]!)
+      }
+    }
+  }
+
+  #flushWrites(): void {
+    this.#writeRetry = undefined
+    while (this.#pendingWrites.length > 0 && !this.#exited) {
+      if (!this.#native.write(this.#pendingWrites[0]!)) {
+        this.#writeRetry = setTimeout(() => this.#flushWrites(), WRITE_RETRY_MS)
+        return
+      }
+      this.#pendingWrites.shift()
+    }
   }
 
   resize(columns: number, rows: number, pixelSize?: { width: number; height: number }): void {
@@ -175,6 +208,8 @@ export class Terminal implements IPty {
     const rest = this.#decoder?.end()
     if (rest) this.#events.emit('data', rest)
     this.#exited = true
+    this.#pendingWrites = []
+    clearTimeout(this.#writeRetry)
     this.#native.destroy()
     const event: IExitEvent = isWindows ? { exitCode: exitCode ?? 0 } : { exitCode: exitCode ?? 0, signal: signal ?? 0 }
     this.#events.emit('exit', event)

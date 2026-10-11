@@ -68,6 +68,11 @@ fn invalid_extended_colors_preserve_style_and_do_not_leak_components() {
         engine.feed(format!("\x1b[{rendition}mB").as_bytes());
         let row = engine.viewport_row(0).unwrap();
         assert_eq!(row[0].style, row[1].style, "{rendition}");
+        assert_eq!(
+            row[0].underline_color(),
+            row[1].underline_color(),
+            "{rendition}"
+        );
     }
 }
 
@@ -88,6 +93,11 @@ fn unsupported_subparameters_do_not_activate_unrelated_renditions() {
         engine.feed(format!("\x1b[{rendition}mB").as_bytes());
         let row = engine.viewport_row(0).unwrap();
         assert_eq!(row[0].style, row[1].style, "{rendition}");
+        assert_eq!(
+            row[0].underline_color(),
+            row[1].underline_color(),
+            "{rendition}"
+        );
     }
 }
 
@@ -422,4 +432,68 @@ fn osc_7501_sequence_limit_includes_ignored_control_bytes() {
     assert_eq!(text(&engine, 0), "ok      ");
     engine.feed(b"\x1b]7501;state=done\x07");
     assert_eq!(engine.program_status().len(), 1);
+}
+
+#[test]
+fn clamped_repeat_matches_writing_every_repetition() {
+    for (cols, rows) in [(7, 3), (8, 4), (1, 2)] {
+        for prefix in ["", "ab", "\x1b[2;3r\x1b[3;1H"] {
+            for (character, count) in [('x', 65_535), ('中', 4_099), ('é', 1_001), ('x', 23)] {
+                let mut repeated = engine(cols, rows);
+                repeated.feed(format!("{prefix}{character}\x1b[{count}bZ").as_bytes());
+                let mut written = engine(cols, rows);
+                let text = character.to_string().repeat(count + 1);
+                written.feed(format!("{prefix}{text}Z").as_bytes());
+                for row in 0..rows {
+                    assert_eq!(
+                        repeated.viewport_row(row),
+                        written.viewport_row(row),
+                        "{cols}x{rows} {prefix:?} {character} x{count} row {row}"
+                    );
+                }
+                assert_eq!(repeated.cursor(), written.cursor());
+            }
+        }
+    }
+}
+
+#[test]
+fn repeating_grapheme_extenders_is_bounded() {
+    let mut engine = engine(80, 24);
+    // Unclamped, this repeats 13M non-ordinary scalars: far over the bound
+    // even in release builds. Clamped, it stays well under it in debug CI.
+    let input = "🇩\x1b[65535b".repeat(200);
+    let started = std::time::Instant::now();
+    engine.feed(input.as_bytes());
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+}
+
+#[test]
+fn insert_and_delete_lines_return_the_cursor_to_the_left_margin() {
+    for sequence in ["\x1b[L", "\x1b[M"] {
+        let mut engine = engine(12, 4);
+        engine.feed(format!("\x1b[2;10H{sequence}").as_bytes());
+        assert_eq!((engine.cursor().row, engine.cursor().col), (1, 0));
+    }
+}
+
+#[test]
+fn osc7_file_urls_are_percent_decoded() {
+    for (input, expected) in [
+        ("file://host/Users/me/My%20Dir", Some("/Users/me/My Dir")),
+        ("file://host/tmp/%C3%A6%C3%B8", Some("/tmp/æø")),
+        ("file:///plain", Some("/plain")),
+        ("file://host/bad%zz", None),
+        ("/raw/path", Some("/raw/path")),
+    ] {
+        let mut engine = engine(8, 2);
+        engine.feed(format!("\x1b]7;{input}\x07").as_bytes());
+        let mut cwd = None;
+        while let Some(event) = engine.pop_event() {
+            if let super::super::Event::WorkingDirectory(path) = event {
+                cwd = Some(path);
+            }
+        }
+        assert_eq!(cwd.as_deref(), expected, "{input}");
+    }
 }

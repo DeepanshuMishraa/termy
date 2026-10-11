@@ -111,12 +111,42 @@ fn event_pressure_keeps_clipboard_resets_and_aborts_incomplete_writes() {
 }
 
 #[test]
-fn cell_layout_and_screen_dimensions_stay_bounded() {
-    assert!(
-        size_of::<Cell>() <= 32,
-        "hot cell grew to {} bytes",
-        size_of::<Cell>()
+fn underline_color_follows_text_into_spacers_marks_links_and_history() {
+    let red = Color::rgb(255, 0, 0);
+    let mut engine = engine(40, 2, 10);
+    engine.feed("\x1b[4;58:2::255:0:0m界e\u{301}".as_bytes());
+    let row = engine.viewport_row(0).unwrap();
+    assert_eq!(row[1].flags, Cell::WIDE_SPACER);
+    assert!(row[..3].iter().all(|cell| cell.underline_color() == red));
+    assert_eq!(row[2].combining(), "\u{301}");
+
+    // OSC 8 keeps the color; SGR 0 clears it but keeps the link.
+    engine.feed(b"\x1b]8;;https://example.test\x1b\\L\x1b[0mM");
+    let row = engine.viewport_row(0).unwrap();
+    assert_eq!(row[3].underline_color(), red);
+    assert!(row[3].hyperlink().is_some());
+    assert_eq!(row[4].underline_color(), Color::DEFAULT);
+    assert!(row[4].hyperlink().is_some());
+
+    // Packed history rows keep colors, flags and marks.
+    engine.feed(b"\r\n\r\n\r\n");
+    engine.compact_history();
+    assert!(engine.state.grid.row(-2).unwrap().is_packed());
+    let line = engine.line(-2).unwrap();
+    assert_eq!(line[1].flags, Cell::WIDE_SPACER);
+    assert_eq!(line[2].combining(), "\u{301}");
+    assert!(line[..4].iter().all(|cell| cell.underline_color() == red));
+
+    engine.feed(b"\x1b[58:5:9m\x1bP$qm\x1b\\\x1b[59m\x1bP$qm\x1b\\");
+    assert_eq!(
+        replies(&mut engine),
+        b"\x1bP1$r0;58;5;9m\x1b\\\x1bP1$r0m\x1b\\"
     );
+}
+
+#[test]
+fn cell_layout_and_screen_dimensions_stay_bounded() {
+    assert_eq!(size_of::<Cell>(), 24, "hot cell size changed");
     assert_eq!(size_of::<Color>(), 4);
     assert_eq!(
         Size { cols: 0, rows: 0 }.clamped(),
@@ -164,7 +194,8 @@ fn sgr_semicolon_and_colon_forms_keep_style_and_hyperlink_independent() {
     let cells = engine.viewport_row(0).unwrap();
     assert_eq!(cells[0].style.foreground.as_rgb(), Some((1, 2, 3)));
     assert_eq!(cells[0].style.background.as_indexed(), Some(42));
-    assert_eq!(cells[0].style.underline_color.as_rgb(), Some((4, 5, 6)));
+    assert_eq!(cells[0].underline_color().as_rgb(), Some((4, 5, 6)));
+    assert_eq!(cells[1].underline_color(), Color::DEFAULT);
     assert_eq!(cells[0].style.underline, UnderlineStyle::Curly);
     assert_eq!(cells[0].style.attributes, Style::BOLD | Style::ITALIC);
     assert_eq!(cells[1].style, Style::default());
