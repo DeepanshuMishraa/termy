@@ -1420,88 +1420,9 @@ fn applying_runtime_options_preserves_scrollback_when_cursor_style_changes() {
     );
 }
 
-#[cfg(unix)]
-#[test]
-fn locale_override_plan_forces_lc_ctype_when_no_utf8_and_no_lc_all() {
-    assert_eq!(
-        super::utf8_locale_override_plan(None, Some("C"), Some("")),
-        super::Utf8LocaleOverridePlan::LcCtypeOnly
-    );
-}
-
-#[cfg(unix)]
-#[test]
-fn locale_override_plan_forces_lc_all_when_lc_all_is_non_utf8() {
-    assert_eq!(
-        super::utf8_locale_override_plan(Some("C"), Some("C"), Some("")),
-        super::Utf8LocaleOverridePlan::LcAllAndLcCtype
-    );
-}
-
-#[cfg(unix)]
-#[test]
-fn locale_override_plan_skips_when_utf8_present() {
-    assert_eq!(
-        super::utf8_locale_override_plan(Some("en_US.UTF-8"), Some("C"), Some("")),
-        super::Utf8LocaleOverridePlan::None
-    );
-}
-
-#[cfg(unix)]
-#[test]
-fn locale_override_plan_prefers_lc_all_over_lang() {
-    assert_eq!(
-        super::utf8_locale_override_plan(Some("fr_FR.ISO8859-1"), Some("C"), Some("en_US.UTF-8")),
-        super::Utf8LocaleOverridePlan::LcAllAndLcCtype
-    );
-}
-
-#[cfg(unix)]
-#[test]
-fn locale_override_plan_does_not_skip_for_utf8_substring_false_positive() {
-    assert_eq!(
-        super::utf8_locale_override_plan(Some("en_US.fakeutf8"), Some("C"), Some("")),
-        super::Utf8LocaleOverridePlan::LcAllAndLcCtype
-    );
-}
-
-#[cfg(unix)]
-#[test]
-fn locale_override_plan_skips_for_utf8_with_modifier() {
-    assert_eq!(
-        super::utf8_locale_override_plan(Some("en_US.UTF-8@variant"), Some("C"), Some("")),
-        super::Utf8LocaleOverridePlan::None
-    );
-}
-
-#[cfg(unix)]
-#[test]
-fn preferred_utf8_locale_preserves_lang_region_from_lc_all() {
-    assert_eq!(
-        super::preferred_utf8_locale(Some("fr_FR.ISO8859-1"), Some("C"), Some("en_US.ISO8859-1")),
-        "fr_FR.UTF-8"
-    );
-}
-
-#[cfg(unix)]
-#[test]
-fn preferred_utf8_locale_preserves_locale_modifier() {
-    assert_eq!(
-        super::preferred_utf8_locale(None, Some("sr_RS@latin"), Some("")),
-        "sr_RS.UTF-8@latin"
-    );
-}
-
-#[cfg(unix)]
-#[test]
-fn preferred_utf8_locale_falls_back_for_c_or_posix() {
-    assert_eq!(
-        super::preferred_utf8_locale(Some("C"), Some("POSIX"), Some("")),
-        crate::locale::DEFAULT_UTF8_LOCALE
-    );
-}
-
 mod input_and_launch;
+#[cfg(unix)]
+mod locale;
 
 #[test]
 fn program_status_reports_are_coalesced_and_clear_through_public_events() {
