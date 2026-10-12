@@ -11,7 +11,7 @@ the [C ABI](/docs/developer/libtermy/c). It compiles against the repository's
 | Product | Use it for |
 | --- | --- |
 | `Termy` | Terminals, sessions, frames, input encoding, events, config, search, Kitty graphics and clipboard, tmux control mode. No UI dependency. |
-| `TermyAppKit` | `TerminalView` (AppKit) and `TermyTerminal` (SwiftUI) with rendering, IME, mouse reporting, selection, scrollback, links, and Kitty graphics. |
+| `TermyAppKit` | `TerminalView` (AppKit) and `TermyTerminal` (SwiftUI) with Metal rendering, IME, mouse reporting, selection, scrollback, links, and Kitty graphics. |
 
 Requires macOS 13+, Swift 6.2+, and a Rust toolchain.
 
@@ -74,6 +74,23 @@ struct ContentView: View {
 
 Keep the view in a model. SwiftUI rebuilds `TermyTerminal` often; the
 `TerminalView` owns the shell and must outlive those rebuilds.
+
+## Rendering
+
+`TerminalView` draws with Metal: instanced quads for cell backgrounds and
+decorations, and glyphs from a CoreText-rasterized texture atlas. Quads are
+cached per row and rebuilt only for rows libtermy reports as damaged. Special
+glyphs such as box drawing, blocks and Braille use libtermy's
+[glyph geometry](/docs/developer/libtermy/rendering#special-glyph-geometry), so they join seamlessly
+across cells.
+
+Without a Metal device, the view falls back to CoreGraphics. Pass
+`backend: .coreGraphics` to `TerminalView` to force it; `renderingBackend`
+reports the active one.
+
+[Swift Metal renderer](/docs/developer/libtermy/swift-rendering) explains the
+pipeline in detail: damage tracking, the shader, the glyph atlas, frame pacing,
+and performance.
 
 ## Headless sessions
 

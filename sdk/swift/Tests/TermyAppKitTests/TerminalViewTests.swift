@@ -3,7 +3,7 @@ import Testing
 import Termy
 @testable import TermyAppKit
 
-@Suite("Terminal view")
+@Suite("Terminal view (CoreGraphics)")
 @MainActor
 struct TerminalViewTests {
     private func makeView(feeding output: String = "") throws -> TerminalView {
@@ -11,7 +11,7 @@ struct TerminalViewTests {
         let render = try config.renderConfig(for: .dark)
         let session = try TerminalSession.display(
             size: TerminalSize(cols: 20, rows: 5, cellWidth: render.cellWidth, cellHeight: render.cellHeight))
-        let view = TerminalView(session: session, renderConfig: render)
+        let view = TerminalView(session: session, renderConfig: render, backend: .coreGraphics)
         view.frame = NSRect(origin: .zero, size: view.size(cols: 20, rows: 5))
         if !output.isEmpty { try session.feed(Data(output.utf8)) }
         return view

@@ -19,15 +19,28 @@ extension TerminalViewDelegate {
     public func terminalViewDidExit(_ view: TerminalView) {}
 }
 
+/// How a `TerminalView` draws.
+public enum TerminalRenderingBackend: Hashable, Sendable {
+    /// Metal when a GPU is available, otherwise CoreGraphics.
+    case automatic
+    /// GPU rendering with a glyph atlas. Falls back to CoreGraphics without a Metal device.
+    case metal
+    /// CPU rendering with CoreGraphics and CoreText.
+    case coreGraphics
+}
+
 /// An AppKit view that renders and drives a `TerminalSession`.
 ///
 /// The view sizes the terminal grid to fit its bounds, redraws only damaged
 /// cells, and handles keyboard (including IME), mouse reporting, scrollback,
-/// selection, copy/paste, OSC 8 links, and Kitty graphics.
+/// selection, copy/paste, OSC 8 links, and Kitty graphics. It renders with
+/// Metal by default.
 @MainActor
 public final class TerminalView: NSView {
     public let session: TerminalSession
     public weak var delegate: TerminalViewDelegate?
+    /// The backend in use: `.metal` or `.coreGraphics`, never `.automatic`.
+    public let renderingBackend: TerminalRenderingBackend
 
     /// Treat Option as Alt/Meta instead of typing composed characters.
     public var optionAsAlt = false
@@ -42,6 +55,7 @@ public final class TerminalView: NSView {
     }
 
     let renderer = TerminalRenderer()
+    let metalRenderer: MetalTerminalRenderer?
     var glyphPlan: [Int: GlyphPlanEntry] = [:]
     var images: [KittyImage] = []
     var markedText: String?
@@ -50,12 +64,15 @@ public final class TerminalView: NSView {
     private var imageRevision: UInt64?
     private var decodedImages: [String: CGImage] = [:]
     private var blinkTimer: Timer?
+    private var metalFrameScheduled = false
     private var animationTimer: Timer?
 
     /// Wraps an existing session.
-    public init(session: TerminalSession, renderConfig: RenderConfig) {
+    public init(session: TerminalSession, renderConfig: RenderConfig, backend: TerminalRenderingBackend = .automatic) {
         self.session = session
         self.renderConfig = renderConfig
+        metalRenderer = backend == .coreGraphics ? nil : MetalTerminalRenderer()
+        renderingBackend = metalRenderer == nil ? .coreGraphics : .metal
         super.init(frame: NSRect(x: 0, y: 0, width: 640, height: 400))
         renderer.configure(renderConfig)
         wantsLayer = true
@@ -66,14 +83,17 @@ public final class TerminalView: NSView {
     }
 
     /// Spawns a shell configured by `config` (the user's Termy config by default).
-    public convenience init(config: TermyConfig? = nil, options: TerminalOptions = TerminalOptions()) throws {
+    public convenience init(
+        config: TermyConfig? = nil, options: TerminalOptions = TerminalOptions(),
+        backend: TerminalRenderingBackend = .automatic
+    ) throws {
         let config = try config ?? TermyConfig.loadDefault()
         let appearance: Appearance = NSApp?.effectiveAppearance.isDark == false ? .light : .dark
         let renderConfig = try config.renderConfig(for: appearance)
         var options = options
         options.config = options.config ?? config
         let size = TerminalSize(cols: 80, rows: 24, cellWidth: renderConfig.cellWidth, cellHeight: renderConfig.cellHeight)
-        self.init(session: try TerminalSession(size: size, options: options), renderConfig: renderConfig)
+        self.init(session: try TerminalSession(size: size, options: options), renderConfig: renderConfig, backend: backend)
         optionAsAlt = (try? config.native().macosOptionAsAlt) ?? false
     }
 
@@ -89,6 +109,14 @@ public final class TerminalView: NSView {
     public override var isFlipped: Bool { true }
     public override var acceptsFirstResponder: Bool { true }
     public override var isOpaque: Bool { renderConfig.backgroundOpacity >= 1 }
+    public override var wantsUpdateLayer: Bool { metalRenderer != nil }
+
+    public override func makeBackingLayer() -> CALayer {
+        guard let metalRenderer else { return super.makeBackingLayer() }
+        let layer = CAMetalLayer()
+        metalRenderer.configure(layer)
+        return layer
+    }
 
     /// The grid size that fits the current bounds.
     public var fittingGridSize: TerminalSize {
@@ -109,6 +137,7 @@ public final class TerminalView: NSView {
         resizeGridToFit()
         restartBlinkTimer()
         rebuildGlyphPlan(spans: nil)
+        metalRenderer?.invalidateAll()
         needsDisplay = true
     }
 
@@ -121,6 +150,7 @@ public final class TerminalView: NSView {
 
     public override func viewDidChangeBackingProperties() {
         super.viewDidChangeBackingProperties()
+        layer?.contentsScale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
         needsDisplay = true
     }
 
@@ -129,22 +159,68 @@ public final class TerminalView: NSView {
         try? session.resize(fittingGridSize)
     }
 
-    public override func draw(_ dirtyRect: NSRect) {
-        guard let context = NSGraphicsContext.current?.cgContext else { return }
-        let state = RenderState(
+    var renderState: RenderState {
+        RenderState(
             frame: session.frame, config: renderConfig, glyphPlan: glyphPlan, selection: selection,
             images: images, isFocused: window?.isKeyWindow == true && window?.firstResponder === self,
             cursorBlinkVisible: cursorBlinkVisible, markedText: markedText)
-        renderer.draw(state, in: context, dirtyRect: dirtyRect, bounds: bounds)
+    }
+
+    public override func draw(_ dirtyRect: NSRect) {
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
+        renderer.draw(renderState, in: context, dirtyRect: dirtyRect, bounds: bounds)
+    }
+
+    // AppKit doesn't run its display cycle for a CAMetalLayer, so invalidation
+    // schedules a Metal frame directly, coalesced to one per run-loop turn.
+    public override var needsDisplay: Bool {
+        get { super.needsDisplay }
+        set {
+            super.needsDisplay = newValue
+            if newValue { scheduleMetalFrame() }
+        }
+    }
+
+    public override func setNeedsDisplay(_ invalidRect: NSRect) {
+        super.setNeedsDisplay(invalidRect)
+        scheduleMetalFrame()
+    }
+
+    public override func updateLayer() {
+        renderMetalFrame()
+    }
+
+    private func scheduleMetalFrame() {
+        guard metalRenderer != nil, !metalFrameScheduled else { return }
+        metalFrameScheduled = true
+        // Common modes keep frames coming during live resize and mouse tracking.
+        RunLoop.main.perform(inModes: [.common]) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.metalFrameScheduled = false
+                self.renderMetalFrame()
+            }
+        }
+    }
+
+    private func renderMetalFrame() {
+        guard let metalRenderer, let layer = layer as? CAMetalLayer, window != nil else { return }
+        let scale = layer.contentsScale
+        let size = CGSize(width: (bounds.width * scale).rounded(), height: (bounds.height * scale).rounded())
+        if layer.drawableSize != size { layer.drawableSize = size }
+        layer.isOpaque = isOpaque
+        metalRenderer.draw(renderState, in: layer)
     }
 
     private func frameDidChange(_ change: FrameChange) {
         switch change.damage {
         case .full:
             rebuildGlyphPlan(spans: nil)
+            metalRenderer?.invalidateAll()
             needsDisplay = true
         case .partial(let spans):
             rebuildGlyphPlan(spans: spans)
+            metalRenderer?.invalidate(rows: spans.map(\.row))
             if change.resized || change.viewportChanged {
                 needsDisplay = true
             } else {
@@ -262,6 +338,7 @@ public final class TerminalView: NSView {
 
     public override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        if let window { layer?.contentsScale = window.backingScaleFactor }
         resizeGridToFit()
         restartBlinkTimer()
     }

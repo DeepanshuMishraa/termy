@@ -6,7 +6,7 @@ Swift bindings for libtermy, the Termy terminal engine, built on its C ABI
 | Product | What it gives you |
 | --- | --- |
 | `Termy` | `Terminal`, `TerminalSession`, frames, input encoding, events, config, search, Kitty graphics and clipboard, tmux control mode. No UI dependency. |
-| `TermyAppKit` | `TerminalView` (AppKit) and `TermyTerminal` (SwiftUI): rendering, keyboard with IME, mouse reporting, selection, scrollback, OSC 8 links, Kitty graphics. |
+| `TermyAppKit` | `TerminalView` (AppKit) and `TermyTerminal` (SwiftUI): Metal rendering, keyboard with IME, mouse reporting, selection, scrollback, OSC 8 links, Kitty graphics. |
 
 Requires macOS 13+, Swift 6.2+ and a Rust toolchain to build libtermy.
 
@@ -99,6 +99,32 @@ session.onProtocolReply = { bytes in channel.write(bytes) }    // cursor reports
 channel.onOutput = { bytes in try? session.feed(bytes) }
 ```
 
+## Rendering
+
+`TerminalView` renders with Metal. Each cell becomes instanced quads: solid
+backgrounds and decorations, and glyphs from a texture atlas that CoreText
+rasterizes on first use. Quads are cached per row and rebuilt only for rows
+that changed, so cursor blinks and selection drags reuse the whole grid.
+Box drawing, blocks and Braille use libtermy's glyph geometry on both paths.
+
+Without a Metal device the view falls back to CoreGraphics. Pass
+`backend: .coreGraphics` to force it, and read `renderingBackend` to see which
+one is active.
+
+| File | Role |
+| --- | --- |
+| `Metal/MetalTerminalRenderer.swift` | Row cache, frame assembly, draw order, frame pacing |
+| `Metal/GlyphAtlas.swift` | Shelf-packed BGRA atlas and CoreText rasterization |
+| `Metal/MetalShaders.swift` | The quad instance layout and the shader source |
+| `TerminalFonts.swift` | Font styles and fallback lookup shared by both renderers |
+| `TerminalRenderer.swift` | The CoreGraphics fallback, also used for `cacheDisplay` |
+
+A full 200×60 frame at 2× takes about 1.2 ms of main-thread CPU on Apple
+silicon when every row is rebuilt, and 0.1 ms when none changed, against
+5.6 ms for CoreGraphics. The
+[Swift Metal renderer guide](https://termy.sh/docs/developer/libtermy/swift-rendering)
+covers the pipeline in detail.
+
 ## Threading
 
 `Terminal` is not thread-safe; confine it to one thread. `TerminalSession` and
@@ -112,7 +138,8 @@ releasing the session, wakes and joins it before the handle is freed.
 | --- | --- |
 | `Sources/CTermy` | Module map over the repository's `termy.h`, so bindings can't drift from the ABI. |
 | `Sources/Termy` | The Swift API. Every C allocation is copied and freed inside the call that returns it. |
-| `Sources/TermyAppKit` | The Core Graphics renderer and AppKit/SwiftUI views. |
+| `Sources/TermyAppKit` | AppKit/SwiftUI views and the CoreGraphics fallback renderer. |
+| `Sources/TermyAppKit/Metal` | The Metal renderer, glyph atlas and shaders. |
 | `Examples` | `TermyDemo` (SwiftUI app) and `TermyHeadless` (CLI). |
 | `Tests` | Swift Testing suites, including a real PTY round trip. |
 

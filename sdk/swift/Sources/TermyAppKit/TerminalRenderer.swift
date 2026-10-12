@@ -23,24 +23,13 @@ struct KittyImage {
 
 /// Draws a retained terminal frame with CoreGraphics and CoreText.
 ///
-/// Fonts, colors, and glyph lookups are cached across frames. Ordinary text is
-/// drawn glyph-by-glyph on the cell grid so columns never drift; characters the
-/// primary font lacks fall back to CoreText font substitution.
+/// The fallback when Metal is unavailable, and the renderer behind
+/// `cacheDisplay(in:to:)`. Ordinary text is drawn glyph-by-glyph on the cell
+/// grid so columns never drift.
 @MainActor
 final class TerminalRenderer {
-    private struct FontKey: Hashable {
-        var bold: Bool
-        var italic: Bool
-    }
-
-    private struct GlyphKey: Hashable {
-        var codepoint: UInt32
-        var font: FontKey
-    }
-
     private var config: RenderConfig?
-    private var fonts: [FontKey: CTFont] = [:]
-    private var glyphs: [GlyphKey: CGGlyph?] = [:]
+    private(set) var fonts = TerminalFonts(fontFamily: "", fontSize: 13)
     private var colors: [UInt32: CGColor] = [:]
     private var ascent: CGFloat = 0
     private var descent: CGFloat = 0
@@ -54,12 +43,10 @@ final class TerminalRenderer {
     func configure(_ config: RenderConfig) {
         guard config != self.config else { return }
         self.config = config
-        fonts.removeAll()
-        glyphs.removeAll()
-        let regular = font(FontKey(bold: false, italic: false))
-        ascent = CTFontGetAscent(regular)
-        descent = CTFontGetDescent(regular)
-        underlineOffset = -CTFontGetUnderlinePosition(regular)
+        fonts = TerminalFonts(fontFamily: config.fontFamily, fontSize: config.fontSize)
+        ascent = fonts.ascent
+        descent = fonts.descent
+        underlineOffset = fonts.underlinePosition
     }
 
     // MARK: - Geometry
@@ -85,7 +72,7 @@ final class TerminalRenderer {
     }
 
     private var baselineOffset: CGFloat {
-        ((cellHeight - (ascent + descent)) / 2 + ascent).rounded()
+        fonts.baselineOffset(cellHeight: cellHeight)
     }
 
     // MARK: - Drawing
@@ -169,32 +156,29 @@ final class TerminalRenderer {
             var positions: [CGPoint] = []
         }
         for row in rows {
-            var runs: [FontKey: [UInt32: (TermyColor, Run)]] = [:]
+            var runs: [Int: [UInt32: (TermyColor, Run)]] = [:]
             let baseline = paddingY + CGFloat(row) * cellHeight + baselineOffset
             for col in 0..<frame.cols {
                 let index = row * frame.cols + col
                 guard state.glyphPlan[index] == nil else { continue }
                 let cell = frame[row, col]
-                guard let text = cell.text else { continue }
-                let key = FontKey(bold: cell.isBold, italic: cell.isItalic)
+                guard cell.text != nil,
+                      let glyph = fonts.glyph(for: cell.codepoint, style: .init(bold: cell.isBold, italic: cell.isItalic))
+                else { continue }
                 let inverted = invertedCursorCell == GridPosition(row: row, col: col)
                 let foreground = inverted ? cursorTextColor(cell, config: state.config) : cell.foreground
                 let point = CGPoint(x: paddingX + CGFloat(col) * cellWidth, y: baseline)
 
-                if let glyph = glyph(for: cell.codepoint, font: key) {
-                    var entry = runs[key, default: [:]][foreground.rgba] ?? (foreground, Run())
-                    entry.1.glyphs.append(glyph)
-                    // Glyph positions are in text space, which the flipped
-                    // text matrix mirrors back into the view.
-                    entry.1.positions.append(CGPoint(x: point.x, y: -point.y))
-                    runs[key, default: [:]][foreground.rgba] = entry
-                } else {
-                    drawFallback(text, font: font(key), color: foreground, at: point, in: context)
-                }
+                var entry = runs[glyph.fontIndex, default: [:]][foreground.rgba] ?? (foreground, Run())
+                entry.1.glyphs.append(glyph.glyph)
+                // Glyph positions are in text space, which the flipped text
+                // matrix mirrors back into the view.
+                entry.1.positions.append(CGPoint(x: point.x, y: -point.y))
+                runs[glyph.fontIndex, default: [:]][foreground.rgba] = entry
             }
             context.textPosition = .zero
-            for (key, byColor) in runs {
-                let font = font(key)
+            for (fontIndex, byColor) in runs {
+                let font = fonts.font(at: fontIndex)
                 for (foreground, run) in byColor.values {
                     context.setFillColor(color(foreground))
                     CTFontDrawGlyphs(font, run.glyphs, run.positions, run.glyphs.count, context)
@@ -218,16 +202,6 @@ final class TerminalRenderer {
                 context.fill(CGRect(x: rect.minX, y: (baseline - ascent * 0.35).rounded(), width: rect.width, height: 1))
             }
         }
-    }
-
-    private func drawFallback(_ text: String, font: CTFont, color: TermyColor, at point: CGPoint, in context: CGContext) {
-        let attributes: [NSAttributedString.Key: Any] = [
-            .init(kCTFontAttributeName as String): font,
-            .init(kCTForegroundColorAttributeName as String): self.color(color),
-        ]
-        let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: attributes))
-        context.textPosition = point
-        CTLineDraw(line, context)
     }
 
     /// Box drawing, blocks, Braille and friends, from libtermy's geometry plans.
@@ -356,7 +330,7 @@ final class TerminalRenderer {
     private func drawMarkedText(_ text: String, state: RenderState, in context: CGContext) {
         let cursor = state.frame.cursor
         let origin = cellRect(row: cursor.row, col: cursor.col)
-        let font = font(FontKey(bold: false, italic: false))
+        let font = fonts.font(.regular)
         let attributes: [NSAttributedString.Key: Any] = [
             .init(kCTFontAttributeName as String): font,
             .init(kCTForegroundColorAttributeName as String): color(state.config.foreground),
@@ -375,34 +349,6 @@ final class TerminalRenderer {
     }
 
     // MARK: - Caches
-
-    private func font(_ key: FontKey) -> CTFont {
-        if let font = fonts[key] { return font }
-        let size = CGFloat(config?.fontSize ?? 13)
-        let base = NSFont(name: config?.fontFamily ?? "", size: size)
-            ?? NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
-        var traits: NSFontTraitMask = []
-        if key.bold { traits.insert(.boldFontMask) }
-        if key.italic { traits.insert(.italicFontMask) }
-        let styled = traits.isEmpty ? base : NSFontManager.shared.convert(base, toHaveTrait: traits)
-        fonts[key] = styled
-        return styled
-    }
-
-    private func glyph(for codepoint: UInt32, font key: FontKey) -> CGGlyph? {
-        let cacheKey = GlyphKey(codepoint: codepoint, font: key)
-        if let cached = glyphs[cacheKey] { return cached }
-        var result: CGGlyph?
-        if let scalar = Unicode.Scalar(codepoint) {
-            let utf16 = Array(String(Character(scalar)).utf16)
-            var found = [CGGlyph](repeating: 0, count: utf16.count)
-            if utf16.count == 1, CTFontGetGlyphsForCharacters(font(key), utf16, &found, 1), found[0] != 0 {
-                result = found[0]
-            }
-        }
-        glyphs[cacheKey] = result
-        return result
-    }
 
     func color(_ color: TermyColor, alpha: CGFloat = 1) -> CGColor {
         let effectiveAlpha = CGFloat(color.a) / 255 * alpha
