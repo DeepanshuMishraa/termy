@@ -13,6 +13,11 @@ use crate::{
     kitty_graphics::{KittyPreparedUpload, KittyUpload},
 };
 
+/// Animation pixels (`a=c` compositions, `a=f` frames) one deferring feed
+/// may write before it pauses, so the runtime can hand the engine lock to
+/// other callers between heavy edits. About 16 MiB of RGBA, a few ms.
+const ANIMATION_PIXELS_PER_FEED: usize = 4 * 1024 * 1024;
+
 #[derive(Default)]
 pub(super) struct Graphics {
     state: KittyGraphicsState,
@@ -243,6 +248,20 @@ impl State {
 
     pub(super) fn has_deferred_upload(&self) -> bool {
         self.graphics.deferred.is_some()
+    }
+
+    /// Whether this feed's animation edits used up their pixel budget. Only
+    /// deferring feeds pause for it; see [`ANIMATION_PIXELS_PER_FEED`].
+    pub(super) fn animation_budget_spent(&self) -> bool {
+        self.graphics.state.animation_work() >= ANIMATION_PIXELS_PER_FEED
+    }
+
+    pub(super) fn pauses_for_animation_work(&self) -> bool {
+        self.graphics.defer_uploads && self.animation_budget_spent()
+    }
+
+    pub(super) fn reset_animation_work(&mut self) {
+        self.graphics.state.reset_animation_work();
     }
 
     pub(super) fn take_deferred_upload(&mut self) -> Option<KittyUpload> {
@@ -628,6 +647,30 @@ mod tests {
     }
 
     #[test]
+    fn committing_an_upload_releases_history_read_while_it_decoded() {
+        let mut engine = Engine::new(
+            Size { cols: 20, rows: 2 },
+            Options {
+                scrollback_history: 100,
+            },
+        );
+        for line in 0..50 {
+            engine.feed(format!("line {line}\r\n").as_bytes());
+        }
+        engine.compact_history();
+        let input = b"\x1b_Ga=T,f=32,s=1,v=1,i=7,c=1,r=2;AQID/w==\x1b\\after";
+        let consumed = engine.feed_deferring_uploads(input);
+        let deferred = engine.take_deferred_upload().expect("upload is deferred");
+        // A UI read (e.g. link hover) while the upload decodes off the lock.
+        assert!(engine.line(-1).is_some());
+        assert!(engine.state.grid.has_history_read_cache());
+        engine.commit_upload(deferred.prepare());
+        assert!(!engine.state.grid.has_history_read_cache());
+        engine.feed(&input[consumed..]);
+        assert_eq!(engine.graphics_placements().len(), 1);
+    }
+
+    #[test]
     fn deferred_upload_failures_reply_at_commit() {
         let mut engine = Engine::new(Size { cols: 20, rows: 4 }, Options::default());
         let input = b"\x1b_Ga=t,f=100,i=3;AQID/w==\x1b\\\x1b_Ga=t,f=32,s=1,v=1,i=4;!!\x1b\\";
@@ -670,5 +713,62 @@ mod tests {
         engine.feed(&input[consumed..]);
         assert_eq!(engine.graphics_placements().len(), 1);
         assert_eq!(row_text(&engine, 1).trim_start(), "after");
+    }
+
+    #[test]
+    fn leaving_1049_clears_alternate_screen_images_with_its_text() {
+        let mut engine = Engine::new(Size { cols: 10, rows: 4 }, Options::default());
+        engine.feed(b"\x1b[?1049h\x1b_Ga=T,f=32,s=1,v=1,i=7,c=1,r=1,q=2;AQID/w==\x1b\\");
+        engine.feed(b"\x1b_Ga=T,f=32,s=1,v=1,c=1,r=1,q=2;AQID/w==\x1b\\");
+        assert_eq!(engine.graphics_placements().len(), 2);
+        engine.feed(b"\x1b[?1049l");
+        // Mode 47 reuses the alternate screen without clearing it, so only
+        // the 1049 exit can have removed these.
+        engine.feed(b"\x1b[?47h");
+        assert!(engine.graphics_placements().is_empty());
+        engine.feed(b"\x1b_Ga=p,i=7,c=1,r=1;\x1b\\");
+        assert_eq!(engine.graphics_placements().len(), 1);
+        assert_eq!(drain(&mut engine), b"\x1b_Gi=7;OK\x1b\\");
+    }
+
+    #[test]
+    fn heavy_animation_edits_pause_deferring_feeds() {
+        use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+        use std::io::Write as _;
+
+        let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+        encoder.write_all(&vec![0; 1024 * 1024 * 4]).unwrap();
+        let root = BASE64.encode(encoder.finish().unwrap());
+        let setup = format!(
+            "\x1b_Ga=t,i=1,f=32,s=1024,v=1024,o=z,q=2;{root}\x1b\\\x1b_Ga=f,i=1,f=32,s=1,v=1,q=2;AQID/w==\x1b\\"
+        );
+        // Each composition blends one whole 1024x1024 frame.
+        let compose = b"\x1b_Ga=c,i=1,r=1,c=2,q=2\x1b\\".as_slice();
+        let input = [compose.repeat(10).as_slice(), b"after"].concat();
+        let size = Size { cols: 20, rows: 4 };
+
+        let mut expected = Engine::new(size, Options::default());
+        expected.feed(setup.as_bytes());
+        expected.feed(&input);
+
+        let mut engine = Engine::new(size, Options::default());
+        engine.feed(setup.as_bytes());
+        let per_feed = super::ANIMATION_PIXELS_PER_FEED / (1024 * 1024);
+        let mut offset = 0;
+        let mut feeds = 0;
+        while offset < input.len() {
+            let consumed = engine.feed_deferring_uploads(&input[offset..]);
+            assert!(engine.take_deferred_upload().is_none());
+            offset += consumed;
+            feeds += 1;
+            if offset < input.len() {
+                assert!(engine.animation_budget_spent());
+                assert_eq!(consumed, per_feed * compose.len());
+            }
+        }
+        assert_eq!(feeds, 10 / per_feed + 1);
+        assert_eq!(row_text(&engine, 0), row_text(&expected, 0));
+        assert!(row_text(&engine, 0).ends_with("after"));
+        assert!(drain(&mut engine).is_empty());
     }
 }

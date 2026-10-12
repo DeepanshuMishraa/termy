@@ -159,6 +159,7 @@ fn non_macos_secondary_shortcuts_map_to_native_word_sequences() {
 #[cfg(not(target_os = "macos"))]
 #[test]
 fn non_macos_secondary_shortcuts_do_not_remap_in_alternate_screen() {
+    // Without the remap, Ctrl+arrow/Delete use xterm's modifier parameter.
     let secondary = Modifiers {
         control: true,
         ..Default::default()
@@ -171,7 +172,7 @@ fn non_macos_secondary_shortcuts_do_not_remap_in_alternate_screen() {
             press_mode(),
             false,
         ),
-        Some(b"\x1b[D".to_vec())
+        Some(b"\x1b[1;5D".to_vec())
     );
     assert_eq!(
         keystroke_to_input(
@@ -180,7 +181,7 @@ fn non_macos_secondary_shortcuts_do_not_remap_in_alternate_screen() {
             press_mode(),
             false,
         ),
-        Some(b"\x1b[C".to_vec())
+        Some(b"\x1b[1;5C".to_vec())
     );
     assert_eq!(
         keystroke_to_input(
@@ -198,7 +199,7 @@ fn non_macos_secondary_shortcuts_do_not_remap_in_alternate_screen() {
             press_mode(),
             false,
         ),
-        Some(b"\x1b[3~".to_vec())
+        Some(b"\x1b[3;5~".to_vec())
     );
 }
 

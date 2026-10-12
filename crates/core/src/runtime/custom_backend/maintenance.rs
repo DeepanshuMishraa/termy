@@ -93,21 +93,15 @@ impl Shared {
                         }
                         let tab_chrome_changed = committed && state.take_tab_chrome_changed();
                         shared.schedule_maintenance(&state);
-                        drop(state);
                         if !replies.is_empty() {
-                            let transport = shared
-                                .transport
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                .upgrade();
-                            if let Some(transport) = transport {
-                                if let Err(error) = transport.write_protocol_reply_owned(replies) {
-                                    log::warn!("terminal timeout reply failed: {error}");
+                            match shared.live_transport() {
+                                Some(transport) => {
+                                    Shared::write_replies_locked(&transport, replies);
                                 }
-                            } else {
-                                shared.state().append_replies(&replies);
+                                None => state.append_replies(&replies),
                             }
                         }
+                        drop(state);
                         if committed {
                             shared.notify();
                         }

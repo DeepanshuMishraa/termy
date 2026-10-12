@@ -159,6 +159,7 @@ impl Grid {
         self.combining_cache.append(&mut cell, character);
         if width == old_width {
             let active = &mut self.screen_mut().rows[row];
+            active.has_extras = true;
             active.cells[col] = cell;
             active.occupied = active.occupied.max(col + width);
             self.mark(row, col, col + width);
@@ -186,6 +187,7 @@ impl Grid {
         }
         self.insert_mode = false;
         self.put_cell(cell, width);
+        self.flag_extras_at_cursor();
         self.insert_mode = insert_mode;
         self.mark_cursor(old_cursor);
         true
@@ -237,6 +239,7 @@ impl Grid {
                 &mut self.primary.rows[row]
             };
             active.occupied = active.occupied.max(col + 1);
+            active.has_extras = true;
             let cell = &mut active.cells[col];
             self.combining_cache.append(cell, character);
             self.mark(row, col, col + 1);
@@ -251,6 +254,19 @@ impl Grid {
         };
         self.grapheme_ordinary = ordinary;
         self.put_cell(cell, width);
+        // `put_cell` leaves the cursor on the row it wrote. Flagging here
+        // rather than per stored cell keeps plain pens off this path.
+        if self.pen.extra.is_some() {
+            self.flag_extras_at_cursor();
+        }
+    }
+
+    /// Note that the cursor row may hold cell metadata; see `Row::has_extras`.
+    #[cold]
+    #[inline(never)]
+    fn flag_extras_at_cursor(&mut self) {
+        let row = self.cursor.row;
+        self.screen_mut().rows[row].has_extras = true;
     }
 
     fn put_cell(&mut self, mut cell: Cell, width: usize) {
@@ -295,7 +311,13 @@ impl Grid {
         // Built only for the rare wide-glyph repairs below.
         let background = self.pen.style.background;
         cell.flags = if width == 2 { Cell::WIDE } else { 0 };
-        let active = &mut self.screen_mut().rows[row];
+        // Borrow the screen by field so the spacer cache stays available.
+        let screen = if self.alternate_active {
+            self.alternate.as_mut().expect("active alternate screen")
+        } else {
+            &mut self.primary
+        };
+        let active = &mut screen.rows[row];
         let mut start = col;
         let mut end = col + width;
         // Only the outside halves of overwritten wide glyphs need erasing.
@@ -310,7 +332,7 @@ impl Grid {
             end += 1;
         }
         if width == 2 {
-            active.cells[col + 1].become_wide_spacer_of(&cell);
+            active.cells[col + 1].become_wide_spacer_of(&cell, &mut self.spacer_extra);
         }
         active.cells[col] = cell;
         active.occupied = active.occupied.max(end);
@@ -412,6 +434,7 @@ impl Grid {
             let cells = active.cells[col..col + count].iter_mut().zip(text);
             // Build whole cells so a plain pen is stored without reloading it.
             if let Some(extra) = extra {
+                active.has_extras = true;
                 for (cell, &byte) in cells {
                     *cell = Cell {
                         character: char::from(byte),

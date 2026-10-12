@@ -24,22 +24,18 @@ pub fn keyboard_mode(engine: &Engine) -> TerminalKeyboardMode {
         bits & 8 != 0,
         bits & 16 != 0,
     )
+    .with_application_keypad(modes.application_keypad)
 }
 
 pub fn mouse_mode(engine: &Engine) -> TerminalMouseMode {
     let modes = engine.modes();
     TerminalMouseMode {
         enabled: modes.mouse_tracking != MouseTracking::None,
-        report_click: matches!(
-            modes.mouse_tracking,
-            MouseTracking::Click | MouseTracking::Press
-        ),
+        // X10 (mode 9) reports presses only: enabled with no other flag.
+        report_click: modes.mouse_tracking == MouseTracking::Click,
         report_drag: modes.mouse_tracking == MouseTracking::Drag,
         report_motion: modes.mouse_tracking == MouseTracking::Motion,
-        sgr_encoding: matches!(
-            modes.mouse_encoding,
-            MouseEncoding::Sgr | MouseEncoding::SgrPixels
-        ),
+        sgr_encoding: modes.mouse_encoding == MouseEncoding::Sgr,
         utf8_encoding: modes.mouse_encoding == MouseEncoding::Utf8,
     }
 }

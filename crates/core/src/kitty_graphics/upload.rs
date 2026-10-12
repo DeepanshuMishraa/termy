@@ -137,7 +137,11 @@ fn raw_image_bytes(command: &KittyGraphicsCommand) -> Result<Option<usize>, Stri
 /// small compressed payload cannot expand to the limit before validation.
 pub(super) fn decompress_zlib(data: &[u8], raw_bytes: Option<usize>) -> Result<Vec<u8>, String> {
     let limit = raw_bytes.unwrap_or(MAX_IMAGE_BYTES).min(MAX_IMAGE_BYTES);
-    let mut output = Vec::new();
+    // A known raw size fits exactly; growing by doubling would leave up to
+    // half the buffer unused (and uncharged) in the stored image. Deflate
+    // expands at most ~1032x, so a tiny payload can't reserve the limit.
+    let mut output =
+        Vec::with_capacity(raw_bytes.map_or(0, |_| limit.min(data.len().saturating_mul(1032))));
     ZlibDecoder::new(data)
         .take(limit as u64 + 1)
         .read_to_end(&mut output)

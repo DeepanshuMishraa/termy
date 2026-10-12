@@ -240,14 +240,35 @@ fn alternate_screen_1047_preserves_on_entry_and_clears_on_exit() {
 }
 
 #[test]
-fn unrelated_mouse_mode_resets_preserve_active_tracking_and_encoding() {
+fn resetting_any_mouse_tracking_mode_turns_tracking_off() {
+    for reset in [9, 1000, 1002, 1003] {
+        let mut engine = engine(5, 2);
+        engine.feed(format!("\x1b[?1003h\x1b[?{reset}l").as_bytes());
+        assert_eq!(
+            engine.modes().mouse_tracking,
+            MouseTracking::None,
+            "{reset}"
+        );
+    }
+}
+
+#[test]
+fn unrelated_mouse_encoding_reset_preserves_active_encoding() {
     let mut engine = engine(5, 2);
-    engine.feed(b"\x1b[?1003h\x1b[?1000l\x1b[?1016h\x1b[?1006l");
-    assert_eq!(engine.modes().mouse_tracking, MouseTracking::Motion);
-    assert_eq!(engine.modes().mouse_encoding, MouseEncoding::SgrPixels);
-    engine.feed(b"\x1b[?1003l\x1b[?1016l");
-    assert_eq!(engine.modes().mouse_tracking, MouseTracking::None);
+    engine.feed(b"\x1b[?1006h\x1b[?1005l");
+    assert_eq!(engine.modes().mouse_encoding, MouseEncoding::Sgr);
+    engine.feed(b"\x1b[?1006l");
     assert_eq!(engine.modes().mouse_encoding, MouseEncoding::Default);
+}
+
+#[test]
+fn unsupported_urxvt_and_sgr_pixel_mouse_modes_are_rejected() {
+    let mut engine = engine(5, 2);
+    engine.feed(b"\x1b[?1006h\x1b[?1015h\x1b[?1016h");
+    assert_eq!(engine.modes().mouse_encoding, MouseEncoding::Sgr);
+    engine.feed(b"\x1b[?1015l\x1b[?1016l\x1b[?1015$p\x1b[?1016$p");
+    assert_eq!(engine.modes().mouse_encoding, MouseEncoding::Sgr);
+    assert_eq!(replies(&mut engine), b"\x1b[?1015;0$y\x1b[?1016;0$y");
 }
 
 #[test]
@@ -478,13 +499,21 @@ fn insert_and_delete_lines_return_the_cursor_to_the_left_margin() {
 }
 
 #[test]
-fn osc7_file_urls_are_percent_decoded() {
+fn osc7_file_urls_are_percent_decoded_and_other_schemes_ignored() {
     for (input, expected) in [
         ("file://host/Users/me/My%20Dir", Some("/Users/me/My Dir")),
         ("file://host/tmp/%C3%A6%C3%B8", Some("/tmp/æø")),
         ("file:///plain", Some("/plain")),
-        ("file://host/bad%zz", None),
+        ("FILE://host/a%20b", Some("/a b")),
+        // A literal `%` that is not a valid escape keeps the raw path.
+        ("file://host/bad%zz", Some("/bad%zz")),
+        ("file://host/100%", Some("/100%")),
+        ("file://host/%FF", Some("/%FF")),
+        ("file://host", None),
+        ("https://example.com/tmp", None),
+        ("kitty-shell-cwd://host/tmp", None),
         ("/raw/path", Some("/raw/path")),
+        ("C:\\Users\\me", Some("C:\\Users\\me")),
     ] {
         let mut engine = engine(8, 2);
         engine.feed(format!("\x1b]7;{input}\x07").as_bytes());
@@ -496,4 +525,213 @@ fn osc7_file_urls_are_percent_decoded() {
         }
         assert_eq!(cwd.as_deref(), expected, "{input}");
     }
+}
+
+#[test]
+fn save_restore_and_screen_switches_keep_cursor_visibility_shape_and_blink() {
+    for (save, restore) in [
+        ("\x1b7", "\x1b8"),
+        ("\x1b[s", "\x1b[u"),
+        ("\x1b[?1048h", "\x1b[?1048l"),
+        ("\x1b[?1049h", "\x1b[?1049l"),
+        ("\x1b[?47h", "\x1b[?47l"),
+        ("\x1b[?1047h", "\x1b[?1047l"),
+    ] {
+        let mut engine = engine(10, 4);
+        engine.feed(format!("{save}\x1b[?25l\x1b[6 q{restore}").as_bytes());
+        let cursor = engine.cursor();
+        assert!(!cursor.visible, "{save:?}");
+        assert_eq!(cursor.shape, CursorShape::Beam, "{save:?}");
+        assert!(!cursor.blinking, "{save:?}");
+    }
+}
+
+#[test]
+fn restore_and_alternate_screens_keep_the_configured_default_cursor_shape() {
+    for sequence in [
+        "\x1b8",
+        "\x1b[?47h",
+        "\x1b[?1049h",
+        "\x1b[?1049h\x1b[?1049l",
+    ] {
+        let mut engine = engine(10, 4);
+        engine.set_default_cursor_shape(CursorShape::Beam);
+        engine.feed(sequence.as_bytes());
+        assert_eq!(engine.cursor().shape, CursorShape::Beam, "{sequence:?}");
+        // Nothing marked the shape overridden, so it follows the default.
+        engine.set_default_cursor_shape(CursorShape::Underline);
+        assert_eq!(
+            engine.cursor().shape,
+            CursorShape::Underline,
+            "{sequence:?}"
+        );
+    }
+}
+
+#[test]
+fn restore_cursor_keeps_the_current_hyperlink_and_restores_underline_color() {
+    for (save, restore) in [("\x1b7", "\x1b8"), ("\x1b[?1049h", "\x1b[?1049l")] {
+        let mut open = engine(10, 2);
+        open.feed(
+            format!(
+                "\x1b]8;;https://old\x1b\\\x1b[58;5;1m{save}\x1b]8;;https://new\x1b\\\x1b[59m{restore}x"
+            )
+            .as_bytes(),
+        );
+        let cell = &open.viewport_row(0).unwrap()[0];
+        assert_eq!(cell.hyperlink().unwrap().uri, "https://new", "{save:?}");
+        assert_eq!(cell.underline_color(), Color::indexed(1), "{save:?}");
+
+        // A link closed before the restore stays closed.
+        let mut closed = engine(10, 2);
+        closed.feed(format!("\x1b]8;;https://old\x1b\\{save}\x1b]8;;\x1b\\{restore}x").as_bytes());
+        assert!(
+            closed.viewport_row(0).unwrap()[0].extra.is_none(),
+            "{save:?}"
+        );
+    }
+}
+
+#[test]
+fn other_charset_designations_select_ascii_and_dec_graphics_underscore_is_blank() {
+    let mut engine = engine(6, 2);
+    engine.feed(b"\x1b(0a_q\x1b(Aq\x1b)0\x0eq\x1b)<q");
+    assert_eq!(text(&engine, 0), "▒ ─q─q");
+}
+
+#[test]
+fn cursor_color_query_falls_back_to_foreground() {
+    let mut engine = engine(5, 2);
+    engine.feed(b"\x1b]12;?\x1b\\\x1b]10;#123456\x07\x1b]12;?\x1b\\");
+    engine.feed(b"\x1b]12;#abcdef\x07\x1b]12;?\x1b\\\x1b]112\x07\x1b]110\x07\x1b]12;?\x1b\\");
+    assert_eq!(
+        replies(&mut engine),
+        b"\x1b]12;rgb:e5e5/e5e5/e5e5\x1b\\\x1b]12;rgb:1212/3434/5656\x1b\\\
+          \x1b]12;rgb:abab/cdcd/efef\x1b\\\x1b]12;rgb:e5e5/e5e5/e5e5\x1b\\"
+    );
+}
+
+#[test]
+fn column_and_save_cursor_modes_are_reported() {
+    let mut engine = engine(10, 4);
+    engine.feed(b"\x1b[?3$p\x1b[?1048$p\x1b[?3h\x1b[?3$p\x1b[?1048h\x1b[?1048$p");
+    // Each screen has its own saved cursor, like xterm.
+    engine.feed(b"\x1b[?1049h\x1b[?1048$p\x1b7\x1b[?1048$p\x1b[?1049l\x1b[?3l\x1b[?3$p");
+    assert_eq!(
+        replies(&mut engine),
+        b"\x1b[?3;2$y\x1b[?1048;2$y\x1b[?3;1$y\x1b[?1048;1$y\
+          \x1b[?1048;2$y\x1b[?1048;1$y\x1b[?3;2$y"
+    );
+    engine.feed(b"\x1b7\x1b[!p\x1b[?1048$p\x1b[?3h\x1bc\x1b[?3$p");
+    assert_eq!(replies(&mut engine), b"\x1b[?1048;2$y\x1b[?3;2$y");
+}
+
+#[test]
+fn xtversion_reports_the_engine_name_and_version() {
+    let mut engine = engine(5, 2);
+    engine.feed(b"\x1b[>q\x1b[>0q\x1b[>1q");
+    let expected = format!("\x1bP>|Termy {}\x1b\\", env!("CARGO_PKG_VERSION"));
+    assert_eq!(replies(&mut engine), expected.repeat(2).as_bytes());
+}
+
+#[test]
+fn grapheme_clustering_mode_is_permanently_set() {
+    let mut engine = engine(5, 2);
+    engine.feed(b"\x1b[?2027$p\x1b[?2027l\x1b[?2027$p\x1b[2027$p");
+    assert_eq!(
+        replies(&mut engine),
+        b"\x1b[?2027;3$y\x1b[?2027;3$y\x1b[2027;0$y"
+    );
+}
+
+#[test]
+fn color_queries_echo_the_query_terminator() {
+    let mut engine = engine(5, 2);
+    engine.feed(b"\x1b]10;#123456\x07\x1b]4;1;?\x07\x1b]4;1;?\x1b\\\x1b]10;?;?\x07\x1b]12;?\x1b\\");
+    assert_eq!(
+        replies(&mut engine),
+        b"\x1b]4;1;rgb:cdcd/0000/0000\x07\x1b]4;1;rgb:cdcd/0000/0000\x1b\\\
+          \x1b]10;rgb:1212/3434/5656\x07\x1b]11;rgb:1e1e/1e1e/1e1e\x07\
+          \x1b]12;rgb:1212/3434/5656\x1b\\"
+    );
+}
+
+#[test]
+fn reverse_video_mode_is_tracked_reported_and_repaints() {
+    let mut engine = engine(5, 2);
+    engine.take_damage();
+    let revision = engine.palette_revision();
+    engine.feed(b"\x1b[?5h");
+    assert!(engine.modes().reverse_video);
+    assert_eq!(engine.take_damage(), Damage::Full);
+    assert_ne!(engine.palette_revision(), revision);
+    // Setting it again changes nothing.
+    let revision = engine.palette_revision();
+    engine.feed(b"\x1b[?5h");
+    assert_eq!(engine.take_damage(), Damage::Partial(Vec::new()));
+    assert_eq!(engine.palette_revision(), revision);
+    engine.feed(b"\x1b[?5$p\x1b[?5s\x1b[?5l\x1b[?5$p\x1b[?5r");
+    assert_eq!(replies(&mut engine), b"\x1b[?5;1$y\x1b[?5;2$y");
+    assert!(engine.modes().reverse_video);
+    engine.feed(b"\x1bc");
+    assert!(!engine.modes().reverse_video);
+}
+
+#[test]
+fn screen_alignment_fills_with_e_resets_margins_and_homes() {
+    let mut engine = engine(4, 3);
+    engine.feed(
+        "\x1b[31;1;4m界x\r\n\x1b]8;;https://x\x1b\\link\x1b[2;3r\x1b[?6h\x1b[2;2H".as_bytes(),
+    );
+    engine.take_damage();
+    engine.feed(b"\x1b#8");
+    for row in 0..3 {
+        assert_eq!(text(&engine, row), "EEEE");
+        for cell in engine.viewport_row(row).unwrap() {
+            assert_eq!(cell.flags, 0);
+            assert!(cell.extra.is_none());
+            assert_eq!(cell.style.foreground, Color::indexed(1));
+            assert_eq!(cell.style.attributes, 0);
+            assert_eq!(cell.style.underline, UnderlineStyle::None);
+        }
+    }
+    assert_eq!((engine.cursor().row, engine.cursor().col), (0, 0));
+    assert_eq!(engine.take_damage(), Damage::Full);
+    // The margins span the screen again; origin mode is kept, like xterm.
+    engine.feed(b"\x1b[3;1H\x1b[6n");
+    assert_eq!(replies(&mut engine), b"\x1b[3;1R");
+}
+
+#[test]
+fn cursor_style_zero_restores_the_configured_default_without_blinking() {
+    let mut engine = engine(5, 2);
+    engine.set_default_cursor_shape(CursorShape::Beam);
+    engine.feed(b"\x1b[3 q");
+    assert_eq!(engine.cursor().shape, CursorShape::Underline);
+    assert!(engine.cursor().blinking);
+    engine.feed(b"\x1b[0 q");
+    assert_eq!(engine.cursor().shape, CursorShape::Beam);
+    assert!(!engine.cursor().blinking);
+    engine.feed(b"\x1b[ q\x1bP$q q\x1b\\");
+    assert_eq!(replies(&mut engine), b"\x1bP1$r6 q\x1b\\");
+    // The default still follows later configuration changes.
+    engine.set_default_cursor_shape(CursorShape::Underline);
+    assert_eq!(engine.cursor().shape, CursorShape::Underline);
+}
+
+#[test]
+fn entering_1049_from_another_alternate_mode_saves_the_cursor_and_clears() {
+    let mut engine = engine(6, 3);
+    engine.feed(b"primary\x1b[2;3H\x1b7\x1b[3;5H\x1b[?47hold\x1b[3;2H\x1b[?1049h");
+    assert!(engine.alternate_screen());
+    assert!((0..3).all(|row| text(&engine, row) == "      "));
+    // The cursor stays put and is saved on the alternate screen.
+    assert_eq!((engine.cursor().row, engine.cursor().col), (2, 1));
+    engine.feed(b"\x1b[H\x1b8");
+    assert_eq!((engine.cursor().row, engine.cursor().col), (2, 1));
+    // Leaving 1049 restores the primary screen's saved cursor.
+    engine.feed(b"\x1b[?1049l");
+    assert!(!engine.alternate_screen());
+    assert_eq!(text(&engine, 0), "primar");
+    assert_eq!((engine.cursor().row, engine.cursor().col), (1, 2));
 }

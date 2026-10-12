@@ -1,8 +1,8 @@
 //! Cold rows retain scalar/flag arrays, style runs and sparse shared metadata.
 //! The live screen keeps dense cells. Borrowed public reads materialize a row
 //! until the next mutation; streaming reads use caller-owned scratch instead.
-use super::super::types::CellExtra;
-use super::{Cell, Color, Row, Style};
+use super::super::types::{CellExtra, MAX_COMBINING_BYTES};
+use super::{Cell, Color, Row, Size, Style};
 use std::sync::{Arc, OnceLock};
 
 /// A character (21 bits) and its cell flags (top byte) in four bytes.
@@ -35,10 +35,14 @@ pub(super) struct PackedCells {
     // Run ends (exclusive column) and styles; `u32` keeps a run at 16 bytes.
     styles: Vec<(u32, Style)>,
     extras: Vec<(usize, Arc<CellExtra>)>,
+    // What `ExtraMeter` measured for `extras` while encoding; see `Row`.
+    extra_bytes: usize,
 }
 
 impl PackedCells {
-    fn encode(&mut self, cells: &[Cell], cols: usize, background: Color) -> bool {
+    /// Pack `cells`, measuring their metadata into `extra_bytes` when
+    /// `has_extras` (even when packing fails, so the caller can charge it).
+    fn encode(&mut self, cells: &[Cell], cols: usize, background: Color, has_extras: bool) -> bool {
         self.decoded.take();
         self.cols = cols;
         self.background = background;
@@ -52,7 +56,20 @@ impl PackedCells {
         if self.scalars.capacity() < cells.len() {
             self.scalars.reserve_exact(cells.len() - self.scalars.len());
         }
-        self.scalars.extend(cells.iter().map(Scalar::new));
+        if has_extras {
+            // Measured in this pass because packing may stop before the end.
+            let mut meter = ExtraMeter::default();
+            self.scalars.extend(cells.iter().map(|cell| {
+                if let Some(extra) = &cell.extra {
+                    meter.add(extra);
+                }
+                Scalar::new(cell)
+            }));
+            self.extra_bytes = meter.bytes;
+        } else {
+            self.scalars.extend(cells.iter().map(Scalar::new));
+            self.extra_bytes = 0;
+        }
         let fixed_bytes = self.scalars.capacity() * size_of::<Scalar>();
         let budget = cols * size_of::<Cell>() / 2;
         if fixed_bytes >= budget {
@@ -128,17 +145,98 @@ impl PackedCells {
     }
 }
 
+/// Rows store metadata bytes in units of this many, so a row of 4096
+/// maximal composed cells still fits a `u16` beside the row's other fields.
+const EXTRA_UNIT: usize = 8;
+/// One extra's allocation: `ArcInner`'s strong and weak counts, then the value.
+const EXTRA_ALLOCATION: usize = 2 * size_of::<usize>() + size_of::<CellExtra>();
+const _: () = assert!(
+    Size::MAX_COLS * (EXTRA_ALLOCATION + MAX_COMBINING_BYTES) <= u16::MAX as usize * EXTRA_UNIT
+);
+
+/// Measures the heap bytes of the cell metadata a row references: each
+/// extra's allocation and combining text. Pen metadata and composed-cell cache
+/// entries are shared by runs of cells (and wide glyphs alternate with their
+/// spacers' extras), so an extra equal to one of the last two distinct ones is
+/// not counted again. A pure function of the row's extras, in column order.
+#[derive(Default)]
+struct ExtraMeter {
+    last: usize,
+    before: usize,
+    bytes: usize,
+}
+
+impl ExtraMeter {
+    #[inline]
+    fn add(&mut self, extra: &Arc<CellExtra>) {
+        let address = Arc::as_ptr(extra).addr();
+        if address != self.last && address != self.before {
+            (self.before, self.last) = (self.last, address);
+            self.bytes += EXTRA_ALLOCATION + extra.combining.capacity();
+        }
+    }
+}
+
+fn extra_units(bytes: usize) -> u16 {
+    u16::try_from(bytes.div_ceil(EXTRA_UNIT)).unwrap_or(u16::MAX)
+}
+
 impl Row {
-    /// Heap bytes of the stored form (dense cells or packed runs), excluding
-    /// a transient decoded read cache.
+    /// Heap bytes of the stored form (dense cells or packed runs) plus the
+    /// metadata charged by [`Self::bound_extras`] or [`Self::measure_extras`],
+    /// excluding a transient decoded read cache. Interned hyperlinks are
+    /// bounded by their own table. History rows don't change, so a row keeps
+    /// its charge until it leaves history or a compaction step measures it.
     pub(super) fn heap_bytes(&self) -> usize {
+        let extras = usize::from(self.extra_units) * EXTRA_UNIT;
         self.cells.capacity() * size_of::<Cell>()
+            + extras
             + self.packed.as_ref().map_or(0, |packed| {
                 size_of::<PackedCells>()
                     + packed.scalars.capacity() * size_of::<Scalar>()
                     + packed.styles.capacity() * size_of::<(u32, Style)>()
                     + packed.extras.capacity() * size_of::<(usize, Arc<CellExtra>)>()
             })
+    }
+
+    /// Charge a row entering history without scanning its cells: packed rows
+    /// were measured while packing, and a dense row with metadata is charged
+    /// an upper bound (one maximal extra per occupied cell) until a compaction
+    /// step measures it. History packs every queued row before evicting any, so
+    /// the bound costs earlier packing, never history.
+    #[inline]
+    pub(super) fn bound_extras(&mut self) {
+        self.extra_units = if self.packed.is_some() {
+            self.count_extra_units()
+        } else if self.has_extras {
+            extra_units(self.occupied * (EXTRA_ALLOCATION + MAX_COMBINING_BYTES))
+        } else {
+            0
+        };
+    }
+
+    /// Charge the measured metadata. Packing measures its extras, and dense
+    /// rows the writers never flagged hold none, so only dense rows with
+    /// metadata are scanned.
+    pub(super) fn measure_extras(&mut self) {
+        self.extra_units = self.count_extra_units();
+    }
+
+    pub(super) fn count_extra_units(&self) -> u16 {
+        extra_units(match &self.packed {
+            Some(packed) => packed.extra_bytes,
+            None if !self.has_extras => 0,
+            None => {
+                let mut meter = ExtraMeter::default();
+                // Cells past `occupied` are erase blanks without metadata.
+                for cell in &self.cells[..self.occupied.min(self.cells.len())] {
+                    if let Some(extra) = &cell.extra {
+                        meter.add(extra);
+                    }
+                }
+                meter.bytes
+            }
+        })
     }
 
     #[cfg(test)]
@@ -176,6 +274,7 @@ impl Row {
 
     pub(super) fn make_dense(&mut self) {
         if let Some(mut packed) = self.packed.take() {
+            self.has_extras |= !packed.extras.is_empty();
             if let Some(cells) = packed.decoded.take() {
                 self.cells = cells;
             } else {
@@ -251,11 +350,15 @@ impl Row {
             return;
         }
         let mut packed = Box::<PackedCells>::default();
-        if !packed.encode(
+        let encoded = packed.encode(
             &self.cells[..self.occupied],
             self.cells.len(),
             self.clear_background,
-        ) {
+            self.has_extras,
+        );
+        // Packed or not, the row is now charged its measured metadata.
+        self.extra_units = extra_units(packed.extra_bytes);
+        if !encoded {
             return;
         }
         self.cells = Vec::new();
@@ -276,7 +379,12 @@ impl Row {
             .as_mut()
             .and_then(|row| row.packed.take())
             .unwrap_or_default();
-        if !packed.encode(&self.cells[..self.occupied], cols, self.clear_background) {
+        if !packed.encode(
+            &self.cells[..self.occupied],
+            cols,
+            self.clear_background,
+            self.has_extras,
+        ) {
             let mut recycled = recycled.unwrap_or_else(|| Self::new(cols, blank));
             if recycled.cells.is_empty() {
                 recycled.cells.resize(cols, blank.clone());
@@ -291,6 +399,8 @@ impl Row {
             occupied: self.occupied,
             clear_background: self.clear_background,
             wrapped: false,
+            has_extras: self.has_extras,
+            extra_units: 0,
         };
         self.packed = Some(packed);
         (self, live)
@@ -393,6 +503,72 @@ mod tests {
         before.sort();
         after.sort();
         assert_eq!(before, after);
+    }
+
+    #[test]
+    fn heap_bytes_count_cell_metadata_once_per_shared_run() {
+        const ALLOCATION: usize = 2 * size_of::<usize>() + size_of::<CellExtra>();
+        // The measurement and its flag fit in the row's padding.
+        assert_eq!(size_of::<Row>(), 5 * size_of::<usize>() + 8);
+        let mut row = Row::new(120, &Cell::default());
+        let plain = row.heap_bytes();
+        assert_eq!(plain, 120 * size_of::<Cell>());
+        // A run sharing the pen's link counts one allocation.
+        let link = Arc::new(CellExtra {
+            hyperlink: Some(Arc::new(Hyperlink {
+                id: String::new(),
+                uri: "https://example.test".into(),
+            })),
+            ..CellExtra::default()
+        });
+        for cell in &mut row.cells[..10] {
+            cell.extra = Some(Arc::clone(&link));
+        }
+        // Alternating glyph and spacer extras count once each.
+        let color = Arc::new(CellExtra {
+            underline_color: Color::indexed(1),
+            ..CellExtra::default()
+        });
+        for (col, cell) in row.cells[10..20].iter_mut().enumerate() {
+            cell.extra = Some(Arc::clone(if col % 2 == 0 { &link } else { &color }));
+        }
+        // Distinct composed cells each count their allocation and text.
+        let mut combining = 0;
+        for (col, cell) in row.cells[20..30].iter_mut().enumerate() {
+            cell.push_combining(char::from_u32(0x300 + col as u32).unwrap());
+            combining += cell.extra.as_ref().unwrap().combining.capacity();
+        }
+        row.occupied = 30;
+        // Rows the writers never flagged are not scanned.
+        row.measure_extras();
+        assert_eq!(row.heap_bytes(), plain);
+        row.bound_extras();
+        assert_eq!(row.heap_bytes(), plain);
+        // A flagged dense row entering history is charged a bound, and the
+        // charge is kept until it is measured.
+        row.has_extras = true;
+        assert_eq!(row.heap_bytes(), plain);
+        row.bound_extras();
+        let bound = (30 * (ALLOCATION + MAX_COMBINING_BYTES)).div_ceil(EXTRA_UNIT) * EXTRA_UNIT;
+        assert_eq!(row.heap_bytes(), plain + bound);
+        // Measuring charges each distinct run's allocation and text.
+        row.measure_extras();
+        let extras = (12 * ALLOCATION + combining).div_ceil(EXTRA_UNIT) * EXTRA_UNIT;
+        assert!(extras < bound);
+        assert_eq!(row.heap_bytes(), plain + extras);
+        // The packed form lists the same metadata, without a bound.
+        row.compact();
+        assert_eq!(row.count_extra_units(), row.extra_units);
+        row.bound_extras();
+        let packed = row.packed.as_ref().unwrap();
+        assert_eq!(
+            row.heap_bytes(),
+            size_of::<PackedCells>()
+                + packed.scalars.capacity() * size_of::<Scalar>()
+                + packed.styles.capacity() * size_of::<(u32, Style)>()
+                + packed.extras.capacity() * size_of::<(usize, Arc<CellExtra>)>()
+                + extras
+        );
     }
 
     #[test]

@@ -832,6 +832,32 @@ impl Terminal {
             tab_title_shell_integration,
             runtime_config,
             launch,
+            None,
+        )
+        .map(|backend| Self { backend })
+    }
+
+    /// Like [`Self::new_with_launch_and_wakeup_notifier`], replaying a saved
+    /// buffer before the child starts. Unlike [`Self::hydrate_output`] after
+    /// spawning, the restored text can't interleave with the new session's
+    /// first output or swallow its replies.
+    pub fn new_with_launch_restoring_output(
+        size: TerminalSize,
+        configured_working_dir: Option<&str>,
+        wakeup_notifier: Option<TerminalWakeupNotifier>,
+        tab_title_shell_integration: Option<&TabTitleShellIntegration>,
+        runtime_config: Option<&TerminalRuntimeConfig>,
+        launch: Option<&TerminalLaunch>,
+        restored_output: &[u8],
+    ) -> anyhow::Result<Self> {
+        engine_backend::Backend::new_with_launch_and_wakeup_notifier(
+            size,
+            configured_working_dir,
+            wakeup_notifier,
+            tab_title_shell_integration,
+            runtime_config,
+            launch,
+            Some(restored_output),
         )
         .map(|backend| Self { backend })
     }

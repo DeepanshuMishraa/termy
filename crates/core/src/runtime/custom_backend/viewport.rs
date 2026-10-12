@@ -88,9 +88,19 @@ impl CustomBackend {
             -(state.engine.history_size() as i32),
             i32::from(state.size.rows) - 1,
         );
+        let size = state.engine.size();
+        // Same contract as the remote backend: reject rather than clip, so a
+        // caller with stale spans falls back to a full read.
         let mut visit = |spans: &[TerminalDirtySpan], visitor: &mut DamageCellVisitor<'_>| {
-            state.visit_ranges(spans, visitor);
-            true
+            let in_viewport = spans.iter().all(|span| {
+                span.row < size.rows
+                    && span.left_col <= span.right_col
+                    && span.right_col < size.cols
+            });
+            if in_viewport {
+                state.visit_ranges(spans, visitor);
+            }
+            in_viewport
         };
         read(
             damage,

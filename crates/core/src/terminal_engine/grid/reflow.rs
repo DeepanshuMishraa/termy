@@ -73,7 +73,7 @@ impl ReflowWindow {
         }
     }
 
-    fn push(&mut self, row: Row) {
+    fn push(&mut self, mut row: Row) {
         let index = self.produced;
         self.produced += 1;
         if self
@@ -88,6 +88,7 @@ impl ReflowWindow {
         if self.rows.len() == self.limit {
             self.evict();
         }
+        row.measure_extras();
         self.bytes += row.heap_bytes();
         self.rows.push_back(row);
         self.fit_byte_budget();
@@ -313,6 +314,7 @@ impl Grid {
                 cell.flags |= Cell::WIDE;
                 row.cells[col + 1] = cell.wide_spacer();
             }
+            row.has_extras |= cell.extra.is_some();
             row.cells[col] = cell;
             col += if expanded_wide { 2 } else { 1 };
             row.occupied = col;

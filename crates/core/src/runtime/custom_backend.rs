@@ -328,7 +328,11 @@ impl State {
             if hydrate {
                 replies.clear();
             }
-            if self.engine.has_deferred_upload() {
+            // Heavy kitty animation edits pause the parser too, so the lock
+            // is released between them instead of after the whole read.
+            if self.engine.has_deferred_upload()
+                || (!hydrate && self.engine.animation_budget_spent())
+            {
                 break;
             }
         }
@@ -452,10 +456,20 @@ impl State {
     }
 
     fn palette(&self) -> TerminalPalette {
+        let mut foreground = self.engine.foreground().and_then(rgb);
+        let mut background = self.engine.background().and_then(rgb);
+        // DECSCNM swaps the default colors. Resolve both first (program
+        // override, else the host's configured colors) so the swap is total.
+        if self.engine.modes().reverse_video {
+            let resolved_foreground = foreground.unwrap_or(self.query_colors.foreground);
+            let resolved_background = background.unwrap_or(self.query_colors.background);
+            foreground = Some(resolved_background);
+            background = Some(resolved_foreground);
+        }
         TerminalPalette {
             indexed: std::array::from_fn(|index| self.engine.palette()[index].and_then(rgb)),
-            foreground: self.engine.foreground().and_then(rgb),
-            background: self.engine.background().and_then(rgb),
+            foreground,
+            background,
             cursor: self.engine.cursor_color().and_then(rgb),
             revision: self
                 .engine
@@ -609,9 +623,12 @@ impl CustomBackend {
             shell_integration,
             config,
             launch.as_ref(),
+            None,
         )
     }
 
+    /// `restored_output` (a saved buffer) is replayed before the child starts,
+    /// so it can't interleave with the new session's first output.
     pub(super) fn new_with_launch_and_wakeup_notifier(
         size: TerminalSize,
         working_dir: Option<&str>,
@@ -619,12 +636,16 @@ impl CustomBackend {
         shell_integration: Option<&TabTitleShellIntegration>,
         config: Option<&TerminalRuntimeConfig>,
         launch: Option<&TerminalLaunch>,
+        restored_output: Option<&[u8]>,
     ) -> anyhow::Result<Self> {
         if !engine::transport::available() {
             anyhow::bail!("the native terminal transport is unavailable on this host");
         }
         let config = config.cloned().unwrap_or_default();
         let mut terminal = Self::new_display_with_wakeup_notifier(size, Some(&config), notifier);
+        if let Some(bytes) = restored_output {
+            terminal.hydrate_output(bytes);
+        }
         let launch = resolve_terminal_launch(&config, launch)?;
         let spawn = SpawnConfig {
             program: launch.program,
@@ -657,7 +678,9 @@ impl CustomBackend {
                 state.engine.process_exited();
                 state.queue(PendingEvent::Terminal(TerminalEvent::Exit));
                 drop(state);
-                exit.notify();
+                // The exit clears program status and closes or marks the tab,
+                // so hidden tabs must hear about it too.
+                exit.notify_tab_chrome();
             },
         )?));
         *terminal
@@ -1174,21 +1197,17 @@ impl CustomBackend {
             bits & 8 != 0,
             bits & 16 != 0,
         )
+        .with_application_keypad(modes.application_keypad)
     }
     pub(super) fn mouse_mode(&self) -> TerminalMouseMode {
         let modes = self.shared.state().engine.modes();
         TerminalMouseMode {
             enabled: modes.mouse_tracking != engine::MouseTracking::None,
-            report_click: matches!(
-                modes.mouse_tracking,
-                engine::MouseTracking::Click | engine::MouseTracking::Press
-            ),
+            // X10 (mode 9) reports presses only: enabled with no other flag.
+            report_click: modes.mouse_tracking == engine::MouseTracking::Click,
             report_drag: modes.mouse_tracking == engine::MouseTracking::Drag,
             report_motion: modes.mouse_tracking == engine::MouseTracking::Motion,
-            sgr_encoding: matches!(
-                modes.mouse_encoding,
-                engine::MouseEncoding::Sgr | engine::MouseEncoding::SgrPixels
-            ),
+            sgr_encoding: modes.mouse_encoding == engine::MouseEncoding::Sgr,
             utf8_encoding: modes.mouse_encoding == engine::MouseEncoding::Utf8,
         }
     }

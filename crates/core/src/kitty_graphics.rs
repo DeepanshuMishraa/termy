@@ -282,6 +282,7 @@ pub struct KittyGraphicsState {
     // undecoded instead of being decoded here.
     defer_uploads: bool,
     deferred: Option<KittyUpload>,
+    animation_work: usize,
 }
 
 impl KittyGraphicsState {
@@ -434,6 +435,31 @@ impl KittyGraphicsState {
         }
 
         let encoded = std::mem::take(&mut command.payload);
+        if let Some(pending) = &self.pending {
+            let foreign = command.control.iter().any(|(key, _)| {
+                !(matches!(key, 'm' | 'q')
+                    || *key == 'a'
+                        && command.char_value('a') == Some('f')
+                        && pending.command.char_value('a') == Some('f'))
+            });
+            // A client killed mid-upload never sends the final chunk. A new
+            // transmission abandons that upload instead of failing itself, so
+            // detect it before checking sizes against the abandoned data.
+            let restarts = foreign
+                && command
+                    .control
+                    .iter()
+                    .any(|(key, _)| matches!(key, 'a' | 'i' | 'I' | 'f' | 's' | 'v' | 't'));
+            if foreign {
+                let abandoned = self.pending.take().expect("pending upload");
+                if !restarts {
+                    return self.failure(
+                        &abandoned.command,
+                        "EINVAL:continuation contains unsupported control data",
+                    );
+                }
+            }
+        }
         // Reject before decoding: base64 yields at least len/4*3 - 2 bytes.
         let pending = self
             .pending
@@ -473,53 +499,33 @@ impl KittyGraphicsState {
             }
         };
 
+        // Any upload still pending here is continued by this chunk.
         if let Some(mut pending) = self.pending.take() {
-            let foreign = command.control.iter().any(|(key, _)| {
-                !(matches!(key, 'm' | 'q')
-                    || *key == 'a'
-                        && command.char_value('a') == Some('f')
-                        && pending.command.char_value('a') == Some('f'))
-            });
-            // A client killed mid-upload never sends the final chunk. A new
-            // transmission abandons that upload instead of failing itself.
-            let restarts = foreign
-                && command
-                    .control
-                    .iter()
-                    .any(|(key, _)| matches!(key, 'a' | 'i' | 'I' | 'f' | 's' | 'v' | 't'));
-            if foreign && !restarts {
+            if pending.decoded.len().saturating_add(decoded.len()) > MAX_IMAGE_BYTES {
                 return self.failure(
                     &pending.command,
-                    "EINVAL:continuation contains unsupported control data",
+                    "EFBIG:image payload exceeds storage limit",
                 );
             }
-            if !foreign {
-                if pending.decoded.len().saturating_add(decoded.len()) > MAX_IMAGE_BYTES {
-                    return self.failure(
-                        &pending.command,
-                        "EFBIG:image payload exceeds storage limit",
-                    );
-                }
-                pending.decoded.extend_from_slice(&decoded);
-                if more {
-                    self.pending = Some(pending);
-                    return KittyGraphicsApplyResult::default();
-                }
-                let mut first = pending.command;
-                for (key, value) in command.control {
-                    if key == 'q' {
-                        first.control.push((key, value));
-                    }
-                }
-                return self.finish_upload(
-                    first,
-                    UploadData::Decoded(pending.decoded),
-                    (cursor_col, cursor_row),
-                    history_size,
-                    size,
-                    screen,
-                );
+            pending.decoded.extend_from_slice(&decoded);
+            if more {
+                self.pending = Some(pending);
+                return KittyGraphicsApplyResult::default();
             }
+            let mut first = pending.command;
+            for (key, value) in command.control {
+                if key == 'q' {
+                    first.control.push((key, value));
+                }
+            }
+            return self.finish_upload(
+                first,
+                UploadData::Decoded(pending.decoded),
+                (cursor_col, cursor_row),
+                history_size,
+                size,
+                screen,
+            );
         }
 
         if more {
@@ -587,6 +593,7 @@ impl KittyGraphicsState {
         let display_offset = i64::try_from(display_offset).unwrap_or(i64::MAX);
         let rows_i64 = i64::try_from(rows).unwrap_or(i64::MAX);
         let mut result = Vec::new();
+        let mut origins = placement::OriginResolver::new(&self.placements, placeholders);
         for placement in self
             .placements
             .iter()
@@ -680,7 +687,7 @@ impl KittyGraphicsState {
                         Some((cell.image_col, cell.image_row)),
                     );
                 }
-            } else if let Some(origin) = self.resolve_render_origin(placement, placeholders) {
+            } else if let Some(origin) = origins.resolve(placement) {
                 let (row, col) = match origin {
                     ResolvedOrigin::Buffer { anchor_line, col } => (
                         anchor_line
@@ -1044,10 +1051,27 @@ impl KittyGraphicsState {
         self.images.insert(image_id, image);
         self.insertion_order.push_back(image_id);
         self.stored_bytes = self.stored_bytes.saturating_add(byte_len);
-        let cursor_advance = staged.and_then(|(placement, advance)| {
+        let mut cursor_advance = None;
+        if let Some((placement, advance)) = staged {
+            // Replacing the image removed its old placements (and their
+            // relative descendants). Like kitty, a parent among them is gone.
+            if let PlacementLocation::Relative {
+                parent_image_id,
+                parent_placement_id,
+                ..
+            } = placement.location
+                && self
+                    .placement_by_key(placement.screen, parent_image_id, parent_placement_id)
+                    .is_none()
+            {
+                let mut result =
+                    self.failure(&command, "ENOPARENT:relative placement parent not found");
+                result.changed = true;
+                return result;
+            }
             self.commit_placement(placement);
-            advance
-        });
+            cursor_advance = advance;
+        }
         self.success(&command, true, cursor_advance, screen)
     }
 
@@ -1419,14 +1443,16 @@ fn response(command: &KittyGraphicsCommand, success: bool, message: &str) -> Opt
     if (success && quiet >= 1) || (!success && quiet >= 2) {
         return None;
     }
-    let image_id = command
-        .u32_value('i')
-        .filter(|id| *id != 0)
-        .or_else(|| command.u32_value('I').filter(|number| *number != 0))?;
-    let mut control = format!("i={image_id}");
-    if let Some(number) = command.u32_value('I').filter(|number| *number != 0) {
-        control.push_str(&format!(",I={number}"));
-    }
+    // As in kitty, `i` and `I` are reported as given: a lookup by number that
+    // found no image answers with `I` alone.
+    let image_id = command.u32_value('i').filter(|id| *id != 0);
+    let number = command.u32_value('I').filter(|number| *number != 0);
+    let mut control = match (image_id, number) {
+        (Some(id), Some(number)) => format!("i={id},I={number}"),
+        (Some(id), None) => format!("i={id}"),
+        (None, Some(number)) => format!("I={number}"),
+        (None, None) => return None,
+    };
     if let Some(placement_id) = command.u32_value('p') {
         control.push_str(&format!(",p={placement_id}"));
     }

@@ -81,8 +81,6 @@ pub enum MouseEncoding {
     Default,
     Utf8,
     Sgr,
-    Urxvt,
-    SgrPixels,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -96,6 +94,10 @@ pub struct Modes {
     pub kitty_keyboard: u8,
     pub synchronized_update: bool,
     pub clipboard_paste_events: bool,
+    /// DECSCNM (`?5`): renderers draw the screen with the default
+    /// foreground and background swapped. Toggling it bumps
+    /// [`Engine::palette_revision`].
+    pub reverse_video: bool,
 }
 
 /// Reusable, single-owner parser and grid. The runtime controls synchronization;
@@ -134,11 +136,21 @@ impl Engine {
         self.state.has_deferred_upload()
     }
 
+    /// True after [`Self::feed_deferring_uploads`] stopped early because
+    /// kitty animation edits did enough pixel work for one lock hold. The
+    /// caller should release the engine lock before feeding the rest.
+    pub(crate) fn animation_budget_spent(&self) -> bool {
+        self.state.animation_budget_spent()
+    }
+
     pub(crate) fn take_deferred_upload(&mut self) -> Option<KittyUpload> {
         self.state.take_deferred_upload()
     }
 
     pub(crate) fn commit_upload(&mut self, prepared: KittyPreparedUpload) {
+        // The caller may have read history while the upload decoded, and the
+        // placement's cursor advance can scroll (and evict) history.
+        self.state.grid.release_history_read_cache();
         self.state.commit_upload(prepared);
         self.state.flush_graphics_effects();
         self.generation = self.generation.wrapping_add(1);
@@ -160,6 +172,7 @@ impl Engine {
         {
             self.commit_upload(upload.prepare());
         }
+        self.state.reset_animation_work();
         self.state.grid.prepare_output(bytes.len());
         if self
             .synchronized_update_deadline()
@@ -187,7 +200,9 @@ impl Engine {
                     self.synchronized_update
                         .begin(now(), self.state.saved_private_mode(2026));
                 }
-                if self.state.has_deferred_upload() {
+                if self.state.has_deferred_upload()
+                    || (defer_uploads && self.state.animation_budget_spent())
+                {
                     break;
                 }
             }

@@ -2,11 +2,15 @@
 
 use std::{
     collections::VecDeque,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use super::types::{
-    Cell, Color, Cursor, CursorShape, Damage, DirtySpan, GridEffect, Size, Style, ViewportScroll,
+    Cell, CellExtra, Color, Cursor, CursorShape, Damage, DirtySpan, GridEffect, Size, Style,
+    ViewportScroll,
 };
 
 mod combining;
@@ -31,6 +35,11 @@ pub(super) struct Row {
     occupied: usize,
     clear_background: Color,
     pub(super) wrapped: bool,
+    // Set by the writers that store cell metadata, so measuring a dense row
+    // without any skips scanning it. Changes only while the row is live.
+    has_extras: bool,
+    // Metadata bytes measured as the row entered history; see `row.rs`.
+    extra_units: u16,
 }
 
 impl Row {
@@ -43,6 +52,8 @@ impl Row {
             occupied: 0,
             clear_background: blank.style.background,
             wrapped: false,
+            has_extras: blank.extra.is_some(),
+            extra_units: 0,
         }
     }
 
@@ -62,6 +73,8 @@ impl Row {
         self.occupied = 0;
         self.clear_background = blank.style.background;
         self.wrapped = false;
+        self.has_extras = blank.extra.is_some();
+        self.extra_units = 0;
     }
 
     fn content_len(&self) -> usize {
@@ -77,11 +90,15 @@ impl Row {
 
 #[derive(Clone, Default)]
 struct SavedCursor {
+    // Only the position is restored. Visibility, shape and blinking are
+    // terminal-wide, as in xterm, so DECRC never changes them.
     cursor: Cursor,
     pen: Cell,
     pending_wrap: bool,
     origin_mode: bool,
     autowrap: bool,
+    // DECRQM ?1048 reports whether this screen holds a saved cursor.
+    valid: bool,
 }
 
 struct Screen {
@@ -121,6 +138,7 @@ pub(super) struct Grid {
     compact_on_scroll: bool,
     output_since_compaction: usize,
     display_offset: usize,
+    // Spans the widest width seen, so stops survive a shrink and regrow.
     tabs: Vec<bool>,
     scroll_top: usize,
     scroll_bottom: usize,
@@ -133,6 +151,8 @@ pub(super) struct Grid {
     dirty: Vec<Option<(usize, usize)>>,
     pending_scrolls: Vec<ViewportScroll>,
     combining_cache: CombiningCache,
+    // Last color-only spacer extra; see `Cell::spacer_extra`.
+    spacer_extra: Option<Arc<CellExtra>>,
     grapheme_open: bool,
     grapheme_ordinary: bool,
     // Only meaningful while a grapheme is open. A closed grapheme at the
@@ -183,12 +203,19 @@ impl Grid {
             return;
         }
         let start = std::mem::replace(self.history_read_start.get_mut(), usize::MAX);
-        let end = std::mem::take(self.history_read_end.get_mut());
+        // Every history mutation releases first, so `end` should still be in
+        // bounds; clamping keeps a missed caller from panicking here.
+        let end = std::mem::take(self.history_read_end.get_mut()).min(self.history.len());
         if start < end {
             for row in self.history.range_mut(start..end) {
                 row.release_read_cache();
             }
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn has_history_read_cache(&self) -> bool {
+        self.history_read_end.load(Ordering::Relaxed) != 0
     }
 
     pub(super) fn new(size: Size, history_limit: usize) -> Self {
@@ -216,6 +243,7 @@ impl Grid {
             dirty: vec![None; size.rows],
             pending_scrolls: Vec::with_capacity(MAX_SCROLL_DAMAGE),
             combining_cache: CombiningCache::default(),
+            spacer_extra: None,
             grapheme_open: false,
             grapheme_ordinary: true,
             grapheme_at_margin: false,
@@ -594,12 +622,17 @@ impl Grid {
 
     pub(super) fn move_cursor(&mut self, row_delta: isize, col_delta: isize) {
         let old = self.cursor;
-        let (top, bottom) = if self.origin_mode
-            || (self.cursor.row >= self.scroll_top && self.cursor.row < self.scroll_bottom)
-        {
-            (self.scroll_top, self.scroll_bottom)
+        // Like xterm, CUU stops at the top margin unless the cursor starts
+        // above it, and CUD stops at the bottom margin unless it starts below.
+        let top = if self.origin_mode || self.cursor.row >= self.scroll_top {
+            self.scroll_top
         } else {
-            (0, self.size.rows)
+            0
+        };
+        let bottom = if self.origin_mode || self.cursor.row < self.scroll_bottom {
+            self.scroll_bottom
+        } else {
+            self.size.rows
         };
         self.cursor.row = self
             .cursor
@@ -744,6 +777,41 @@ impl Grid {
             self.cursor.col.saturating_add(count).min(self.size.cols),
             false,
         );
+    }
+
+    /// DECALN: like xterm, reset the margins, home the cursor and fill the
+    /// screen with `E`. The fill keeps the pen's colors but no other rendition.
+    pub(super) fn screen_alignment_test(&mut self) {
+        let old = self.cursor;
+        self.scroll_top = 0;
+        self.scroll_bottom = self.size.rows;
+        let fill = Cell {
+            character: 'E',
+            style: Style {
+                foreground: self.pen.style.foreground,
+                background: self.pen.style.background,
+                ..Style::default()
+            },
+            ..Cell::default()
+        };
+        let cols = self.size.cols;
+        for row in &mut self.screen_mut().rows {
+            row.discard_packed();
+            row.cells.resize(cols, fill.clone());
+            row.cells.fill(fill.clone());
+            row.occupied = cols;
+            row.wrapped = false;
+            row.has_extras = false;
+        }
+        // The text under any image is gone, as after ED 2.
+        self.effect(GridEffect::Clear {
+            alternate: self.alternate_active,
+            history_size: self.history_size(),
+        });
+        self.mark_full_damage();
+        self.cursor.row = 0;
+        self.cursor.col = 0;
+        self.motion_done(old);
     }
 
     fn repair_wide(row: &mut Row, blank: &Cell) {
@@ -948,17 +1016,29 @@ impl Grid {
             pending_wrap: self.pending_wrap,
             origin_mode: self.origin_mode,
             autowrap: self.autowrap,
+            valid: true,
         };
         self.screen_mut().saved = saved;
+    }
+
+    pub(super) fn has_saved_cursor(&self) -> bool {
+        self.screen().saved.valid
     }
 
     pub(super) fn restore_cursor(&mut self) {
         let old = self.cursor;
         let saved = self.screen().saved.clone();
-        self.cursor = saved.cursor;
-        self.cursor.row = self.cursor.row.min(self.size.rows - 1);
-        self.cursor.col = self.cursor.col.min(self.size.cols - 1);
-        self.pen = saved.pen;
+        self.cursor.row = saved.cursor.row.min(self.size.rows - 1);
+        self.cursor.col = saved.cursor.col.min(self.size.cols - 1);
+        // The OSC 8 link is not part of the saved rendition: keep the live
+        // one and take everything else, including SGR 58, from the save.
+        let link = self.pen.extra.take();
+        let underline_color = saved.pen.underline_color();
+        self.pen = Cell {
+            extra: link,
+            ..saved.pen
+        };
+        self.pen.set_underline_color(underline_color);
         self.origin_mode = saved.origin_mode;
         self.autowrap = saved.autowrap;
         self.motion_done(old);
@@ -987,12 +1067,8 @@ impl Grid {
                 for row in &mut alternate.rows {
                     row.clear(self.size.cols, &blank);
                 }
-                alternate.cursor = Cursor {
-                    shape: self.cursor.shape,
-                    blinking: self.cursor.blinking,
-                    visible: self.cursor.visible,
-                    ..Cursor::default()
-                };
+                alternate.cursor.row = 0;
+                alternate.cursor.col = 0;
                 alternate.pending_wrap = false;
                 self.effect(GridEffect::Clear {
                     alternate: true,
@@ -1001,15 +1077,23 @@ impl Grid {
             }
         }
         self.alternate_active = enabled;
-        self.cursor = self.screen().cursor;
+        // Each screen keeps its own position; cursor visibility, shape and
+        // blinking stay terminal-wide.
+        let position = self.screen().cursor;
+        self.cursor.row = position.row;
+        self.cursor.col = position.col;
         self.pending_wrap = self.screen().pending_wrap;
         if !enabled && save_cursor {
             self.restore_cursor();
         }
         if !enabled && clear {
             // 1049 clears the alternate screen on every entry, so its rows
-            // are dead weight until then.
+            // are dead weight until then. Its images go with the text.
             self.alternate = None;
+            self.effect(GridEffect::Clear {
+                alternate: true,
+                history_size: 0,
+            });
         }
         self.scroll_top = 0;
         self.scroll_bottom = self.size.rows;
@@ -1096,10 +1180,6 @@ impl Grid {
         self.pending_wrap = false;
         self.end_grapheme();
         self.screen_mut().saved = SavedCursor {
-            cursor: Cursor {
-                shape: cursor_shape,
-                ..Cursor::default()
-            },
             autowrap: true,
             ..SavedCursor::default()
         };
@@ -1193,10 +1273,10 @@ impl Grid {
         }
         self.scroll_top = 0;
         self.scroll_bottom = size.rows;
-        let old_cols = self.tabs.len();
-        self.tabs.resize(size.cols, false);
-        for col in old_cols..size.cols {
-            self.tabs[col] = col != 0 && col % 8 == 0;
+        // Stops past the visible width survive a shrink, so only columns
+        // beyond the widest width seen so far get default stops.
+        for col in self.tabs.len()..size.cols {
+            self.tabs.push(col != 0 && col % 8 == 0);
         }
         self.cursor = self.screen().cursor;
         self.cursor.row = self.cursor.row.min(size.rows - 1);

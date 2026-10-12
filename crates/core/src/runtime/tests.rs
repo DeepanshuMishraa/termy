@@ -1458,3 +1458,10 @@ fn program_status_reports_are_coalesced_and_clear_through_public_events() {
             .any(|e| matches!(e, TerminalEvent::ProgramStatus(records) if records.is_empty()))
     );
 }
+
+#[test]
+fn mouse_mode_maps_x10_to_presses_only() {
+    let mode = mouse_mode_after_bytes(b"\x1b[?9h");
+    assert!(mode.presses_only());
+    assert!(!mouse_mode_after_bytes(b"\x1b[?1000h").presses_only());
+}
