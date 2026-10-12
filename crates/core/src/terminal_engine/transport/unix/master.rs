@@ -1,5 +1,48 @@
-// PTY master readiness and window-size helpers for the writer thread.
-// Included into `unix.rs`, so it shares that module's imports and items.
+// PTY master readiness and window-size helpers for the writer thread, and the
+// wake/shutdown socket helpers. Included into `unix.rs`, so it shares that
+// module's imports and items.
+
+/// A socket pair for wake/shutdown bytes. Either end may outlive its peer, so
+/// writes must not raise SIGPIPE: C and Swift hosts don't ignore it the way
+/// Rust binaries do. Apple has no `MSG_NOSIGNAL`, so the socket opts out.
+fn signal_socket_pair() -> io::Result<(UnixStream, UnixStream)> {
+    let (first, second) = UnixStream::pair()?;
+    #[cfg(target_vendor = "apple")]
+    for stream in [&first, &second] {
+        let enabled: c_int = 1;
+        // SAFETY: the descriptor is live and the option value is a c_int of
+        // the length passed.
+        let result = unsafe {
+            libc::setsockopt(
+                stream.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_NOSIGPIPE,
+                (&raw const enabled).cast(),
+                size_of::<c_int>() as libc::socklen_t,
+            )
+        };
+        if result < 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok((first, second))
+}
+
+/// Sends one wake byte. A missing reader, a full buffer or any other error is
+/// ignored: the byte only interrupts a poll that may already be gone.
+fn send_signal_byte(stream: &UnixStream) {
+    #[cfg(target_vendor = "apple")]
+    const FLAGS: c_int = 0;
+    #[cfg(not(target_vendor = "apple"))]
+    const FLAGS: c_int = libc::MSG_NOSIGNAL;
+    loop {
+        // SAFETY: the descriptor is live and the one-byte buffer outlives the call.
+        let sent = unsafe { libc::send(stream.as_raw_fd(), [1u8].as_ptr().cast(), 1, FLAGS) };
+        if sent >= 0 || io::Error::last_os_error().kind() != ErrorKind::Interrupted {
+            return;
+        }
+    }
+}
 
 fn wait_for_pty_writable(master: &File, wake: &UnixStream) -> io::Result<()> {
     let mut descriptors = [
@@ -40,6 +83,14 @@ fn wait_for_pty_writable(master: &File, wake: &UnixStream) -> io::Result<()> {
         return Err(io::Error::new(
             ErrorKind::BrokenPipe,
             "Termy native PTY writer descriptor is invalid",
+        ));
+    }
+    // A hung-up master stays ready, so retrying the write would spin until
+    // the reader notices the exit and closes the writer.
+    if descriptor.revents & (POLLHUP | POLLERR) != 0 && descriptor.revents & POLLOUT == 0 {
+        return Err(io::Error::new(
+            ErrorKind::BrokenPipe,
+            "Termy native PTY was hung up",
         ));
     }
     Ok(())

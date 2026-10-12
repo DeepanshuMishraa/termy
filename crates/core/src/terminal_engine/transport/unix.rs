@@ -36,18 +36,10 @@ const O_NONBLOCK: c_int = libc::O_NONBLOCK;
 const EINTR: c_int = libc::EINTR;
 const SIGHUP: c_int = libc::SIGHUP;
 const SIGKILL: c_int = libc::SIGKILL;
-#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
-const SIGINT: c_int = libc::SIGINT;
-#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
-const SIGQUIT: c_int = libc::SIGQUIT;
-#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
+#[cfg(test)]
 const SIGPIPE: c_int = libc::SIGPIPE;
-#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
-const SIGALRM: c_int = libc::SIGALRM;
-#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
+#[cfg(test)]
 const SIGTERM: c_int = libc::SIGTERM;
-#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
-const SIGCHLD: c_int = libc::SIGCHLD;
 #[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
 const SIGNAL_DEFAULT: usize = 0;
 const POLLIN: c_short = libc::POLLIN;
@@ -416,7 +408,7 @@ impl WriterHandle {
         // A writer blocked on a full PTY is not in recv, so its queued Wake
         // stays pending; the socket interrupts its poll for every request.
         if let Some(stream) = self.control.poll_wake.get() {
-            let _ = (&*stream).write(&[1]);
+            send_signal_byte(stream);
         }
         let Some(reservation) = self.control.reserve_wake() else {
             return Ok(());
@@ -705,7 +697,13 @@ impl Transport {
         let mut descriptors = InheritedDescriptors::new();
         // SAFETY: all pointers refer to parent-owned allocations that remain valid across
         // fork. The child only invokes libc functions before replacing its image.
+        // Signals stay blocked across fork so no parent handler runs in the
+        // child before its dispositions are reset; the child clears the mask.
+        let parent_mask = block_all_signals();
         let pid = unsafe { libc::fork() };
+        if pid != 0 {
+            restore_signal_mask(&parent_mask);
+        }
         if pid < 0 {
             return Err(io::Error::last_os_error());
         }
@@ -726,9 +724,7 @@ impl Transport {
             } {
                 Ok(fd) => fd,
                 Err(fd) => unsafe {
-                    if fd >= 0 {
-                        report_child_spawn_failure(fd, ChildSpawnStage::ControllingTerminal);
-                    }
+                    report_child_spawn_failure(fd, ChildSpawnStage::ControllingTerminal);
                     _exit(126);
                 },
             };
@@ -790,7 +786,7 @@ impl Transport {
         let (writer, writer_rx) = WriterHandle::channel();
         let writer_control = writer.control.clone();
         let writer_protocol_replies = writer.protocol_replies.clone();
-        let (writer_wake, wake_sender) = match UnixStream::pair().and_then(|(reader, sender)| {
+        let (writer_wake, wake_sender) = match signal_socket_pair().and_then(|(reader, sender)| {
             reader.set_nonblocking(true)?;
             sender.set_nonblocking(true)?;
             Ok((reader, sender))
@@ -820,7 +816,7 @@ impl Transport {
             return Err(error);
         }
 
-        let (mut shutdown_reader, mut shutdown_writer) = match UnixStream::pair() {
+        let (mut shutdown_reader, shutdown_writer) = match signal_socket_pair() {
             Ok(pair) => pair,
             Err(error) => {
                 writer.close();
@@ -885,10 +881,7 @@ impl Transport {
                         Ok(0) => break,
                         Ok(read) => {
                             let reply = on_output(&buffer[..read]);
-                            if !queue_reader_protocol_reply(&reader_writer, reply) {
-                                force_child_shutdown(pid);
-                                break;
-                            }
+                            queue_reader_protocol_reply(&reader_writer, reply);
                         }
                         Err(error) if error.kind() == ErrorKind::Interrupted => {}
                         Err(error) if error.kind() == ErrorKind::WouldBlock => {}
@@ -930,9 +923,9 @@ impl Transport {
                 *exit_status
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-                    Some(child_exit_from_wait_status(status));
+                    Some(status.map(child_exit_from_wait_status).unwrap_or_default());
                 watcher_alive.store(false, Ordering::Release);
-                let _ = shutdown_writer.write(&[1]);
+                send_signal_byte(&shutdown_writer);
             });
         if let Err(error) = watcher_thread {
             writer.close();
@@ -1337,23 +1330,21 @@ fn drain_ready_pty_output(
     }
 }
 
-fn queue_reader_protocol_reply(writer: &WriterHandle, reply: Vec<u8>) -> bool {
+fn queue_reader_protocol_reply(writer: &WriterHandle, reply: Vec<u8>) {
     if reply.is_empty() {
-        return true;
+        return;
     }
     match writer.write_protocol_reply_owned(reply) {
-        Ok(()) => true,
+        Ok(()) => {}
         // A full backlog means the child is not reading its input, e.g. `cat`
         // of a file full of queries. Drop the reply instead of the session.
         Err(error) if error.kind() == ErrorKind::WouldBlock => {
             log::warn!("dropping terminal protocol reply: {error}");
-            true
         }
-        Err(_) => {
-            // The writer is closed; the caller tears down the child.
-            writer.close();
-            false
-        }
+        // The writer only closes during drop or after the child is gone. Drop's
+        // SIGHUP grace and escalation own the shutdown, so a query printed by
+        // a HUP handler must not turn into an immediate SIGKILL.
+        Err(_) => {}
     }
 }
 
@@ -1378,8 +1369,12 @@ fn reset_child_process_state() {
     // `tcsetattr` are async-signal-safe, and this code performs no allocation
     // or locking between forkpty and execve.
     unsafe {
-        for signal_number in [SIGCHLD, SIGHUP, SIGINT, SIGQUIT, SIGPIPE, SIGTERM, SIGALRM] {
-            let _ = signal(signal_number, SIGNAL_DEFAULT);
+        // Ignored signals survive exec (e.g. SIGTSTP/SIGTTOU from a job-control
+        // parent, or SIGHUP under nohup), so reset every disposition first.
+        for signal_number in 1..=MAX_RESET_SIGNAL {
+            if signal_number != SIGKILL && signal_number != libc::SIGSTOP {
+                let _ = signal(signal_number, SIGNAL_DEFAULT);
+            }
         }
         // The forking thread's blocked mask survives exec; shells expect none.
         let mut unblocked = std::mem::zeroed::<libc::sigset_t>();
@@ -1412,15 +1407,21 @@ fn terminate_and_reap(pid: c_int) {
     }
 }
 
-fn wait_for_child(pid: c_int) -> c_int {
+/// `None` when the status is unknown: a host that ignores SIGCHLD or reaps
+/// with `waitpid(-1)` makes this wait fail with ECHILD.
+fn wait_for_child(pid: c_int) -> Option<c_int> {
     // SAFETY: the dedicated watcher is the sole waiter for the exact child PID
     // returned by forkpty.
     unsafe {
         let mut status = 0;
-        while waitpid(pid, &mut status, 0) < 0
-            && io::Error::last_os_error().kind() == ErrorKind::Interrupted
-        {}
-        status
+        loop {
+            if waitpid(pid, &mut status, 0) >= 0 {
+                return Some(status);
+            }
+            if io::Error::last_os_error().kind() != ErrorKind::Interrupted {
+                return None;
+            }
+        }
     }
 }
 

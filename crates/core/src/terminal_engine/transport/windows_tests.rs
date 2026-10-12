@@ -733,3 +733,15 @@ fn conpty_batch_wrapper_uses_the_normalized_working_directory() {
         .expect("batch file should write relative to the normalized cwd");
     assert_eq!(proof.trim(), marker);
 }
+
+#[test]
+fn parent_terminal_variables_match_case_insensitively() {
+    use crate::terminal_engine::transport::belongs_to_parent_terminal;
+    for name in ["wt_session", "Tmux", "vscode_injection", "ColorTerm"] {
+        assert!(
+            belongs_to_parent_terminal(std::ffi::OsStr::new(name)),
+            "{name}"
+        );
+    }
+    assert!(!belongs_to_parent_terminal(std::ffi::OsStr::new("Path")));
+}
