@@ -69,6 +69,7 @@ and restored with XTSAVE (`CSI ? n s`) and XTRESTORE (`CSI ? n r`).
 | `5` | Reverse video (DECSCNM): swaps the default foreground and background (explicitly colored cells keep their colors) |
 | `6` | Origin mode (DECOM) |
 | `7` | Autowrap (DECAWM) |
+| `69` | Left/right margin mode (DECLRMM): enables DECSLRM; resetting it resets the margins |
 | `9` | X10 mouse reporting |
 | `12` | Cursor blinking |
 | `25` | Cursor visible (DECTCEM) |
@@ -93,13 +94,13 @@ ANSI modes `4` (insert, IRM) and `20` (line feed/new line, LNM) use
 | Secondary device attributes | `CSI > c` | `CSI > 1 ; 1 ; 0 c` |
 | Terminal name and version (XTVERSION) | `CSI > q`, `CSI > 0 q` | `DCS > \| Termy version ST`, with the engine's version |
 | Device status | `CSI 5 n` | `CSI 0 n` |
-| Cursor position | `CSI 6 n`, `CSI ? 6 n` | `CSI row ; col R`, relative to the scroll region in origin mode |
+| Cursor position | `CSI 6 n`, `CSI ? 6 n` | `CSI row ; col R`, relative to the margins in origin mode |
 | Mode report | `CSI ? n $ p`, `CSI n $ p` | `CSI ? n ; status $ y` |
 | Kitty keyboard flags | `CSI ? u` | `CSI ? flags u` |
 | Text area size in pixels | `CSI 14 t` | `CSI 4 ; height ; width t` |
 | Cell size in pixels | `CSI 16 t` | `CSI 6 ; height ; width t` |
 | Text area size in cells | `CSI 18 t` | `CSI 8 ; rows ; cols t` |
-| DECRQSS | `DCS $ q Pt ST` | SGR (`m`), scroll region (`r`), cursor style (` q`), protection (`"q`), and conformance level (`"p`) |
+| DECRQSS | `DCS $ q Pt ST` | SGR (`m`), scroll region (`r`), left/right margins (`s`), cursor style (` q`), protection (`"q`), and conformance level (`"p`) |
 | XTGETTCAP | `DCS + q names ST` | `Co`/`colors` (`256`), `TN`/`name` (`xterm-256color`), `RGB` (`8`), and, in terminfo notation, `Smulx` (styled underlines), `Setulc` (underline color), and `Ms` (OSC 52 clipboard writes) |
 | Color | `OSC 4`, `OSC 10`–`12` with `?` | See [Colors](#colors) |
 | Program status | `OSC 7501 ; ?` | `OSC 7501 ; ? ST` |
@@ -117,19 +118,20 @@ ANSI modes `4` (insert, IRM) and `20` (line feed/new line, LNM) use
 | `CSI L`, `CSI M`, `CSI S`, `CSI T` | Insert/delete lines, scroll up/down |
 | `CSI b` | Repeat the last printed character (REP) |
 | `CSI r` | Set the scroll region (DECSTBM) |
-| `CSI s`, `CSI u`, `ESC 7`, `ESC 8` | Save/restore cursor and character sets |
+| `CSI Pl ; Pr s` | Set the left/right margins (DECSLRM) while mode `69` is set. Text wraps and scrolls inside them, and IL/DL/ICH/DCH/SU/SD stay inside them; scrolling inside narrower margins doesn't add to scrollback |
+| `CSI s`, `CSI u`, `ESC 7`, `ESC 8` | Save/restore cursor and character sets; `CSI s` is DECSLRM while mode `69` is set |
 | `CSI Ps SP q` | Cursor style (DECSCUSR): block, underline, or bar, blinking or steady; `0` restores the configured default shape, steady |
 | `CSI Ps " q` | Character protection (DECSCA) |
 | `ESC D`, `ESC E`, `ESC M` | Index, next line, reverse index |
 | `ESC =`, `ESC >` | Application/normal keypad |
 | `ESC ( 0`, `ESC ) 0`, `ESC ( B`, `ESC ) B`, `SO`, `SI` | DEC special graphics in G0/G1; other designations select ASCII |
 | `ESC # 8` | Screen alignment test (DECALN): fills the screen with `E`, resets the margins, and homes the cursor |
-| `CSI ! p` | Soft reset (DECSTR); screen contents are kept |
+| `CSI ! p` | Soft reset (DECSTR); screen contents are kept, and mode `69` is reset |
 | `ESC c` | Full reset (RIS) |
 
 ## Not supported
 
 Sixel and iTerm2 (`OSC 1337`) images, desktop notifications (`OSC 9` text,
-`OSC 777`, `OSC 99`), left/right margins (DECSLRM), window
+`OSC 777`, `OSC 99`), window
 manipulation beyond the `CSI t` reports above, and mouse pointer shapes
 (`OSC 22`). Use [Kitty graphics](#extensions) for images.

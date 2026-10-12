@@ -15,6 +15,7 @@ use super::types::{
 
 mod combining;
 mod history;
+mod margins;
 mod print;
 mod reflow;
 mod row;
@@ -142,6 +143,10 @@ pub(super) struct Grid {
     tabs: Vec<bool>,
     scroll_top: usize,
     scroll_bottom: usize,
+    // DECSLRM; `0..cols` unless DECLRMM is set. See `margins.rs`.
+    left_margin: usize,
+    right_margin: usize,
+    lr_margin_mode: bool,
     pending_wrap: bool,
     // Erasing the display establishes a boundary that width reflow must not
     // cross when choosing the new live viewport.
@@ -236,6 +241,9 @@ impl Grid {
             tabs: Self::default_tabs(size.cols),
             scroll_top: 0,
             scroll_bottom: size.rows,
+            left_margin: 0,
+            right_margin: size.cols,
+            lr_margin_mode: false,
             pending_wrap: false,
             clear_anchor: false,
             full_damage: true,
@@ -569,24 +577,29 @@ impl Grid {
 
     pub(super) fn carriage_return(&mut self) {
         let old = self.cursor;
-        self.cursor.col = 0;
+        self.cursor.col = self.left_limit();
         self.motion_done(old);
     }
     pub(super) fn backspace(&mut self) {
         let old = self.cursor;
-        self.cursor.col = self.cursor.col.saturating_sub(1);
+        if self.cursor.col != self.left_margin {
+            self.cursor.col = self.cursor.col.saturating_sub(1);
+        }
         self.motion_done(old);
     }
 
     pub(super) fn linefeed(&mut self) {
         let old = self.cursor;
         if self.cursor.row + 1 == self.scroll_bottom {
-            self.scroll_up(1);
+            // Outside the left/right margins the bottom margin just stops.
+            if self.in_lr_margins() {
+                self.scroll_up(1);
+            }
         } else {
             self.cursor.row = (self.cursor.row + 1).min(self.size.rows - 1);
         }
         if self.newline_mode {
-            self.cursor.col = 0;
+            self.cursor.col = self.left_limit();
         }
         self.motion_done(old);
         self.observe_output();
@@ -601,23 +614,53 @@ impl Grid {
     pub(super) fn reverse_index(&mut self) {
         let old = self.cursor;
         if self.cursor.row == self.scroll_top {
-            self.scroll_down(1);
+            if self.in_lr_margins() {
+                self.scroll_down(1);
+            }
         } else {
             self.cursor.row = self.cursor.row.saturating_sub(1);
         }
         self.motion_done(old);
     }
 
+    /// CUP: in origin mode both coordinates are relative to the margins.
     pub(super) fn goto(&mut self, row: usize, col: usize) {
         let old = self.cursor;
-        self.cursor.row = if self.origin_mode {
+        self.cursor.row = self.origin_row(row);
+        self.cursor.col = self.origin_col(col);
+        self.motion_done(old);
+    }
+
+    /// VPA: like CUP, but keeps the column.
+    pub(super) fn goto_row(&mut self, row: usize) {
+        let old = self.cursor;
+        self.cursor.row = self.origin_row(row);
+        self.motion_done(old);
+    }
+
+    /// CHA/HPA: like CUP, but keeps the row.
+    pub(super) fn goto_col(&mut self, col: usize) {
+        let old = self.cursor;
+        self.cursor.col = self.origin_col(col);
+        self.motion_done(old);
+    }
+
+    fn origin_row(&self, row: usize) -> usize {
+        if self.origin_mode {
             row.saturating_add(self.scroll_top)
                 .min(self.scroll_bottom - 1)
         } else {
             row.min(self.size.rows - 1)
-        };
-        self.cursor.col = col.min(self.size.cols - 1);
-        self.motion_done(old);
+        }
+    }
+
+    fn origin_col(&self, col: usize) -> usize {
+        if self.origin_mode {
+            col.saturating_add(self.left_margin)
+                .min(self.right_margin - 1)
+        } else {
+            col.min(self.size.cols - 1)
+        }
     }
 
     pub(super) fn move_cursor(&mut self, row_delta: isize, col_delta: isize) {
@@ -639,27 +682,40 @@ impl Grid {
             .row
             .saturating_add_signed(row_delta)
             .clamp(top, bottom - 1);
+        // CUF and CUB treat the left/right margins the same way.
+        let left = if self.origin_mode || self.cursor.col >= self.left_margin {
+            self.left_margin
+        } else {
+            0
+        };
+        let right = if self.origin_mode || self.cursor.col < self.right_margin {
+            self.right_margin
+        } else {
+            self.size.cols
+        };
         self.cursor.col = self
             .cursor
             .col
             .saturating_add_signed(col_delta)
-            .min(self.size.cols - 1);
+            .clamp(left, right - 1);
         self.motion_done(old);
     }
 
     pub(super) fn tab(&mut self) {
         let old = self.cursor;
-        self.cursor.col = ((self.cursor.col + 1)..self.size.cols)
+        let right = self.right_limit();
+        self.cursor.col = ((self.cursor.col + 1)..right)
             .find(|&col| self.tabs[col])
-            .unwrap_or(self.size.cols - 1);
+            .unwrap_or(right - 1);
         self.motion_done(old);
     }
     pub(super) fn backtab(&mut self) {
         let old = self.cursor;
-        self.cursor.col = (0..self.cursor.col)
+        let left = self.left_limit();
+        self.cursor.col = (left..self.cursor.col)
             .rev()
             .find(|&col| self.tabs[col])
-            .unwrap_or(0);
+            .unwrap_or(left);
         self.motion_done(old);
     }
     pub(super) fn set_tab(&mut self) {
@@ -785,6 +841,7 @@ impl Grid {
         let old = self.cursor;
         self.scroll_top = 0;
         self.scroll_bottom = self.size.rows;
+        self.reset_lr_margins();
         let fill = Cell {
             character: 'E',
             style: Style {
@@ -848,11 +905,17 @@ impl Grid {
         row.occupied = occupied;
     }
 
+    /// ICH and DCH shift cells up to the right margin and do nothing when
+    /// the cursor is outside the left/right margins, as in xterm.
     pub(super) fn insert_chars(&mut self, count: usize) {
         self.pending_wrap = false;
+        if !self.in_lr_margins() {
+            return;
+        }
         let col = self.cursor.col;
         let row = self.cursor.row;
-        let count = count.min(self.size.cols - col);
+        let right = self.right_margin;
+        let count = count.min(right - col);
         if count == 0 {
             return;
         }
@@ -862,21 +925,36 @@ impl Grid {
         if active.cells[col].flags & Cell::WIDE_SPACER != 0 {
             Self::clear_wide_at(active, col, &blank);
         }
-        active.cells[col..].rotate_right(count);
+        Self::clear_straddling_right_margin(active, right, &blank);
+        active.cells[col..right].rotate_right(count);
         active.cells[col..col + count].fill(blank.clone());
-        active.wrapped = false;
+        if right == cols {
+            active.wrapped = false;
+        }
         // Only a wide glyph pushed against the margin can lose its spacer,
         // and a leading spacer there no longer ends a wrapped row.
-        Self::repair_wide_at(active, cols - 1, &blank);
+        Self::repair_wide_at(active, right - 1, &blank);
         Self::edited_occupied(active, count, col + count, &blank);
         self.mark(row, col.saturating_sub(1), cols);
     }
 
+    /// A wide glyph whose spacer sits right of the margin can't be shifted
+    /// by half, so blank both halves first.
+    fn clear_straddling_right_margin(row: &mut Row, right: usize, blank: &Cell) {
+        if right < row.cells.len() && row.cells[right - 1].flags & Cell::WIDE != 0 {
+            Self::clear_wide_at(row, right - 1, blank);
+        }
+    }
+
     pub(super) fn delete_chars(&mut self, count: usize) {
         self.pending_wrap = false;
+        if !self.in_lr_margins() {
+            return;
+        }
         let col = self.cursor.col;
         let row = self.cursor.row;
-        let count = count.min(self.size.cols - col);
+        let right = self.right_margin;
+        let count = count.min(right - col);
         if count == 0 {
             return;
         }
@@ -886,16 +964,19 @@ impl Grid {
         if active.cells[col].flags & Cell::WIDE_SPACER != 0 {
             Self::clear_wide_at(active, col, &blank);
         }
-        active.cells[col..].rotate_left(count);
-        active.cells[cols - count..].fill(blank.clone());
-        active.wrapped = false;
+        Self::clear_straddling_right_margin(active, right, &blank);
+        active.cells[col..right].rotate_left(count);
+        active.cells[right - count..right].fill(blank.clone());
+        if right == cols {
+            active.wrapped = false;
+        }
         // A spacer whose glyph was deleted lands at the cursor, and a former
         // last-column leading spacer lands just before the new blanks.
         Self::repair_wide_at(active, col, &blank);
-        if count < cols - col {
-            Self::repair_wide_at(active, cols - count - 1, &blank);
+        if count < right - col {
+            Self::repair_wide_at(active, right - count - 1, &blank);
         }
-        Self::edited_occupied(active, 0, cols, &blank);
+        Self::edited_occupied(active, 0, right, &blank);
         self.mark(row, col.saturating_sub(1), cols);
     }
 
@@ -978,24 +1059,45 @@ impl Grid {
     }
 
     pub(super) fn scroll_up(&mut self, count: usize) {
+        if !self.margins_span_screen() {
+            self.scroll_rect(self.scroll_top, self.scroll_bottom, count, true);
+            return;
+        }
         let retain = !self.alternate_active && self.scroll_top == 0;
         self.scroll_region_up(self.scroll_top, self.scroll_bottom, count, retain);
     }
     pub(super) fn scroll_down(&mut self, count: usize) {
+        if !self.margins_span_screen() {
+            self.scroll_rect(self.scroll_top, self.scroll_bottom, count, false);
+            return;
+        }
         self.scroll_region_down(self.scroll_top, self.scroll_bottom, count);
+    }
+    fn cursor_in_margins(&self) -> bool {
+        self.cursor.row >= self.scroll_top
+            && self.cursor.row < self.scroll_bottom
+            && self.in_lr_margins()
     }
     pub(super) fn insert_lines(&mut self, count: usize) {
         self.pending_wrap = false;
-        if self.cursor.row >= self.scroll_top && self.cursor.row < self.scroll_bottom {
-            self.scroll_region_down(self.cursor.row, self.scroll_bottom, count);
+        if self.cursor_in_margins() {
+            if self.margins_span_screen() {
+                self.scroll_region_down(self.cursor.row, self.scroll_bottom, count);
+            } else {
+                self.scroll_rect(self.cursor.row, self.scroll_bottom, count, false);
+            }
             // Like xterm and the VT510, IL leaves the cursor at the left margin.
             self.carriage_return();
         }
     }
     pub(super) fn delete_lines(&mut self, count: usize) {
         self.pending_wrap = false;
-        if self.cursor.row >= self.scroll_top && self.cursor.row < self.scroll_bottom {
-            self.scroll_region_up(self.cursor.row, self.scroll_bottom, count, false);
+        if self.cursor_in_margins() {
+            if self.margins_span_screen() {
+                self.scroll_region_up(self.cursor.row, self.scroll_bottom, count, false);
+            } else {
+                self.scroll_rect(self.cursor.row, self.scroll_bottom, count, true);
+            }
             self.carriage_return();
         }
     }
@@ -1097,6 +1199,7 @@ impl Grid {
         }
         self.scroll_top = 0;
         self.scroll_bottom = self.size.rows;
+        self.reset_lr_margins();
         self.mark_full_damage();
     }
 
@@ -1174,6 +1277,9 @@ impl Grid {
         self.pen = Cell::default();
         self.scroll_top = 0;
         self.scroll_bottom = self.size.rows;
+        // A program that dies with DECLRMM set would otherwise turn every
+        // later `CSI s` into DECSLRM.
+        self.set_lr_margin_mode(false);
         self.autowrap = true;
         self.origin_mode = false;
         self.insert_mode = false;
@@ -1208,6 +1314,7 @@ impl Grid {
         self.tabs = Self::default_tabs(self.size.cols);
         self.scroll_top = 0;
         self.scroll_bottom = self.size.rows;
+        self.set_lr_margin_mode(false);
         self.autowrap = true;
         self.origin_mode = false;
         self.insert_mode = false;
@@ -1273,6 +1380,7 @@ impl Grid {
         }
         self.scroll_top = 0;
         self.scroll_bottom = size.rows;
+        self.reset_lr_margins();
         // Stops past the visible width survive a shrink, so only columns
         // beyond the widest width seen so far get default stops.
         for col in self.tabs.len()..size.cols {

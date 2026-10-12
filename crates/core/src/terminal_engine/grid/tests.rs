@@ -681,7 +681,7 @@ fn limits_bound_dimensions_and_scrollback_storage() {
 #[test]
 fn mixed_edit_resize_and_scroll_sequences_preserve_grid_invariants() {
     for initial in [0xd9a3_4871_u32, 0x1234_5678, 0x9e37_79b9, 0x0bad_f00d] {
-        mixed_edit_sequence_preserves_grid_invariants(initial, 13);
+        mixed_edit_sequence_preserves_grid_invariants(initial, 13, false);
     }
 }
 
@@ -690,13 +690,22 @@ fn mixed_edit_resize_and_scroll_sequences_preserve_grid_invariants() {
 #[test]
 fn wide_mixed_sequences_preserve_grid_invariants_while_packing_rows() {
     for initial in [0x2545_f491_u32, 0x6c07_8965, 0xdead_beef] {
-        mixed_edit_sequence_preserves_grid_invariants(initial, 20);
+        mixed_edit_sequence_preserves_grid_invariants(initial, 20, false);
     }
 }
 
-fn mixed_edit_sequence_preserves_grid_invariants(mut seed: u32, cols: usize) {
+/// DECSLRM margins move cells within rows instead of rotating whole rows.
+#[test]
+fn mixed_sequences_inside_left_right_margins_preserve_grid_invariants() {
+    for initial in [0x5bd1_e995_u32, 0x85eb_ca6b, 0xc2b2_ae35] {
+        mixed_edit_sequence_preserves_grid_invariants(initial, 20, true);
+    }
+}
+
+fn mixed_edit_sequence_preserves_grid_invariants(mut seed: u32, cols: usize, margins: bool) {
     let wide = cols >= 16;
     let mut grid = grid(cols, 5, 11);
+    grid.set_lr_margin_mode(margins);
     let mut packed = false;
     for _ in 0..3000 {
         seed ^= seed << 13;
@@ -718,6 +727,11 @@ fn mixed_edit_sequence_preserves_grid_invariants(mut seed: u32, cols: usize) {
             if seed & 0x0c00_0000 == 0 {
                 grid.compact_history(count);
             }
+        }
+        // Resizes and screen switches reset the margins, so keep setting them.
+        if margins && seed >> 29 == 0 {
+            let left = (seed >> 4) as usize % 6;
+            grid.set_lr_margins(left, left + 2 + (seed >> 12) as usize % 10);
         }
         match seed % 15 {
             0 => grid.put_char('界'),

@@ -152,7 +152,12 @@ impl Grid {
         }
         let mut width = text.width().clamp(1, 2).min(self.size.cols);
         let old_width = 1 + usize::from(previous.flags & Cell::WIDE != 0);
-        if !self.autowrap && col + width > self.size.cols {
+        let right = if col < self.right_margin {
+            self.right_margin
+        } else {
+            self.size.cols
+        };
+        if !self.autowrap && col + width > right {
             width = old_width;
         }
         let mut cell = previous.clone();
@@ -272,18 +277,12 @@ impl Grid {
     fn put_cell(&mut self, mut cell: Cell, width: usize) {
         if self.pending_wrap {
             if self.autowrap {
-                let row = self.cursor.row;
-                self.screen_mut().rows[row].wrapped = true;
-                // Wrap metadata belongs to the last cell even when a hidden
-                // cursor produces no damage at its previous position.
-                self.mark(row, self.size.cols - 1, self.size.cols);
-                self.cursor.col = 0;
-                self.linefeed();
+                self.wrap_line();
             }
             self.pending_wrap = false;
         }
         let width = width.min(self.size.cols).min(2);
-        if width == 2 && self.cursor.col + 1 == self.size.cols {
+        if width == 2 && self.cursor.col + 1 == self.right_limit() {
             if !self.autowrap {
                 // The glyph is discarded, so nothing may extend the cell to
                 // its left as though it were this cluster.
@@ -294,12 +293,15 @@ impl Grid {
             let row = self.cursor.row;
             let col = self.cursor.col;
             let blank = self.blank();
+            let full_width = self.margins_span_screen();
             let active = &mut self.screen_mut().rows[row];
             Self::clear_wide_at(active, col, &blank);
-            active.cells[col].flags = Cell::LEADING_WIDE_SPACER;
-            active.wrapped = true;
+            if full_width {
+                active.cells[col].flags = Cell::LEADING_WIDE_SPACER;
+                active.wrapped = true;
+            }
             self.mark(row, col.saturating_sub(1), col + 1);
-            self.cursor.col = 0;
+            self.cursor.col = self.left_limit();
             self.linefeed();
         }
         if self.insert_mode {
@@ -308,6 +310,7 @@ impl Grid {
 
         let row = self.cursor.row;
         let col = self.cursor.col;
+        let right = self.right_limit();
         // Built only for the rare wide-glyph repairs below.
         let background = self.pen.style.background;
         cell.flags = if width == 2 { Cell::WIDE } else { 0 };
@@ -336,9 +339,9 @@ impl Grid {
         }
         active.cells[col] = cell;
         active.occupied = active.occupied.max(end);
-        self.grapheme_at_margin = col + width >= self.size.cols;
+        self.grapheme_at_margin = col + width >= right;
         if self.grapheme_at_margin {
-            self.cursor.col = self.size.cols - 1;
+            self.cursor.col = right - 1;
             self.pending_wrap = self.autowrap;
         } else {
             self.cursor.col += width;
@@ -358,6 +361,21 @@ impl Grid {
         self.mark(row, start, end);
     }
 
+    /// Autowrap from a pending wrap to the next line's left margin.
+    fn wrap_line(&mut self) {
+        let row = self.cursor.row;
+        // Only a full-width row continues on the next one; text wrapped
+        // inside left/right margins doesn't reflow as one line.
+        if self.margins_span_screen() {
+            self.screen_mut().rows[row].wrapped = true;
+        }
+        // Wrap metadata belongs to the last cell even when a hidden
+        // cursor produces no damage at its previous position.
+        self.mark(row, self.cursor.col, self.cursor.col + 1);
+        self.cursor.col = self.left_limit();
+        self.linefeed();
+    }
+
     /// REP output beyond one screen and a row only scrolls identical rows, so
     /// an untrusted count is clamped. Ordinary bases keep the count modulo a
     /// row, which leaves the same screen and cursor as the full repetition.
@@ -366,8 +384,13 @@ impl Grid {
         let count = if width == 0 {
             count.min(MAX_COMBINING_BYTES)
         } else {
-            let per_row = (self.size.cols / width.min(self.size.cols)).max(1);
-            let limit = per_row * (self.size.rows + 1);
+            // Inside left/right margins rows repeat at the margin width,
+            // after at most one screen-wide row outside them.
+            let span = self.right_margin - self.left_margin;
+            let per_row = (span / width.min(span)).max(1);
+            let outside = usize::from(span != self.size.cols) * self.size.cols.div_ceil(per_row);
+            let rows = self.size.rows + 1 + outside;
+            let limit = per_row * rows;
             match count {
                 count if count <= limit => count,
                 count if ordinary => limit + count % per_row,
@@ -410,12 +433,13 @@ impl Grid {
             }
             // Without autowrap, each byte at the margin replaces the last one,
             // so only the final byte of the run is visible there.
-            if !self.autowrap && self.cursor.col + 1 == self.size.cols && text.len() > 1 {
+            let right = self.right_limit();
+            if !self.autowrap && self.cursor.col + 1 == right && text.len() > 1 {
                 text = &text[text.len() - 1..];
             }
             let row = self.cursor.row;
             let col = self.cursor.col;
-            let count = text.len().min(self.size.cols - col);
+            let count = text.len().min(right - col);
             // Wide-cell repair is uncommon, and the scalar path handles both
             // ends of an overwritten glyph without a second general scan.
             if self.screen().rows[row].cells[col..col + count]
@@ -455,7 +479,7 @@ impl Grid {
             }
             active.occupied = active.occupied.max(col + count);
             self.cursor.col += count;
-            let at_margin = self.cursor.col == self.size.cols;
+            let at_margin = self.cursor.col == right;
             if at_margin {
                 self.cursor.col -= 1;
                 self.pending_wrap = self.autowrap;

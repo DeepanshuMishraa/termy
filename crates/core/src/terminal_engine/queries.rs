@@ -15,6 +15,7 @@ impl State {
                 5 => Some(self.modes.reverse_video),
                 6 => Some(self.grid.origin_mode),
                 7 => Some(self.grid.autowrap),
+                69 => Some(self.grid.lr_margin_mode()),
                 9 => Some(self.modes.mouse_tracking == MouseTracking::Press),
                 12 => Some(self.grid.cursor.blinking),
                 25 => Some(self.grid.cursor.visible),
@@ -60,6 +61,10 @@ impl State {
                 b"r" => {
                     let (top, bottom) = self.grid.scroll_region();
                     Some(format!("{};{bottom}r", top + 1))
+                }
+                b"s" => {
+                    let (left, right) = self.grid.lr_margins();
+                    Some(format!("{};{right}s", left + 1))
                 }
                 b" q" => {
                     let base = match self.grid.cursor.shape {

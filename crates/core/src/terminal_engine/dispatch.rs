@@ -184,6 +184,7 @@ impl State {
                 // The width never changes, but DECCOLM still clears and homes.
                 self.column_mode = enabled;
                 self.grid.set_scroll_region(0, self.grid.size().rows);
+                self.grid.reset_lr_margins();
                 self.grid.erase_display(2, false);
                 self.grid.goto(0, 0);
             }
@@ -201,6 +202,7 @@ impl State {
                 self.grid.goto(0, 0);
             }
             7 => self.grid.autowrap = enabled,
+            69 => self.grid.set_lr_margin_mode(enabled),
             9 => self.mouse_tracking(MouseTracking::Press, enabled),
             12 => self.grid.cursor.blinking = enabled,
             25 => self.grid.cursor.visible = enabled,
@@ -725,17 +727,12 @@ impl Handler for State {
                 self.grid.move_cursor(-(count as isize), 0);
                 self.grid.carriage_return();
             }
-            (None, b'G' | b'`') => {
-                self.grid.carriage_return();
-                self.grid.move_cursor(0, count.saturating_sub(1) as isize);
-            }
+            (None, b'G' | b'`') => self.grid.goto_col(count.saturating_sub(1)),
             (None, b'H' | b'f') => self.grid.goto(
                 count.saturating_sub(1),
                 super::dispatch::count(params, 1).saturating_sub(1),
             ),
-            (None, b'd') => self
-                .grid
-                .goto(count.saturating_sub(1), self.grid.cursor.col),
+            (None, b'd') => self.grid.goto_row(count.saturating_sub(1)),
             (None, b'I') => {
                 for _ in 0..count.min(self.grid.size().cols) {
                     self.grid.tab();
@@ -791,6 +788,16 @@ impl Handler for State {
                 };
                 self.grid.set_scroll_region(count.saturating_sub(1), bottom);
             }
+            // With DECLRMM set, `CSI s` is DECSLRM instead of SCOSC.
+            (None, b's') if self.grid.lr_margin_mode() => {
+                let right = value(params, 1, 0);
+                let right = if right == 0 {
+                    self.grid.size().cols
+                } else {
+                    usize::from(right)
+                };
+                self.grid.set_lr_margins(count.saturating_sub(1), right);
+            }
             (None, b's') => self.save_cursor(),
             (None, b'u') => self.restore_cursor(),
             (None, b'm') => self.sgr(params),
@@ -817,13 +824,14 @@ impl Handler for State {
             (None, b'n') if value(params, 0, 0) == 5 => self.reply(b"\x1b[0n"),
             (None | Some(b'?'), b'n') if value(params, 0, 0) == 6 => {
                 let private = if private.is_some() { "?" } else { "" };
-                let top = if self.grid.origin_mode {
-                    self.grid.scroll_region().0
+                let (top, left) = if self.grid.origin_mode {
+                    (self.grid.scroll_region().0, self.grid.lr_margins().0)
                 } else {
-                    0
+                    (0, 0)
                 };
                 let row = self.grid.cursor.row.saturating_sub(top) + 1;
-                self.reply(format!("\x1b[{private}{row};{}R", self.grid.cursor.col + 1).as_bytes());
+                let col = self.grid.cursor.col.saturating_sub(left) + 1;
+                self.reply(format!("\x1b[{private}{row};{col}R").as_bytes());
             }
             (None, b't') => match value(params, 0, 0) {
                 14 => self.reply(
@@ -1021,3 +1029,7 @@ fn dec_graphic(character: char) -> char {
 #[cfg(test)]
 #[path = "dispatch/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "dispatch/margin_tests.rs"]
+mod margin_tests;
