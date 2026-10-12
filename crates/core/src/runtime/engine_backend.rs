@@ -62,6 +62,7 @@ impl Backend {
         tab_title_shell_integration: Option<&TabTitleShellIntegration>,
         runtime_config: Option<&TerminalRuntimeConfig>,
         launch: Option<&TerminalLaunch>,
+        restored_output: Option<&[u8]>,
     ) -> anyhow::Result<Self> {
         super::custom_backend::CustomBackend::new_with_launch_and_wakeup_notifier(
             size,
@@ -70,6 +71,7 @@ impl Backend {
             tab_title_shell_integration,
             runtime_config,
             launch,
+            restored_output,
         )
         .map(Box::new)
         .map(Self::Custom)

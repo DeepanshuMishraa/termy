@@ -15,12 +15,46 @@ const READER_YIELD_LIMIT: Duration = Duration::from_millis(2);
 #[derive(Default)]
 pub(super) struct LockWaiters(AtomicUsize);
 
+/// Announces a waiting caller for as long as it lives, so a panic while
+/// locking cannot leave the feeder yielding to a waiter that is gone.
+struct WaiterAnnouncement<'a>(&'a AtomicUsize);
+
+impl<'a> WaiterAnnouncement<'a> {
+    fn new(waiters: &'a LockWaiters) -> Self {
+        waiters.0.fetch_add(1, Ordering::AcqRel);
+        Self(&waiters.0)
+    }
+}
+
+impl Drop for WaiterAnnouncement<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 impl Shared {
     pub(super) fn state(&self) -> MutexGuard<'_, State> {
-        self.lock_waiters.0.fetch_add(1, Ordering::AcqRel);
-        let state = self.lock_state();
-        self.lock_waiters.0.fetch_sub(1, Ordering::AcqRel);
-        state
+        let _announcement = WaiterAnnouncement::new(&self.lock_waiters);
+        self.lock_state()
+    }
+
+    pub(super) fn live_transport(&self) -> Option<Arc<Transport>> {
+        self.transport
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .upgrade()
+    }
+
+    /// Queue replies to the child. Callers hold the engine lock, so replies
+    /// from different feeders (reader slices, the synchronized-update
+    /// watchdog) reach the child in the order the engine produced them.
+    pub(super) fn write_replies_locked(transport: &Transport, replies: Vec<u8>) {
+        if replies.is_empty() {
+            return;
+        }
+        if let Err(error) = transport.write_protocol_reply_owned(replies) {
+            log::warn!("dropping terminal protocol reply: {error}");
+        }
     }
 
     fn lock_state(&self) -> MutexGuard<'_, State> {
@@ -54,6 +88,12 @@ impl Shared {
             FEED_SLICE
         };
         let mut replies = Vec::new();
+        // PTY output queues each slice's replies before the lock is released.
+        // Holding them until the whole read is parsed would let the watchdog
+        // send a later reply first while this read waits behind a UI lock.
+        let transport = (!buffer_replies && !hydrate)
+            .then(|| self.live_transport())
+            .flatten();
         let (mut should_notify, mut tab_chrome_changed) = (false, false);
         let mut rest = bytes;
         while !rest.is_empty() {
@@ -72,6 +112,8 @@ impl Shared {
             }
             if buffer_replies {
                 state.append_replies(&slice_replies);
+            } else if let Some(transport) = &transport {
+                Self::write_replies_locked(transport, slice_replies);
             } else {
                 replies.append(&mut slice_replies);
             }
@@ -91,5 +133,22 @@ impl Shared {
             self.notify_tab_chrome();
         }
         replies
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_panicking_waiter_withdraws_its_announcement() {
+        let waiters = LockWaiters::default();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _announcement = WaiterAnnouncement::new(&waiters);
+            assert_eq!(waiters.0.load(Ordering::Acquire), 1);
+            panic!("lock panicked");
+        }));
+        assert!(result.is_err());
+        assert_eq!(waiters.0.load(Ordering::Acquire), 0);
     }
 }

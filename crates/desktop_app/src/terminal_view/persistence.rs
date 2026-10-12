@@ -703,27 +703,37 @@ impl TerminalView {
             )
             .map_err(|error| format!("Failed to reattach saved pane: {error}"))?
         } else {
-            Terminal::new_native(
-                TerminalSize {
-                    cols: width,
-                    rows: height,
-                    ..TerminalSize::default()
-                },
-                working_dir,
-                Some(&self.native_terminal_wakeup_router),
-                Some(&self.tab_shell_integration),
-                Some(&self.terminal_runtime),
-                None,
-                self.multiplexer_client(),
-            )
+            let size = TerminalSize {
+                cols: width,
+                rows: height,
+                ..TerminalSize::default()
+            };
+            let restored = pane
+                .buffer
+                .as_deref()
+                .filter(|_| pane.session_id.is_none() && self.native_buffer_persistence);
+            match restored {
+                Some(buffer) => Terminal::new_native_restoring(
+                    size,
+                    working_dir,
+                    Some(&self.native_terminal_wakeup_router),
+                    Some(&self.tab_shell_integration),
+                    Some(&self.terminal_runtime),
+                    self.multiplexer_client(),
+                    buffer.as_bytes(),
+                ),
+                None => Terminal::new_native(
+                    size,
+                    working_dir,
+                    Some(&self.native_terminal_wakeup_router),
+                    Some(&self.tab_shell_integration),
+                    Some(&self.terminal_runtime),
+                    None,
+                    self.multiplexer_client(),
+                ),
+            }
             .map_err(|error| format!("Failed to restore saved pane: {error}"))?
         };
-        if pane.session_id.is_none()
-            && self.native_buffer_persistence
-            && let Some(buffer) = pane.buffer.as_deref()
-        {
-            terminal.hydrate_output(buffer.as_bytes());
-        }
         Ok(TerminalPane::new_native(
             pane_id, pane.left, pane.top, width, height, terminal,
         ))

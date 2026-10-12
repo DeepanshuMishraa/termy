@@ -17,6 +17,10 @@ pub struct TermyKeystroke {
 pub type Modifiers = TermyModifiers;
 pub type Keystroke = TermyKeystroke;
 
+mod legacy;
+
+use legacy::basic_keystroke_to_input;
+
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TerminalKeyboardMode {
     application_cursor_keys: bool,
@@ -25,6 +29,9 @@ pub struct TerminalKeyboardMode {
     report_alternate_keys: bool,
     report_all_keys_as_esc: bool,
     report_associated_text: bool,
+    /// DECKPAM. Skipped on the wire so the multiplexer state format is unchanged.
+    #[serde(skip)]
+    application_keypad: bool,
 }
 
 impl TerminalKeyboardMode {
@@ -43,7 +50,17 @@ impl TerminalKeyboardMode {
             report_alternate_keys,
             report_all_keys_as_esc,
             report_associated_text,
+            application_keypad: false,
         }
+    }
+
+    pub const fn with_application_keypad(mut self, application_keypad: bool) -> Self {
+        self.application_keypad = application_keypad;
+        self
+    }
+
+    pub fn application_keypad(self) -> bool {
+        self.application_keypad
     }
 
     pub fn disambiguate_escape_codes(self) -> bool {
@@ -202,134 +219,6 @@ fn modifiers_are_empty(modifiers: Modifiers) -> bool {
         && !modifiers.shift
         && !modifiers.platform
         && !modifiers.function
-}
-
-fn basic_keystroke_to_input(
-    keystroke: &Keystroke,
-    keyboard_mode: TerminalKeyboardMode,
-) -> Option<Vec<u8>> {
-    let key = keystroke.key.as_str();
-    let modifiers = keystroke.modifiers;
-
-    let input = match key {
-        "enter" => {
-            if modifiers.shift {
-                Some(vec![b'\n'])
-            } else {
-                Some(vec![b'\r'])
-            }
-        }
-        "tab" => {
-            if modifiers.shift
-                && !modifiers.control
-                && !modifiers.alt
-                && !modifiers.platform
-                && !modifiers.function
-            {
-                Some(b"\x1b[Z".to_vec())
-            } else {
-                Some(vec![b'\t'])
-            }
-        }
-        "escape" => Some(vec![0x1b]),
-        "backspace" => Some(vec![0x7f]),
-        "delete" => Some(b"\x1b[3~".to_vec()),
-        "up" => Some(legacy_cursor_key_input('A', keyboard_mode, modifiers)),
-        "down" => Some(legacy_cursor_key_input('B', keyboard_mode, modifiers)),
-        "right" => Some(legacy_cursor_key_input('C', keyboard_mode, modifiers)),
-        "left" => Some(legacy_cursor_key_input('D', keyboard_mode, modifiers)),
-        "home" => Some(legacy_cursor_key_input('H', keyboard_mode, modifiers)),
-        "end" => Some(legacy_cursor_key_input('F', keyboard_mode, modifiers)),
-        "pageup" => Some(b"\x1b[5~".to_vec()),
-        "pagedown" => Some(b"\x1b[6~".to_vec()),
-        "space" => Some(vec![b' ']),
-        _ => None,
-    };
-
-    if let Some(input) = input {
-        return Some(input);
-    }
-
-    if let Some(input) = legacy_function_key_input(key, modifiers) {
-        return Some(input.to_vec());
-    }
-
-    #[cfg(target_os = "windows")]
-    if let Some(text) = windows_altgr_text(keystroke) {
-        return Some(text.as_bytes().to_vec());
-    }
-
-    if modifiers.control && !modifiers.platform && !modifiers.function && key.len() == 1 {
-        let c = key.chars().next().unwrap();
-        if c.is_ascii_alphabetic() {
-            let ctrl_char = (c.to_ascii_lowercase() as u8) - b'a' + 1;
-            return Some(vec![ctrl_char]);
-        }
-        // Handle CTRL with @, [, \, ], ^, _ (standard ASCII control range)
-        if matches!(c, '@'..='_') {
-            let ctrl_char = (c as u8) & 0x1F;
-            return Some(vec![ctrl_char]);
-        }
-    }
-
-    if !modifiers.control
-        && !modifiers.platform
-        && !modifiers.function
-        && let Some(key_char) = keystroke.key_char.as_deref()
-        && !key_char.is_empty()
-    {
-        return Some(key_char.as_bytes().to_vec());
-    }
-
-    if !modifiers.control && !modifiers.platform && !modifiers.function && key.len() == 1 {
-        let c = key.chars().next().unwrap();
-        if c.is_ascii() {
-            return Some(vec![c as u8]);
-        }
-
-        let mut buf = [0u8; 4];
-        let s = c.encode_utf8(&mut buf);
-        return Some(s.as_bytes().to_vec());
-    }
-
-    None
-}
-
-fn legacy_cursor_key_input(
-    suffix: char,
-    keyboard_mode: TerminalKeyboardMode,
-    modifiers: Modifiers,
-) -> Vec<u8> {
-    // Full-screen TUIs toggle DECCKM and expect SS3 cursor/home/end sequences
-    // only for unmodified keys; modified keys keep the existing legacy fallback.
-    let prefix = if modifiers_are_empty(modifiers) && keyboard_mode.application_cursor_keys {
-        "\x1bO"
-    } else {
-        "\x1b["
-    };
-    format!("{prefix}{suffix}").into_bytes()
-}
-
-fn legacy_function_key_input(key: &str, modifiers: Modifiers) -> Option<&'static [u8]> {
-    if modifiers.control || modifiers.alt || modifiers.shift || modifiers.platform {
-        return None;
-    }
-
-    Some(match key {
-        "f1" => b"\x1bOP".as_slice(),
-        "f2" => b"\x1bOQ".as_slice(),
-        "f3" => b"\x1bOR".as_slice(),
-        "f4" => b"\x1bOS".as_slice(),
-        "f5" => b"\x1b[15~".as_slice(),
-        "f6" => b"\x1b[17~".as_slice(),
-        "f7" => b"\x1b[18~".as_slice(),
-        "f8" => b"\x1b[19~".as_slice(),
-        "f9" => b"\x1b[20~".as_slice(),
-        "f10" => b"\x1b[21~".as_slice(),
-        "f11" => b"\x1b[23~".as_slice(),
-        "f12" => b"\x1b[24~".as_slice(),
-        _ => return None,
-    })
 }
 
 fn modifier_or_control_sequence_base(
@@ -1311,24 +1200,6 @@ mod tests {
                 true,
             ),
             Some(b"\x1bOP".to_vec())
-        );
-    }
-
-    #[test]
-    fn legacy_mode_does_not_emit_modified_function_keys() {
-        let modifiers = Modifiers {
-            shift: true,
-            ..Modifiers::default()
-        };
-
-        assert_eq!(
-            keystroke_to_input(
-                &keystroke("f1", None, modifiers),
-                TerminalKeyEventKind::Press,
-                TerminalKeyboardMode::default(),
-                true,
-            ),
-            None
         );
     }
 

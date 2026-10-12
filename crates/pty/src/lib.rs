@@ -83,8 +83,14 @@ impl Output {
     }
 
     fn flush(&self, mode: ThreadsafeFunctionCallMode) {
-        if let Some(events) = self.events.get().and_then(Weak::upgrade) {
-            events.call(Flush, mode);
+        let queued = self
+            .events
+            .get()
+            .and_then(Weak::upgrade)
+            .is_some_and(|events| events.call(Flush, mode) == napi::Status::Ok);
+        // A flush that never reached JavaScript must not block later ones.
+        if !queued {
+            self.lock().scheduled = false;
         }
     }
 
@@ -284,7 +290,8 @@ impl NativePty {
         let Some(pty) = &self.pty else {
             return Ok(());
         };
-        self.output.set_paused(false);
+        // Signals such as SIGWINCH or SIGSTOP don't end the program, so a
+        // `pause()` (or XOFF) stays in effect; the exit waits for `resume()`.
         #[cfg(not(windows))]
         let result = match signal {
             Some(signal) => pty.signal(signal),

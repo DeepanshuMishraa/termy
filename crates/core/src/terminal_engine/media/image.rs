@@ -26,8 +26,11 @@ impl PartialEq for GraphicsImage {
 impl Eq for GraphicsImage {}
 
 impl GraphicsImage {
-    pub fn from_rgba(width: u32, height: u32, rgba: Vec<u8>) -> Self {
+    pub fn from_rgba(width: u32, height: u32, mut rgba: Vec<u8>) -> Self {
         assert_eq!(u64::from(width) * u64::from(height) * 4, rgba.len() as u64);
+        // `byte_len` charges the pixels only. Chunk assembly and inflation
+        // can leave up to as much again in spare capacity.
+        rgba.shrink_to_fit();
         Self {
             width,
             height,
@@ -56,6 +59,23 @@ impl GraphicsImage {
 
     pub fn rgba(&self) -> Option<&[u8]> {
         self.rgba.as_deref().map(Vec::as_slice)
+    }
+
+    /// Writable pixels, for editing an image nobody else holds yet.
+    pub(crate) fn rgba_mut(&mut self) -> Option<&mut [u8]> {
+        // A cached export would describe the old pixels.
+        *self
+            .png_export
+            .get_mut()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Weak::new();
+        self.rgba
+            .as_mut()
+            .map(|rgba| Arc::make_mut(rgba).as_mut_slice())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn rgba_capacity(&self) -> usize {
+        self.rgba.as_ref().map_or(0, |rgba| rgba.capacity())
     }
 
     /// Decoded size is charged even for compressed PNGs, bounding texture memory.

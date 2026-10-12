@@ -730,8 +730,10 @@ fn child_resets_inherited_ignored_signals() {
     let (signal_number, signal_name) = match std::env::var(HELPER_ENV).as_deref() {
         Ok("TERM") => (SIGTERM, "TERM"),
         Ok("PIPE") => (SIGPIPE, "PIPE"),
+        // Not in the old fixed reset list: every disposition is reset now.
+        Ok("USR1") => (libc::SIGUSR1, "USR1"),
         _ => {
-            for signal_name in ["TERM", "PIPE"] {
+            for signal_name in ["TERM", "PIPE", "USR1"] {
                 let status = Command::new(std::env::current_exe().expect("test executable should exist"))
                     .arg("terminal_engine::transport::unix::tests::process::child_resets_inherited_ignored_signals")
                     .arg("--exact")
@@ -972,13 +974,29 @@ fn child_does_not_inherit_descriptors_without_close_on_exec() {
 
 #[test]
 fn child_environment_drops_the_parent_terminals_identity() {
-    for name in ["TMUX", "COLUMNS", "VSCODE_INJECTION", "KITTY_WINDOW_ID"] {
+    for name in [
+        "TMUX",
+        "COLUMNS",
+        "VSCODE_INJECTION",
+        "KITTY_WINDOW_ID",
+        "COLORTERM",
+        "LC_TERMINAL",
+        "WEZTERM_EXECUTABLE",
+    ] {
         assert!(
             crate::terminal_engine::transport::belongs_to_parent_terminal(OsStr::new(name)),
             "{name}"
         );
     }
-    for name in ["HOME", "PATH", "TERM", "TERM_PROGRAM", "TMUX_TMPDIR"] {
+    for name in [
+        "HOME",
+        "PATH",
+        "TERM",
+        "TERM_PROGRAM",
+        "TMUX_TMPDIR",
+        "LC_ALL",
+        "LANG",
+    ] {
         assert!(
             !crate::terminal_engine::transport::belongs_to_parent_terminal(OsStr::new(name)),
             "{name}"
@@ -990,5 +1008,184 @@ fn child_environment_drops_the_parent_terminals_identity() {
         environment
             .iter()
             .any(|entry| entry.as_bytes() == b"TMUX=kept")
+    );
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn dropping_after_the_child_exited_does_not_raise_sigpipe() {
+    // C and Swift hosts keep SIGPIPE at its default, which kills the process.
+    // Run in an isolated helper so the main runner keeps ignoring it.
+    const HELPER_ENV: &str = "TERMY_NATIVE_SIGPIPE_TEST_HELPER";
+    const SIGNAL_DEFAULT: usize = 0;
+    if std::env::var_os(HELPER_ENV).is_none() {
+        let status = Command::new(std::env::current_exe().expect("test executable should exist"))
+            .arg("terminal_engine::transport::unix::tests::process::dropping_after_the_child_exited_does_not_raise_sigpipe")
+            .arg("--exact")
+            .arg("--nocapture")
+            .env(HELPER_ENV, "1")
+            .status()
+            .expect("isolated SIGPIPE test should start");
+        assert!(status.success(), "isolated SIGPIPE test failed: {status}");
+        return;
+    }
+
+    // SAFETY: this process is an isolated helper; SIG_DFL is the POSIX sentinel.
+    let previous = unsafe { signal(SIGPIPE, SIGNAL_DEFAULT) };
+    assert_ne!(previous, SIGNAL_ERROR, "resetting SIGPIPE should succeed");
+    let (exit_tx, exit_rx) = mpsc::channel();
+    let terminal = Transport::spawn(
+        SpawnConfig {
+            program: "/bin/sh".to_string(),
+            args: vec!["-c".to_string(), "exit 0".to_string()],
+            working_directory: None,
+            environment: Vec::new(),
+        },
+        test_size(),
+        |_| Vec::new(),
+        move || {
+            let _ = exit_tx.send(());
+        },
+    )
+    .expect("PTY should start");
+    exit_rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("child should exit");
+    // Let the writer thread see the close and drop its end of the wake socket.
+    thread::sleep(Duration::from_millis(200));
+    drop(terminal);
+    thread::sleep(Duration::from_millis(100));
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn a_reply_during_the_drop_grace_keeps_the_hup_handler_running() {
+    const READY: &[u8] = b"TERMY_NATIVE_HUP_QUERY_READY";
+    let directory = TestDirectory::new("hup-query");
+    let marker = directory.path().join("handled");
+    let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+    let mut output = Vec::new();
+    let mut ready_reported = false;
+    let terminal = Transport::spawn(
+        SpawnConfig {
+            program: "/bin/sh".to_string(),
+            args: vec![
+                "-c".to_string(),
+                format!(
+                    "trap 'printf \"\\033[c\"; sleep 0.1; : > \"{}\"; exit 0' HUP; printf TERMY_NATIVE_HUP_QUERY_READY; while :; do sleep 0.02; done",
+                    marker.display()
+                ),
+            ],
+            working_directory: None,
+            environment: Vec::new(),
+        },
+        test_size(),
+        move |bytes| {
+            output.extend_from_slice(bytes);
+            if !ready_reported && output.windows(READY.len()).any(|part| part == READY) {
+                ready_reported = true;
+                let _ = ready_tx.send(());
+            }
+            // Every chunk "answers" a query, like the engine replying to DA1.
+            b"\x1b[?62c".to_vec()
+        },
+        || {},
+    )
+    .expect("PTY should start");
+    let cleanup = KillProcessOnDrop(terminal.child_pid);
+    ready_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("child should install its HUP handler");
+    drop(terminal);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !marker.exists() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    drop(cleanup);
+    assert!(
+        marker.exists(),
+        "the HUP handler was killed before it finished"
+    );
+}
+
+#[test]
+fn a_failed_wait_reports_an_unknown_exit_instead_of_success() {
+    // Hosts that ignore SIGCHLD or reap with waitpid(-1) make our wait fail
+    // with ECHILD; pid 1 is never our child, which gives the same error.
+    assert_eq!(wait_for_child(1), None);
+    assert_eq!(
+        wait_for_child(1)
+            .map(child_exit_from_wait_status)
+            .unwrap_or_default(),
+        ChildExit::default()
+    );
+}
+
+// macOS only: the exact descriptor arrangement depends on how many fds the
+// platform's openpty uses, which was only verified there.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_child_setup_failure_is_reported_instead_of_looking_like_a_spawn() {
+    // The child moves a status endpoint that landed on stdin/stdout above
+    // stderr. With the descriptor table full that fails, and the failure must
+    // reach the parent. Run isolated: this rearranges the process's fds.
+    const HELPER_ENV: &str = "TERMY_NATIVE_CHILD_EMFILE_TEST_HELPER";
+    if std::env::var_os(HELPER_ENV).is_none() {
+        let output = Command::new(std::env::current_exe().expect("test executable should exist"))
+            .arg("terminal_engine::transport::unix::tests::process::a_child_setup_failure_is_reported_instead_of_looking_like_a_spawn")
+            .arg("--exact")
+            .arg("--nocapture")
+            .env(HELPER_ENV, "1")
+            .output()
+            .expect("isolated descriptor test should start");
+        assert!(
+            output.status.success(),
+            "isolated descriptor test failed: {}\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+
+    // SAFETY: raw descriptor and rlimit calls on this isolated helper only.
+    unsafe {
+        let mut limit = std::mem::zeroed::<libc::rlimit>();
+        assert_eq!(libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit), 0);
+        limit.rlim_cur = 64;
+        assert_eq!(libc::setrlimit(libc::RLIMIT_NOFILE, &limit), 0);
+        let mut filler = Vec::new();
+        loop {
+            let fd = libc::open(c"/dev/null".as_ptr(), libc::O_RDONLY);
+            if fd < 0 {
+                break;
+            }
+            filler.push(fd);
+        }
+        // Free stdin and stdout for the status pair, and two slots for the
+        // PTY pair; the forked child then has no slot above stderr left.
+        let _ = close(0);
+        let _ = close(1);
+        for fd in filler.iter().rev().take(2) {
+            let _ = close(*fd);
+        }
+    }
+    let error = Transport::spawn(
+        SpawnConfig {
+            program: "/bin/sh".to_string(),
+            args: vec!["-c".to_string(), "exit 0".to_string()],
+            working_directory: None,
+            environment: Vec::new(),
+        },
+        test_size(),
+        |_| Vec::new(),
+        || {},
+    )
+    .err()
+    .expect("a child that cannot set up its terminal must fail the spawn");
+    assert!(
+        error
+            .to_string()
+            .contains("attach terminal as controlling tty"),
+        "{error}"
     );
 }

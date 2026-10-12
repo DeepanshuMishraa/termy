@@ -805,3 +805,290 @@ fn id_less_images_are_freed_with_their_last_placement() {
     assert_eq!((state.images.len(), state.anonymous_images), (2, 0));
     assert_eq!(state.insertion_order.len(), 2);
 }
+
+fn reply(result: &KittyGraphicsApplyResult) -> String {
+    String::from_utf8(result.response.clone().unwrap_or_default()).unwrap()
+}
+
+#[test]
+fn a_restarting_upload_is_checked_and_answered_as_itself() {
+    let mut state = KittyGraphicsState::default();
+    state.apply(
+        command("a=t,f=32,s=1,v=1,i=1,m=1", &[1, 2]),
+        0,
+        0,
+        0,
+        size(),
+    );
+    // The restart decodes as a fresh single-chunk upload: its own error,
+    // reported for its own id, not the abandoned upload's.
+    let invalid = KittyGraphicsCommand::parse(b"a=t,f=32,s=1,v=1,i=2;!!!!".to_vec(), false);
+    let result = state.apply(invalid, 0, 0, 0, size());
+    assert_eq!(
+        reply(&result),
+        "\x1b_Gi=2;EINVAL:invalid base64 payload\x1b\\"
+    );
+    assert!(state.pending.is_none());
+}
+
+#[test]
+fn orphaned_relative_placements_keep_their_named_images() {
+    let mut state = KittyGraphicsState::default();
+    state.apply(
+        command("a=T,i=1,p=1,f=32,s=1,v=1", &[255; 4]),
+        0,
+        0,
+        0,
+        size(),
+    );
+    state.apply(
+        command("a=T,i=2,P=1,Q=1,f=32,s=1,v=1", &[255; 4]),
+        0,
+        0,
+        0,
+        size(),
+    );
+    state.apply(command("a=d,d=i,i=1", &[]), 0, 0, 0, size());
+    assert!(!state.has_placements());
+    let result = state.apply(command("a=p,i=2", &[]), 0, 0, 0, size());
+    assert_eq!(reply(&result), "\x1b_Gi=2;OK\x1b\\");
+    assert_eq!(state.render_placements(0, 0, 24, 80).len(), 1);
+}
+
+#[test]
+fn resending_an_image_relative_to_its_own_placement_has_no_parent() {
+    let mut state = KittyGraphicsState::default();
+    state.apply(
+        command("a=T,i=1,p=1,f=32,s=1,v=1", &[255; 4]),
+        0,
+        0,
+        0,
+        size(),
+    );
+    // Replacing image 1 removes its placements, including the parent named
+    // here. kitty frees the old placements first and answers ENOPARENT.
+    let result = state.apply(
+        command("a=T,i=1,p=2,P=1,Q=1,f=32,s=1,v=1", &[0; 4]),
+        0,
+        0,
+        0,
+        size(),
+    );
+    assert_eq!(
+        reply(&result),
+        "\x1b_Gi=1,p=2;ENOPARENT:relative placement parent not found\x1b\\"
+    );
+    assert!(result.changed, "the old placement is gone");
+    assert!(!state.has_placements());
+    assert_eq!(state.images[&1].image.rgba().unwrap(), &[0; 4]);
+}
+
+#[test]
+fn replies_report_image_numbers_as_numbers() {
+    let mut state = KittyGraphicsState::default();
+    let result = state.apply(command("a=p,I=5", &[]), 0, 0, 0, size());
+    assert_eq!(reply(&result), "\x1b_GI=5;ENOENT:image id not found\x1b\\");
+    let result = state.apply(command("a=t,I=5,f=32,s=1,v=1", &[255; 4]), 0, 0, 0, size());
+    let id = state.resolve_image_id(&command("I=5", &[])).unwrap();
+    assert_eq!(reply(&result), format!("\x1b_Gi={id},I=5;OK\x1b\\"));
+    let result = state.apply(command("a=p,I=5,p=3", &[]), 0, 0, 0, size());
+    assert_eq!(reply(&result), format!("\x1b_Gi={id},I=5,p=3;OK\x1b\\"));
+}
+
+#[test]
+fn positional_deletes_resolve_a_shared_virtual_parent_once() {
+    let mut state = KittyGraphicsState::default();
+    state.apply(
+        command("a=t,i=1,f=32,s=1,v=1,q=2", &[255; 4]),
+        0,
+        0,
+        0,
+        size(),
+    );
+    state.apply(command("a=p,U=1,i=1,p=1,c=4,r=4,q=2", &[]), 0, 0, 0, size());
+    state.apply(
+        command("a=t,i=2,f=32,s=1,v=1,q=2", &[255; 4]),
+        0,
+        0,
+        0,
+        size(),
+    );
+    for placement in 1..=2000 {
+        state.apply(
+            command(&format!("a=p,i=2,p={placement},P=1,Q=1,c=1,r=1,q=2"), &[]),
+            0,
+            0,
+            0,
+            size(),
+        );
+    }
+    let placeholders: Vec<_> = (0..4)
+        .flat_map(|row| {
+            (0..4).map(move |col| KittyGraphicsPlaceholder {
+                viewport_row: row,
+                col: col as usize,
+                image_id_low: 1,
+                image_id_high: 0,
+                image_id: 1,
+                placement_id: 1,
+                image_row: row as u32,
+                image_col: col,
+            })
+        })
+        .collect();
+    let scans = || placement::VIRTUAL_ORIGIN_SCANS.with(std::cell::Cell::get);
+    let before = scans();
+    let result = state.apply_on_screen_with_placeholders(
+        command("a=d,d=q,x=1,y=1,z=999,q=2", &[]),
+        (0, 0),
+        0,
+        size(),
+        KittyGraphicsScreen::Primary,
+        &placeholders,
+    );
+    assert!(!result.changed);
+    assert_eq!(scans() - before, 1);
+    let rendered = state.render_placements_on_screen_with_placeholders(
+        0,
+        0,
+        24,
+        80,
+        KittyGraphicsScreen::Primary,
+        &placeholders,
+    );
+    assert_eq!(
+        rendered.len(),
+        16 + 2000,
+        "each placeholder cell, then each child"
+    );
+    assert_eq!(scans() - before, 2);
+
+    state.apply_on_screen_with_placeholders(
+        command("a=d,d=p,x=1,y=1,q=2", &[]),
+        (0, 0),
+        0,
+        size(),
+        KittyGraphicsScreen::Primary,
+        &placeholders,
+    );
+    assert_eq!(state.placements.len(), 1, "every child sat on cell (0, 0)");
+}
+
+#[test]
+fn stored_images_hold_no_more_memory_than_they_are_charged() {
+    let (width, height) = (1025u32, 1024u32);
+    let pixels: Vec<u8> = (0..width * height * 4).map(|i| (i % 251) as u8).collect();
+    let control = format!("a=t,i=1,f=32,s={width},v={height},q=2");
+
+    let mut chunked = KittyGraphicsState::default();
+    let chunks: Vec<_> = pixels.chunks(3 * 4096).collect();
+    for (index, chunk) in chunks.iter().enumerate() {
+        let more = u8::from(index + 1 < chunks.len());
+        let control = if index == 0 {
+            format!("{control},m={more}")
+        } else {
+            format!("m={more}")
+        };
+        chunked.apply(command(&control, chunk), 0, 0, 0, size());
+    }
+
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+    encoder.write_all(&pixels).unwrap();
+    let mut compressed = KittyGraphicsState::default();
+    compressed.apply(
+        command(&format!("{control},o=z"), &encoder.finish().unwrap()),
+        0,
+        0,
+        0,
+        size(),
+    );
+
+    for state in [chunked, compressed] {
+        let image = &state.images[&1].image;
+        assert_eq!(image.rgba().unwrap(), pixels.as_slice());
+        assert_eq!(image.rgba_capacity(), image.byte_len());
+        assert_eq!(state.stored_bytes, image.byte_len());
+    }
+}
+
+#[test]
+fn compositions_write_into_unshared_frames_in_place() {
+    let mut state = KittyGraphicsState::default();
+    state.apply(
+        command("a=t,i=1,f=32,s=2,v=1,q=2", &[9; 8]),
+        0,
+        0,
+        0,
+        size(),
+    );
+    // An opaque red frame 2 on a background, then make frame 2 current.
+    state.apply(
+        command("a=f,i=1,f=32,s=1,v=1,Y=4278190335,q=2", &[255, 0, 0, 255]),
+        0,
+        0,
+        0,
+        size(),
+    );
+    let frames = |state: &KittyGraphicsState| {
+        state.images[&1]
+            .animation
+            .as_ref()
+            .unwrap()
+            .frames
+            .iter()
+            .map(|frame| frame.image.rgba().unwrap().to_vec())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(frames(&state)[1], [255, 0, 0, 255, 255, 0, 0, 255]);
+    state.apply(command("a=a,i=1,c=2,q=2", &[]), 0, 0, 0, size());
+
+    let pointer = |state: &KittyGraphicsState| {
+        state.images[&1].animation.as_ref().unwrap().frames[1]
+            .image
+            .rgba()
+            .unwrap()
+            .as_ptr()
+    };
+    let before = pointer(&state);
+    let bytes = state.stored_bytes;
+    let result = state.apply(command("a=c,i=1,r=1,c=2,w=1,h=1,C=1", &[]), 0, 0, 0, size());
+    assert_eq!(reply(&result), "\x1b_Gi=1;OK\x1b\\");
+    assert_eq!(
+        pointer(&state),
+        before,
+        "the current frame is edited in place"
+    );
+    assert_eq!(frames(&state)[1], [9, 9, 9, 9, 255, 0, 0, 255]);
+    assert_eq!(state.images[&1].image.rgba().unwrap(), &frames(&state)[1]);
+    assert_eq!(state.stored_bytes, bytes);
+
+    // A frame a snapshot still shows is copied, never changed under it.
+    state.apply(command("a=p,i=1,q=2", &[]), 0, 0, 0, size());
+    let snapshot = state.render_placements(0, 0, 24, 80);
+    state.apply(
+        command("a=c,i=1,r=2,c=2,X=1,x=0,w=1,h=1,C=1", &[]),
+        0,
+        0,
+        0,
+        size(),
+    );
+    assert_eq!(
+        snapshot[0].image.rgba().unwrap(),
+        [9, 9, 9, 9, 255, 0, 0, 255]
+    );
+    assert_eq!(frames(&state)[1], [255, 0, 0, 255, 255, 0, 0, 255]);
+    assert_ne!(pointer(&state), before);
+
+    // A failed composition leaves a still image as it was.
+    state.apply(
+        command("a=t,i=2,f=32,s=1,v=1,q=2", &[1; 4]),
+        0,
+        0,
+        0,
+        size(),
+    );
+    let result = state.apply(command("a=c,i=2,r=1,c=1", &[]), 0, 0, 0, size());
+    assert!(reply(&result).contains("EINVAL"));
+    assert!(state.images[&2].animation.is_none());
+    assert_eq!(state.images[&2].image.rgba().unwrap(), &[1; 4]);
+}

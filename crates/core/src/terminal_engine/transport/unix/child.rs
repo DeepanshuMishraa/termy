@@ -98,7 +98,8 @@ impl InheritedDescriptors {
 
 /// Make `user` the session's controlling terminal and the standard streams,
 /// as `login_tty` does, then drop every other inherited descriptor. Returns
-/// the status endpoint, which moves above stderr if it started below it.
+/// the status endpoint, which moves above stderr if it started below it. An
+/// error carries the endpoint the failure should be reported on.
 unsafe fn attach_child_terminal(
     user: c_int,
     mut status: c_int,
@@ -108,10 +109,13 @@ unsafe fn attach_child_terminal(
     // freshly forked child.
     unsafe {
         if status <= 2 {
-            status = libc::fcntl(status, libc::F_DUPFD_CLOEXEC, 3);
-            if status < 0 {
-                return Err(-1);
+            let moved = libc::fcntl(status, libc::F_DUPFD_CLOEXEC, 3);
+            if moved < 0 {
+                // Nothing was redirected yet, so the original endpoint can
+                // still report the failure instead of looking like a spawn.
+                return Err(status);
             }
+            status = moved;
         }
         if libc::setsid() < 0 || libc::ioctl(user, libc::TIOCSCTTY as _, 0) < 0 {
             return Err(status);
@@ -124,4 +128,30 @@ unsafe fn attach_child_terminal(
         descriptors.close_all_except(status);
     }
     Ok(status)
+}
+
+/// Highest signal number whose disposition the child resets. Invalid or
+/// reserved numbers (e.g. glibc's internal real-time signals) just fail.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+const MAX_RESET_SIGNAL: c_int = 64;
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+const MAX_RESET_SIGNAL: c_int = 31;
+
+/// Block every signal on the calling thread, returning the previous mask.
+fn block_all_signals() -> libc::sigset_t {
+    // SAFETY: both sets are valid, initialized sigset_t values for the call.
+    unsafe {
+        let mut all = std::mem::zeroed::<libc::sigset_t>();
+        let mut previous = std::mem::zeroed::<libc::sigset_t>();
+        libc::sigfillset(&mut all);
+        let _ = libc::pthread_sigmask(libc::SIG_SETMASK, &all, &mut previous);
+        previous
+    }
+}
+
+fn restore_signal_mask(mask: &libc::sigset_t) {
+    // SAFETY: `mask` came from `block_all_signals` on this thread.
+    unsafe {
+        let _ = libc::pthread_sigmask(libc::SIG_SETMASK, mask, ptr::null_mut());
+    }
 }

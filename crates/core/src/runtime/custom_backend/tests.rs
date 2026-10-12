@@ -380,6 +380,7 @@ fn native_exit_commits_synchronized_tail_before_exit_event() {
                 "printf '\\033[?2026hfinal-tail'".to_owned(),
             ],
         }),
+        None,
     )
     .unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -416,6 +417,7 @@ fn unqueueable_input_reports_one_dropped_input_event() {
             program: "/bin/sleep".to_owned(),
             args: vec!["5".to_owned()],
         }),
+        None,
     )
     .unwrap();
     terminal.drain_events(&mut |_| None);
@@ -513,4 +515,175 @@ fn render_damage_reads_stay_coherent_while_output_streams() {
     let mut fresh = Vec::new();
     terminal.visit_viewport_cells(|_, _, _, cell| fresh.push(cell.clone()));
     assert_eq!(incremental.concat(), fresh);
+}
+
+#[cfg(unix)]
+#[test]
+fn hidden_terminal_wakes_the_host_when_its_child_exits() {
+    let (send, receive) = flume::unbounded();
+    let terminal = CustomBackend::new_with_launch_and_wakeup_notifier(
+        TerminalSize::default(),
+        None,
+        Some(TerminalWakeupNotifier::new(move || {
+            let _ = send.send(());
+        })),
+        None,
+        None,
+        Some(&TerminalLaunch::Program {
+            program: "/bin/sh".to_owned(),
+            args: vec!["-c".to_owned(), "sleep 0.3; exit 3".to_owned()],
+        }),
+        None,
+    )
+    .unwrap();
+    terminal.set_wakeup_enabled(false);
+    let _ = terminal.drain_events(&mut |_| None);
+    while receive.try_recv().is_ok() {}
+    receive
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the exit wakes a hidden terminal's host");
+    let (events, _) = terminal.drain_events(&mut |_| None);
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, TerminalEvent::Exit))
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn pty_replies_reach_the_child_in_order() {
+    let terminal = CustomBackend::new_with_launch_and_wakeup_notifier(
+        TerminalSize::default(),
+        None,
+        None,
+        None,
+        None,
+        Some(&TerminalLaunch::Program {
+            program: "/bin/sh".to_owned(),
+            args: vec![
+                "-c".to_owned(),
+                // Replies are queued per feed slice straight to the transport.
+                "stty raw -echo; printf '\\033[6nx\\033[6n'; dd bs=1 count=12 2>/dev/null | od -An -c | tr -d ' \\n'; printf '|done'; sleep 1".to_owned(),
+            ],
+        }),
+        None,
+    )
+    .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let text: String = terminal
+            .snapshot()
+            .cells
+            .into_iter()
+            .map(|cell| cell.char)
+            .collect();
+        if text.contains("|done") {
+            assert!(text.contains(r"033[1;1R033[1;2R|done"), "{text:?}");
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "child read its replies: {text:?}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn damage_cells_reject_spans_outside_the_viewport() {
+    let terminal = CustomBackend::new_display(
+        TerminalSize {
+            cols: 5,
+            rows: 3,
+            ..TerminalSize::default()
+        },
+        None,
+    );
+    terminal.feed_output(b"abcde");
+    let span = |row, left_col, right_col| TerminalDirtySpan {
+        row,
+        left_col,
+        right_col,
+    };
+    terminal.with_render_damage(|_, mut cells| {
+        let mut visited = 0;
+        assert!(cells.visit(&[span(0, 1, 3)], |_, _, _, _, _| visited += 1));
+        assert_eq!(visited, 3);
+        for outside in [span(3, 0, 1), span(0, 2, 5), span(0, 3, 2)] {
+            assert!(!cells.visit(&[span(0, 0, 0), outside], |_, _, _, _, _| visited += 1));
+        }
+        assert_eq!(visited, 3, "a rejected batch visits nothing");
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn restored_output_precedes_the_new_sessions_first_output() {
+    let terminal = CustomBackend::new_with_launch_and_wakeup_notifier(
+        TerminalSize::default(),
+        None,
+        None,
+        None,
+        None,
+        Some(&TerminalLaunch::Program {
+            program: "/bin/sh".to_owned(),
+            args: vec!["-c".to_owned(), "printf live; sleep 1".to_owned()],
+        }),
+        Some(b"saved\r\n".as_slice()),
+    )
+    .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let snapshot = terminal.snapshot();
+        let cols = usize::from(snapshot.cols);
+        let row = |index: usize| -> String {
+            snapshot.cells[index * cols..(index + 1) * cols]
+                .iter()
+                .map(|cell| cell.char)
+                .collect::<String>()
+                .trim_end()
+                .to_owned()
+        };
+        if row(1) == "live" {
+            assert_eq!(row(0), "saved");
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "child printed: {:?}",
+            (row(0), row(1))
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn reverse_video_swaps_the_resolved_default_colors() {
+    let mut terminal = CustomBackend::new_display(TerminalSize::default(), None);
+    let colors = TerminalQueryColors {
+        foreground: TerminalColor { r: 1, g: 2, b: 3 },
+        background: TerminalColor { r: 9, g: 8, b: 7 },
+        ..TerminalQueryColors::default()
+    };
+    terminal.set_query_colors(colors);
+    let before = terminal.palette();
+    assert_eq!((before.foreground, before.background), (None, None));
+    terminal.feed_output(b"\x1b[?5h");
+    let reversed = terminal.palette();
+    assert_eq!(reversed.foreground, Some(colors.background));
+    assert_eq!(reversed.background, Some(colors.foreground));
+    assert_ne!(reversed.revision, before.revision);
+    // A program-set foreground is swapped as well.
+    terminal.feed_output(b"\x1b]10;#abcdef\x07");
+    assert_eq!(
+        terminal.palette().background,
+        Some(TerminalColor {
+            r: 0xab,
+            g: 0xcd,
+            b: 0xef
+        })
+    );
+    terminal.feed_output(b"\x1b[?5l");
+    assert_eq!(terminal.palette().background, None);
 }

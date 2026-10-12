@@ -529,6 +529,46 @@ impl Terminal {
         })
     }
 
+    /// A new session that starts with a saved buffer. Locally the buffer is
+    /// replayed before the shell starts, so it can't interleave with the new
+    /// prompt; the session host has no such path in its protocol, so there it
+    /// is still replayed right after spawning.
+    fn new_native_restoring(
+        size: TerminalSize,
+        configured_working_dir: Option<&str>,
+        wakeup_router: Option<&NativeTerminalWakeupRouter>,
+        tab_title_shell_integration: Option<&TabTitleShellIntegration>,
+        runtime_config: Option<&TerminalRuntimeConfig>,
+        multiplexer: Option<&termy_core::multiplexer::SessionClient>,
+        restored_output: &[u8],
+    ) -> anyhow::Result<Self> {
+        if multiplexer.is_some() {
+            let terminal = Self::new_native_with_launch(
+                size,
+                configured_working_dir,
+                wakeup_router,
+                tab_title_shell_integration,
+                runtime_config,
+                None,
+                multiplexer,
+            )?;
+            terminal.hydrate_output(restored_output);
+            return Ok(terminal);
+        }
+        Self::build_native(wakeup_router, |notifier| {
+            let terminal = NativeTerminal::new_with_launch_restoring_output(
+                size,
+                configured_working_dir,
+                Some(notifier),
+                tab_title_shell_integration,
+                runtime_config,
+                None,
+                restored_output,
+            )?;
+            Ok((terminal, None))
+        })
+    }
+
     fn attach_native_session(
         id: &str,
         client: &termy_core::multiplexer::SessionClient,

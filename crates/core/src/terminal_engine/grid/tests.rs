@@ -569,9 +569,13 @@ fn saved_cursor_restores_style_wrap_and_origin() {
     grid.save_cursor();
     grid.goto(2, 1);
     grid.pen.style.foreground = Color::DEFAULT;
+    // Shape, visibility and blinking are live state, not part of the save.
+    grid.cursor.shape = CursorShape::Underline;
+    grid.cursor.visible = false;
     grid.restore_cursor();
     assert_eq!((grid.cursor.row, grid.cursor.col), (0, 3));
-    assert_eq!(grid.cursor.shape, CursorShape::Beam);
+    assert_eq!(grid.cursor.shape, CursorShape::Underline);
+    assert!(!grid.cursor.visible);
     assert_eq!(grid.pen.style.foreground, Color::indexed(1));
     grid.put_char('e');
     assert_eq!((grid.cursor.row, grid.cursor.col), (1, 1));
@@ -603,6 +607,52 @@ fn tabs_origin_and_relative_motion_use_the_configured_region() {
 }
 
 #[test]
+fn relative_vertical_motion_stops_at_margins_only_from_their_side() {
+    // Rows 2..=4 form the region. Like xterm, CUU stops at the top margin
+    // from anywhere below it and CUD at the bottom margin from above it.
+    for (start, delta, expected) in [
+        (8, -20, 2),
+        (0, 20, 4),
+        (3, -20, 2),
+        (3, 20, 4),
+        (1, -20, 0),
+        (6, 20, 9),
+    ] {
+        let mut grid = grid(4, 10, 0);
+        grid.set_scroll_region(2, 5);
+        grid.goto(start, 0);
+        grid.move_cursor(delta, 0);
+        assert_eq!(grid.cursor.row, expected, "{start} {delta}");
+    }
+}
+
+#[test]
+fn resize_keeps_tab_stops_in_regained_columns() {
+    let mut grid = grid(20, 2, 0);
+    grid.goto(0, 8);
+    grid.clear_tab(false);
+    grid.goto(0, 12);
+    grid.set_tab();
+    grid.resize(Size { cols: 6, rows: 2 });
+    grid.resize(Size { cols: 30, rows: 2 });
+    let stops = |grid: &mut Grid| {
+        grid.carriage_return();
+        let mut stops = Vec::new();
+        for _ in 0..4 {
+            grid.tab();
+            stops.push(grid.cursor.col);
+        }
+        stops
+    };
+    // Columns past the previous widest width (20) get default stops.
+    assert_eq!(stops(&mut grid), [12, 16, 24, 29]);
+    grid.clear_tab(true);
+    grid.resize(Size { cols: 10, rows: 2 });
+    grid.resize(Size { cols: 30, rows: 2 });
+    assert_eq!(stops(&mut grid), [29, 29, 29, 29]);
+}
+
+#[test]
 fn height_resize_keeps_cursor_visible_and_recovers_history_on_growth() {
     let mut grid = grid(6, 4, 10);
     print(&mut grid, "one\r\ntwo\r\nthree\r\nfour");
@@ -631,12 +681,32 @@ fn limits_bound_dimensions_and_scrollback_storage() {
 #[test]
 fn mixed_edit_resize_and_scroll_sequences_preserve_grid_invariants() {
     for initial in [0xd9a3_4871_u32, 0x1234_5678, 0x9e37_79b9, 0x0bad_f00d] {
-        mixed_edit_sequence_preserves_grid_invariants(initial);
+        mixed_edit_sequence_preserves_grid_invariants(initial, 13, false);
     }
 }
 
-fn mixed_edit_sequence_preserves_grid_invariants(mut seed: u32) {
-    let mut grid = grid(13, 5, 11);
+/// At 16+ columns, quiet intervals make scrolling rows pack and recycle
+/// through `Row::retain`, and pen metadata reaches the packed form.
+#[test]
+fn wide_mixed_sequences_preserve_grid_invariants_while_packing_rows() {
+    for initial in [0x2545_f491_u32, 0x6c07_8965, 0xdead_beef] {
+        mixed_edit_sequence_preserves_grid_invariants(initial, 20, false);
+    }
+}
+
+/// DECSLRM margins move cells within rows instead of rotating whole rows.
+#[test]
+fn mixed_sequences_inside_left_right_margins_preserve_grid_invariants() {
+    for initial in [0x5bd1_e995_u32, 0x85eb_ca6b, 0xc2b2_ae35] {
+        mixed_edit_sequence_preserves_grid_invariants(initial, 20, true);
+    }
+}
+
+fn mixed_edit_sequence_preserves_grid_invariants(mut seed: u32, cols: usize, margins: bool) {
+    let wide = cols >= 16;
+    let mut grid = grid(cols, 5, 11);
+    grid.set_lr_margin_mode(margins);
+    let mut packed = false;
     for _ in 0..3000 {
         seed ^= seed << 13;
         seed ^= seed >> 17;
@@ -648,6 +718,21 @@ fn mixed_edit_sequence_preserves_grid_invariants(mut seed: u32) {
             Color::DEFAULT
         };
         grid.insert_mode = seed & 0x0100_0000 != 0;
+        if wide {
+            grid.pen.set_underline_color(if seed & 0x0200_0000 != 0 {
+                Color::indexed(1)
+            } else {
+                Color::DEFAULT
+            });
+            if seed & 0x0c00_0000 == 0 {
+                grid.compact_history(count);
+            }
+        }
+        // Resizes and screen switches reset the margins, so keep setting them.
+        if margins && seed >> 29 == 0 {
+            let left = (seed >> 4) as usize % 6;
+            grid.set_lr_margins(left, left + 2 + (seed >> 12) as usize % 10);
+        }
         match seed % 15 {
             0 => grid.put_char('界'),
             1 => grid.put_char('\u{301}'),
@@ -661,7 +746,7 @@ fn mixed_edit_sequence_preserves_grid_invariants(mut seed: u32) {
             9 => grid.insert_lines(count),
             10 => grid.delete_lines(count),
             11 => grid.resize(Size {
-                cols: count + 1,
+                cols: if wide { cols - 4 + count } else { count + 1 },
                 rows: 3 + count % 4,
             }),
             12 => {
@@ -677,6 +762,18 @@ fn mixed_edit_sequence_preserves_grid_invariants(mut seed: u32) {
         let bytes: usize = grid.history.iter().map(Row::heap_bytes).sum();
         assert_eq!(grid.history_bytes, bytes);
         assert!(bytes <= history::HISTORY_BYTE_BUDGET);
+        packed |= grid.history.iter().any(Row::is_packed);
+        // Rows awaiting compaction are charged at least their metadata, and
+        // compacted rows exactly what they reference.
+        let measured = grid.history.len() - grid.pending_compaction.min(grid.history.len());
+        for (index, row) in grid.history.iter().enumerate() {
+            let units = row.count_extra_units();
+            if index < measured {
+                assert_eq!(row.extra_units, units);
+            } else {
+                assert!(row.extra_units >= units);
+            }
+        }
         for row in grid
             .history
             .iter()
@@ -685,6 +782,12 @@ fn mixed_edit_sequence_preserves_grid_invariants(mut seed: u32) {
         {
             assert_eq!(row.cells().len(), grid.size.cols);
             assert!(row.occupied <= row.cells().len());
+            // History accounting relies on writers flagging dense metadata.
+            assert!(
+                row.has_extras
+                    || row.packed.is_some()
+                    || row.cells.iter().all(|cell| cell.extra.is_none())
+            );
             let blank = Cell {
                 style: Style {
                     background: row.clear_background,
@@ -713,6 +816,7 @@ fn mixed_edit_sequence_preserves_grid_invariants(mut seed: u32) {
             }
         }
     }
+    assert_eq!(packed, wide);
 }
 
 #[test]

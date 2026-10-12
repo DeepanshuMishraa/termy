@@ -306,11 +306,12 @@ fn unqueueable_reader_reply_is_dropped_and_keeps_the_writer_open() {
             max_entries: 0,
         },
     );
-    assert!(queue_reader_protocol_reply(&writer, b"reply".to_vec()));
+    queue_reader_protocol_reply(&writer, b"reply".to_vec());
     assert!(!writer.control.is_closed());
     assert_eq!(writer.control.protocol_reply_backlog(), (0, 0));
     writer.close();
-    assert!(!queue_reader_protocol_reply(&writer, b"reply".to_vec()));
+    queue_reader_protocol_reply(&writer, b"reply".to_vec());
+    assert_eq!(writer.control.protocol_reply_backlog(), (0, 0));
 }
 
 #[test]
@@ -588,4 +589,19 @@ fn mouse_motion_fills_only_half_the_backlog_and_leaves_room_for_keys() {
     writer.write_owned(b"k1".to_vec()).unwrap();
     writer.write_owned(b"k2".to_vec()).unwrap();
     assert_eq!(writer.control.backlog(), (8, 4));
+}
+
+#[test]
+fn waiting_on_a_hung_up_descriptor_fails_instead_of_spinning() {
+    let mut fds = [0; 2];
+    // SAFETY: `fds` has room for both pipe ends.
+    assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+    // SAFETY: both descriptors were just created and are owned here.
+    let (read, write) = unsafe { (File::from_raw_fd(fds[0]), File::from_raw_fd(fds[1])) };
+    let (wake, _wake_sender) = signal_socket_pair().unwrap();
+    drop(read);
+    let started = Instant::now();
+    let result = wait_for_pty_writable(&write, &wake);
+    assert!(started.elapsed() < Duration::from_millis(500), "{result:?}");
+    assert_eq!(result.unwrap_err().kind(), ErrorKind::BrokenPipe);
 }

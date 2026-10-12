@@ -12,7 +12,7 @@ mod input;
 mod theme;
 
 use termy_core::terminal_engine::{
-    CursorShape, Damage, Engine, Event, MouseTracking, Options, Size,
+    Color, CursorShape, Damage, Engine, Event, MouseTracking, Options, Size,
 };
 use termy_core::{ProgressState, TerminalColor, TerminalQueryColors};
 use wasm_bindgen::prelude::*;
@@ -33,6 +33,8 @@ pub mod mode_bits {
     pub const SYNCHRONIZED_UPDATE: u32 = 1 << 5;
     pub const ALTERNATE_SCREEN: u32 = 1 << 6;
     pub const CURSOR_VISIBLE: u32 = 1 << 7;
+    /// DECSCNM; [`TermyEngine::dynamic_color_overrides`] already swaps.
+    pub const REVERSE_VIDEO: u32 = 1 << 8;
 }
 
 /// One headless terminal: parser, grid, scrollback and protocol state.
@@ -42,6 +44,8 @@ pub struct TermyEngine {
     replies: Vec<u8>,
     cells: CellBuffer,
     graphics: GraphicsSnapshot,
+    /// The theme colors from `set_query_colors`, to resolve DECSCNM swaps.
+    query_colors: Option<TerminalQueryColors>,
 }
 
 #[wasm_bindgen]
@@ -58,6 +62,7 @@ impl TermyEngine {
             replies: Vec::new(),
             cells: CellBuffer::default(),
             graphics: GraphicsSnapshot::default(),
+            query_colors: None,
         }
     }
 
@@ -145,6 +150,7 @@ impl TermyEngine {
         set(mode_bits::SYNCHRONIZED_UPDATE, modes.synchronized_update);
         set(mode_bits::ALTERNATE_SCREEN, self.engine.alternate_screen());
         set(mode_bits::CURSOR_VISIBLE, self.engine.cursor().visible);
+        set(mode_bits::REVERSE_VIDEO, modes.reverse_video);
         bits
     }
 
@@ -283,15 +289,24 @@ impl TermyEngine {
     }
 
     /// OSC 10/11/12 overrides as raw colors: `[foreground, background, cursor]`.
+    /// Under DECSCNM the default colors come back swapped, resolved against
+    /// the theme colors passed to `set_query_colors`.
     pub fn dynamic_color_overrides(&self) -> Vec<u32> {
-        [
-            self.engine.foreground(),
-            self.engine.background(),
-            self.engine.cursor_color(),
-        ]
-        .iter()
-        .map(|color| color.map_or(0, cells::raw_color))
-        .collect()
+        let mut foreground = self.engine.foreground();
+        let mut background = self.engine.background();
+        if self.engine.modes().reverse_video
+            && let Some(theme) = self.query_colors
+        {
+            let rgb = |color: TerminalColor| Color::rgb(color.r, color.g, color.b);
+            let resolved_foreground = foreground.unwrap_or(rgb(theme.foreground));
+            let resolved_background = background.unwrap_or(rgb(theme.background));
+            foreground = Some(resolved_background);
+            background = Some(resolved_foreground);
+        }
+        [foreground, background, self.engine.cursor_color()]
+            .iter()
+            .map(|color| color.map_or(0, cells::raw_color))
+            .collect()
     }
 
     pub fn palette_revision(&self) -> f64 {
@@ -313,12 +328,14 @@ impl TermyEngine {
         for (slot, value) in ansi.iter_mut().zip(&colors[3..19]) {
             *slot = color(*value);
         }
-        self.engine.set_query_colors(TerminalQueryColors {
+        let query_colors = TerminalQueryColors {
             ansi,
             foreground: color(colors[0]),
             background: color(colors[1]),
             cursor: Some(color(colors[2])),
-        });
+        };
+        self.query_colors = Some(query_colors);
+        self.engine.set_query_colors(query_colors);
     }
 
     /// Active kitty keyboard protocol flags (CSI > u), 0 when legacy encoding.

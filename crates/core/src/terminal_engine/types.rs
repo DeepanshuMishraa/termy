@@ -112,7 +112,8 @@ pub struct Cell {
     pub character: char,
 }
 
-const _: () = assert!(size_of::<Style>() == 10 && size_of::<Cell>() == 24);
+// 24 B on 64-bit targets; the extra pointer is 4 B on wasm32, so 20 B there.
+const _: () = assert!(size_of::<Style>() == 10 && size_of::<Cell>() == size_of::<usize>() + 16);
 
 impl Default for Cell {
     fn default() -> Self {
@@ -164,28 +165,51 @@ impl Cell {
             character: ' ',
             style: self.style,
             flags: Self::WIDE_SPACER,
-            extra: self.extra.as_ref().and_then(Self::spacer_extra),
+            extra: self.spacer_extra(&mut None),
         }
     }
     /// [`Self::wide_spacer`] written in place, without a temporary cell.
     #[inline]
-    pub(super) fn become_wide_spacer_of(&mut self, wide: &Cell) {
+    pub(super) fn become_wide_spacer_of(
+        &mut self,
+        wide: &Cell,
+        cache: &mut Option<Arc<CellExtra>>,
+    ) {
         self.character = ' ';
         self.style = wide.style;
         self.flags = Self::WIDE_SPACER;
-        self.extra = wide.extra.as_ref().and_then(Self::spacer_extra);
+        self.extra = wide.spacer_extra(cache);
+    }
+    /// Metadata for this wide cell's spacer: only its underline color.
+    /// `cache` keeps the last color-only extra built for a cell that also has
+    /// text or a link, so a run of such glyphs shares one allocation.
+    #[inline]
+    fn spacer_extra(&self, cache: &mut Option<Arc<CellExtra>>) -> Option<Arc<CellExtra>> {
+        self.extra
+            .as_ref()
+            .and_then(|extra| Self::spacer_extra_of(extra, cache))
     }
     #[cold]
-    fn spacer_extra(extra: &Arc<CellExtra>) -> Option<Arc<CellExtra>> {
+    fn spacer_extra_of(
+        extra: &Arc<CellExtra>,
+        cache: &mut Option<Arc<CellExtra>>,
+    ) -> Option<Arc<CellExtra>> {
         if extra.underline_color == Color::DEFAULT {
             None
         } else if extra.combining.is_empty() && extra.hyperlink.is_none() {
             Some(Arc::clone(extra))
         } else {
-            Some(Arc::new(CellExtra {
-                underline_color: extra.underline_color,
-                ..CellExtra::default()
-            }))
+            // Cells copy-on-write shared extras, so the cached one never changes.
+            if cache
+                .as_ref()
+                .is_none_or(|cached| cached.underline_color != extra.underline_color)
+            {
+                *cache = Some(Arc::new(CellExtra {
+                    underline_color: extra.underline_color,
+                    ..CellExtra::default()
+                }));
+            }
+            cache.clone()
         }
     }
     pub(super) fn push_combining(&mut self, character: char) {

@@ -204,6 +204,35 @@ fn sgr_semicolon_and_colon_forms_keep_style_and_hyperlink_independent() {
 }
 
 #[test]
+fn reopened_links_and_wide_spacers_reuse_shared_metadata() {
+    use std::sync::Arc;
+
+    let extra = |cell: &Cell| cell.extra.clone().unwrap();
+    let mut engine = engine(20, 2, 0);
+    // Reopening the pen's current link keeps its metadata allocation.
+    engine.feed(b"\x1b]8;;https://example.test\x1b\\A\x1b]8;;https://example.test\x1b\\B");
+    let cells = engine.viewport_row(0).unwrap();
+    assert!(Arc::ptr_eq(&extra(&cells[0]), &extra(&cells[1])));
+    // Closing a link that isn't open is a no-op, and keeps the color.
+    engine.feed(b"\x1b]8;;\x1b\\\x1b[58:5:1m\x1b]8;;\x1b\\C");
+    let cells = engine.viewport_row(0).unwrap();
+    assert!(cells[2].hyperlink().is_none());
+    assert_eq!(cells[2].underline_color(), Color::indexed(1));
+    // Spacers of linked, colored wide glyphs share one color-only extra.
+    engine.feed("\x1b]8;;https://example.test\x1b\\界界".as_bytes());
+    let cells = engine.viewport_row(0).unwrap();
+    let (first, second) = (extra(&cells[4]), extra(&cells[6]));
+    assert!(Arc::ptr_eq(&first, &second));
+    assert!(first.hyperlink.is_none());
+    assert_eq!(first.underline_color, Color::indexed(1));
+    // A new color gets its own spacer extra.
+    engine.feed("\x1b[58:5:2m界".as_bytes());
+    let cells = engine.viewport_row(0).unwrap();
+    assert_eq!(cells[8].underline_color(), Color::indexed(2));
+    assert!(!Arc::ptr_eq(&first, &extra(&cells[8])));
+}
+
+#[test]
 fn wide_and_combining_text_survive_bytewise_input() {
     let mut engine = engine(8, 2, 0);
     for byte in "A界e\u{301}🙂".as_bytes() {

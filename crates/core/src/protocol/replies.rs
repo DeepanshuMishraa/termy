@@ -96,7 +96,7 @@ mod tests {
         feed(b"\x1b]10;#123456\x07\x1b]10;?\x07\x1b]4;8;?\x07", &mut host);
         assert_eq!(
             host.replies,
-            b"\x1b]10;rgb:1212/3434/5656\x1b\\\x1b]4;8;rgb:7f7f/7f7f/7f7f\x1b\\"
+            b"\x1b]10;rgb:1212/3434/5656\x07\x1b]4;8;rgb:7f7f/7f7f/7f7f\x07"
         );
     }
 

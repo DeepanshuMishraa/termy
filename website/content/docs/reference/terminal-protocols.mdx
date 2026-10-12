@@ -23,7 +23,7 @@ Sequences that are not listed here are ignored without affecting the screen.
 | Hyperlinks | `OSC 8 ; params ; uri ST` | Supports the `id=` parameter. |
 | Clipboard | `OSC 52 ; targets ; data ST` | Writes are always allowed. Reads (`data` = `?`) follow the `clipboard_read` setting. |
 | Shell integration | `OSC 133 ; A/B/C/D` | Prompt start, command start, command executing, and command finished with an optional exit code. Always parsed; `shell_integration_enabled` only controls the environment Termy passes to shells. |
-| Working directory | `OSC 7 ; file://host/path ST`, `OSC 9 ; 9 ; path ST` | Percent-encoded `file://` URLs are decoded. |
+| Working directory | `OSC 7 ; file://host/path ST`, `OSC 9 ; 9 ; path ST` | Percent-encoded `file://` URLs are decoded; a path with a literal `%` is kept as written. Other URL schemes are ignored. |
 | Window title | `OSC 0`, `OSC 2`, `CSI 22 t`, `CSI 23 t` | Title stack holds up to 64 entries. `OSC 1` (icon title) is ignored. |
 
 ## Colors
@@ -31,11 +31,12 @@ Sequences that are not listed here are ignored without affecting the screen.
 | Sequence | Notes |
 | --- | --- |
 | `OSC 4 ; index ; spec` | Set or query (`?`) palette entries 0–255. |
-| `OSC 10`, `OSC 11`, `OSC 12` | Set or query foreground, background, and cursor colors. A cursor color query replies only after a program has set one. |
+| `OSC 10`, `OSC 11`, `OSC 12` | Set or query foreground, background, and cursor colors. Without a cursor color, the cursor query reports the foreground. |
 | `OSC 104`, `OSC 110`, `OSC 111`, `OSC 112` | Reset palette entries, foreground, background, and cursor color. |
 
 Color specs accept `#rgb` through `#rrrrggggbbbb` and `rgb:r/g/b` with one to
-four hex digits per component. Replies use `rgb:rrrr/gggg/bbbb`.
+four hex digits per component. Replies use `rgb:rrrr/gggg/bbbb` and end with
+the query's terminator (BEL or ST).
 
 ## Text attributes (SGR)
 
@@ -57,26 +58,29 @@ four hex digits per component. Replies use `rgb:rrrr/gggg/bbbb`.
 
 ## Modes
 
-Set with `CSI ? n h`, reset with `CSI ? n l`. Except for `3` and `1048`, every
-mode below can be queried with DECRQM (`CSI ? n $ p`) and saved and restored
-with XTSAVE (`CSI ? n s`) and XTRESTORE (`CSI ? n r`).
+Set with `CSI ? n h`, reset with `CSI ? n l`. Every mode below can be queried
+with DECRQM (`CSI ? n $ p`). Except for `3`, `1048`, and `2027`, each can also be saved
+and restored with XTSAVE (`CSI ? n s`) and XTRESTORE (`CSI ? n r`).
 
 | Mode | Name |
 | --- | --- |
 | `1` | Application cursor keys (DECCKM) |
 | `3` | DECCOLM: clears the screen and resets margins; does not resize |
+| `5` | Reverse video (DECSCNM): swaps the default foreground and background (explicitly colored cells keep their colors) |
 | `6` | Origin mode (DECOM) |
 | `7` | Autowrap (DECAWM) |
+| `69` | Left/right margin mode (DECLRMM): enables DECSLRM; resetting it resets the margins |
 | `9` | X10 mouse reporting |
 | `12` | Cursor blinking |
 | `25` | Cursor visible (DECTCEM) |
-| `47`, `1047`, `1049` | Alternate screen; `1049` also saves the cursor and clears on entry |
-| `1048` | Save/restore cursor |
-| `1000`, `1002`, `1003` | Mouse click, drag, and motion tracking |
+| `47`, `1047`, `1049` | Alternate screen; `1049` also saves the cursor and clears on entry, including when `47`/`1047` already switched screens |
+| `1048` | Save/restore cursor; DECRQM reports whether a cursor is saved |
+| `1000`, `1002`, `1003` | Mouse click, drag, and motion tracking; resetting any of `9`, `1000`, `1002`, `1003` turns tracking off |
 | `1004` | Focus in/out events |
-| `1005`, `1006`, `1015`, `1016` | Mouse encoding: UTF-8, SGR, urxvt, SGR pixels |
+| `1005`, `1006` | Mouse encoding: UTF-8, SGR. urxvt (`1015`) and SGR pixels (`1016`) are not supported and report `0` |
 | `2004` | Bracketed paste |
 | `2026` | Synchronized output |
+| `2027` | Grapheme clustering: always on; DECRQM reports `3` (permanently set) |
 | `5522` | Kitty clipboard paste events |
 
 ANSI modes `4` (insert, IRM) and `20` (line feed/new line, LNM) use
@@ -88,15 +92,16 @@ ANSI modes `4` (insert, IRM) and `20` (line feed/new line, LNM) use
 | --- | --- | --- |
 | Primary device attributes | `CSI c`, `ESC Z` | `CSI ? 62 ; 22 c` |
 | Secondary device attributes | `CSI > c` | `CSI > 1 ; 1 ; 0 c` |
+| Terminal name and version (XTVERSION) | `CSI > q`, `CSI > 0 q` | `DCS > \| Termy version ST`, with the engine's version |
 | Device status | `CSI 5 n` | `CSI 0 n` |
-| Cursor position | `CSI 6 n`, `CSI ? 6 n` | `CSI row ; col R`, relative to the scroll region in origin mode |
+| Cursor position | `CSI 6 n`, `CSI ? 6 n` | `CSI row ; col R`, relative to the margins in origin mode |
 | Mode report | `CSI ? n $ p`, `CSI n $ p` | `CSI ? n ; status $ y` |
 | Kitty keyboard flags | `CSI ? u` | `CSI ? flags u` |
 | Text area size in pixels | `CSI 14 t` | `CSI 4 ; height ; width t` |
 | Cell size in pixels | `CSI 16 t` | `CSI 6 ; height ; width t` |
 | Text area size in cells | `CSI 18 t` | `CSI 8 ; rows ; cols t` |
-| DECRQSS | `DCS $ q Pt ST` | SGR (`m`), scroll region (`r`), cursor style (` q`), protection (`"q`), and conformance level (`"p`) |
-| XTGETTCAP | `DCS + q names ST` | `Co`/`colors` (`256`), `TN`/`name` (`xterm-256color`), and `RGB` (`8`) |
+| DECRQSS | `DCS $ q Pt ST` | SGR (`m`), scroll region (`r`), left/right margins (`s`), cursor style (` q`), protection (`"q`), and conformance level (`"p`) |
+| XTGETTCAP | `DCS + q names ST` | `Co`/`colors` (`256`), `TN`/`name` (`xterm-256color`), `RGB` (`8`), and, in terminfo notation, `Smulx` (styled underlines), `Setulc` (underline color), and `Ms` (OSC 52 clipboard writes) |
 | Color | `OSC 4`, `OSC 10`–`12` with `?` | See [Colors](#colors) |
 | Program status | `OSC 7501 ; ?` | `OSC 7501 ; ? ST` |
 
@@ -113,18 +118,20 @@ ANSI modes `4` (insert, IRM) and `20` (line feed/new line, LNM) use
 | `CSI L`, `CSI M`, `CSI S`, `CSI T` | Insert/delete lines, scroll up/down |
 | `CSI b` | Repeat the last printed character (REP) |
 | `CSI r` | Set the scroll region (DECSTBM) |
-| `CSI s`, `CSI u`, `ESC 7`, `ESC 8` | Save/restore cursor and character sets |
-| `CSI Ps SP q` | Cursor style (DECSCUSR): block, underline, or bar, blinking or steady; `0` restores the configured default |
+| `CSI Pl ; Pr s` | Set the left/right margins (DECSLRM) while mode `69` is set. Text wraps and scrolls inside them, and IL/DL/ICH/DCH/SU/SD stay inside them; scrolling inside narrower margins doesn't add to scrollback |
+| `CSI s`, `CSI u`, `ESC 7`, `ESC 8` | Save/restore cursor and character sets; `CSI s` is DECSLRM while mode `69` is set |
+| `CSI Ps SP q` | Cursor style (DECSCUSR): block, underline, or bar, blinking or steady; `0` restores the configured default shape, steady |
 | `CSI Ps " q` | Character protection (DECSCA) |
 | `ESC D`, `ESC E`, `ESC M` | Index, next line, reverse index |
 | `ESC =`, `ESC >` | Application/normal keypad |
-| `ESC ( 0`, `ESC ) 0`, `ESC ( B`, `ESC ) B`, `SO`, `SI` | DEC special graphics in G0/G1 |
-| `CSI ! p` | Soft reset (DECSTR); screen contents are kept |
+| `ESC ( 0`, `ESC ) 0`, `ESC ( B`, `ESC ) B`, `SO`, `SI` | DEC special graphics in G0/G1; other designations select ASCII |
+| `ESC # 8` | Screen alignment test (DECALN): fills the screen with `E`, resets the margins, and homes the cursor |
+| `CSI ! p` | Soft reset (DECSTR); screen contents are kept, and mode `69` is reset |
 | `ESC c` | Full reset (RIS) |
 
 ## Not supported
 
 Sixel and iTerm2 (`OSC 1337`) images, desktop notifications (`OSC 9` text,
-`OSC 777`, `OSC 99`), left/right margins (DECSLRM), XTVERSION, window
+`OSC 777`, `OSC 99`), window
 manipulation beyond the `CSI t` reports above, and mouse pointer shapes
 (`OSC 22`). Use [Kitty graphics](#extensions) for images.

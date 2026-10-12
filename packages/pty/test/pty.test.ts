@@ -221,6 +221,24 @@ describe.skipIf(isWindows)('unix', () => {
     expect(events.at(-1)).toBe('exit')
   })
 
+  test.skipIf(isWindows)('a signal that does not end the program keeps output paused', async () => {
+    const terminal = sh('echo ready; trap "echo winch" WINCH; while :; do sleep 0.02; done')
+    await waitFor(terminal, 'ready')
+    terminal.pause()
+    let received = ''
+    const counter = terminal.onData((data) => {
+      received += data
+    })
+    terminal.kill('SIGWINCH')
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    expect(received).toBe('')
+    const winch = waitFor(terminal, 'winch')
+    terminal.resume()
+    await winch
+    counter.dispose()
+    terminal.kill('SIGKILL')
+  })
+
   test('pause stops output and resume continues it', async () => {
     const terminal = sh('i=0; while [ $i -lt 3000 ]; do echo "line $i"; i=$((i+1)); done')
     const done = collect(terminal, 30_000)
