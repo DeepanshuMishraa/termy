@@ -588,7 +588,11 @@ impl TerminalView {
                     cell_height: pane_cell_size.height.into(),
                 };
                 let terminal = pane.terminal();
-                let current = terminal.size();
+                // A reattached session-host pane reports its last frame, which
+                // lags queued resizes. Comparing with that stale size can drop
+                // the final resize of a burst (e.g. window setup after restart)
+                // and leave the program at an intermediate size.
+                let current = terminal.requested_size();
                 let needs_resize = current.cols != next_size.cols
                     || current.rows != next_size.rows
                     || current.cell_width != next_size.cell_width

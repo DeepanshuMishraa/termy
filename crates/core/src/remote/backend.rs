@@ -60,6 +60,9 @@ pub(crate) struct RemoteBackend {
     transport: Arc<dyn RemoteTransport>,
     last_render: Mutex<Option<Arc<RemoteState>>>,
     graphics: Mutex<GraphicsCache>,
+    /// Resizes are queued to the host; its frames report them later. Until a
+    /// frame shows this size, resize decisions must compare against it.
+    requested_size: Mutex<Option<TerminalSize>>,
 }
 
 impl RemoteBackend {
@@ -71,6 +74,7 @@ impl RemoteBackend {
                 key: None,
                 snapshot: (u64::MAX, Vec::new()),
             }),
+            requested_size: Mutex::new(None),
         }
     }
 
@@ -107,7 +111,21 @@ impl RemoteBackend {
     pub(crate) fn size(&self) -> TerminalSize {
         self.transport.state().size
     }
+    pub(crate) fn requested_size(&self) -> TerminalSize {
+        let current = self.size();
+        let mut requested = self.requested_size.lock().unwrap();
+        match *requested {
+            Some(size) if size != current => size,
+            _ => {
+                // Once a frame catches up, follow the host again so a resize
+                // from another client is not hidden by this stale request.
+                *requested = None;
+                current
+            }
+        }
+    }
     pub(crate) fn resize(&mut self, size: TerminalSize) {
+        *self.requested_size.get_mut().unwrap() = Some(size.clamped());
         self.transport.send(RemoteCommand::Resize(size));
     }
     pub(crate) fn nudge_resize(&self) {
