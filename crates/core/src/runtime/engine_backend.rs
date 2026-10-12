@@ -178,6 +178,13 @@ impl Backend {
         }
     }
 
+    pub(super) fn requested_size(&self) -> TerminalSize {
+        match self {
+            Self::Custom(backend) => backend.size(),
+            Self::Remote(backend) => backend.requested_size(),
+        }
+    }
+
     pub(super) fn kitty_graphics_placements(&self) -> Vec<KittyGraphicsRenderPlacement> {
         match self {
             Self::Custom(backend) => backend.kitty_graphics_placements(),

@@ -743,7 +743,7 @@ impl TerminalSize {
     /// enough to exhaust memory. The pixel cell metrics are left untouched.
     /// Columns/rows are floored at 1 so downstream grid math never sees a zero
     /// dimension.
-    fn clamped(self) -> Self {
+    pub(crate) fn clamped(self) -> Self {
         let cols = self.cols.clamp(1, MAX_TERMINAL_COLS);
         let rows = usize::from(self.rows.clamp(1, MAX_TERMINAL_ROWS))
             .min(crate::terminal_engine::Size::MAX_CELLS / usize::from(cols))
@@ -932,6 +932,14 @@ impl Terminal {
 
     pub fn size(&self) -> TerminalSize {
         self.backend.size()
+    }
+
+    /// The size the latest `resize` asked for. Local terminals apply it
+    /// immediately; a session-host terminal reports its previous size from
+    /// `size` until the host publishes a frame at the new size. Compare
+    /// against this when deciding whether a resize is still needed.
+    pub fn requested_size(&self) -> TerminalSize {
+        self.backend.requested_size()
     }
 
     pub fn kitty_graphics_placements(&self) -> Vec<KittyGraphicsRenderPlacement> {

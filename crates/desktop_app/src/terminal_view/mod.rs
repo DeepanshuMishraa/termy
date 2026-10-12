@@ -754,6 +754,16 @@ impl Terminal {
         }
     }
 
+    fn requested_size(&self) -> TerminalSize {
+        match self {
+            Self::Tmux(terminal) => terminal.size(),
+            Self::Native(terminal) => terminal
+                .lock()
+                .map(|terminal| terminal.requested_size())
+                .unwrap_or_default(),
+        }
+    }
+
     fn child_pid(&self) -> Option<u32> {
         match self {
             Self::Tmux(_) => None,
