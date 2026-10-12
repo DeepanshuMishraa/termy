@@ -86,8 +86,10 @@ fn wait_for_pty_writable(master: &File, wake: &UnixStream) -> io::Result<()> {
         ));
     }
     // A hung-up master stays ready, so retrying the write would spin until
-    // the reader notices the exit and closes the writer.
-    if descriptor.revents & (POLLHUP | POLLERR) != 0 && descriptor.revents & POLLOUT == 0 {
+    // the reader notices the exit and closes the writer. Linux reports POLLERR
+    // together with POLLOUT once the other end is gone, so POLLERR alone fails.
+    let hung_up = descriptor.revents & POLLHUP != 0 && descriptor.revents & POLLOUT == 0;
+    if hung_up || descriptor.revents & POLLERR != 0 {
         return Err(io::Error::new(
             ErrorKind::BrokenPipe,
             "Termy native PTY was hung up",
