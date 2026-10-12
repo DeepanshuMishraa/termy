@@ -52,10 +52,8 @@ func withUTF8<R, E: Error>(
     _ string: String,
     _ body: (UnsafePointer<UInt8>?, Int) throws(E) -> R
 ) throws(E) -> R {
-    var string = string
-    return try string.withUTF8 { (buffer) throws(E) -> R in
-        try body(buffer.baseAddress, buffer.count)
-    }
+    // String.withUTF8 only rethrows untyped errors before Swift 6.4's stdlib.
+    try withBytes(Array(string.utf8), body)
 }
 
 /// Like `withUTF8`, but passes `(nil, 0)` for an absent string.

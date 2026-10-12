@@ -37,6 +37,9 @@ jobs:
       - name: Cache Rust
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
+      - name: Swift version
+        run: swift --version
+
       - name: Build libtermy
         run: sdk/swift/scripts/build-libtermy.sh debug
 
