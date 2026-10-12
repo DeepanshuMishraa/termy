@@ -114,6 +114,11 @@ check-boundaries:
 check-file-sizes:
     ./scripts/check-file-sizes.sh
 
+# Build libtermy and run the Swift SDK tests (macOS)
+test-swift-sdk profile="release":
+    ./sdk/swift/scripts/build-libtermy.sh {{ profile }}
+    swift test --package-path sdk/swift
+
 test-tmux-integration:
     #!/usr/bin/env bash
     set -euo pipefail

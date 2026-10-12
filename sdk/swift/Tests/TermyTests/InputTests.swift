@@ -1,0 +1,67 @@
+import Foundation
+import Testing
+@testable import Termy
+
+@Suite("Input")
+struct InputTests {
+    private func encoded(_ key: Keystroke, after output: String = "") throws -> String {
+        let terminal = try displayTerminal(feeding: output)
+        return String(decoding: try terminal.encode(key), as: UTF8.self)
+    }
+
+    @Test func namedKeysUseLegacySequences() throws {
+        #expect(try encoded(.enter) == "\r")
+        #expect(try encoded(.tab) == "\t")
+        #expect(try encoded(.backspace) == "\u{7f}")
+        #expect(try encoded(.up) == "\u{1b}[A")
+        #expect(try encoded(Keystroke(key: "f5")) == "\u{1b}[15~")
+    }
+
+    @Test func applicationCursorModeChangesArrows() throws {
+        #expect(try encoded(.up, after: "\u{1b}[?1h") == "\u{1b}OA")
+    }
+
+    @Test func controlAndText() throws {
+        #expect(try encoded(.control("c")) == "\u{03}")
+        #expect(try encoded(.text("é")) == "é")
+        #expect(try encoded(Keystroke(key: "a", text: "A", modifiers: .shift)) == "A")
+    }
+
+    @Test func kittyKeyboardModeDisambiguatesEscape() throws {
+        #expect(try encoded(.escape, after: "\u{1b}[>1u") == "\u{1b}[27u")
+    }
+
+    @Test func displayTerminalsRouteInputToTheHost() throws {
+        let terminal = try displayTerminal()
+        var sent = Data()
+        terminal.onInput = { sent.append($0) }
+        try terminal.send(.enter)
+        try terminal.write("ls")
+        #expect(String(decoding: sent, as: UTF8.self) == "\rls")
+    }
+
+    @Test func mouseIsReportedOnlyWhenTracked() throws {
+        let terminal = try displayTerminal()
+        let click = MouseInput(.press(.left), at: GridPosition(row: 2, col: 4))
+        #expect(try terminal.encode(click).isEmpty)
+
+        try terminal.feed("\u{1b}[?1000h\u{1b}[?1006h")
+        #expect(String(decoding: try terminal.encode(click), as: UTF8.self) == "\u{1b}[<0;5;3M")
+        let wheel = MouseInput(.wheelUp, at: GridPosition(row: 0, col: 0))
+        #expect(String(decoding: try terminal.encode(wheel), as: UTF8.self) == "\u{1b}[<64;1;1M")
+    }
+
+    @Test func pasteRespectsBracketedPasteMode() throws {
+        let terminal = try displayTerminal()
+        var sent = Data()
+        terminal.onInput = { sent.append($0) }
+        try terminal.paste("plain")
+        #expect(String(decoding: sent, as: UTF8.self) == "plain")
+
+        sent.removeAll()
+        try terminal.feed("\u{1b}[?2004h")
+        #expect(terminal.isBracketedPasteEnabled)
+        try terminal.paste("a\u{1b}[201~b")
+        #expect(String(decoding: sent, as: UTF8.self) == "\u{1b}[200~ab\u{1b}[201~")
+    }
+}

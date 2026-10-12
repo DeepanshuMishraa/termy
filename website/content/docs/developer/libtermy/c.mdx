@@ -141,7 +141,9 @@ serially drives the handle. See [threading and shutdown](/docs/developer/libterm
 
 ## Swift and other bindings
 
-For Swift, expose the header through a bridging header or a Clang module. A
+For macOS apps, prefer the [Swift SDK](/docs/developer/libtermy/swift): it
+wraps this ABI and includes AppKit and SwiftUI terminal views. To bind the C ABI
+yourself, expose the header through a bridging header or a Clang module. A
 minimal module map beside a vendored `termy.h` can contain:
 
 ```text title="module.modulemap"
@@ -153,9 +155,9 @@ module CLibTermy {
 ```
 
 Configure your target's import/header and library search paths, then import
-`CLibTermy`. This imports the C ABI; libtermy does not provide a SwiftUI terminal
-view. Wrap the opaque handle in one owner that serializes calls and performs the
-explicit shutdown sequence before releasing it.
+`CLibTermy`. This imports the C ABI only. Wrap the opaque handle in one owner
+that serializes calls and performs the explicit shutdown sequence before
+releasing it.
 
 Across Swift, Go, Python, or C++ bindings:
 

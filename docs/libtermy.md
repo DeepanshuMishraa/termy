@@ -12,6 +12,9 @@ This repository note is a compact source-oriented overview; use the matching
 - `termy_core`: Rust API for a single headless terminal surface.
 - `termy_core::ffi`: C ABI wrapper over `termy_core`.
 
+The Swift SDK in [`sdk/swift`](../sdk/swift/README.md) wraps the C ABI and adds
+AppKit and SwiftUI terminal views.
+
 The core API owns PTY startup, terminal parsing, input writes, resize, event
 draining, damage snapshots, renderer-neutral frame snapshots, and canonical
 special-glyph geometry. It does not
