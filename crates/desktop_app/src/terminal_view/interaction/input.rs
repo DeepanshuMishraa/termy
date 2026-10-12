@@ -20,6 +20,22 @@ fn should_defer_key_down_to_ime(keystroke: &gpui_kit::Keystroke) -> bool {
         )
 }
 
+/// A dead key starting an xkb compose sequence (Linux). GPUI shows the dead
+/// key as marked text first, then sends a KeyDown with no `key_char` whose
+/// `key` is only a US-layout guess for the physical key (e.g. `}` or `\`).
+/// The composed character arrives later as text, so forwarding this key
+/// would type a stray character before it.
+fn is_compose_dead_key(keystroke: &gpui_kit::Keystroke, composing: bool) -> bool {
+    composing
+        && keystroke.key_char.is_none()
+        && !keystroke.modifiers.control
+        && !keystroke.modifiers.alt
+        && !keystroke.modifiers.platform
+        && !keystroke.modifiers.function
+        // GPUI falls back to the keysym name (`dead_tilde`) when it can't guess.
+        && (keystroke.key.chars().count() == 1 || keystroke.key.starts_with("dead_"))
+}
+
 fn shell_quote_path(path: &Path) -> String {
     let path_str = path.to_string_lossy();
     let mut quoted = String::with_capacity(path_str.len() + 2);
@@ -829,8 +845,11 @@ impl TerminalView {
         self.reset_cursor_blink_phase();
         let _ = self.close_terminal_context_menu(cx);
         let _ = self.close_new_tab_menu(cx);
+        let composing = is_compose_dead_key(&event.keystroke, self.ime_marked_text.is_some());
         let inspector_route = if self.overlay_owns_terminal_input() {
             "overlay"
+        } else if composing {
+            "compose"
         } else if should_defer_key_down_to_ime(&event.keystroke) {
             "ime"
         } else {
@@ -888,6 +907,13 @@ impl TerminalView {
         }
 
         self.last_terminal_modifiers = event.keystroke.modifiers;
+
+        // The composed character (or the dead key itself, if composition is
+        // cancelled) reaches the PTY through the input handler.
+        if composing {
+            self.deferred_ime_key_releases.insert(key.to_string());
+            return;
+        }
 
         // Printable character input without modifiers is delegated to the
         // platform IME / input handler so that CJK input methods work.
@@ -975,11 +1001,11 @@ mod tests {
     use super::{
         FileDropTarget, PendingKeyRelease, PendingKeyReleaseAction, classify_file_drop_target,
         clipboard_entries_to_terminal_paste_input, clipboard_item_to_terminal_paste_input,
-        dropped_paths_to_terminal_paste_input, image_extension, kitty_png_clipboard_item,
-        modifier_transition_events, shell_quote_paths, should_defer_key_down_to_ime,
-        should_prepare_terminal_input_write, should_write_drop_to_target,
-        take_deferred_ime_key_release, take_pending_key_release_action,
-        terminal_modifier_transition_events,
+        dropped_paths_to_terminal_paste_input, image_extension, is_compose_dead_key,
+        kitty_png_clipboard_item, modifier_transition_events, shell_quote_paths,
+        should_defer_key_down_to_ime, should_prepare_terminal_input_write,
+        should_write_drop_to_target, take_deferred_ime_key_release,
+        take_pending_key_release_action, terminal_modifier_transition_events,
     };
     use gpui_kit::{Keystroke, Modifiers};
     use std::{
@@ -1035,6 +1061,34 @@ mod tests {
             Some("c"),
             control
         )));
+    }
+
+    #[test]
+    fn dead_keys_starting_a_compose_sequence_are_not_forwarded() {
+        // GPUI on Linux: the dead key's KeyDown has no key_char and a guessed key.
+        let dead_key = keystroke("}", None, Modifiers::default());
+        assert!(is_compose_dead_key(&dead_key, true));
+        assert!(is_compose_dead_key(
+            &keystroke("dead_tilde", None, Modifiers::default()),
+            true
+        ));
+        // Without marked text it is an ordinary key without text.
+        assert!(!is_compose_dead_key(&dead_key, false));
+        // The composed character arrives with key_char and goes to the IME path.
+        assert!(!is_compose_dead_key(
+            &keystroke("asciitilde", Some("~"), Modifiers::default()),
+            true
+        ));
+        // Named keys and shortcuts are still forwarded while composing.
+        assert!(!is_compose_dead_key(
+            &keystroke("escape", None, Modifiers::default()),
+            true
+        ));
+        let control = Modifiers {
+            control: true,
+            ..Modifiers::default()
+        };
+        assert!(!is_compose_dead_key(&keystroke("c", None, control), true));
     }
 
     #[test]
