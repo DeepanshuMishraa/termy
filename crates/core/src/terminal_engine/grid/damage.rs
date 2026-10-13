@@ -10,11 +10,37 @@ impl Grid {
         self.pending_scrolls.clear();
     }
 
+    /// Record a scroll of rows `top..bottom` by `lines` (up when positive).
+    /// Inline for the case every line of a flood but the first hits: damage
+    /// is saturated and the pending scroll already exposes the region.
+    #[inline]
     pub(super) fn mark_scroll_damage(&mut self, top: usize, bottom: usize, lines: i32) {
         self.visual_dirty = true;
-        if self.full_damage {
+        if self.full_damage
+            || (self.damage_saturated
+                && self.display_offset() == 0
+                && self.exposes_region(top, bottom, lines))
+        {
+            // As below: only the cursor would be marked, on a dirty row.
             return;
         }
+        self.record_scroll_damage(top, bottom, lines);
+    }
+
+    /// Whether the last pending scroll moved `top..bottom` the same way as
+    /// `lines`, by the whole region.
+    #[inline]
+    fn exposes_region(&self, top: usize, bottom: usize, lines: i32) -> bool {
+        self.pending_scrolls.last().is_some_and(|previous| {
+            previous.top == top
+                && previous.bottom == bottom
+                && previous.lines.signum() == lines.signum()
+                && previous.lines.unsigned_abs() as usize == bottom - top
+        })
+    }
+
+    #[inline(never)]
+    fn record_scroll_damage(&mut self, top: usize, bottom: usize, lines: i32) {
         // While browsing history, scrolling can change both history and live
         // rows in the viewport. A full refresh also covers eviction at its top.
         if self.display_offset() != 0 {
@@ -25,12 +51,7 @@ impl Grid {
         debug_assert!(count != 0 && count <= bottom - top);
         // Once a pending scroll exposed the whole region, every row in it is
         // fully dirty, so rotating again (per line of a flood) changes nothing.
-        if self.pending_scrolls.last().is_some_and(|previous| {
-            previous.top == top
-                && previous.bottom == bottom
-                && previous.lines.signum() == lines.signum()
-                && previous.lines.unsigned_abs() as usize == bottom - top
-        }) {
+        if self.exposes_region(top, bottom, lines) {
             self.mark_cursor(self.cursor);
             return;
         }
@@ -38,11 +59,12 @@ impl Grid {
         // old mark must travel with that row before marking its new position.
         self.mark_cursor(self.cursor);
         let exposed = Some((0, self.size.cols));
+        // Rows shift by `count`, and the ones exposed are dirty throughout.
         if lines > 0 {
-            self.dirty[top..bottom].rotate_left(count);
+            self.dirty.copy_within(top + count..bottom, top);
             self.dirty[bottom - count..bottom].fill(exposed);
         } else {
-            self.dirty[top..bottom].rotate_right(count);
+            self.dirty.copy_within(top..bottom - count, top + count);
             self.dirty[top..top + count].fill(exposed);
         }
         self.mark_cursor(self.cursor);

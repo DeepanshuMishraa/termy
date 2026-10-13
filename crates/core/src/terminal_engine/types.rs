@@ -48,7 +48,7 @@ pub enum UnderlineStyle {
     Dashed,
 }
 
-/// Ten 1-aligned bytes, so a cell with its flags and extra pointer is 24 B.
+/// Ten 1-aligned bytes, so a cell with its flags and character is 16 B.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Style {
     pub foreground: Color,

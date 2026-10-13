@@ -113,12 +113,12 @@ impl Grid {
         let rows = self.size.rows;
         let history_before = self.history.len();
         // The top row joins history and the oldest history row becomes the
-        // new bottom row: both rings rotate, then their last rows swap.
-        // While a ring is exactly full, moving its first row to its back
-        // writes the row where it was read, without the out-of-line calls a
-        // general rotation makes. Rows moved through the stack, or edited
-        // before a move, are read back across narrower stores, which waits
-        // for every cell store the line queued.
+        // new bottom row. While a ring is exactly full, the row pushed to its
+        // back lands in the slot its first row just left, so each ring is
+        // written where it was read, without the out-of-line calls a general
+        // rotation makes. Rows moved through the stack, or edited before a
+        // move, are read back across narrower stores, which waits for every
+        // cell store the line queued.
         if self.history.capacity() != self.history.len() {
             self.history.shrink_to_fit();
         }
@@ -126,12 +126,9 @@ impl Grid {
             self.primary.rows.shrink_to_fit();
         }
         let oldest = self.history.pop_front().expect("history at its limit");
-        self.history.push_back(oldest);
         let top = self.primary.rows.pop_front().expect("screen row");
-        self.primary.rows.push_back(top);
-        let top = self.primary.rows.back_mut().expect("screen row");
-        let oldest = self.history.back_mut().expect("history row");
-        std::mem::swap(top, oldest);
+        self.history.push_back(top);
+        self.primary.rows.push_back(oldest);
         // Charged where they now stay.
         let recycled = self.primary.rows.back().expect("screen row");
         self.history_bytes -= recycled.heap_bytes();
