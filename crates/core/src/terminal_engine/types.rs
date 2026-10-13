@@ -190,6 +190,120 @@ impl PlainCell {
                 .write([self.words[0], last]);
         }
     }
+
+    /// `store` each byte of `text`, printable ASCII, into `cells`, as far as
+    /// both reach. Sixteen bytes at a time with the target's baseline
+    /// vectors (SSE2, NEON); the rest one at a time.
+    #[inline]
+    pub(super) fn store_ascii(self, cells: &mut [Cell], text: &[u8]) {
+        let len = cells.len().min(text.len());
+        let (cells, text) = (&mut cells[..len], &text[..len]);
+        let done = self.store_ascii_blocks(cells, text);
+        for (cell, &byte) in cells[done..].iter_mut().zip(&text[done..]) {
+            self.store(cell, char::from(byte));
+        }
+    }
+
+    /// The vector part of `store_ascii` for `cells` and `text` of one
+    /// length, returning how many it stored. Each byte widens to a
+    /// character word, which is interleaved with the template's words: a
+    /// cell per register, stored whole.
+    #[cfg(target_arch = "x86_64")]
+    #[inline(always)]
+    fn store_ascii_blocks(self, cells: &mut [Cell], text: &[u8]) -> usize {
+        use std::arch::x86_64::{
+            __m128i, _mm_loadu_si128, _mm_set1_epi32, _mm_set1_epi64x, _mm_setzero_si128,
+            _mm_store_si128, _mm_unpackhi_epi8, _mm_unpackhi_epi16, _mm_unpackhi_epi32,
+            _mm_unpackhi_epi64, _mm_unpacklo_epi8, _mm_unpacklo_epi16, _mm_unpacklo_epi32,
+            _mm_unpacklo_epi64,
+        };
+        let blocks = text.len() / 16;
+        // SAFETY: SSE2 is part of the x86_64 baseline. Block `n` reads bytes
+        // `16n..16n + 16` of `text` and writes cells `16n..16n + 16` of
+        // `cells`, which have its length, so both stay in bounds. Cells are
+        // 16-aligned and 16 bytes. Each store is the two template words, the
+        // low half of the second (style tail and flags) then a character in
+        // its high half (x86 is little-endian): the bytes `store` writes.
+        unsafe {
+            let head = _mm_set1_epi64x(self.words[0] as i64);
+            let tail = _mm_set1_epi32(self.words[1] as u32 as i32);
+            let zero = _mm_setzero_si128();
+            for block in 0..blocks {
+                let bytes = _mm_loadu_si128(text.as_ptr().add(block * 16).cast::<__m128i>());
+                let (low, high) = (
+                    _mm_unpacklo_epi8(bytes, zero),
+                    _mm_unpackhi_epi8(bytes, zero),
+                );
+                let quads = [
+                    _mm_unpacklo_epi16(low, zero),
+                    _mm_unpackhi_epi16(low, zero),
+                    _mm_unpacklo_epi16(high, zero),
+                    _mm_unpackhi_epi16(high, zero),
+                ];
+                let out = cells.as_mut_ptr().add(block * 16).cast::<__m128i>();
+                for (quad, characters) in quads.into_iter().enumerate() {
+                    // [tail, c0, tail, c1] and [tail, c2, tail, c3].
+                    let first = _mm_unpacklo_epi32(tail, characters);
+                    let second = _mm_unpackhi_epi32(tail, characters);
+                    let out = out.add(quad * 4);
+                    _mm_store_si128(out, _mm_unpacklo_epi64(head, first));
+                    _mm_store_si128(out.add(1), _mm_unpackhi_epi64(head, first));
+                    _mm_store_si128(out.add(2), _mm_unpacklo_epi64(head, second));
+                    _mm_store_si128(out.add(3), _mm_unpackhi_epi64(head, second));
+                }
+            }
+        }
+        blocks * 16
+    }
+
+    #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+    #[inline(always)]
+    fn store_ascii_blocks(self, cells: &mut [Cell], text: &[u8]) -> usize {
+        use std::arch::aarch64::{
+            vdupq_n_u32, vdupq_n_u64, vget_low_u8, vget_low_u16, vld1q_u8, vmovl_high_u8,
+            vmovl_high_u16, vmovl_u8, vmovl_u16, vreinterpretq_u64_u32, vst1q_u64, vzip1q_u32,
+            vzip1q_u64, vzip2q_u32, vzip2q_u64,
+        };
+        let blocks = text.len() / 16;
+        // SAFETY: NEON is part of the aarch64 baseline. Bounds, alignment
+        // and the stored bytes are as in the x86_64 version (this target is
+        // little-endian too).
+        unsafe {
+            let head = vdupq_n_u64(self.words[0]);
+            let tail = vdupq_n_u32(self.words[1] as u32);
+            for block in 0..blocks {
+                let bytes = vld1q_u8(text.as_ptr().add(block * 16));
+                let (low, high) = (vmovl_u8(vget_low_u8(bytes)), vmovl_high_u8(bytes));
+                let quads = [
+                    vmovl_u16(vget_low_u16(low)),
+                    vmovl_high_u16(low),
+                    vmovl_u16(vget_low_u16(high)),
+                    vmovl_high_u16(high),
+                ];
+                let out = cells.as_mut_ptr().add(block * 16).cast::<u64>();
+                for (quad, characters) in quads.into_iter().enumerate() {
+                    // [tail, c0, tail, c1] and [tail, c2, tail, c3].
+                    let first = vreinterpretq_u64_u32(vzip1q_u32(tail, characters));
+                    let second = vreinterpretq_u64_u32(vzip2q_u32(tail, characters));
+                    let out = out.add(quad * 8);
+                    vst1q_u64(out, vzip1q_u64(head, first));
+                    vst1q_u64(out.add(2), vzip2q_u64(head, first));
+                    vst1q_u64(out.add(4), vzip1q_u64(head, second));
+                    vst1q_u64(out.add(6), vzip2q_u64(head, second));
+                }
+            }
+        }
+        blocks * 16
+    }
+
+    #[cfg(not(any(
+        target_arch = "x86_64",
+        all(target_arch = "aarch64", target_endian = "little")
+    )))]
+    #[inline(always)]
+    fn store_ascii_blocks(self, _cells: &mut [Cell], _text: &[u8]) -> usize {
+        0
+    }
 }
 
 impl Default for Cell {
@@ -225,10 +339,7 @@ impl Cell {
     /// Write printable ASCII into `cells`.
     #[inline]
     pub(super) fn write_plain_ascii(cells: &mut [Cell], text: &[u8], style: Style) {
-        let template = PlainCell::new(style, 0);
-        for (cell, &byte) in cells.iter_mut().zip(text) {
-            template.store(cell, char::from(byte));
-        }
+        PlainCell::new(style, 0).store_ascii(cells, text);
     }
 
     /// The right half of a wide character. It keeps the style so decorations
@@ -588,5 +699,42 @@ impl Size {
             .clamp(1, Self::MAX_ROWS)
             .min(Self::MAX_CELLS / cols);
         Self { cols, rows }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The vector stores must write exactly what storing each byte does,
+    // for every length around the block size and at unaligned text.
+    #[test]
+    fn ascii_blocks_store_what_single_cells_do() {
+        let style = Style {
+            foreground: Color::rgb(1, 2, 3),
+            background: Color::indexed(200),
+            attributes: Style::BOLD | Style::ITALIC,
+            underline: UnderlineStyle::Curly,
+        };
+        let text: Vec<u8> = (0..80).map(|index| b' ' + (index * 7 % 95) as u8).collect();
+        for flags in [0, Cell::WIDE] {
+            let template = PlainCell::new(style, flags);
+            for start in 0..3 {
+                for len in 0..text.len() - start {
+                    let text = &text[start..start + len];
+                    let mut expected = vec![Cell::default(); len + 2];
+                    for (cell, &byte) in expected.iter_mut().zip(text) {
+                        template.store(cell, char::from(byte));
+                    }
+                    let mut cells = vec![Cell::default(); len + 2];
+                    template.store_ascii(&mut cells, text);
+                    assert_eq!(cells, expected, "start {start}, length {len}");
+                    // Shorter cells bound the store too.
+                    let mut short = vec![Cell::default(); len / 2];
+                    template.store_ascii(&mut short, text);
+                    assert_eq!(short, expected[..len / 2], "start {start}, length {len}");
+                }
+            }
+        }
     }
 }
