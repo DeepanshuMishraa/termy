@@ -655,7 +655,7 @@ fn full_reset_recovers_from_an_oversized_string() {
 fn printable_ascii_scan_stops_at_every_other_byte_in_every_position() {
     for byte in 0..=u8::MAX {
         let printable = (0x20..=0x7e).contains(&byte);
-        for len in 0..=19 {
+        for len in 0..=40 {
             for position in 0..len {
                 let mut bytes = vec![b'a'; len];
                 bytes[position] = byte;

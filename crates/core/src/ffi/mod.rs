@@ -866,12 +866,48 @@ fn ffi_cursor_from_cursor(cursor: Option<crate::TerminalCursorState>) -> TermyFf
     })
 }
 
+// `TermyCell` is laid out as `TermyFfiCell`, so a frame's cells are handed
+// to C hosts as they are. Every bit pattern of a `TermyCell` (a `char` is a
+// valid `u32`, `bool`s are `bool`s) is a valid `TermyFfiCell`.
+const _: () = {
+    use std::mem::{align_of, offset_of, size_of};
+    assert!(size_of::<TermyCell>() == size_of::<TermyFfiCell>());
+    assert!(align_of::<TermyCell>() == align_of::<TermyFfiCell>());
+    assert!(offset_of!(TermyCell, char) == offset_of!(TermyFfiCell, codepoint));
+    assert!(offset_of!(TermyCell, fg) == offset_of!(TermyFfiCell, fg));
+    assert!(offset_of!(TermyCell, bg) == offset_of!(TermyFfiCell, bg));
+    assert!(
+        offset_of!(TermyCell, uses_terminal_default_bg)
+            == offset_of!(TermyFfiCell, uses_terminal_default_bg)
+    );
+    assert!(offset_of!(TermyCell, bold) == offset_of!(TermyFfiCell, bold));
+    assert!(offset_of!(TermyCell, render_text) == offset_of!(TermyFfiCell, render_text));
+    assert!(
+        offset_of!(TermyCell, wide_character_spacer)
+            == offset_of!(TermyFfiCell, wide_character_spacer)
+    );
+    assert!(offset_of!(TermyCell, line_wrapped) == offset_of!(TermyFfiCell, line_wrapped));
+    assert!(offset_of!(TermyCell, italic) == offset_of!(TermyFfiCell, italic));
+    assert!(offset_of!(TermyCell, underline) == offset_of!(TermyFfiCell, underline));
+    assert!(offset_of!(TermyCell, strikethrough) == offset_of!(TermyFfiCell, strikethrough));
+    assert!(size_of::<TermyColor>() == size_of::<TermyFfiColor>());
+    assert!(offset_of!(TermyColor, r) == offset_of!(TermyFfiColor, r));
+    assert!(offset_of!(TermyColor, g) == offset_of!(TermyFfiColor, g));
+    assert!(offset_of!(TermyColor, b) == offset_of!(TermyFfiColor, b));
+    assert!(offset_of!(TermyColor, a) == offset_of!(TermyFfiColor, a));
+};
+
+fn ffi_cells(cells: Vec<TermyCell>) -> Vec<TermyFfiCell> {
+    let mut cells = std::mem::ManuallyDrop::new(cells);
+    let (ptr, len, capacity) = (cells.as_mut_ptr(), cells.len(), cells.capacity());
+    // SAFETY: the types have the same size, alignment and field layout
+    // (asserted above), every `TermyCell` is a valid `TermyFfiCell`, and the
+    // allocation is handed over whole, so it is freed with the same layout.
+    unsafe { Vec::from_raw_parts(ptr.cast::<TermyFfiCell>(), len, capacity) }
+}
+
 fn ffi_frame_update_from_update(update: TermyFrameUpdate) -> TermyFfiFrameUpdate {
-    let cells = update
-        .cells
-        .into_iter()
-        .map(TermyFfiCell::from)
-        .collect::<Vec<_>>();
+    let cells = ffi_cells(update.cells);
     let (cells_ptr, cells_len, cells_capacity) = leak_vec(cells);
 
     let (damage_kind, spans) = match update.damage {
@@ -3561,12 +3597,7 @@ pub unsafe extern "C" fn termy_terminal_snapshot(
         }
 
         let frame = unsafe { (*terminal).terminal.snapshot() };
-        let cells = frame
-            .cells
-            .into_iter()
-            .map(TermyFfiCell::from)
-            .collect::<Vec<_>>();
-        let (cells_ptr, cells_len, cells_capacity) = leak_vec(cells);
+        let (cells_ptr, cells_len, cells_capacity) = leak_vec(ffi_cells(frame.cells));
         let cursor = ffi_cursor_from_cursor(frame.cursor);
 
         unsafe {

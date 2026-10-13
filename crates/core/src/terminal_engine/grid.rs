@@ -84,13 +84,15 @@ impl Row {
             // Every scrolled line clears a row; plain rows skip drop glue.
             let (character, style) = (blank.character, blank.style);
             let len = self.cells.len().min(cols);
-            self.cells.truncate(cols);
-            self.cells.extend((len..cols).map(|_| Cell {
-                extra: None,
-                style,
-                flags: 0,
-                character,
-            }));
+            if self.cells.len() != cols {
+                self.cells.truncate(cols);
+                self.cells.extend((len..cols).map(|_| Cell {
+                    extra: None,
+                    style,
+                    flags: 0,
+                    character,
+                }));
+            }
             Some(end.min(len))
         } else {
             self.cells.resize(cols, blank.clone());

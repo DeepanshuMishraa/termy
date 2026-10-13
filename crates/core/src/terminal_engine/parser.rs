@@ -60,8 +60,15 @@ impl Param {
 fn printable_ascii_len(bytes: &[u8]) -> usize {
     const ONES: u64 = 0x0101_0101_0101_0101;
     const HIGH: u64 = 0x8080_8080_8080_8080;
-    let (chunks, remainder) = bytes.as_chunks::<8>();
+    let (blocks, rest) = bytes.as_chunks::<16>();
     let mut len = 0;
+    for block in blocks {
+        if let Some(stop) = first_unprintable(block) {
+            return len + stop;
+        }
+        len += 16;
+    }
+    let (chunks, remainder) = rest.as_chunks::<8>();
     for chunk in chunks {
         let word = u64::from_le_bytes(*chunk);
         // Per byte, neither sum carries into the next byte. A high bit is set
@@ -81,6 +88,56 @@ fn printable_ascii_len(bytes: &[u8]) -> usize {
         .iter()
         .take_while(|byte| (0x20..=0x7e).contains(*byte))
         .count()
+}
+
+/// The index of the first byte of `block` outside `0x20..=0x7e`, with the
+/// baseline vector instructions of the target (NEON, SSE2).
+#[inline(always)]
+fn first_unprintable(block: &[u8; 16]) -> Option<usize> {
+    #[cfg(target_arch = "aarch64")]
+    {
+        use std::arch::aarch64::{
+            vcltq_u8, vdupq_n_u8, vget_lane_u64, vld1q_u8, vminvq_u8, vmvnq_u8,
+            vreinterpret_u64_u8, vreinterpretq_u16_u8, vshrn_n_u16, vsubq_u8,
+        };
+        // SAFETY: NEON is part of the aarch64 baseline, and the load reads
+        // exactly the 16 bytes of `block`.
+        unsafe {
+            let bytes = vld1q_u8(block.as_ptr());
+            let printable = vcltq_u8(vsubq_u8(bytes, vdupq_n_u8(0x20)), vdupq_n_u8(0x5f));
+            if vminvq_u8(printable) == u8::MAX {
+                return None;
+            }
+            // Narrow to four mask bits per byte to find the first stop.
+            let stops = vreinterpretq_u16_u8(vmvnq_u8(printable));
+            let mask = vget_lane_u64::<0>(vreinterpret_u64_u8(vshrn_n_u16::<4>(stops)));
+            Some((mask.trailing_zeros() / 4) as usize)
+        }
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        use std::arch::x86_64::{
+            __m128i, _mm_and_si128, _mm_cmpgt_epi8, _mm_cmplt_epi8, _mm_loadu_si128,
+            _mm_movemask_epi8, _mm_set1_epi8,
+        };
+        // SAFETY: SSE2 is part of the x86_64 baseline, and the unaligned load
+        // reads exactly the 16 bytes of `block`.
+        unsafe {
+            let bytes = _mm_loadu_si128(block.as_ptr().cast::<__m128i>());
+            // As signed bytes, 0x20..=0x7e is 32..=126 and every byte from
+            // 0x80 is negative.
+            let printable = _mm_and_si128(
+                _mm_cmpgt_epi8(bytes, _mm_set1_epi8(0x1f)),
+                _mm_cmplt_epi8(bytes, _mm_set1_epi8(0x7f)),
+            );
+            let mask = _mm_movemask_epi8(printable) as u32;
+            (mask != 0xffff).then(|| (!mask).trailing_zeros() as usize)
+        }
+    }
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+    {
+        block.iter().position(|byte| !(0x20..=0x7e).contains(byte))
+    }
 }
 
 pub(super) trait Handler {
@@ -247,6 +304,16 @@ impl Parser {
                 // than revisiting the VT state machine for each continuation.
                 // Invalid and fragmented sequences keep the streaming path's
                 // replacement/reconsumption behavior below.
+                // Line endings and the other C0 controls but ESC execute
+                // directly, as `ground` would.
+                if bytes[offset] < 0x20 && bytes[offset] != 0x1b {
+                    handler.execute(bytes[offset]);
+                    offset += 1;
+                    if PAUSABLE && handler.pause_requested() {
+                        break;
+                    }
+                    continue;
+                }
                 if bytes[offset] >= 0xc2 {
                     // The handler may write a whole run of text, decoding it
                     // as it goes. Printing never requests a pause, so one

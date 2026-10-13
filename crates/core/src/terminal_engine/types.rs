@@ -163,14 +163,18 @@ impl PlainCell {
                 0
             };
             let last = self.words[2] | (u64::from(u32::from(character)) << shift);
-            // SAFETY: as in `new`; the words are a valid `Cell` whose `extra`
-            // is the null `None`, and the replaced `None` owns nothing.
+            // The destination's `extra` is already `None`, the first word, so
+            // only the style, flags and character words are stored: one
+            // 16-byte write per cell.
+            // SAFETY: as in `new`, these words are the valid tail of a `Cell`
+            // whose `extra` is `None`; the cell is 8-aligned and 24 bytes, so
+            // its second and third words are in bounds and aligned.
             unsafe {
-                std::ptr::from_mut(cell).cast::<[u64; 3]>().write([
-                    self.words[0],
-                    self.words[1],
-                    last,
-                ]);
+                std::ptr::from_mut(cell)
+                    .cast::<u64>()
+                    .add(1)
+                    .cast::<[u64; 2]>()
+                    .write([self.words[1], last]);
             }
         }
         #[cfg(not(target_pointer_width = "64"))]

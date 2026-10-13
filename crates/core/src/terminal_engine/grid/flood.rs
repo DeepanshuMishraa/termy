@@ -24,7 +24,7 @@ impl Grid {
 
     /// Blank a pending row's leading cells except `skip_start..skip_end`,
     /// which the caller just wrote.
-    #[inline(never)]
+    #[inline]
     pub(super) fn fill_pending_clear(
         &mut self,
         pending: PendingClear,
@@ -33,12 +33,18 @@ impl Grid {
     ) {
         let cells = &mut self.screen_mut().rows[pending.row].cells;
         let end = pending.end.min(cells.len());
-        if skip_start >= skip_end {
-            Cell::fill_plain(&mut cells[..end], ' ', pending.style);
-            return;
+        let (before, after) = if skip_start >= skip_end {
+            (end, end)
+        } else {
+            (skip_start.min(end), skip_end.min(end))
+        };
+        // A line usually overwrites all of its row's old text.
+        if before != 0 {
+            Cell::fill_plain(&mut cells[..before], ' ', pending.style);
         }
-        Cell::fill_plain(&mut cells[..skip_start.min(end)], ' ', pending.style);
-        Cell::fill_plain(&mut cells[skip_end.min(end)..end], ' ', pending.style);
+        if after != end {
+            Cell::fill_plain(&mut cells[after..end], ' ', pending.style);
+        }
     }
 
     /// The pending clear of `row`, for a text write about to overwrite part

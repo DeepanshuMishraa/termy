@@ -171,8 +171,9 @@ impl Engine {
         {
             self.state.reset_animation_work();
             self.state.grid.prepare_output(bytes.len());
-            let consumed =
-                self.parse_pass(bytes, defer_uploads, || now.unwrap_or_else(Instant::now));
+            let consumed = self.parse_pass(bytes, defer_uploads, &mut || {
+                now.unwrap_or_else(Instant::now)
+            });
             if consumed == bytes.len()
                 || self.state.has_deferred_upload()
                 || (defer_uploads && self.state.animation_budget_spent())
@@ -192,7 +193,7 @@ impl Engine {
         &mut self,
         bytes: &[u8],
         defer_uploads: bool,
-        now: impl FnOnce() -> Instant,
+        now: &mut impl FnMut() -> Instant,
     ) -> usize {
         self.state.set_defer_uploads(defer_uploads);
         let consumed = self.parser.advance(&mut self.state, bytes);

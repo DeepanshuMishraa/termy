@@ -285,13 +285,22 @@ impl Row {
 
     /// Drop packed contents without decoding them, keeping a decoded read
     /// cache's allocation (but not its cells) when one exists.
+    #[inline]
     pub(super) fn discard_packed(&mut self) -> bool {
-        let Some(mut packed) = self.packed.take() else {
+        if self.packed.is_none() {
             return false;
+        }
+        self.discard_packed_contents();
+        true
+    }
+
+    #[inline(never)]
+    fn discard_packed_contents(&mut self) {
+        let Some(mut packed) = self.packed.take() else {
+            return;
         };
         self.cells = packed.decoded.take().unwrap_or_default();
         self.cells.clear();
-        true
     }
 
     /// Fit a hard-terminated row to `cols` without rewrapping it, keeping

@@ -3,6 +3,7 @@ use compact_str::CompactString;
 use crate::runtime::{TerminalCursorState, TerminalDamageSnapshot};
 pub use crate::terminal_types::TerminalColor;
 
+#[repr(C)]
 #[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TermyColor {
     pub r: u8,
@@ -173,6 +174,10 @@ pub struct TerminalRenderRead {
 /// One viewport cell. Carries no position: full frames are row-major
 /// (`index = row * cols + col`) and partial updates list cells in dirty-span
 /// order, so position is derived from context on the consuming side.
+///
+/// The layout matches the C ABI's `TermyFfiCell` field for field, so frame
+/// updates reach C hosts without another pass over their cells.
+#[repr(C)]
 #[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TermyCell {
     pub char: char,
@@ -180,12 +185,12 @@ pub struct TermyCell {
     pub bg: TermyColor,
     pub uses_terminal_default_bg: bool,
     pub bold: bool,
-    pub italic: bool,
-    pub underline: bool,
-    pub strikethrough: bool,
     pub render_text: bool,
     pub wide_character_spacer: bool,
     pub line_wrapped: bool,
+    pub italic: bool,
+    pub underline: bool,
+    pub strikethrough: bool,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]

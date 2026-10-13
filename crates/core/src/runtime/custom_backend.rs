@@ -1351,39 +1351,48 @@ impl<'a> LegacyCells<'a> {
 
     /// Append `line`, whose last cell ends a wrapped row when `wrapped`.
     fn extend(&mut self, cells: &mut Vec<TermyCell>, line: &[engine::Cell], wrapped: bool) {
-        cells.extend(line.iter().map(|cell| self.cell(cell, false)));
+        let Some(first) = line.first() else {
+            return;
+        };
+        // Work on a local copy of the cached style, so the loop keeps it in
+        // registers instead of reloading it around every stored cell.
+        let (mut key, mut styled) = match self.style {
+            Some((key, styled)) if key == first.style => (key, styled),
+            _ => (first.style, self.styled(first.style)),
+        };
+        cells.reserve(line.len());
+        for cell in line {
+            if cell.style != key {
+                key = cell.style;
+                styled = self.styled(key);
+            }
+            let spacer =
+                cell.flags & (engine::Cell::WIDE_SPACER | engine::Cell::LEADING_WIDE_SPACER) != 0;
+            let character = cell.character;
+            // `styled.render_text` is false for hidden text.
+            let control = character < ' ' || ('\u{7f}'..='\u{9f}').contains(&character);
+            cells.push(TermyCell {
+                char: character,
+                render_text: styled.render_text && !spacer && !control,
+                wide_character_spacer: spacer,
+                ..styled
+            });
+        }
+        self.style = Some((key, styled));
         if wrapped && let Some(last) = cells.last_mut() {
             last.line_wrapped = true;
         }
     }
 
-    #[inline]
-    fn cell(&mut self, cell: &engine::Cell, wrapped: bool) -> TermyCell {
-        let styled = match &self.style {
-            Some((style, styled)) if *style == cell.style => *styled,
-            _ => {
-                // Only the style feeds these fields; the rest are per cell.
-                let blank = engine::Cell {
-                    style: cell.style,
-                    ..engine::Cell::default()
-                };
-                let styled = legacy_cell(&blank, false, self.palette, self.fallback);
-                self.style = Some((cell.style, styled));
-                styled
-            }
+    /// The frame cell fields `style` determines, for a printable character.
+    #[inline(never)]
+    fn styled(&self, style: engine::Style) -> TermyCell {
+        let blank = engine::Cell {
+            style,
+            character: 'x',
+            ..engine::Cell::default()
         };
-        let spacer =
-            cell.flags & (engine::Cell::WIDE_SPACER | engine::Cell::LEADING_WIDE_SPACER) != 0;
-        TermyCell {
-            char: cell.character,
-            render_text: !spacer
-                && cell.style.attributes & engine::Style::HIDDEN == 0
-                && cell.character != '\0'
-                && !cell.character.is_control(),
-            wide_character_spacer: spacer,
-            line_wrapped: wrapped,
-            ..styled
-        }
+        legacy_cell(&blank, false, self.palette, self.fallback)
     }
 }
 
