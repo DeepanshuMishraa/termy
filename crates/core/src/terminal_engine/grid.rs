@@ -175,6 +175,10 @@ pub(super) struct Grid {
     // Marking cells can change no damage: full damage is pending, or a
     // pending scroll exposed the whole screen, so every row is fully dirty.
     damage_saturated: bool,
+    // Damage is saturated and the last pending scroll moved the whole screen
+    // up by its height: a live flood's scroll changes no damage. Only ever
+    // set while that holds; see `mark_live_scroll_damage`.
+    flood_exposed: bool,
     visual_dirty: bool,
     dirty: Vec<Option<(usize, usize)>>,
     pending_scrolls: Vec<ViewportScroll>,
@@ -283,6 +287,7 @@ impl Grid {
             clear_anchor: false,
             full_damage: true,
             damage_saturated: true,
+            flood_exposed: false,
             visual_dirty: false,
             dirty: vec![None; size.rows],
             pending_scrolls: Vec::with_capacity(MAX_SCROLL_DAMAGE),
@@ -1253,6 +1258,7 @@ impl Grid {
             self.primary.saved.pending_wrap = self.primary.pending_wrap;
         }
         self.size = size;
+        self.flood_exposed = false;
         self.history_limit = Self::bounded_history(self.requested_history_limit);
         self.recount_history_bytes();
         self.trim_history();

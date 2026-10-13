@@ -7,6 +7,7 @@ impl Grid {
         self.visual_dirty = true;
         self.full_damage = true;
         self.damage_saturated = true;
+        self.flood_exposed = false;
         self.pending_scrolls.clear();
     }
 
@@ -32,9 +33,18 @@ impl Grid {
     #[inline]
     pub(super) fn mark_live_scroll_damage(&mut self) {
         debug_assert_eq!(self.display_offset(), 0);
-        let rows = self.size.rows;
+        debug_assert!(
+            !self.flood_exposed
+                || (self.damage_saturated && self.exposes_region(0, self.size.rows, 1)),
+            "flood exposure outlived its pending scroll"
+        );
         self.visual_dirty = true;
-        if self.full_damage || (self.damage_saturated && self.exposes_region(0, rows, 1)) {
+        if self.full_damage || self.flood_exposed {
+            return;
+        }
+        let rows = self.size.rows;
+        if self.damage_saturated && self.exposes_region(0, rows, 1) {
+            self.flood_exposed = true;
             return;
         }
         self.record_scroll_damage(0, rows, 1);
@@ -52,6 +62,8 @@ impl Grid {
 
     #[inline(never)]
     fn record_scroll_damage(&mut self, top: usize, bottom: usize, lines: i32) {
+        // The last pending scroll may change below.
+        self.flood_exposed = false;
         // While browsing history, scrolling can change both history and live
         // rows in the viewport. A full refresh also covers eviction at its top.
         if self.display_offset() != 0 {
@@ -171,6 +183,7 @@ impl Grid {
 
     fn take_cell_damage(&mut self) -> Damage {
         self.damage_saturated = false;
+        self.flood_exposed = false;
         if std::mem::take(&mut self.full_damage) {
             self.dirty.fill(None);
             return Damage::Full;
