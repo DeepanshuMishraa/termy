@@ -9,6 +9,8 @@ use super::{
 
 const MAX_TITLE_STACK: usize = 64;
 const MAX_KEYBOARD_STACK: usize = 32;
+/// ASCII runs at most this long try `Grid::write_short_ascii` first.
+const SHORT_ASCII_RUN: usize = 16;
 
 pub(super) struct State {
     pub(super) graphics: super::graphics::Graphics,
@@ -576,7 +578,11 @@ impl State {
                 self.print(char::from(byte));
             }
         } else {
-            self.grid.write_ascii(bytes);
+            // Short runs (words between other text) mostly fit the row
+            // as they are; longer ones are stored in vector blocks.
+            if bytes.len() > SHORT_ASCII_RUN || !self.grid.write_short_ascii(bytes) {
+                self.grid.write_ascii(bytes);
+            }
             if let Some(&byte) = bytes.last() {
                 self.last_printed = Some(char::from(byte));
             }

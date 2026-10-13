@@ -680,6 +680,45 @@ impl Grid {
         (consumed, last)
     }
 
+    /// `write_ascii` of short text that ends before the right limit, without
+    /// the general path's setup: no wrap, margin, pen metadata or wide-glyph
+    /// repair can apply. Returns false, having changed
+    /// nothing, when any condition that path handles applies. Out of line:
+    /// inline, it changes how the one-byte path beside it is compiled.
+    #[inline(never)]
+    pub(in crate::terminal_engine) fn write_short_ascii(&mut self, text: &[u8]) -> bool {
+        debug_assert!(!text.is_empty() && text.iter().all(|byte| (0x20..=0x7e).contains(byte)));
+        let (row, col) = (self.cursor.row, self.cursor.col);
+        let end = col + text.len();
+        if !self.grapheme_ordinary
+            || self.pending_wrap
+            || self.insert_mode
+            || self.pen.extra.is_some()
+            || end >= self.right_limit()
+        {
+            return false;
+        }
+        let plain = Cell::plain(self.pen.style, 0);
+        let active = &mut self.screen_mut().rows[row];
+        let written = col..end.min(active.occupied).max(col);
+        if active.cells[written].iter().any(|cell| cell.flags != 0) {
+            return false;
+        }
+        for (cell, &byte) in active.cells[col..end].iter_mut().zip(text) {
+            plain.store(cell, char::from(byte));
+        }
+        active.clear_extras(col..end);
+        active.occupied = active.occupied.max(end);
+        // As in `write_ascii`: a pending row is blanked around the text.
+        self.write_over_pending_clear(row, col, end);
+        self.observe_output();
+        self.cursor.col = end;
+        self.grapheme_open = true;
+        self.grapheme_at_margin = false;
+        self.mark(row, col, (end + 1).min(self.size.cols));
+        true
+    }
+
     /// `write_ascii` of one byte in the middle of a plain row, without the
     /// general path's setup. Returns false, having changed nothing, when any
     /// condition that path handles applies.
@@ -909,5 +948,183 @@ mod tests {
         for c in ['a', '💻', '🇩', '\u{1100}'] {
             assert!(!always_extends(c), "U+{:04X}", c as u32);
         }
+    }
+
+    struct Rng(u32);
+
+    impl Rng {
+        fn next(&mut self, bound: u32) -> u32 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 17;
+            self.0 ^= self.0 << 5;
+            self.0 % bound
+        }
+
+        /// Up to `pieces` pieces of output: words, line endings, jumps, wide
+        /// and joining scalars, and the modes and pen state the short path
+        /// gives way to.
+        fn output(&mut self, pieces: u32) -> Vec<u8> {
+            const PIECES: &[&str] = &[
+                "\n",
+                "\r",
+                "\x08",
+                "\t",
+                "\x1b[31m",
+                "\x1b[44m",
+                "\x1b[0m",
+                "\x1b[1;4m",
+                "\x1b[58:5:2m",
+                "\x1b[59m",
+                "\x1b]8;;http://x\x07",
+                "\x1b]8;;\x07",
+                "\x1b[4h",
+                "\x1b[4l",
+                "\x1b[?7l",
+                "\x1b[?7h",
+                "\x1b[?69h\x1b[3;15s",
+                "\x1b[?69l",
+                "\x1b[2;4r",
+                "\x1b[r",
+                "界",
+                "\u{301}",
+                "\u{600}",
+                "🙂",
+                "\x1b[K",
+                "\x1b[1K",
+                "\x1b[2J",
+                "\x1b[2@",
+                "\x1b[3P",
+                "\x1b[?1049h",
+                "\x1b[?1049l",
+            ];
+            let mut output = Vec::new();
+            for _ in 0..self.next(pieces) {
+                match self.next(PIECES.len() as u32 + 6) as usize {
+                    piece if piece < PIECES.len() => {
+                        output.extend_from_slice(PIECES[piece].as_bytes());
+                    }
+                    piece if piece < PIECES.len() + 3 => {
+                        for _ in 0..1 + self.next(20) {
+                            output.push(b'!' + self.next(94) as u8);
+                        }
+                    }
+                    piece if piece < PIECES.len() + 5 => output.extend_from_slice(b"\r\n"),
+                    _ => {
+                        let jump = format!("\x1b[{};{}H", 1 + self.next(5), 1 + self.next(20));
+                        output.extend_from_slice(jump.as_bytes());
+                    }
+                }
+            }
+            output
+        }
+    }
+
+    /// What either path can change: every line, the cursor and grapheme
+    /// state, damage, a pending row clear and effects.
+    fn written_state(
+        engine: &crate::terminal_engine::Engine,
+    ) -> impl PartialEq + std::fmt::Debug + use<> {
+        let grid = &engine.state.grid;
+        let lines: Vec<_> = (-(engine.history_size() as i32)..grid.size.rows as i32)
+            .map(|line| engine.line(line).map(|line| line.snapshot()))
+            .collect();
+        let pending = grid.pending_clear;
+        (
+            lines,
+            (
+                grid.cursor,
+                grid.pending_wrap,
+                grid.grapheme_open,
+                grid.grapheme_ordinary,
+                grid.grapheme_at_margin,
+                grid.clear_anchor,
+            ),
+            (
+                grid.dirty.clone(),
+                grid.pending_scrolls.clone(),
+                grid.full_damage,
+                grid.damage_saturated,
+                grid.visual_dirty,
+            ),
+            (pending.end != 0).then_some((
+                pending.row,
+                pending.start,
+                pending.end,
+                pending.background,
+            )),
+            grid.effects.clone(),
+        )
+    }
+
+    // `write_short_ascii` stores what `write_ascii` does, or gives way having
+    // changed nothing; the same output then follows alike.
+    #[test]
+    fn short_ascii_runs_write_what_the_general_path_does() {
+        use crate::terminal_engine::{Engine, Options, Size};
+        let mut rng = Rng(0x9e37_79b9);
+        let (mut taken, mut over_pending_clear) = (0, 0);
+        for _ in 0..3000 {
+            let before = rng.output(40);
+            // Half the time a flood fills the history and the last line feed
+            // leaves its row's clear pending, perhaps under a word, as the
+            // parser does within one feed (which flushes it before returning).
+            let flood = rng.next(2) == 0;
+            let word: Vec<u8> = (0..rng.next(12))
+                .map(|_| b'a' + rng.next(26) as u8)
+                .collect();
+            let text: Vec<u8> = (0..1 + rng.next(16))
+                .map(|_| b' ' + rng.next(95) as u8)
+                .collect();
+            let after = rng.output(10);
+            let engine = || {
+                let mut engine = Engine::new(
+                    Size { cols: 20, rows: 5 },
+                    Options {
+                        scrollback_history: 4,
+                    },
+                );
+                engine.feed(&before);
+                if flood {
+                    engine.feed(b"\x1b[r\x1b[?69l\x1b[?1049l\x1b[0m\x1b[5H");
+                    engine.feed("ab\r\n".repeat(9).as_bytes());
+                    engine.state.grid.linefeed_deferring_clear();
+                    if !word.is_empty() {
+                        engine.state.grid.write_ascii(&word);
+                    }
+                }
+                engine
+            };
+            let (mut general, mut short) = (engine(), engine());
+            general.state.grid.write_ascii(&text);
+            let unchanged = written_state(&short);
+            let pending_clear = short.state.grid.has_pending_clear();
+            if short.state.grid.write_short_ascii(&text) {
+                taken += 1;
+                over_pending_clear += usize::from(pending_clear);
+            } else {
+                assert_eq!(
+                    written_state(&short),
+                    unchanged,
+                    "{before:02x?} {text:02x?}"
+                );
+                short.state.grid.write_ascii(&text);
+            }
+            assert_eq!(
+                written_state(&general),
+                written_state(&short),
+                "{before:02x?} {text:02x?}"
+            );
+            general.feed(&after);
+            short.feed(&after);
+            assert_eq!(
+                written_state(&general),
+                written_state(&short),
+                "{before:02x?} {text:02x?} {after:02x?}"
+            );
+        }
+        assert!(
+            taken > 500 && over_pending_clear > 20,
+            "{taken} {over_pending_clear}"
+        );
     }
 }
