@@ -168,6 +168,22 @@ impl PlainCell {
         Self { style, flags }
     }
 
+    /// This template with `flags` instead of its own: the same style words,
+    /// which a loop storing both templates then holds once.
+    #[inline(always)]
+    pub(super) fn with_flags(self, flags: u16) -> Self {
+        #[cfg(target_pointer_width = "64")]
+        {
+            let [s8, s9, ..] = self.words[2].to_ne_bytes();
+            let [l0, l1] = flags.to_ne_bytes();
+            let mut words = self.words;
+            words[2] = u64::from_ne_bytes([s8, s9, l0, l1, 0, 0, 0, 0]);
+            Self { words }
+        }
+        #[cfg(not(target_pointer_width = "64"))]
+        Self { flags, ..self }
+    }
+
     /// Overwrite `cell`, which must hold no metadata (it isn't released).
     #[inline(always)]
     pub(super) fn store(self, cell: &mut Cell, character: char) {

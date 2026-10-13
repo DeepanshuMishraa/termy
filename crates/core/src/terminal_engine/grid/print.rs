@@ -162,7 +162,7 @@ fn narrow_two_byte(lead: u8, second: u8) -> Option<char> {
 /// from `col`, stopping before the last cell of `cells` (where `put_cell`
 /// handles the margin) and before overwriting half of a wide glyph (cells
 /// from `occupied` on are erase blanks). Returns the column and byte count
-/// reached and the last scalar written. Out of line, so its loop keeps the
+/// reached. Out of line, so its loop keeps the
 /// cell templates in registers rather than reloading them per glyph.
 #[inline(never)]
 fn write_wide_cjk(
@@ -171,31 +171,31 @@ fn write_wide_cjk(
     occupied: usize,
     bytes: &[u8],
     wide: PlainCell,
-    spacer: PlainCell,
-) -> (usize, usize, Option<char>) {
+) -> (usize, usize) {
+    let spacer = wide.with_flags(Cell::WIDE_SPACER);
     // Whole pairs that end before the last cell, and whole scalars: with
     // the trip count fixed up front, the loop indexes nothing.
     let room = cells.len().saturating_sub(col + 1) / 2;
     let (pairs, _) = cells[col..].as_chunks_mut::<2>();
     let (scalars, _) = bytes.as_chunks::<3>();
     let count = room.min(scalars.len());
+    // Pairs from this one on start at or past `occupied`.
+    let checked = occupied.saturating_sub(col).div_ceil(2);
     let mut written = 0;
-    let mut last = None;
     for ([glyph, right_half], &[lead, second, third]) in
         pairs[..count].iter_mut().zip(&scalars[..count])
     {
         let Some(character) = wide_cjk(lead, second, third) else {
             break;
         };
-        if col + 2 * written < occupied && (glyph.flags | right_half.flags) != 0 {
+        if written < checked && (glyph.flags | right_half.flags) != 0 {
             break;
         }
         wide.store(glyph, character);
         spacer.store(right_half, ' ');
-        last = Some(character);
         written += 1;
     }
-    (col + 2 * written, 3 * written, last)
+    (col + 2 * written, 3 * written)
 }
 
 impl Grid {
@@ -531,18 +531,20 @@ impl Grid {
         let cells = &mut active.cells[..right];
         let mut col = start;
         let mut consumed = 0;
-        let mut last = None;
+        // Where the last scalar written starts: it is decoded once, at the
+        // end, rather than carried through the loops.
+        let mut last = 0;
         while let Some(&byte) = bytes.get(consumed) {
             // CJK ideographs and Hangul syllables are three-byte scalars that
             // are all wide ordinary bases: a run of them skips the general
             // decode and classification. Anything else, including a cell
             // that needs wide-glyph repair, is left to the general path.
             if byte & 0xf0 == 0xe0 {
-                let (end, len, run_last) =
-                    write_wide_cjk(cells, col, occupied, &bytes[consumed..], wide, spacer);
+                let (end, len) = write_wide_cjk(cells, col, occupied, &bytes[consumed..], wide);
                 if len != 0 {
-                    (col, last) = (end, run_last);
+                    col = end;
                     consumed += len;
+                    last = consumed - 3;
                     continue;
                 }
             }
@@ -580,12 +582,16 @@ impl Grid {
                 plain.store(&mut cells[col], character);
             }
             col += width;
+            last = consumed;
             consumed += len;
-            last = Some(character);
         }
         if consumed == 0 {
             return (0, None);
         }
+        let last = match bytes[last] {
+            byte @ ..0x80 => Some(char::from(byte)),
+            _ => complete_utf8(&bytes[last..]).map(|(character, _)| character),
+        };
         active.occupied = occupied.max(col);
         // As in `write_ascii`: a pending row is blanked around the text.
         self.write_over_pending_clear(row, start, col);
