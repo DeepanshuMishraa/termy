@@ -163,12 +163,19 @@ impl Engine {
 
     /// Only synchronized updates need the time, and reading the clock would
     /// dominate small PTY reads, so `now` is read when first needed.
+    #[inline]
     fn feed_impl(&mut self, bytes: &[u8], now: Option<Instant>, defer_uploads: bool) -> usize {
         if let [byte] = *bytes
             && self.feed_ascii_cell(byte)
         {
             return 1;
         }
+        self.feed_parsed(bytes, now, defer_uploads)
+    }
+
+    /// `feed_impl` through the parser.
+    #[inline(never)]
+    fn feed_parsed(&mut self, bytes: &[u8], now: Option<Instant>, defer_uploads: bool) -> usize {
         // Most feeds are one parse pass with nothing deferred or buffered.
         if bytes.len() <= PARSE_CHUNK
             && !self.state.has_deferred_upload()
