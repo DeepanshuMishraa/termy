@@ -269,6 +269,13 @@ impl Parser {
         self.utf8_remaining = 0;
     }
 
+    /// Between sequences and scalars, where a printable ASCII byte is
+    /// printed and nothing else.
+    #[inline]
+    pub(super) fn at_ground(&self) -> bool {
+        self.state == State::Ground && self.utf8_remaining == 0
+    }
+
     pub(super) fn advance(&mut self, handler: &mut impl Handler, bytes: &[u8]) -> usize {
         self.advance_impl::<true>(handler, bytes)
     }

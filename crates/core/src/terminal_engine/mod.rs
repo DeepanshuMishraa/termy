@@ -164,6 +164,11 @@ impl Engine {
     /// Only synchronized updates need the time, and reading the clock would
     /// dominate small PTY reads, so `now` is read when first needed.
     fn feed_impl(&mut self, bytes: &[u8], now: Option<Instant>, defer_uploads: bool) -> usize {
+        if let [byte] = *bytes
+            && self.feed_ascii_cell(byte)
+        {
+            return 1;
+        }
         // Most feeds are one parse pass with nothing deferred or buffered.
         if bytes.len() <= PARSE_CHUNK
             && !self.state.has_deferred_upload()
@@ -184,6 +189,31 @@ impl Engine {
             return consumed + self.feed_impl_general(&bytes[consumed..], now, defer_uploads);
         }
         self.feed_impl_general(bytes, now, defer_uploads)
+    }
+
+    /// Typed and echoed text arrives a byte at a time. Feed one printable
+    /// byte that the grid writes in place with exactly the effects of
+    /// `parse_pass`, minus its setup; returns false, having changed nothing,
+    /// when that pass would do more (an upload or synchronized update is
+    /// pending, a sequence is open, or the write wraps, inserts or repairs).
+    #[inline]
+    fn feed_ascii_cell(&mut self, byte: u8) -> bool {
+        if !(0x20..=0x7e).contains(&byte)
+            || !self.parser.at_ground()
+            || self.state.has_deferred_upload()
+            || self.state.modes.synchronized_update
+            || self.synchronized_update_deadline().is_some()
+            || !self.state.print_ascii_cell(byte)
+        {
+            return false;
+        }
+        // The rest of `feed_impl` and `parse_pass` for this byte: printing
+        // leaves no pending clear, upload deferral or synchronized update.
+        self.state.reset_animation_work();
+        self.state.grid.prepare_output(1);
+        self.state.flush_graphics_effects();
+        self.generation = self.generation.wrapping_add(1);
+        true
     }
 
     /// Parse `bytes` (at most one chunk) through the grid, as one iteration

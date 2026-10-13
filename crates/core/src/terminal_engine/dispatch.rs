@@ -557,6 +557,18 @@ impl State {
 }
 
 impl State {
+    /// `print_ascii` of one byte when the grid writes it in place; see
+    /// `Grid::write_ascii_cell`. Returns false, having changed nothing,
+    /// otherwise.
+    #[inline]
+    pub(super) fn print_ascii_cell(&mut self, byte: u8) -> bool {
+        if self.charsets[self.active_charset] || !self.grid.write_ascii_cell(byte) {
+            return false;
+        }
+        self.last_printed = Some(char::from(byte));
+        true
+    }
+
     #[inline(never)]
     fn print_ascii_run(&mut self, bytes: &[u8]) {
         if self.charsets[self.active_charset] {
@@ -605,10 +617,8 @@ impl Handler for State {
     fn print_ascii(&mut self, bytes: &[u8]) {
         // Byte-at-a-time output (echo, small PTY reads) writes one cell.
         if let &[byte] = bytes
-            && !self.charsets[self.active_charset]
-            && self.grid.write_ascii_cell(byte)
+            && self.print_ascii_cell(byte)
         {
-            self.last_printed = Some(char::from(byte));
             return;
         }
         self.print_ascii_run(bytes);

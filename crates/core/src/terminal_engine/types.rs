@@ -114,6 +114,12 @@ pub struct Cell {
 
 // 24 B on 64-bit targets; the extra pointer is 4 B on wasm32, so 20 B there.
 const _: () = assert!(size_of::<Style>() == 10 && size_of::<Cell>() == size_of::<usize>() + 16);
+// The field offsets `PlainCell` assembles its words from.
+const _: () = assert!(
+    std::mem::offset_of!(Cell, style) == size_of::<usize>()
+        && std::mem::offset_of!(Cell, flags) == size_of::<usize>() + 10
+        && std::mem::offset_of!(Cell, character) == size_of::<usize>() + 12
+);
 
 /// A metadata-free cell as the words it occupies, so the print and clear
 /// loops store each cell with two or three full-width writes instead of one
@@ -134,16 +140,21 @@ impl PlainCell {
     fn new(style: Style, flags: u16) -> Self {
         #[cfg(target_pointer_width = "64")]
         {
-            let cell = std::mem::ManuallyDrop::new(Cell {
-                extra: None,
-                style,
-                flags,
-                character: '\0',
-            });
-            // SAFETY: `Cell` is `repr(C)`, 24 bytes and 8-aligned with no
-            // padding (asserted above), so every byte is initialized and it
-            // reads as three words. `ManuallyDrop` keeps the `None` alive.
-            let words = unsafe { std::ptr::read((&raw const *cell).cast::<[u64; 3]>()) };
+            // `Cell` is `repr(C)`: the `None` pointer, then the style's ten
+            // bytes, the flags and the character, with no padding (asserted
+            // above). The words are assembled in registers: a cell built on
+            // the stack and reread as words would make each template wait
+            // for every store queued before it.
+            // SAFETY: `Style` is ten 1-byte fields (`UnderlineStyle` is
+            // `repr(u8)`), so it has no padding and every byte is initialized.
+            let [s0, s1, s2, s3, s4, s5, s6, s7, s8, s9] =
+                unsafe { std::mem::transmute::<Style, [u8; 10]>(style) };
+            let [l0, l1] = flags.to_ne_bytes();
+            let words = [
+                0,
+                u64::from_ne_bytes([s0, s1, s2, s3, s4, s5, s6, s7]),
+                u64::from_ne_bytes([s8, s9, l0, l1, 0, 0, 0, 0]),
+            ];
             Self { words }
         }
         #[cfg(not(target_pointer_width = "64"))]

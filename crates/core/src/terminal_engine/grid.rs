@@ -14,6 +14,7 @@ use super::types::{
 };
 
 mod combining;
+mod damage;
 mod flood;
 mod history;
 mod margins;
@@ -181,16 +182,20 @@ pub(super) struct Grid {
     // cross when choosing the new live viewport.
     clear_anchor: bool,
     full_damage: bool,
+    // Marking cells can change no damage: full damage is pending, or a
+    // pending scroll exposed the whole screen, so every row is fully dirty.
+    damage_saturated: bool,
     visual_dirty: bool,
     dirty: Vec<Option<(usize, usize)>>,
     pending_scrolls: Vec<ViewportScroll>,
     combining_cache: CombiningCache,
     // Last color-only spacer extra; see `Cell::spacer_extra`.
     spacer_extra: Option<Arc<CellExtra>>,
-    // The row a line feed just scrolled in, whose leading cells still hold
-    // old content until the next write fills around its text (or anything
-    // else fills them first); see `flush_pending_clear`.
-    pending_clear: Option<PendingClear>,
+    // Cells of the row a line feed just scrolled in that still hold old
+    // content. The line's text runs cover them from the left; whatever they
+    // skip or leave is filled before anything else reads the row (see
+    // `flush_pending_clear`).
+    pending_clear: PendingClear,
     defer_scroll_clear: bool,
     grapheme_open: bool,
     grapheme_ordinary: bool,
@@ -287,12 +292,13 @@ impl Grid {
             pending_wrap: false,
             clear_anchor: false,
             full_damage: true,
+            damage_saturated: true,
             visual_dirty: false,
             dirty: vec![None; size.rows],
             pending_scrolls: Vec::with_capacity(MAX_SCROLL_DAMAGE),
             combining_cache: CombiningCache::default(),
             spacer_extra: None,
-            pending_clear: None,
+            pending_clear: PendingClear::NONE,
             defer_scroll_clear: false,
             grapheme_open: false,
             grapheme_ordinary: true,
@@ -398,65 +404,6 @@ impl Grid {
         self.row_cells(row as i32 - self.display_offset() as i32)
     }
 
-    pub(super) fn mark_full_damage(&mut self) {
-        self.visual_dirty = true;
-        self.full_damage = true;
-        self.pending_scrolls.clear();
-    }
-
-    fn mark_scroll_damage(&mut self, top: usize, bottom: usize, lines: i32) {
-        self.visual_dirty = true;
-        if self.full_damage {
-            return;
-        }
-        // While browsing history, scrolling can change both history and live
-        // rows in the viewport. A full refresh also covers eviction at its top.
-        if self.display_offset() != 0 {
-            self.mark_full_damage();
-            return;
-        }
-        let count = lines.unsigned_abs() as usize;
-        debug_assert!(count != 0 && count <= bottom - top);
-        // Once a pending scroll exposed the whole region, every row in it is
-        // fully dirty, so rotating again (per line of a flood) changes nothing.
-        if self.pending_scrolls.last().is_some_and(|previous| {
-            previous.top == top
-                && previous.bottom == bottom
-                && previous.lines.signum() == lines.signum()
-                && previous.lines.unsigned_abs() as usize == bottom - top
-        }) {
-            self.mark_cursor(self.cursor);
-            return;
-        }
-        // The renderer may have painted the old cursor into a cached row. Its
-        // old mark must travel with that row before marking its new position.
-        self.mark_cursor(self.cursor);
-        let exposed = Some((0, self.size.cols));
-        if lines > 0 {
-            self.dirty[top..bottom].rotate_left(count);
-            self.dirty[bottom - count..bottom].fill(exposed);
-        } else {
-            self.dirty[top..bottom].rotate_right(count);
-            self.dirty[top..top + count].fill(exposed);
-        }
-        self.mark_cursor(self.cursor);
-        if let Some(previous) = self.pending_scrolls.last_mut()
-            && previous.top == top
-            && previous.bottom == bottom
-            && previous.lines.signum() == lines.signum()
-        {
-            // Once the entire region was exposed, every cell is dirty, so a
-            // full rotation plus those patches represents any further scroll.
-            let count = (previous.lines.unsigned_abs() as usize + count).min(bottom - top);
-            previous.lines = count as i32 * lines.signum();
-        } else if self.pending_scrolls.len() < MAX_SCROLL_DAMAGE {
-            self.pending_scrolls
-                .push(ViewportScroll { top, bottom, lines });
-        } else {
-            self.mark_full_damage();
-        }
-    }
-
     pub(super) fn tracks_effects(&self) -> bool {
         self.track_effects
     }
@@ -508,87 +455,24 @@ impl Grid {
         self.effects.push(effect);
     }
 
-    fn mark(&mut self, row: usize, start: usize, end: usize) {
-        self.visual_dirty = true;
-        self.mark_damage(row, start, end);
-    }
-
-    fn mark_damage(&mut self, row: usize, start: usize, end: usize) {
-        if self.full_damage || row >= self.size.rows || start >= end {
-            return;
-        }
-        let row = row.saturating_add(self.display_offset());
-        if let Some(dirty) = self.dirty.get_mut(row) {
-            let end = end.min(self.size.cols);
-            *dirty = Some(match *dirty {
-                Some((old_start, old_end)) => (old_start.min(start), old_end.max(end)),
-                None => (start, end),
-            });
-        }
-    }
-
-    fn mark_cursor(&mut self, cursor: Cursor) {
-        if cursor.visible {
-            // Cursor overlays need text damage but do not edit placeholder cells.
-            self.mark_damage(cursor.row, cursor.col, cursor.col.saturating_add(1));
-        }
-    }
-
-    /// Tracks edits independently of damage consumption, including while full
-    /// damage is already pending. Graphics consume it to notice placeholder edits.
-    pub(super) fn take_visual_dirty(&mut self) -> bool {
-        std::mem::take(&mut self.visual_dirty)
-    }
-
     pub(super) fn end_grapheme(&mut self) {
         self.grapheme_open = false;
         self.grapheme_at_margin = false;
     }
 
+    #[inline]
     fn motion_done(&mut self, old: Cursor) {
         self.end_grapheme();
         self.pending_wrap = false;
-        self.mark_cursor(old);
-        self.mark_cursor(self.cursor);
+        if !self.damage_saturated {
+            self.mark_cursor(old);
+            self.mark_cursor(self.cursor);
+        }
     }
 
     pub(super) fn cursor_changed(&mut self, old: Cursor) {
         self.mark_cursor(old);
         self.mark_cursor(self.cursor);
-    }
-
-    pub(super) fn take_damage(&mut self) -> Damage {
-        // Cell-only consumers cannot replay row rotations. Expand the affected
-        // regions so their usual span patching still reconstructs the viewport.
-        for scroll in &self.pending_scrolls {
-            self.dirty[scroll.top..scroll.bottom].fill(Some((0, self.size.cols)));
-        }
-        self.pending_scrolls.clear();
-        self.take_cell_damage()
-    }
-
-    pub(super) fn take_render_damage(&mut self) -> (Damage, Vec<ViewportScroll>) {
-        let scrolls = self.pending_scrolls.clone();
-        self.pending_scrolls.clear();
-        (self.take_cell_damage(), scrolls)
-    }
-
-    fn take_cell_damage(&mut self) -> Damage {
-        if std::mem::take(&mut self.full_damage) {
-            self.dirty.fill(None);
-            return Damage::Full;
-        }
-        let spans = self
-            .dirty
-            .iter_mut()
-            .enumerate()
-            .filter_map(|(row, dirty)| {
-                dirty
-                    .take()
-                    .map(|(start, end)| DirtySpan { row, start, end })
-            })
-            .collect();
-        Damage::Partial(spans)
     }
 
     fn blank(&self) -> Cell {

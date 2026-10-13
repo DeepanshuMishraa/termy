@@ -232,6 +232,32 @@ fn reopened_links_and_wide_spacers_reuse_shared_metadata() {
     assert!(!Arc::ptr_eq(&first, &extra(&cells[8])));
 }
 
+// Single printable bytes take a shortcut past the parser; any byte the full
+// path would treat differently must still reach it.
+#[test]
+fn byte_at_a_time_output_matches_one_write() {
+    let input = concat!(
+        "plain text that wraps past the edge\r\n",
+        "\x1b[31mred\x1b[0m \x1b(0lqk\x1b(B x\r\n",
+        "\x1b[4hins\x1b[4l\x1b[1;3Hover\x1b[3;1H",
+        "\x1b]8;;https://example.test\x07link\x1b]8;;\x07 ",
+        "\x1b[?2026hsync\x1b[?2026l e\u{301}界\x1b[?7lno wrap at the margin here\x1b[?7h",
+        "\r\nmore\r\nlines\r\nscroll\r\nthe\r\nscreen\x1b[2;5r\x1b[5;1Hregion\n\n",
+    );
+    let mut whole = engine(16, 4, 8);
+    whole.feed(input.as_bytes());
+    let mut bytewise = engine(16, 4, 8);
+    for byte in input.as_bytes() {
+        bytewise.feed(std::slice::from_ref(byte));
+    }
+    for line in -(whole.history_size() as i32)..4 {
+        assert_eq!(whole.line(line), bytewise.line(line), "line {line}");
+    }
+    assert_eq!(whole.cursor(), bytewise.cursor());
+    assert_eq!(whole.modes(), bytewise.modes());
+    assert_eq!(whole.history_size(), bytewise.history_size());
+}
+
 #[test]
 fn wide_and_combining_text_survive_bytewise_input() {
     let mut engine = engine(8, 2, 0);
@@ -456,6 +482,14 @@ fn rows_scrolled_in_by_line_feeds_never_show_their_recycled_content() {
         ("\x1b]0;title\x07ab\r\n", "ab"),
         // LF without CR keeps the column, so the text starts mid-row.
         ("ab\n", "ab"),
+        // Consecutive runs (ASCII, then UTF-8, across SGR) each take their
+        // part of the row; only what no run covers is blanked.
+        (
+            "ab caf\u{e9} \u{3b5}\u{3bb} \u{65e5}z\r\n",
+            "ab caf\u{e9} \u{3b5}\u{3bb} \u{65e5}z",
+        ),
+        ("\u{e9}a\u{e9}a\r\n", "\u{e9}a\u{e9}a"),
+        ("ab\x1b[1m\u{e9}\u{65e5}\x1b[0mz\r\n", "ab\u{e9}\u{65e5}z"),
     ];
     for (line, visible) in cases {
         for chunk in [1, 3, usize::MAX] {

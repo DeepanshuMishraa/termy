@@ -3,13 +3,41 @@
 //! the next line's text is not stored on top of a fresh blank.
 use super::{Cell, Color, Grid, GridEffect, Row, Style};
 
-/// Leading cells of a live row that must still become plain blanks.
+/// Cells `start..end` of a live row that must still become plain blanks.
+/// An `end` of zero leaves nothing to fill, so it also means none is
+/// pending. The grid stores this by value and reads it a field at a time:
+/// it is written while the line's cell stores drain, and a wider read would
+/// wait for all of them.
 #[derive(Clone, Copy)]
 pub(super) struct PendingClear {
     pub(super) row: usize,
+    pub(super) start: usize,
     pub(super) end: usize,
-    pub(super) style: Style,
+    pub(super) background: Color,
 }
+
+impl PendingClear {
+    pub(super) const NONE: Self = Self {
+        row: 0,
+        start: 0,
+        end: 0,
+        background: Color::DEFAULT,
+    };
+}
+
+/// The blank a full-screen scroll clears with while the pen has the default
+/// background. A constant, so reading it never waits on recent stores.
+const DEFAULT_BLANK: Cell = Cell {
+    extra: None,
+    style: Style {
+        foreground: Color::DEFAULT,
+        background: Color::DEFAULT,
+        attributes: 0,
+        underline: super::super::types::UnderlineStyle::None,
+    },
+    flags: 0,
+    character: ' ',
+};
 
 impl Grid {
     /// Fill a row a line feed left partly unblanked. Every grid operation
@@ -17,46 +45,55 @@ impl Grid {
     /// the engine flushes before anything outside parsing can read the grid.
     #[inline]
     pub(in crate::terminal_engine) fn flush_pending_clear(&mut self) {
-        if let Some(pending) = self.pending_clear.take() {
-            self.fill_pending_clear(pending, 0, 0);
+        if self.pending_clear.end != 0 {
+            let pending = self.pending_clear;
+            self.pending_clear.end = 0;
+            self.fill_pending_clear(pending.row, pending.start, pending.end, pending.background);
         }
     }
 
-    /// Blank a pending row's leading cells except `skip_start..skip_end`,
-    /// which the caller just wrote.
     #[inline]
-    pub(super) fn fill_pending_clear(
-        &mut self,
-        pending: PendingClear,
-        skip_start: usize,
-        skip_end: usize,
-    ) {
-        let cells = &mut self.screen_mut().rows[pending.row].cells;
-        let end = pending.end.min(cells.len());
-        let (before, after) = if skip_start >= skip_end {
-            (end, end)
+    pub(super) fn has_pending_clear(&self) -> bool {
+        self.pending_clear.end != 0
+    }
+
+    #[inline(never)]
+    fn fill_pending_clear(&mut self, row: usize, start: usize, end: usize, background: Color) {
+        let cells = &mut self.screen_mut().rows[row].cells;
+        let end = end.min(cells.len());
+        if start < end {
+            let style = Style {
+                background,
+                ..Style::default()
+            };
+            Cell::fill_plain(&mut cells[start..end], ' ', style);
+        }
+    }
+
+    /// Account for text a writer just stored at `start..end` of `row`, the
+    /// cursor row. A pending clear of another row is applied; on this row
+    /// the stale cells left of the text are blanked, and those right of it
+    /// stay pending, since the line's next run usually covers them.
+    #[inline]
+    pub(super) fn write_over_pending_clear(&mut self, row: usize, start: usize, end: usize) {
+        if self.pending_clear.end == 0 {
+            return;
+        }
+        if self.pending_clear.row != row {
+            self.flush_pending_clear();
+            return;
+        }
+        let pending = self.pending_clear;
+        if pending.start < start {
+            let left = start.min(pending.end);
+            self.fill_pending_clear(row, pending.start, left, pending.background);
+        }
+        let rest = pending.start.max(end);
+        if rest < pending.end {
+            self.pending_clear.start = rest;
         } else {
-            (skip_start.min(end), skip_end.min(end))
-        };
-        // A line usually overwrites all of its row's old text.
-        if before != 0 {
-            Cell::fill_plain(&mut cells[..before], ' ', pending.style);
+            self.pending_clear.end = 0;
         }
-        if after != end {
-            Cell::fill_plain(&mut cells[after..end], ' ', pending.style);
-        }
-    }
-
-    /// The pending clear of `row`, for a text write about to overwrite part
-    /// of it; any other pending clear is applied now.
-    #[inline]
-    pub(super) fn take_pending_clear(&mut self, row: usize) -> Option<PendingClear> {
-        let pending = self.pending_clear.take()?;
-        if pending.row == row {
-            return Some(pending);
-        }
-        self.fill_pending_clear(pending, 0, 0);
-        None
     }
 
     /// LF from output: a row it scrolls in is blanked lazily, so the line
@@ -77,23 +114,25 @@ impl Grid {
         let rows = self.size.rows;
         let history_before = self.history.len();
         let removed = self.primary.rows.pop_front().expect("screen row");
-        let mut recycled = self.pop_history_front().expect("history at its limit");
+        let recycled = self.pop_history_front().expect("history at its limit");
         self.push_history(removed);
         self.history_activity = true;
         self.pending_compaction = (self.pending_compaction + 1).min(self.history.len());
-        let blank = Cell::default();
-        let deferred = if self.defer_scroll_clear {
-            recycled.clear_deferring_fill(cols, &blank)
-        } else {
-            recycled.clear(cols, &blank);
-            None
-        };
+        // Rows are edited where they will stay, not on the way there.
         self.primary.rows.push_back(recycled);
-        self.pending_clear = deferred.map(|end| PendingClear {
-            row: rows - 1,
-            end,
-            style: blank.style,
-        });
+        let recycled = self.primary.rows.back_mut().expect("screen row");
+        if self.defer_scroll_clear {
+            if let Some(end) = recycled.clear_deferring_fill(cols, &DEFAULT_BLANK) {
+                self.pending_clear = PendingClear {
+                    row: rows - 1,
+                    start: 0,
+                    end,
+                    background: Color::DEFAULT,
+                };
+            }
+        } else {
+            recycled.clear(cols, &DEFAULT_BLANK);
+        }
         self.mark_scroll_damage(0, rows, 1);
         if self.track_effects {
             self.effect(GridEffect::Scroll {
@@ -192,11 +231,14 @@ impl Grid {
             } else {
                 rows.insert(bottom - 1, recycled);
             }
-            self.pending_clear = deferred.map(|end| PendingClear {
-                row: bottom - 1,
-                end,
-                style: blank.style,
-            });
+            if let Some(end) = deferred {
+                self.pending_clear = PendingClear {
+                    row: bottom - 1,
+                    start: 0,
+                    end,
+                    background: blank.style.background,
+                };
+            }
         }
         if count != 0 {
             self.mark_scroll_damage(top, bottom, count as i32);

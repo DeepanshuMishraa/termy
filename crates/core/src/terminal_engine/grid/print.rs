@@ -523,9 +523,7 @@ impl Grid {
         }
         active.occupied = occupied.max(col);
         // As in `write_ascii`: a pending row is blanked around the text.
-        if let Some(pending) = self.take_pending_clear(row) {
-            self.fill_pending_clear(pending, start, col);
-        }
+        self.write_over_pending_clear(row, start, col);
         self.observe_output();
         self.cursor.col = col;
         self.grapheme_open = true;
@@ -544,7 +542,7 @@ impl Grid {
         if !self.grapheme_ordinary
             || self.pending_wrap
             || self.insert_mode
-            || self.pending_clear.is_some()
+            || self.has_pending_clear()
             || self.pen.extra.is_some()
             || col + 1 >= self.right_limit()
         {
@@ -609,9 +607,6 @@ impl Grid {
                 text = &text[count..];
                 continue;
             }
-            // A row scrolled in by the last line feed is blanked only around
-            // this text; its cells hold no metadata, so the plain writes hold.
-            let pending = self.take_pending_clear(row);
             let style = self.pen.style;
             let extra = self.pen.extra.clone();
             let active = &mut self.screen_mut().rows[row];
@@ -640,9 +635,9 @@ impl Grid {
                 }
             }
             active.occupied = active.occupied.max(col + count);
-            if let Some(pending) = pending {
-                self.fill_pending_clear(pending, col, col + count);
-            }
+            // A row scrolled in by the last line feed is blanked only around
+            // this text; its cells hold no metadata, so the plain writes hold.
+            self.write_over_pending_clear(row, col, col + count);
             self.cursor.col += count;
             let at_margin = self.cursor.col == right;
             if at_margin {

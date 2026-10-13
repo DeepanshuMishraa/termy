@@ -36,9 +36,11 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod legacy;
 mod lock;
 mod maintenance;
 mod viewport;
+use legacy::LegacyCells;
 
 const EVENT_BATCH: usize = 2048;
 const MAX_EVENTS: usize = 65_536;
@@ -56,9 +58,9 @@ pub(super) struct CustomBackend {
 }
 
 struct Shared {
-    // Taken for every feed and read; parking_lot's uncontended lock is a
-    // single atomic, where the macOS pthread mutex costs far more per call.
-    state: parking_lot::Mutex<State>,
+    // Taken for every feed and read; see `lock::RawEngineLock`. The macOS
+    // pthread mutex costs far more per call.
+    state: lock::EngineMutex,
     lock_waiters: lock::LockWaiters,
     clipboard: Mutex<KittyClipboardHostState>,
     notifier: Option<TerminalWakeupNotifier>,
@@ -729,7 +731,7 @@ impl CustomBackend {
     ) -> Self {
         Self {
             shared: Arc::new(Shared {
-                state: parking_lot::Mutex::new(State::new(
+                state: lock::EngineMutex::new(State::new(
                     size,
                     &config.cloned().unwrap_or_default(),
                 )),
@@ -1331,115 +1333,6 @@ fn resolve_color(
         a: 255,
     }
 }
-/// Converts runs of engine cells to legacy frame cells. Neighbouring cells
-/// almost always share a style, so its colors and attribute flags are
-/// resolved once per run instead of once per cell.
-struct LegacyCells<'a> {
-    palette: &'a TerminalPalette,
-    fallback: TerminalQueryColors,
-    style: Option<(engine::Style, TermyCell)>,
-}
-
-impl<'a> LegacyCells<'a> {
-    fn new(palette: &'a TerminalPalette, fallback: TerminalQueryColors) -> Self {
-        Self {
-            palette,
-            fallback,
-            style: None,
-        }
-    }
-
-    /// Append `line`, whose last cell ends a wrapped row when `wrapped`.
-    fn extend(&mut self, cells: &mut Vec<TermyCell>, line: &[engine::Cell], wrapped: bool) {
-        let Some(first) = line.first() else {
-            return;
-        };
-        // Work on a local copy of the cached style, so the loop keeps it in
-        // registers instead of reloading it around every stored cell.
-        let (mut key, mut styled) = match self.style {
-            Some((key, styled)) if key == first.style => (key, styled),
-            _ => (first.style, self.styled(first.style)),
-        };
-        cells.reserve(line.len());
-        for cell in line {
-            if cell.style != key {
-                key = cell.style;
-                styled = self.styled(key);
-            }
-            let spacer =
-                cell.flags & (engine::Cell::WIDE_SPACER | engine::Cell::LEADING_WIDE_SPACER) != 0;
-            let character = cell.character;
-            // `styled.render_text` is false for hidden text.
-            let control = character < ' ' || ('\u{7f}'..='\u{9f}').contains(&character);
-            cells.push(TermyCell {
-                char: character,
-                render_text: styled.render_text && !spacer && !control,
-                wide_character_spacer: spacer,
-                ..styled
-            });
-        }
-        self.style = Some((key, styled));
-        if wrapped && let Some(last) = cells.last_mut() {
-            last.line_wrapped = true;
-        }
-    }
-
-    /// The frame cell fields `style` determines, for a printable character.
-    #[inline(never)]
-    fn styled(&self, style: engine::Style) -> TermyCell {
-        let blank = engine::Cell {
-            style,
-            character: 'x',
-            ..engine::Cell::default()
-        };
-        legacy_cell(&blank, false, self.palette, self.fallback)
-    }
-}
-
-fn legacy_cell(
-    cell: &engine::Cell,
-    wrapped: bool,
-    palette: &TerminalPalette,
-    fallback: TerminalQueryColors,
-) -> TermyCell {
-    let attributes = cell.style.attributes;
-    let bold = attributes & engine::Style::BOLD != 0;
-    let inverse = attributes & engine::Style::INVERSE != 0;
-    let foreground = render_color(cell.style.foreground, true);
-    let background = render_color(cell.style.background, false);
-    let (mut foreground, background) = if inverse {
-        (background, foreground)
-    } else {
-        (foreground, background)
-    };
-    if bold && let TerminalRenderColor::Indexed(index @ 0..=7) = foreground {
-        foreground = TerminalRenderColor::Indexed(index + 8);
-    }
-    let mut fg = resolve_color(foreground, palette, fallback);
-    if attributes & engine::Style::DIM != 0 {
-        fg.r /= 2;
-        fg.g /= 2;
-        fg.b /= 2;
-    }
-    let spacer = cell.flags & (engine::Cell::WIDE_SPACER | engine::Cell::LEADING_WIDE_SPACER) != 0;
-    TermyCell {
-        char: cell.character,
-        fg,
-        bg: resolve_color(background, palette, fallback),
-        uses_terminal_default_bg: background == TerminalRenderColor::DefaultBackground,
-        bold,
-        italic: attributes & engine::Style::ITALIC != 0,
-        underline: cell.style.underline != engine::UnderlineStyle::None,
-        strikethrough: attributes & engine::Style::STRIKE != 0,
-        render_text: !spacer
-            && attributes & engine::Style::HIDDEN == 0
-            && cell.character != '\0'
-            && !cell.character.is_control(),
-        wide_character_spacer: spacer,
-        line_wrapped: wrapped,
-    }
-}
-
 fn append_search_cell(text: &mut String, cell: &engine::Cell) {
     if cell.flags & engine::Cell::WIDE_SPACER != 0 {
         return;
