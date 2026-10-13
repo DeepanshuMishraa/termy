@@ -162,8 +162,9 @@ fn narrow_two_byte(lead: u8, second: u8) -> Option<char> {
 /// from `col`, stopping before the last cell of `cells` (where `put_cell`
 /// handles the margin) and before overwriting half of a wide glyph (cells
 /// from `occupied` on are erase blanks). Returns the column and byte count
-/// reached. Out of line, so its loop keeps the
-/// cell templates in registers rather than reloading them per glyph.
+/// reached. For runs of at least four scalars, most of which it stores four
+/// at a time; out of line, so its loops keep the cell templates in
+/// registers rather than reloading them per glyph.
 #[inline(never)]
 fn write_wide_cjk(
     cells: &mut [Cell],
@@ -172,38 +173,14 @@ fn write_wide_cjk(
     bytes: &[u8],
     wide: PlainCell,
 ) -> (usize, usize) {
-    // A fourth three-byte scalar after this one: a long run.
-    if bytes.get(9).is_some_and(|lead| lead & 0xf0 == 0xe0) {
-        return write_long_wide_cjk(cells, col, occupied, bytes, wide);
-    }
     let spacer = wide.with_flags(Cell::WIDE_SPACER);
     // Whole pairs that end before the last cell, and whole scalars: with
-    // the trip count fixed up front, the loop indexes nothing.
+    // the trip count fixed up front, the loops index nothing.
     let room = cells.len().saturating_sub(col + 1) / 2;
     let (pairs, _) = cells[col..].as_chunks_mut::<2>();
     let (scalars, _) = bytes.as_chunks::<3>();
     let count = room.min(scalars.len());
     // Pairs from this one on start at or past `occupied`.
-    let checked = occupied.saturating_sub(col).div_ceil(2);
-    let written = write_wide_scalars(pairs, scalars, 0..count, checked, wide, spacer);
-    (col + 2 * written, 3 * written)
-}
-
-/// `write_wide_cjk` for a run of at least four scalars, most of which it
-/// stores four at a time.
-#[inline(never)]
-fn write_long_wide_cjk(
-    cells: &mut [Cell],
-    col: usize,
-    occupied: usize,
-    bytes: &[u8],
-    wide: PlainCell,
-) -> (usize, usize) {
-    let spacer = wide.with_flags(Cell::WIDE_SPACER);
-    let room = cells.len().saturating_sub(col + 1) / 2;
-    let (pairs, _) = cells[col..].as_chunks_mut::<2>();
-    let (scalars, _) = bytes.as_chunks::<3>();
-    let count = room.min(scalars.len());
     let checked = occupied.saturating_sub(col).div_ceil(2);
     // Groups skip the repair check, so they start only past `occupied`.
     let mut written = 0;
@@ -574,22 +551,37 @@ impl Grid {
         let mut last = 0;
         while let Some(&byte) = bytes.get(consumed) {
             // CJK ideographs and Hangul syllables are three-byte scalars that
-            // are all wide ordinary bases: a run of them skips the general
-            // decode and classification. Anything else, including a cell
-            // that needs wide-glyph repair, is left to the general path.
-            if byte & 0xf0 == 0xe0 {
-                let (end, len) = write_wide_cjk(cells, col, occupied, &bytes[consumed..], wide);
-                if len != 0 {
-                    col = end;
-                    consumed += len;
-                    last = consumed - 3;
-                    continue;
+            // are all wide ordinary bases, which skip the general decode and
+            // classification. A run of four or more is stored out of line,
+            // mostly four at a time; a shorter one, here. Anything else,
+            // including a cell that needs wide-glyph repair, is left to the
+            // general path.
+            let cjk = if byte & 0xf0 == 0xe0 {
+                if bytes
+                    .get(consumed + 9)
+                    .is_some_and(|lead| lead & 0xf0 == 0xe0)
+                {
+                    let (end, len) = write_wide_cjk(cells, col, occupied, &bytes[consumed..], wide);
+                    if len != 0 {
+                        col = end;
+                        consumed += len;
+                        last = consumed - 3;
+                        continue;
+                    }
                 }
-            }
+                match bytes.get(consumed..consumed + 3) {
+                    Some(&[lead, second, third]) => wide_cjk(lead, second, third),
+                    _ => None,
+                }
+            } else {
+                None
+            };
             // Printable ASCII and the common two-byte scripts are narrow and
             // ordinary, and other ASCII is a control, which ends the run;
             // anything else is looked up.
-            let (character, len, width, ordinary) = if (0x20..=0x7e).contains(&byte) {
+            let (character, len, width, ordinary) = if let Some(character) = cjk {
+                (character, 3, 2, true)
+            } else if (0x20..=0x7e).contains(&byte) {
                 (char::from(byte), 1, 1, true)
             } else if byte < 0x80 {
                 break;
