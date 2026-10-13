@@ -1,11 +1,8 @@
 //! Row-oriented terminal storage. Scrolling moves row handles, not cells.
 
-use std::{
-    collections::VecDeque,
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
 };
 
 use super::types::{
@@ -22,9 +19,11 @@ mod history;
 mod margins;
 mod print;
 mod reflow;
+mod ring;
 mod row;
 use combining::CombiningCache;
 use flood::PendingClear;
+use ring::Ring;
 use row::PackedCells;
 
 const MAX_HISTORY_ROWS: usize = 20_000;
@@ -124,7 +123,7 @@ struct SavedCursor {
 }
 
 struct Screen {
-    rows: VecDeque<Row>,
+    rows: Ring<Row>,
     saved: SavedCursor,
     cursor: Cursor,
     pending_wrap: bool,
@@ -151,7 +150,7 @@ pub(super) struct Grid {
     primary: Screen,
     alternate: Option<Screen>,
     alternate_active: bool,
-    history: VecDeque<Row>,
+    history: Ring<Row>,
     // Heap bytes of `history` rows; see `history.rs`.
     history_bytes: usize,
     requested_history_limit: usize,
@@ -266,7 +265,7 @@ impl Grid {
             primary: Screen::new(size),
             alternate: None,
             alternate_active: false,
-            history: VecDeque::new(),
+            history: Ring::new(),
             history_bytes: 0,
             requested_history_limit: history_limit.min(MAX_HISTORY_ROWS),
             history_limit: Self::bounded_history(history_limit),

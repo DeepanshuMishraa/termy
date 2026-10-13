@@ -114,31 +114,30 @@ impl Grid {
         let rows = self.size.rows;
         let history_before = self.history.len();
         // The top row joins history and the oldest history row becomes the
-        // new bottom row. While a ring is exactly full, the row pushed to its
-        // back lands in the slot its first row just left, so each ring is
-        // written where it was read, without the out-of-line calls a general
-        // rotation makes. Rows moved through the stack, or edited before a
-        // move, are read back across narrower stores, which waits for every
-        // cell store the line queued.
+        // new bottom row: the two trade places, then each ring's first slot
+        // becomes its last, which moves no row while the ring is exactly
+        // full. Rows moved through the stack, or edited before a move, are
+        // read back across narrower stores, which waits for every cell store
+        // the line queued; the trade reads two rows no recent line wrote.
         if self.history.capacity() != self.history.len() {
             self.history.shrink_to_fit();
         }
         if self.primary.rows.capacity() != self.primary.rows.len() {
             self.primary.rows.shrink_to_fit();
         }
-        let oldest = self.history.pop_front().expect("history at its limit");
-        let top = self.primary.rows.pop_front().expect("screen row");
-        self.history.push_back(top);
-        self.primary.rows.push_back(oldest);
+        let newest = self.history.front_mut().expect("history at its limit");
+        let recycled = self.primary.rows.front_mut().expect("screen row");
+        // Copied whole, as `swap`'s word-sized steps take twice the stores.
+        // SAFETY: `newest` is read out and written back with `recycled`'s
+        // row before anything else reads it; nothing in between can panic.
+        unsafe {
+            let row = std::ptr::read(newest);
+            std::ptr::write(newest, std::mem::replace(recycled, row));
+        }
         // Charged where they now stay.
-        let recycled = self.primary.rows.back().expect("screen row");
         self.history_bytes -= recycled.heap_bytes();
-        let newest = self.history.back_mut().expect("history row");
         newest.bound_extras();
         self.history_bytes += newest.heap_bytes();
-        self.history_activity = true;
-        self.pending_compaction = (self.pending_compaction + 1).min(self.history.len());
-        let recycled = self.primary.rows.back_mut().expect("screen row");
         if self.defer_scroll_clear {
             let end = recycled.clear_deferring_fill(cols, &DEFAULT_BLANK);
             self.pending_clear = PendingClear {
@@ -150,6 +149,11 @@ impl Grid {
         } else {
             recycled.clear(cols, &DEFAULT_BLANK);
         }
+        // Rotating moves neither row from the slot it was edited in above.
+        self.history.rotate_front_to_back();
+        self.primary.rows.rotate_front_to_back();
+        self.history_activity = true;
+        self.pending_compaction = (self.pending_compaction + 1).min(history_before);
         // The caller checked that the viewport shows the live screen.
         self.mark_live_scroll_damage();
         if self.track_effects {

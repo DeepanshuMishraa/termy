@@ -1,14 +1,14 @@
 //! Width-change reflow: rewraps logical lines into a bounded output window.
 use super::super::types::{CellExtra, ExtraSlot};
 use super::history::HISTORY_BYTE_BUDGET;
-use super::{Cell, Grid, Row, Size, print};
-use std::{collections::VecDeque, sync::Arc};
+use super::{Cell, Grid, Ring, Row, Size, print};
+use std::sync::Arc;
 
 /// Keep only the rows a resized viewport and its bounded history can retain.
 /// Row positions remain absolute while old rows are evicted, so cursor and
 /// viewport anchors can be remapped without materializing the entire result.
 struct ReflowWindow {
-    rows: VecDeque<Row>,
+    rows: Ring<Row>,
     // Heap bytes of `rows`, and the oldest row not yet packed for the budget.
     bytes: usize,
     next_pack: usize,
@@ -27,7 +27,7 @@ struct ReflowWindow {
 impl ReflowWindow {
     fn new(size: Size, history_limit: usize) -> Self {
         Self {
-            rows: VecDeque::new(),
+            rows: Ring::new(),
             bytes: 0,
             next_pack: 0,
             spare: Vec::new(),
