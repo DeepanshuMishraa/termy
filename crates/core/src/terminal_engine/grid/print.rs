@@ -487,18 +487,27 @@ impl Grid {
     /// `put_char` per scalar: two ordinary bases never form one grapheme, and
     /// a run stops before any wrap, insert, metadata or wide-cell repair that
     /// `put_cell` would do, leaving that scalar to the caller.
+    #[inline]
     pub(in crate::terminal_engine) fn write_utf8_run(
         &mut self,
         bytes: &[u8],
     ) -> (usize, Option<char>) {
         // An open grapheme that isn't ordinary may absorb the next scalar.
+        // A combining diacritical mark (U+0300..U+036F) never starts a run:
+        // turning it away here spares decomposed text the run's setup.
         if self.pending_wrap
             || self.insert_mode
             || self.pen.extra.is_some()
             || (self.grapheme_open && !self.grapheme_ordinary)
+            || matches!(bytes, [0xcc, ..] | [0xcd, 0x80..=0xaf, ..])
         {
             return (0, None);
         }
+        self.write_ordinary_run(bytes)
+    }
+
+    #[inline(never)]
+    fn write_ordinary_run(&mut self, bytes: &[u8]) -> (usize, Option<char>) {
         let row = self.cursor.row;
         let start = self.cursor.col;
         let right = self.right_limit();
@@ -780,6 +789,27 @@ mod tests {
                     "{bytes:02x?}"
                 );
             }
+        }
+    }
+
+    // `write_utf8_run` turns away these byte patterns undecoded: they
+    // encode exactly the combining diacritical marks, at which a run stops.
+    #[test]
+    fn turned_away_lead_bytes_are_combining_diacritical_marks() {
+        for lead in [0xcc_u8, 0xcd] {
+            for second in 0..=0xffu8 {
+                let bytes = [lead, second];
+                let decoded = complete_utf8(&bytes).map(|(character, _)| character);
+                let turned_away = matches!(bytes, [0xcc, ..] | [0xcd, 0x80..=0xaf, ..]);
+                assert_eq!(
+                    turned_away && decoded.is_some(),
+                    decoded.is_some_and(|c| ('\u{300}'..='\u{36f}').contains(&c)),
+                    "{bytes:02x?}"
+                );
+            }
+        }
+        for character in '\u{300}'..='\u{36f}' {
+            assert!(!scalar_properties(character).1, "{character:?}");
         }
     }
 

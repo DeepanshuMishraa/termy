@@ -9,6 +9,9 @@ use super::super::types::{CellExtra, ExtraSlot, MAX_COMBINING_BYTES};
 
 const BUCKETS: usize = 64;
 const WAYS: usize = 4;
+// Direct-mapped by scalar: the combining diacritical marks (U+0300..U+036F)
+// all get their own entry.
+const MARKS: usize = 128;
 // Avoid pinning large OSC 8 strings after their last visible cell is erased.
 const MAX_CACHED_HYPERLINK_BYTES: usize = 1024;
 
@@ -52,6 +55,9 @@ fn bucket_for(suffix: &[u8], encoded: &[u8], link_identity: usize) -> usize {
 pub(super) struct CombiningCache {
     slots: [[Option<Arc<CellExtra>>; WAYS]; BUCKETS],
     next: [u8; BUCKETS],
+    // The metadata of a cell that had none and gains one mark, by that
+    // mark: the usual case, found without hashing.
+    marks: [Option<(char, Arc<CellExtra>)>; MARKS],
 }
 
 impl Default for CombiningCache {
@@ -59,6 +65,7 @@ impl Default for CombiningCache {
         Self {
             slots: std::array::from_fn(|_| std::array::from_fn(|_| None)),
             next: [0; BUCKETS],
+            marks: std::array::from_fn(|_| None),
         }
     }
 }
@@ -69,10 +76,30 @@ impl CombiningCache {
             bucket.fill(None);
         }
         self.next.fill(0);
+        self.marks.fill(None);
     }
 
     /// Append `character` to the combining text of a cell's metadata.
+    #[inline]
     pub(super) fn append(&mut self, slot: &mut Option<Arc<CellExtra>>, character: char) {
+        if slot.is_some() {
+            return self.append_interned(slot, character);
+        }
+        let entry = &mut self.marks[character as usize % MARKS];
+        if let Some((mark, extra)) = entry
+            && *mark == character
+        {
+            *slot = Some(Arc::clone(extra));
+            return;
+        }
+        self.append_interned(slot, character);
+        // One scalar never exceeds the combining limit.
+        let extra = slot.as_ref().expect("a cell's first mark");
+        self.marks[character as usize % MARKS] = Some((character, Arc::clone(extra)));
+    }
+
+    #[inline(never)]
+    fn append_interned(&mut self, slot: &mut Option<Arc<CellExtra>>, character: char) {
         let suffix = slot.combining();
         let mut encoded = [0; 4];
         let encoded = character.encode_utf8(&mut encoded).as_bytes();
@@ -200,7 +227,9 @@ mod tests {
             cells.push(cell);
         }
 
-        // A full bucket evicts the oldest entry, but the cell still owns it.
+        // A full bucket evicts the oldest entry, but the cell still owns it
+        // (and the first-mark table, which isn't under test here).
+        cache.marks.fill(None);
         assert_eq!(Arc::strong_count(cells[0].as_ref().unwrap()), 1);
         let original = cells[0].clone();
         cache.append(&mut cells[0], '\u{308}');
@@ -210,6 +239,29 @@ mod tests {
         for (cell, character) in cells.iter().zip(&colliding).skip(1) {
             assert_eq!(cell.combining(), character.to_string());
         }
+    }
+
+    #[test]
+    fn first_marks_share_metadata_and_clear_releases_it() {
+        let mut cache = CombiningCache::default();
+        // These two share a first-mark entry: the newer one replaces it.
+        let (first, second) = ('\u{301}', char::from_u32(0x301 + MARKS as u32).unwrap());
+        let mut cells = [None, None, None];
+        cache.append(&mut cells[0], first);
+        cache.append(&mut cells[1], second);
+        cache.append(&mut cells[2], first);
+        assert_eq!(cells[1].combining(), second.to_string());
+        assert_eq!(cells[2].combining(), first.to_string());
+        // The interning table still shares the replaced entry's value.
+        assert!(Arc::ptr_eq(
+            cells[0].as_ref().unwrap(),
+            cells[2].as_ref().unwrap()
+        ));
+        cache.clear();
+        let counts = cells
+            .each_ref()
+            .map(|cell| Arc::strong_count(cell.as_ref().unwrap()));
+        assert_eq!(counts, [2, 1, 2]);
     }
 
     #[test]
