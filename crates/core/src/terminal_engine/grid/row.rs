@@ -75,6 +75,42 @@ impl PackedCells {
         if fixed_bytes >= budget {
             return false;
         }
+        if !has_extras {
+            debug_assert!(
+                cells.iter().all(|cell| cell.extra.is_none()),
+                "unflagged row holds cell metadata"
+            );
+            // No cell holds metadata: only style runs remain, found by
+            // scanning for each run's end instead of probing per cell.
+            let mut start = 0;
+            while let Some(first) = cells.get(start) {
+                let style = first.style;
+                let end = cells[start..]
+                    .iter()
+                    .position(|cell| cell.style != style)
+                    .map_or(cells.len(), |len| start + len);
+                if self.styles.is_empty() {
+                    // Most rows have one run; don't reserve room for four.
+                    self.styles.reserve_exact(1);
+                }
+                self.styles.push((end as u32, style));
+                if fixed_bytes
+                    + self.styles.capacity() * size_of::<(u32, Style)>()
+                    + self.extras.capacity() * size_of::<(usize, Arc<CellExtra>)>()
+                    >= budget
+                {
+                    return false;
+                }
+                start = end;
+            }
+            if self.styles.capacity() > 2 * self.styles.len() + 4 {
+                self.styles.shrink_to(self.styles.len());
+            }
+            if self.extras.capacity() > 4 {
+                self.extras.shrink_to(0);
+            }
+            return true;
+        }
         for (col, cell) in cells.iter().enumerate() {
             if self
                 .styles
@@ -460,6 +496,8 @@ mod tests {
         row.cells[2].style.foreground = Color::rgb(1, 2, 3);
         row.occupied = 3;
         row.wrapped = true;
+        // As the writers do whenever they store cell metadata.
+        row.has_extras = true;
         let expected = row.cells.clone();
         row.compact();
         assert_eq!(row.cells.capacity(), 0);
