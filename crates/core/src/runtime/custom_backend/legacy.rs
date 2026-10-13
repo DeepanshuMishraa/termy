@@ -303,7 +303,7 @@ impl Quad {
     /// engine cells with the style bits `key` and the flags `flags`.
     fn new(template: Template, key: (u64, u16), middles: [u64; 4], flags: [u16; 4]) -> Self {
         let mut bytes = [0; 80];
-        for (record, middle) in bytes.chunks_exact_mut(20).zip(middles) {
+        for (record, middle) in bytes.as_chunks_mut::<20>().0.iter_mut().zip(middles) {
             record[..8].copy_from_slice(&template.low.to_ne_bytes());
             record[8..16].copy_from_slice(&middle.to_ne_bytes());
             record[16..].copy_from_slice(&template.high.to_ne_bytes());
