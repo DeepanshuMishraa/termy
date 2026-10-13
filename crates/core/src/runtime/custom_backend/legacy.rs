@@ -185,26 +185,47 @@ impl Template {
         line: &[engine::Cell],
         key: (u64, u16),
     ) -> usize {
+        const SPACERS: u16 = engine::Cell::WIDE_SPACER | engine::Cell::LEADING_WIDE_SPACER;
         // The middle word of most cells: their text renders unless hidden
         // (when the template has `render_text` clear).
         let text = self.middle | u64::from_ne_bytes([0, 0, 0, 0, 0, 0, self.render_text.into(), 0]);
-        for (index, (slot, cell)) in slots.iter_mut().zip(line).enumerate() {
+        let spacer_middle = self.middle | u64::from_ne_bytes([0, 0, 0, 0, 0, 0, 0, 1]);
+        let count = slots.len().min(line.len());
+        let (slots, line) = (&mut slots[..count], &line[..count]);
+        let mut index = 0;
+        while let Some(cell) = line.get(index) {
             if cell.style.bits() != key {
                 return index;
             }
-            let spacer =
-                cell.flags & (engine::Cell::WIDE_SPACER | engine::Cell::LEADING_WIDE_SPACER) != 0;
-            // Spacers and C0 and C1 controls don't render.
+            // C0 and C1 controls don't render, nor do spacers.
             let code = u32::from(cell.character);
             let control = code < 0x20 || code.wrapping_sub(0x7f) <= 0x9f - 0x7f;
-            let middle = if spacer || control {
-                self.middle | u64::from_ne_bytes([0, 0, 0, 0, 0, 0, 0, spacer.into()])
+            if cell.flags == 0 && !control {
+                self.store(&mut slots[index], cell.character, text);
+                index += 1;
+                continue;
+            }
+            let middle = if cell.flags & SPACERS != 0 {
+                spacer_middle
+            } else if control {
+                self.middle
             } else {
                 text
             };
-            self.store(slot, cell.character, middle);
+            self.store(&mut slots[index], cell.character, middle);
+            index += 1;
+            // A wide glyph's spacer usually follows it, and is stored
+            // without the checks only rendered text needs.
+            if cell.flags & engine::Cell::WIDE != 0
+                && let Some(next) = line.get(index)
+                && next.flags & SPACERS != 0
+                && next.style.bits() == key
+            {
+                self.store(&mut slots[index], next.character, spacer_middle);
+                index += 1;
+            }
         }
-        slots.len().min(line.len())
+        count
     }
 
     /// Store a cell of `character` whose middle word, the template's with

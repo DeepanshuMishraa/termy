@@ -142,16 +142,18 @@ impl Grid {
             self.dirty.fill(None);
             return Damage::Full;
         }
-        let spans = self
-            .dirty
-            .iter_mut()
-            .enumerate()
-            .filter_map(|(row, dirty)| {
-                dirty
-                    .take()
-                    .map(|(start, end)| DirtySpan { row, start, end })
-            })
-            .collect();
+        // Sized for every row, as after any flood, rather than grown.
+        let mut spans = Vec::with_capacity(self.dirty.len());
+        spans.extend(
+            self.dirty
+                .iter_mut()
+                .enumerate()
+                .filter_map(|(row, dirty)| {
+                    dirty
+                        .take()
+                        .map(|(start, end)| DirtySpan { row, start, end })
+                }),
+        );
         Damage::Partial(spans)
     }
 }
