@@ -23,6 +23,8 @@ on:
     - cron: "17 4 * * 1"
   pull_request:
     paths:
+      - "Cargo.lock"
+      - "crates/core/**"
       - "scripts/vt-library-bench/**"
       - "scripts/benchmark-vt-libraries.py"
       - ".github/workflows/vt-library-benchmark.yml"
