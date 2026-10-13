@@ -243,6 +243,12 @@ fn byte_at_a_time_output_matches_one_write() {
         "\x1b]8;;https://example.test\x07link\x1b]8;;\x07 ",
         "\x1b[?2026hsync\x1b[?2026l e\u{301}界\x1b[?7lno wrap at the margin here\x1b[?7h",
         "\r\nmore\r\nlines\r\nscroll\r\nthe\r\nscreen\x1b[2;5r\x1b[5;1Hregion\n\n",
+        // Control sequences the parser's fast paths take whole, and their
+        // edge cases: intermediates, controls, cancels, escapes and deletes
+        // inside, subparameters and too many parameters.
+        "\x1b[38;2;120;180;255;48;5;234;1mstatus\x1b[0m\x1b[2;1H\x1b[Kbuild\x1b[H",
+        "\x1b[4 q\x1b[2\r;3HA\x1b[31\x18mB\x1b[3\x1b[1mC\x1b[4:3mD\x1b[3\x7f2mE",
+        "\x1b[1;2;3;4;5;6;7;8;9;1;2;3;4;5;6;7;8;9;1;2;3;4;5;6;7;8;9;1;2;3;4;5;6;7mF\x1b[m",
     );
     let mut whole = engine(16, 4, 8);
     whole.feed(input.as_bytes());

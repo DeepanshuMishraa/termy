@@ -313,6 +313,14 @@ impl Parser {
                 // replacement/reconsumption behavior below.
                 // Line endings and the other C0 controls but ESC execute
                 // directly, as `ground` would.
+                // A control sequence introducer opens most escapes, and calls
+                // no handler: both bytes are taken at once.
+                if bytes[offset] == 0x1b && bytes.get(offset + 1) == Some(&b'[') {
+                    self.begin_escape();
+                    self.state = State::Csi;
+                    offset += 2;
+                    continue;
+                }
                 if bytes[offset] < 0x20 && bytes[offset] != 0x1b {
                     handler.execute(bytes[offset]);
                     offset += 1;
@@ -345,7 +353,7 @@ impl Parser {
             } else if self.state == State::Csi && !self.discarded && self.intermediate_len == 0 {
                 // Parameters are most of a CSI sequence's bytes; take their
                 // run here instead of dispatching each through the state
-                // machine. Anything else, including the final byte, does.
+                // machine. Anything else but the final byte does.
                 let start = offset;
                 while let Some(&byte) = bytes.get(offset) {
                     match byte {
@@ -366,6 +374,18 @@ impl Parser {
                         _ => break,
                     }
                     offset += 1;
+                }
+                // So does the final byte, as `csi_byte` would.
+                if !self.discarded
+                    && let Some(&byte @ 0x40..=0x7e) = bytes.get(offset)
+                {
+                    self.state = State::Ground;
+                    handler.csi(&self.params[..self.param_len], self.private, &[], byte);
+                    offset += 1;
+                    if PAUSABLE && handler.pause_requested() {
+                        break;
+                    }
+                    continue;
                 }
                 if offset != start {
                     continue;
