@@ -95,6 +95,8 @@ fn scalar_properties(character: char) -> (usize, bool) {
         '\u{300}'..='\u{36f}' => (0, false),
         '\u{3400}'..='\u{4dbf}' | '\u{4e00}'..='\u{9fff}' | '\u{ac00}'..='\u{d7a3}' => (2, true),
         '\u{c0}'..='\u{2ff}' | '\u{370}'..='\u{482}' | '\u{48a}'..='\u{52f}' => (1, true),
+        // Emoticons, all with emoji presentation.
+        '\u{1f600}'..='\u{1f64f}' => (2, true),
         _ => {
             let width = character.width().unwrap_or(0);
             (width, width != 0 && ordinary_base(character))
@@ -137,6 +139,21 @@ fn wide_cjk_word(word: u32) -> Option<char> {
     // surrogates, so each is a scalar encoded canonically. Ideographs come
     // first: they are most of this text.
     (matches!(value, 0x4e00..=0x9fff) || matches!(value, 0x3400..=0x4dbf | 0xac00..=0xd7a3))
+        // SAFETY: every value in these blocks is a Unicode scalar value.
+        .then(|| unsafe { char::from_u32_unchecked(value) })
+}
+
+/// A two-byte UTF-8 scalar in the narrow ordinary blocks `scalar_properties`
+/// resolves first (Latin, Greek, Cyrillic).
+#[inline(always)]
+fn narrow_two_byte(lead: u8, second: u8) -> Option<char> {
+    if lead & 0xe0 != 0xc0 || second & 0xc0 != 0x80 {
+        return None;
+    }
+    let value = u32::from(lead & 0x1f) << 6 | u32::from(second & 0x3f);
+    // Overlong leads (0xc0, 0xc1) decode below these blocks, and two bytes
+    // encode no surrogates.
+    matches!(value, 0xc0..=0x2ff | 0x370..=0x482 | 0x48a..=0x52f)
         // SAFETY: every value in these blocks is a Unicode scalar value.
         .then(|| unsafe { char::from_u32_unchecked(value) })
 }
@@ -529,10 +546,17 @@ impl Grid {
                     continue;
                 }
             }
-            // Printable ASCII is narrow and ordinary; anything else is
-            // looked up.
+            // Printable ASCII and the common two-byte scripts are narrow and
+            // ordinary, and other ASCII is a control, which ends the run;
+            // anything else is looked up.
             let (character, len, width, ordinary) = if (0x20..=0x7e).contains(&byte) {
                 (char::from(byte), 1, 1, true)
+            } else if byte < 0x80 {
+                break;
+            } else if let Some(&second) = bytes.get(consumed + 1)
+                && let Some(character) = narrow_two_byte(byte, second)
+            {
+                (character, 2, 1, true)
             } else {
                 let Some((character, len)) = complete_utf8(&bytes[consumed..]) else {
                     break;
@@ -762,6 +786,27 @@ mod tests {
                     let block = |c: char| matches!(c, '\u{3400}'..='\u{4dbf}' | '\u{4e00}'..='\u{9fff}' | '\u{ac00}'..='\u{d7a3}');
                     assert_eq!(fast, general.filter(|&c| block(c)), "{bytes:02x?}");
                 }
+            }
+        }
+    }
+
+    // Likewise for the two-byte scalars the run loop decodes itself.
+    #[test]
+    fn narrow_two_byte_matches_the_general_decode_and_classification() {
+        for lead in 0..=0xffu8 {
+            for second in 0..=0xffu8 {
+                let bytes = [lead, second];
+                let general = complete_utf8(&bytes)
+                    .filter(|&(character, len)| {
+                        len == 2 && scalar_properties(character) == (1, true)
+                    })
+                    .map(|(character, _)| character);
+                let block = |c: char| matches!(c, '\u{c0}'..='\u{2ff}' | '\u{370}'..='\u{482}' | '\u{48a}'..='\u{52f}');
+                assert_eq!(
+                    narrow_two_byte(lead, second),
+                    general.filter(|&c| block(c)),
+                    "{bytes:02x?}"
+                );
             }
         }
     }

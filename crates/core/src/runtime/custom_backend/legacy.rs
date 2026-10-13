@@ -185,32 +185,34 @@ impl Template {
         line: &[engine::Cell],
         key: (u64, u16),
     ) -> usize {
+        // The middle word of most cells: their text renders unless hidden
+        // (when the template has `render_text` clear).
+        let text = self.middle | u64::from_ne_bytes([0, 0, 0, 0, 0, 0, self.render_text.into(), 0]);
         for (index, (slot, cell)) in slots.iter_mut().zip(line).enumerate() {
             if cell.style.bits() != key {
                 return index;
             }
             let spacer =
                 cell.flags & (engine::Cell::WIDE_SPACER | engine::Cell::LEADING_WIDE_SPACER) != 0;
-            // C0 and C1 controls don't render, nor does hidden text (whose
-            // template has `render_text` clear).
+            // Spacers and C0 and C1 controls don't render.
             let code = u32::from(cell.character);
             let control = code < 0x20 || code.wrapping_sub(0x7f) <= 0x9f - 0x7f;
-            self.store(
-                slot,
-                cell.character,
-                self.render_text && !spacer && !control,
-                spacer,
-            );
+            let middle = if spacer || control {
+                self.middle | u64::from_ne_bytes([0, 0, 0, 0, 0, 0, 0, spacer.into()])
+            } else {
+                text
+            };
+            self.store(slot, cell.character, middle);
         }
         slots.len().min(line.len())
     }
 
+    /// Store a cell of `character` whose middle word, the template's with
+    /// its `render_text` and spacer bytes set, is `middle`.
     #[inline(always)]
-    fn store(self, slot: &mut MaybeUninit<TermyCell>, character: char, render: bool, spacer: bool) {
+    fn store(self, slot: &mut MaybeUninit<TermyCell>, character: char, middle: u64) {
         let [c0, c1, c2, c3] = u32::from(character).to_ne_bytes();
         let low = self.low | u64::from_ne_bytes([c0, c1, c2, c3, 0, 0, 0, 0]);
-        let middle = self.middle
-            | u64::from_ne_bytes([0, 0, 0, 0, 0, 0, u8::from(render), u8::from(spacer)]);
         let cell = slot.as_mut_ptr().cast::<u8>();
         // SAFETY: the three writes cover the slot's 20 bytes with the bytes
         // of a valid cell: the template's, a character's and two booleans.

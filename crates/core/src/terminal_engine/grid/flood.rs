@@ -113,13 +113,30 @@ impl Grid {
         let cols = self.size.cols;
         let rows = self.size.rows;
         let history_before = self.history.len();
-        let removed = self.primary.rows.pop_front().expect("screen row");
-        let recycled = self.pop_history_front().expect("history at its limit");
-        self.push_history(removed);
+        // The top row joins history and the oldest history row becomes the
+        // new bottom row: they swap places and both rings rotate, which
+        // moves no rows while each ring is exactly full. Rows moved through
+        // the stack, or edited before a move, are read back across narrower
+        // stores, which waits for every cell store the line queued.
+        if self.history.capacity() != self.history.len() {
+            self.history.shrink_to_fit();
+        }
+        if self.primary.rows.capacity() != self.primary.rows.len() {
+            self.primary.rows.shrink_to_fit();
+        }
+        let top = self.primary.rows.front_mut().expect("screen row");
+        let oldest = self.history.front_mut().expect("history at its limit");
+        std::mem::swap(top, oldest);
+        self.history.rotate_left(1);
+        self.primary.rows.rotate_left(1);
+        // Charged where they now stay.
+        let recycled = self.primary.rows.back().expect("screen row");
+        self.history_bytes -= recycled.heap_bytes();
+        let newest = self.history.back_mut().expect("history row");
+        newest.bound_extras();
+        self.history_bytes += newest.heap_bytes();
         self.history_activity = true;
         self.pending_compaction = (self.pending_compaction + 1).min(self.history.len());
-        // Rows are edited where they will stay, not on the way there.
-        self.primary.rows.push_back(recycled);
         let recycled = self.primary.rows.back_mut().expect("screen row");
         if self.defer_scroll_clear {
             if let Some(end) = recycled.clear_deferring_fill(cols, &DEFAULT_BLANK) {

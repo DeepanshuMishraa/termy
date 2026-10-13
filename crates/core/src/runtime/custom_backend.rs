@@ -565,19 +565,18 @@ impl State {
         let cursor = self.cursor();
         if cursor != self.last_damage_cursor || !scrolls.is_empty() {
             if let TerminalDamageSnapshot::Partial(spans) = &mut damage {
-                for cursor in previous_cursor.into_iter().chain(cursor) {
-                    if cursor.row < self.engine.size().rows {
-                        spans.push(TerminalDirtySpan {
+                let size = self.engine.size();
+                let cursors = previous_cursor.into_iter().chain(cursor);
+                add_spans(
+                    spans,
+                    cursors
+                        .filter(|cursor| cursor.row < size.rows)
+                        .map(|cursor| TerminalDirtySpan {
                             row: cursor.row,
                             left_col: cursor.col.saturating_sub(1),
-                            right_col: cursor
-                                .col
-                                .saturating_add(1)
-                                .min(self.engine.size().cols - 1),
-                        });
-                    }
-                }
-                normalize_spans(spans);
+                            right_col: cursor.col.saturating_add(1).min(size.cols - 1),
+                        }),
+                );
             }
             self.last_damage_cursor = cursor;
         }
@@ -1037,15 +1036,19 @@ impl CustomBackend {
         let mut update = state.take_damage(force_full);
         expand_legacy_scroll_damage(&mut update, usize::from(state.size.cols));
         let palette = state.palette();
+        let full_rows: Vec<_>;
         let spans = match &update.damage {
-            TerminalDamageSnapshot::Full => (0..usize::from(state.size.rows))
-                .map(|row| TerminalDirtySpan {
-                    row,
-                    left_col: 0,
-                    right_col: usize::from(state.size.cols) - 1,
-                })
-                .collect(),
-            TerminalDamageSnapshot::Partial(spans) => spans.clone(),
+            TerminalDamageSnapshot::Full => {
+                full_rows = (0..usize::from(state.size.rows))
+                    .map(|row| TerminalDirtySpan {
+                        row,
+                        left_col: 0,
+                        right_col: usize::from(state.size.cols) - 1,
+                    })
+                    .collect();
+                &full_rows
+            }
+            TerminalDamageSnapshot::Partial(spans) => spans,
         };
         let mut cells = Vec::with_capacity(
             spans
@@ -1055,7 +1058,7 @@ impl CustomBackend {
         );
         let mut legacy = LegacyCells::new(&palette, state.query_colors);
         let mut scratch = Vec::new();
-        for span in spans {
+        for &span in spans {
             let wrapped = state.engine.viewport_row_wrapped(span.row);
             state.engine.with_viewport_row_blanks(
                 span.row,
@@ -1361,16 +1364,60 @@ fn append_search_cell(text: &mut String, cell: &engine::Cell) {
 // by scroll operations rather than silently dropping that part of the update.
 fn expand_legacy_scroll_damage(update: &mut TerminalRenderDamageSnapshot, cols: usize) {
     if let TerminalDamageSnapshot::Partial(spans) = &mut update.damage {
-        for scroll in &update.scrolls {
-            spans.extend((scroll.top..=scroll.bottom).map(|row| TerminalDirtySpan {
+        let rows = update
+            .scrolls
+            .iter()
+            .flat_map(|scroll| scroll.top..=scroll.bottom);
+        add_spans(
+            spans,
+            rows.map(|row| TerminalDirtySpan {
                 row,
                 left_col: 0,
                 right_col: cols.saturating_sub(1),
-            }));
-        }
-        normalize_spans(spans);
+            }),
+        );
     }
     update.scrolls.clear();
+}
+
+/// Add `extra` to `spans` and normalize them. A span that one already in
+/// `spans` covers would merge into it unchanged, so it is left out: damage
+/// that already covers the additions (a scroll over rows that are dirty
+/// across the width) needs no sort.
+fn add_spans(
+    spans: &mut Vec<TerminalDirtySpan>,
+    extra: impl IntoIterator<Item = TerminalDirtySpan>,
+) {
+    let len = spans.len();
+    let sorted = spans.is_sorted_by_key(|span| (span.row, span.left_col));
+    // Additions mostly come in row order: each walk resumes at the last
+    // row found.
+    let (mut from, mut last_row) = (0, 0);
+    for span in extra {
+        if sorted {
+            if span.row < last_row {
+                from = 0;
+            }
+            last_row = span.row;
+            let existing = &spans[..len];
+            while existing.get(from).is_some_and(|other| other.row < span.row) {
+                from += 1;
+            }
+            let covered = existing[from..]
+                .iter()
+                .take_while(|other| other.row == span.row)
+                .any(|other| {
+                    other.left_col <= span.left_col
+                        && span.left_col <= other.right_col
+                        && span.right_col <= other.right_col
+                });
+            if covered {
+                continue;
+            }
+        }
+        spans.push(span);
+    }
+    normalize_spans(spans);
 }
 
 fn normalize_spans(spans: &mut Vec<TerminalDirtySpan>) {
