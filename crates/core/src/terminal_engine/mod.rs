@@ -164,6 +164,57 @@ impl Engine {
     /// Only synchronized updates need the time, and reading the clock would
     /// dominate small PTY reads, so `now` is read when first needed.
     fn feed_impl(&mut self, bytes: &[u8], now: Option<Instant>, defer_uploads: bool) -> usize {
+        // Most feeds are one parse pass with nothing deferred or buffered.
+        if bytes.len() <= PARSE_CHUNK
+            && !self.state.has_deferred_upload()
+            && self.synchronized_update_deadline().is_none()
+        {
+            self.state.reset_animation_work();
+            self.state.grid.prepare_output(bytes.len());
+            let consumed =
+                self.parse_pass(bytes, defer_uploads, || now.unwrap_or_else(Instant::now));
+            if consumed == bytes.len()
+                || self.state.has_deferred_upload()
+                || (defer_uploads && self.state.animation_budget_spent())
+            {
+                return consumed;
+            }
+            // A synchronized update began: the general path buffers the rest.
+            return consumed + self.feed_impl_general(&bytes[consumed..], now, defer_uploads);
+        }
+        self.feed_impl_general(bytes, now, defer_uploads)
+    }
+
+    /// Parse `bytes` (at most one chunk) through the grid, as one iteration
+    /// of `feed_impl_general`'s loop outside a synchronized update.
+    #[inline]
+    fn parse_pass(
+        &mut self,
+        bytes: &[u8],
+        defer_uploads: bool,
+        now: impl FnOnce() -> Instant,
+    ) -> usize {
+        self.state.set_defer_uploads(defer_uploads);
+        let consumed = self.parser.advance(&mut self.state, bytes);
+        // Nothing outside parsing may see a partly blanked row.
+        self.state.grid.flush_pending_clear();
+        self.state.set_defer_uploads(false);
+        self.state.flush_graphics_effects();
+        self.generation = self.generation.wrapping_add(1);
+        if self.state.modes.synchronized_update {
+            self.synchronized_update
+                .begin(now(), self.state.saved_private_mode(2026));
+        }
+        consumed
+    }
+
+    #[inline(never)]
+    fn feed_impl_general(
+        &mut self,
+        bytes: &[u8],
+        now: Option<Instant>,
+        defer_uploads: bool,
+    ) -> usize {
         let mut now = now;
         let mut now = move || *now.get_or_insert_with(Instant::now);
         // An upload nobody took must not keep pausing the parser.
@@ -190,18 +241,7 @@ impl Engine {
                 }
             } else {
                 let end = offset.saturating_add(PARSE_CHUNK).min(bytes.len());
-                self.state.set_defer_uploads(defer_uploads);
-                let consumed = self.parser.advance(&mut self.state, &bytes[offset..end]);
-                // Nothing outside parsing may see a partly blanked row.
-                self.state.grid.flush_pending_clear();
-                self.state.set_defer_uploads(false);
-                offset += consumed;
-                self.state.flush_graphics_effects();
-                self.generation = self.generation.wrapping_add(1);
-                if self.state.modes.synchronized_update {
-                    self.synchronized_update
-                        .begin(now(), self.state.saved_private_mode(2026));
-                }
+                offset += self.parse_pass(&bytes[offset..end], defer_uploads, &mut now);
                 if self.state.has_deferred_upload()
                     || (defer_uploads && self.state.animation_budget_spent())
                 {
@@ -426,6 +466,12 @@ impl Engine {
         self.state.grid.clear_scrollback();
         self.state.flush_graphics_effects();
         self.generation = self.generation.wrapping_add(1);
+    }
+
+    /// Whether `pop_event` or `drain_replies` has anything to hand out.
+    #[inline]
+    pub(crate) fn has_output(&self) -> bool {
+        !self.state.events.is_empty() || !self.state.replies.is_empty()
     }
 
     pub fn pop_event(&mut self) -> Option<Event> {

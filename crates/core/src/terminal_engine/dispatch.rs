@@ -556,6 +556,22 @@ impl State {
     }
 }
 
+impl State {
+    #[inline(never)]
+    fn print_ascii_run(&mut self, bytes: &[u8]) {
+        if self.charsets[self.active_charset] {
+            for &byte in bytes {
+                self.print(char::from(byte));
+            }
+        } else {
+            self.grid.write_ascii(bytes);
+            if let Some(&byte) = bytes.last() {
+                self.last_printed = Some(char::from(byte));
+            }
+        }
+    }
+}
+
 impl Handler for State {
     fn pause_requested(&self) -> bool {
         self.modes.synchronized_update
@@ -585,17 +601,17 @@ impl Handler for State {
         written
     }
 
+    #[inline]
     fn print_ascii(&mut self, bytes: &[u8]) {
-        if self.charsets[self.active_charset] {
-            for &byte in bytes {
-                self.print(char::from(byte));
-            }
-        } else {
-            self.grid.write_ascii(bytes);
-            if let Some(&byte) = bytes.last() {
-                self.last_printed = Some(char::from(byte));
-            }
+        // Byte-at-a-time output (echo, small PTY reads) writes one cell.
+        if let &[byte] = bytes
+            && !self.charsets[self.active_charset]
+            && self.grid.write_ascii_cell(byte)
+        {
+            self.last_printed = Some(char::from(byte));
+            return;
         }
+        self.print_ascii_run(bytes);
     }
 
     fn execute(&mut self, byte: u8) {

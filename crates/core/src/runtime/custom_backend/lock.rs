@@ -81,6 +81,59 @@ impl Shared {
         hydrate: bool,
         buffer_replies: bool,
     ) -> Vec<u8> {
+        // Hosts feeding a display terminal (tmux `%output`, embedders) send
+        // many small reads: one slice, one lock hold, replies buffered.
+        if buffer_replies && !hydrate && bytes.len() <= PARSE_BATCH {
+            let rest = self.feed_display_slice(bytes);
+            if rest.is_empty() {
+                return Vec::new();
+            }
+            return self.feed_slices(rest, false, true);
+        }
+        self.feed_slices(bytes, hydrate, buffer_replies)
+    }
+
+    /// One iteration of `feed_slices` for buffered, non-hydrating output
+    /// that fits a single slice. Returns what an upload or animation pause
+    /// left unparsed, for `feed_slices` to continue.
+    #[inline]
+    fn feed_display_slice<'a>(self: &Arc<Self>, bytes: &'a [u8]) -> &'a [u8] {
+        let mut state = self.feeder_state();
+        let before_generation = state.engine.generation();
+        let consumed = state.engine.feed_deferring_uploads(bytes);
+        // Events and replies are rare; skip draining when there are none.
+        if state.engine.has_output() {
+            state.drain_engine_output();
+        }
+        // Output buffered by a synchronized update changes nothing yet.
+        if state.engine.generation() != before_generation {
+            state.generation = state.generation.wrapping_add(1);
+        }
+        if let Some(upload) = state.engine.take_deferred_upload() {
+            drop(state);
+            let prepared = upload.prepare();
+            state = self.feeder_state();
+            let replies = state.commit_upload(prepared);
+            state.append_replies(&replies);
+        }
+        if state.engine.take_history_activity() {
+            state.defer_history_compaction(Instant::now());
+        }
+        let notify = !state.engine.modes().synchronized_update || !state.events.is_empty();
+        let tab_chrome_changed = state.take_tab_chrome_changed();
+        self.schedule_maintenance(&mut state);
+        drop(state);
+        if notify {
+            self.notify();
+        }
+        if tab_chrome_changed {
+            self.notify_tab_chrome();
+        }
+        &bytes[consumed..]
+    }
+
+    #[inline(never)]
+    fn feed_slices(self: &Arc<Self>, bytes: &[u8], hydrate: bool, buffer_replies: bool) -> Vec<u8> {
         let slice = if hydrate {
             bytes.len().max(1)
         } else {

@@ -535,6 +535,36 @@ impl Grid {
         (consumed, last)
     }
 
+    /// `write_ascii` of one byte in the middle of a plain row, without the
+    /// general path's setup. Returns false, having changed nothing, when any
+    /// condition that path handles applies.
+    #[inline]
+    pub(in crate::terminal_engine) fn write_ascii_cell(&mut self, byte: u8) -> bool {
+        let (row, col) = (self.cursor.row, self.cursor.col);
+        if !self.grapheme_ordinary
+            || self.pending_wrap
+            || self.insert_mode
+            || self.pending_clear.is_some()
+            || self.pen.extra.is_some()
+            || col + 1 >= self.right_limit()
+        {
+            return false;
+        }
+        let style = self.pen.style;
+        let active = &mut self.screen_mut().rows[row];
+        if active.has_extras || (col < active.occupied && active.cells[col].flags != 0) {
+            return false;
+        }
+        Cell::plain(style, 0).store(&mut active.cells[col], char::from(byte));
+        active.occupied = active.occupied.max(col + 1);
+        self.observe_output();
+        self.cursor.col = col + 1;
+        self.grapheme_open = true;
+        self.grapheme_at_margin = false;
+        self.mark(row, col, col + 2);
+        true
+    }
+
     /// Ordinary ASCII uses one bounds/damage update per row-local run.
     #[inline]
     pub(in crate::terminal_engine) fn write_ascii(&mut self, mut text: &[u8]) {

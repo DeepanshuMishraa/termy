@@ -362,6 +362,18 @@ impl State {
         (replies, consumed)
     }
 
+    /// Queue the engine's events and buffer its replies, as `feed` does for
+    /// a display terminal.
+    #[inline(never)]
+    fn drain_engine_output(&mut self) {
+        while let Some(event) = self.engine.pop_event() {
+            self.engine_event(event);
+        }
+        let mut replies = Vec::new();
+        self.engine.drain_replies(&mut replies);
+        self.append_replies(&replies);
+    }
+
     fn commit_upload(&mut self, prepared: KittyPreparedUpload) -> Vec<u8> {
         self.engine.commit_upload(prepared);
         while let Some(event) = self.engine.pop_event() {
