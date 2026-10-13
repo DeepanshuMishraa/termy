@@ -191,6 +191,13 @@ impl PlainCell {
         }
     }
 
+    /// The cell's two words, with no character: `store` adds one to the
+    /// high half of the second (on little-endian targets).
+    #[inline(always)]
+    pub(super) fn words(self) -> [u64; 2] {
+        self.words
+    }
+
     /// `store` each byte of `text`, printable ASCII, into `cells`, as far as
     /// both reach. Sixteen bytes at a time with the target's baseline
     /// vectors (SSE2, NEON); the rest one at a time.

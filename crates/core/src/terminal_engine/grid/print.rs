@@ -172,6 +172,10 @@ fn write_wide_cjk(
     bytes: &[u8],
     wide: PlainCell,
 ) -> (usize, usize) {
+    // A fourth three-byte scalar after this one: a long run.
+    if bytes.get(9).is_some_and(|lead| lead & 0xf0 == 0xe0) {
+        return write_long_wide_cjk(cells, col, occupied, bytes, wide);
+    }
     let spacer = wide.with_flags(Cell::WIDE_SPACER);
     // Whole pairs that end before the last cell, and whole scalars: with
     // the trip count fixed up front, the loop indexes nothing.
@@ -181,9 +185,49 @@ fn write_wide_cjk(
     let count = room.min(scalars.len());
     // Pairs from this one on start at or past `occupied`.
     let checked = occupied.saturating_sub(col).div_ceil(2);
+    let written = write_wide_scalars(pairs, scalars, 0..count, checked, wide, spacer);
+    (col + 2 * written, 3 * written)
+}
+
+/// `write_wide_cjk` for a run of at least four scalars, most of which it
+/// stores four at a time.
+#[inline(never)]
+fn write_long_wide_cjk(
+    cells: &mut [Cell],
+    col: usize,
+    occupied: usize,
+    bytes: &[u8],
+    wide: PlainCell,
+) -> (usize, usize) {
+    let spacer = wide.with_flags(Cell::WIDE_SPACER);
+    let room = cells.len().saturating_sub(col + 1) / 2;
+    let (pairs, _) = cells[col..].as_chunks_mut::<2>();
+    let (scalars, _) = bytes.as_chunks::<3>();
+    let count = room.min(scalars.len());
+    let checked = occupied.saturating_sub(col).div_ceil(2);
+    // Groups skip the repair check, so they start only past `occupied`.
     let mut written = 0;
+    if checked == 0 {
+        written = super::cjk::store_quads(&mut pairs[..count], bytes, wide, spacer);
+    }
+    let written = write_wide_scalars(pairs, scalars, written..count, checked, wide, spacer);
+    (col + 2 * written, 3 * written)
+}
+
+/// `write_wide_cjk`'s loop over the pairs and scalars of `range`, returning
+/// where it stopped. Pairs before `checked` must not hold half of a glyph.
+#[inline(always)]
+fn write_wide_scalars(
+    pairs: &mut [[Cell; 2]],
+    scalars: &[[u8; 3]],
+    range: std::ops::Range<usize>,
+    checked: usize,
+    wide: PlainCell,
+    spacer: PlainCell,
+) -> usize {
+    let mut written = range.start;
     for ([glyph, right_half], &[lead, second, third]) in
-        pairs[..count].iter_mut().zip(&scalars[..count])
+        pairs[range.clone()].iter_mut().zip(&scalars[range])
     {
         let Some(character) = wide_cjk(lead, second, third) else {
             break;
@@ -195,7 +239,7 @@ fn write_wide_cjk(
         spacer.store(right_half, ' ');
         written += 1;
     }
-    (col + 2 * written, 3 * written)
+    written
 }
 
 impl Grid {

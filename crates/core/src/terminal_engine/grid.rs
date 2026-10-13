@@ -13,6 +13,7 @@ use super::types::{
     Style, ViewportScroll,
 };
 
+mod cjk;
 mod combining;
 mod damage;
 mod extras;
