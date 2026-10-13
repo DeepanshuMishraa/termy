@@ -188,12 +188,21 @@ static double now_seconds(void) {
 }
 
 static long peak_rss_kib(void) {
+#ifdef __linux__
+  /* ru_maxrss survives execve on Linux and would report the parent's peak;
+   * VmHWM belongs to this process image only. */
+  FILE *status = fopen("/proc/self/status", "r");
+  char row[256];
+  long kib = -1;
+  while (status && fgets(row, sizeof(row), status)) {
+    if (sscanf(row, "VmHWM: %ld kB", &kib) == 1) break;
+  }
+  if (status) fclose(status);
+  return kib;
+#else
   struct rusage usage;
   if (getrusage(RUSAGE_SELF, &usage) != 0) return -1;
-#ifdef __APPLE__
   return usage.ru_maxrss / 1024;
-#else
-  return usage.ru_maxrss;
 #endif
 }
 
