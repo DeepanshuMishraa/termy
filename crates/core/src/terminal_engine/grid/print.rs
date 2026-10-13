@@ -576,6 +576,24 @@ impl Grid {
             } else {
                 None
             };
+            // So are the common two-byte scripts' letters: narrow ordinary
+            // bases, which a run of them stores one after another here.
+            if byte & 0xe0 == 0xc0 {
+                let from = col;
+                while col + 1 < right
+                    && (col >= occupied || cells[col].flags == 0)
+                    && let Some(&[lead, second]) = bytes.get(consumed..consumed + 2)
+                    && let Some(character) = narrow_two_byte(lead, second)
+                {
+                    plain.store(&mut cells[col], character);
+                    col += 1;
+                    last = consumed;
+                    consumed += 2;
+                }
+                if col != from {
+                    continue;
+                }
+            }
             // Printable ASCII and the common two-byte scripts are narrow and
             // ordinary, and other ASCII is a control, which ends the run;
             // anything else is looked up.

@@ -190,8 +190,9 @@ fn store_quads_neon(
 mod tests {
     use crate::terminal_engine::{Engine, Options, Size};
 
-    // Text fed whole goes through the four-scalar stores; fed a byte at a
-    // time, each scalar is printed on its own. Both leave the same screen.
+    // Text fed whole goes through the run loops (the four-scalar stores
+    // among them); fed a byte at a time, each scalar is printed on its own.
+    // Both leave the same screen.
     #[test]
     fn quads_store_what_single_scalars_do() {
         let mut seed = 0x2545_f491_u32;
@@ -204,8 +205,11 @@ mod tests {
         for _ in 0..300 {
             let mut text = Vec::new();
             for _ in 0..next(90) {
-                let scalar = match next(12) {
+                let scalar = match next(14) {
                     0 => char::from(b'a' + next(26) as u8),
+                    // Two-byte scalars, the narrow scripts' and the marks
+                    // among them.
+                    12 | 13 => char::from_u32(0xc0 + next(0x470)).unwrap(),
                     // Just outside and at the ends of the blocks.
                     1 => ['\u{4dbf}', '\u{4dc0}', '\u{4dff}', '\u{9fff}', '\u{a000}']
                         [next(5) as usize],
