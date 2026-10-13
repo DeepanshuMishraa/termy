@@ -3668,13 +3668,13 @@ pub unsafe extern "C" fn termy_frame_update_free(
 
         let update = unsafe { &mut *update };
         if !update.cells_ptr.is_null() {
-            unsafe {
-                drop(Vec::from_raw_parts(
-                    update.cells_ptr,
-                    update.cells_len,
-                    update.cells_capacity,
-                ));
-            }
+            // SAFETY: the cells were allocated as a `Vec<TermyCell>` (see
+            // `ffi_cells`), whose layout `TermyFfiCell` shares. No cell is
+            // read: the buffer is taken back empty.
+            let cells = unsafe {
+                Vec::<TermyCell>::from_raw_parts(update.cells_ptr.cast(), 0, update.cells_capacity)
+            };
+            crate::frame::recycle_frame_cells(cells);
         }
         if !update.spans_ptr.is_null() {
             unsafe {

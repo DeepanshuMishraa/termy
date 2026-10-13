@@ -1050,7 +1050,7 @@ impl CustomBackend {
             }
             TerminalDamageSnapshot::Partial(spans) => spans,
         };
-        let mut cells = Vec::with_capacity(
+        let mut cells = crate::frame::frame_cells(
             spans
                 .iter()
                 .map(|span| span.right_col + 1 - span.left_col.min(span.right_col + 1))

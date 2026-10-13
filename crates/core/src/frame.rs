@@ -193,6 +193,40 @@ pub struct TermyCell {
     pub strikethrough: bool,
 }
 
+/// One spare cell buffer: a host that frees its frame updates through the
+/// C ABI hands theirs back here, and the next update reuses it. A host
+/// polling frames then keeps one allocation instead of allocating and
+/// freeing one per frame, whose pages an allocator may return to the
+/// system in between.
+static SPARE_CELLS: std::sync::Mutex<Vec<TermyCell>> = std::sync::Mutex::new(Vec::new());
+/// Larger buffers (over 1.25 MiB) are freed rather than kept.
+const MAX_SPARE_CELLS: usize = 1 << 16;
+
+/// An empty cell buffer with room for `capacity` cells.
+pub(crate) fn frame_cells(capacity: usize) -> Vec<TermyCell> {
+    let mut cells = std::mem::take(
+        &mut *SPARE_CELLS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    );
+    cells.reserve_exact(capacity);
+    cells
+}
+
+/// Keep `cells`' allocation for the next `frame_cells`.
+pub(crate) fn recycle_frame_cells(mut cells: Vec<TermyCell>) {
+    if cells.capacity() > MAX_SPARE_CELLS {
+        return;
+    }
+    cells.clear();
+    let mut spare = SPARE_CELLS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if spare.capacity() < cells.capacity() {
+        *spare = cells;
+    }
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct TermyFrame {
     pub cols: u16,
@@ -218,6 +252,33 @@ pub struct TermyFrameUpdate {
 mod tests {
     use super::*;
     use crate::{Terminal, TerminalDirtySpan, TerminalQueryColors, TerminalSize};
+
+    // A returned buffer is handed out again, empty; an oversized one isn't
+    // kept. The spare is shared, so other tests may take it in between:
+    // only what a test can observe on its own is asserted.
+    #[test]
+    fn frame_cell_buffers_are_reused_empty() {
+        let mut cells = frame_cells(100);
+        assert!(cells.is_empty() && cells.capacity() >= 100);
+        cells.push(TermyCell {
+            char: 'x',
+            fg: TermyColor::default(),
+            bg: TermyColor::default(),
+            uses_terminal_default_bg: false,
+            bold: false,
+            render_text: true,
+            wide_character_spacer: false,
+            line_wrapped: false,
+            italic: false,
+            underline: false,
+            strikethrough: false,
+        });
+        recycle_frame_cells(cells);
+        let cells = frame_cells(10);
+        assert!(cells.is_empty() && cells.capacity() >= 10);
+        recycle_frame_cells(Vec::with_capacity(MAX_SPARE_CELLS + 1));
+        assert!(frame_cells(0).capacity() <= MAX_SPARE_CELLS);
+    }
 
     #[test]
     fn default_render_cell_uses_role_correct_terminal_colors() {
