@@ -741,12 +741,14 @@ impl Grid {
             let row = self.cursor.row;
             let col = self.cursor.col;
             let count = text.len().min(right - col);
+            let style = self.pen.style;
+            let extra = self.pen.extra.clone();
+            let active = &mut self.screen_mut().rows[row];
             // Wide-cell repair is uncommon, and the scalar path handles both
             // ends of an overwritten glyph without a second general scan.
             // Cells past `occupied` are erase blanks, so a fresh row skips it.
-            let written = &self.screen().rows[row];
-            let scanned = col..(col + count).min(written.occupied).max(col);
-            if written.cells[scanned].iter().any(|cell| cell.flags != 0) {
+            let scanned = col..(col + count).min(active.occupied).max(col);
+            if active.cells[scanned].iter().any(|cell| cell.flags != 0) {
                 self.flush_pending_clear();
                 for &byte in &text[..count] {
                     self.put_char(char::from(byte));
@@ -754,9 +756,6 @@ impl Grid {
                 text = &text[count..];
                 continue;
             }
-            let style = self.pen.style;
-            let extra = self.pen.extra.clone();
-            let active = &mut self.screen_mut().rows[row];
             Cell::write_plain_ascii(&mut active.cells[col..col + count], text, style);
             match &extra {
                 Some(extra) => active.fill_extras(col..col + count, extra),
