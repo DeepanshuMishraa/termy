@@ -346,7 +346,6 @@ mod tests {
                 character,
                 style: styles[index / 5 % styles.len()],
                 flags: flags[index % flags.len()],
-                ..engine::Cell::default()
             });
         }
         for wrapped in [false, true] {

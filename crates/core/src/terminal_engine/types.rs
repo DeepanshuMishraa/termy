@@ -113,106 +113,82 @@ impl CellExtra {
 }
 
 /// Plain cells allocate nothing. Uncommon combining text, OSC 8 metadata and
-/// underline colors live behind a shared pointer so row copies do not copy
-/// strings.
-/// `repr(C)` keeps every field naturally aligned with no padding, so the
-/// print loops store a cell in a few aligned writes.
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[repr(C)]
+/// underline colors live in their row's metadata table (see [`Line`]), behind
+/// a shared pointer so row copies do not copy strings.
+/// `repr(C)` keeps every field in place with no padding, and the alignment
+/// keeps each cell within one cache line, so the print loops store a cell
+/// with one 16-byte write.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(C, align(16))]
 pub struct Cell {
-    pub extra: Option<Arc<CellExtra>>,
     pub style: Style,
     pub flags: u16,
     pub character: char,
 }
 
-// 24 B on 64-bit targets; the extra pointer is 4 B on wasm32, so 20 B there.
-const _: () = assert!(size_of::<Style>() == 10 && size_of::<Cell>() == size_of::<usize>() + 16);
+const _: () = assert!(size_of::<Style>() == 10 && size_of::<Cell>() == 16);
 // The field offsets `PlainCell` assembles its words from.
 const _: () = assert!(
-    std::mem::offset_of!(Cell, style) == size_of::<usize>()
-        && std::mem::offset_of!(Cell, flags) == size_of::<usize>() + 10
-        && std::mem::offset_of!(Cell, character) == size_of::<usize>() + 12
+    std::mem::offset_of!(Cell, style) == 0
+        && std::mem::offset_of!(Cell, flags) == 10
+        && std::mem::offset_of!(Cell, character) == 12
 );
 
-/// A metadata-free cell as the words it occupies, so the print and clear
-/// loops store each cell with two or three full-width writes instead of one
-/// per field (a 10-byte style and 2-byte flags otherwise split into narrow
-/// stores, reloaded every iteration because the output may alias them).
+/// A cell as the two words it occupies, so the print and clear loops store
+/// each cell with one 16-byte write instead of one per field (a 10-byte style
+/// and 2-byte flags otherwise split into narrow stores, reloaded every
+/// iteration because the output may alias them).
 #[derive(Clone, Copy)]
 pub(super) struct PlainCell {
-    #[cfg(target_pointer_width = "64")]
-    words: [u64; 3],
-    #[cfg(not(target_pointer_width = "64"))]
-    style: Style,
-    #[cfg(not(target_pointer_width = "64"))]
-    flags: u16,
+    words: [u64; 2],
 }
 
 impl PlainCell {
     #[inline(always)]
     fn new(style: Style, flags: u16) -> Self {
-        #[cfg(target_pointer_width = "64")]
-        {
-            // `Cell` is `repr(C)`: the `None` pointer, then the style's ten
-            // bytes, the flags and the character, with no padding (asserted
-            // above). The words are assembled in registers: a cell built on
-            // the stack and reread as words would make each template wait
-            // for every store queued before it.
-            let (head, [s8, s9]) = (style.bits().0, style.bits().1.to_ne_bytes());
-            let [l0, l1] = flags.to_ne_bytes();
-            let words = [0, head, u64::from_ne_bytes([s8, s9, l0, l1, 0, 0, 0, 0])];
-            Self { words }
+        // `Cell` is `repr(C)`: the style's ten bytes, the flags and the
+        // character, with no padding (asserted above). The words are
+        // assembled in registers: a cell built on the stack and reread as
+        // words would make each template wait for every store queued before it.
+        let (head, [s8, s9]) = (style.bits().0, style.bits().1.to_ne_bytes());
+        let [l0, l1] = flags.to_ne_bytes();
+        Self {
+            words: [head, u64::from_ne_bytes([s8, s9, l0, l1, 0, 0, 0, 0])],
         }
-        #[cfg(not(target_pointer_width = "64"))]
-        Self { style, flags }
     }
 
     /// This template with `flags` instead of its own: the same style words,
     /// which a loop storing both templates then holds once.
     #[inline(always)]
     pub(super) fn with_flags(self, flags: u16) -> Self {
-        #[cfg(target_pointer_width = "64")]
-        {
-            let [s8, s9, ..] = self.words[2].to_ne_bytes();
-            let [l0, l1] = flags.to_ne_bytes();
-            let mut words = self.words;
-            words[2] = u64::from_ne_bytes([s8, s9, l0, l1, 0, 0, 0, 0]);
-            Self { words }
+        let [s8, s9, ..] = self.words[1].to_ne_bytes();
+        let [l0, l1] = flags.to_ne_bytes();
+        Self {
+            words: [
+                self.words[0],
+                u64::from_ne_bytes([s8, s9, l0, l1, 0, 0, 0, 0]),
+            ],
         }
-        #[cfg(not(target_pointer_width = "64"))]
-        Self { flags, ..self }
     }
 
-    /// Overwrite `cell`, which must hold no metadata (it isn't released).
+    /// Overwrite `cell` with this template and `character`.
     #[inline(always)]
     pub(super) fn store(self, cell: &mut Cell, character: char) {
-        debug_assert!(cell.extra.is_none(), "unflagged row holds cell metadata");
-        #[cfg(target_pointer_width = "64")]
-        {
-            // `character` is the last field: the high half of the last word.
-            let shift = if cfg!(target_endian = "little") {
-                32
-            } else {
-                0
-            };
-            let last = self.words[2] | (u64::from(u32::from(character)) << shift);
-            // The destination's `extra` is already `None`, the first word, so
-            // only the style, flags and character words are stored: one
-            // 16-byte write per cell.
-            // SAFETY: as in `new`, these words are the valid tail of a `Cell`
-            // whose `extra` is `None`; the cell is 8-aligned and 24 bytes, so
-            // its second and third words are in bounds and aligned.
-            unsafe {
-                std::ptr::from_mut(cell)
-                    .cast::<u64>()
-                    .add(1)
-                    .cast::<[u64; 2]>()
-                    .write([self.words[1], last]);
-            }
+        // `character` is the last field: the high half of the last word.
+        let shift = if cfg!(target_endian = "little") {
+            32
+        } else {
+            0
+        };
+        let last = self.words[1] | (u64::from(u32::from(character)) << shift);
+        // SAFETY: as in `new`, these words are the bytes of a valid `Cell`;
+        // a cell is 16 bytes and 16-aligned, so both words are in bounds and
+        // aligned.
+        unsafe {
+            std::ptr::from_mut(cell)
+                .cast::<[u64; 2]>()
+                .write([self.words[0], last]);
         }
-        #[cfg(not(target_pointer_width = "64"))]
-        cell.overwrite_plain(character, self.style, self.flags);
     }
 }
 
@@ -222,7 +198,6 @@ impl Default for Cell {
             character: ' ',
             style: Style::default(),
             flags: 0,
-            extra: None,
         }
     }
 }
@@ -231,42 +206,14 @@ impl Cell {
     pub const WIDE: u16 = 1;
     pub const WIDE_SPACER: u16 = 1 << 1;
     pub const LEADING_WIDE_SPACER: u16 = 1 << 2;
-    pub fn combining(&self) -> &str {
-        self.extra
-            .as_ref()
-            .map_or("", |extra| extra.combining.as_str())
-    }
-    pub fn hyperlink(&self) -> Option<&Arc<Hyperlink>> {
-        self.extra
-            .as_ref()
-            .and_then(|extra| extra.hyperlink.as_ref())
-    }
-    pub fn underline_color(&self) -> Color {
-        self.extra
-            .as_ref()
-            .map_or(Color::DEFAULT, |extra| extra.underline_color)
-    }
-    pub(super) fn set_underline_color(&mut self, color: Color) {
-        if self.underline_color() == color {
-            return;
-        }
-        let extra = self
-            .extra
-            .get_or_insert_with(|| Arc::new(CellExtra::default()));
-        Arc::make_mut(extra).underline_color = color;
-        if extra.is_empty() {
-            self.extra = None;
-        }
-    }
-    /// A word-store template for metadata-free cells in `style`; see
-    /// [`PlainCell`].
+
+    /// A word-store template for cells in `style`; see [`PlainCell`].
     #[inline(always)]
     pub(super) fn plain(style: Style, flags: u16) -> PlainCell {
         PlainCell::new(style, flags)
     }
 
-    /// Fill `cells`, which hold no metadata (see [`Self::overwrite_plain`]),
-    /// with a plain character in `style`.
+    /// Fill `cells` with a plain character in `style`.
     #[inline]
     pub(super) fn fill_plain(cells: &mut [Cell], character: char, style: Style) {
         let template = PlainCell::new(style, 0);
@@ -275,7 +222,7 @@ impl Cell {
         }
     }
 
-    /// Write printable ASCII into `cells`, which hold no metadata.
+    /// Write printable ASCII into `cells`.
     #[inline]
     pub(super) fn write_plain_ascii(cells: &mut [Cell], text: &[u8], style: Style) {
         let template = PlainCell::new(style, 0);
@@ -284,88 +231,261 @@ impl Cell {
         }
     }
 
-    /// Overwrite a cell that holds no metadata, without its drop glue. Rows
-    /// that `has_extras` doesn't flag hold none, and skipping the per-cell
-    /// release check lets runs of writes compile to plain wide stores.
-    #[cfg(not(target_pointer_width = "64"))]
-    #[inline(always)]
-    fn overwrite_plain(&mut self, character: char, style: Style, flags: u16) {
-        debug_assert!(self.extra.is_none(), "unflagged row holds cell metadata");
-        // Forgetting an `extra` of `None` releases nothing.
-        std::mem::forget(std::mem::replace(
-            self,
-            Self {
-                extra: None,
-                style,
-                flags,
-                character,
-            },
-        ));
-    }
-    /// The right half of a wide character. It keeps the style and underline
-    /// color so decorations span both columns, but no text or link.
+    /// The right half of a wide character. It keeps the style so decorations
+    /// span both columns, but no text; see [`ExtraSlot::spacer_extra`] for
+    /// its metadata.
     #[inline]
     pub(super) fn wide_spacer(&self) -> Self {
         Self {
             character: ' ',
             style: self.style,
             flags: Self::WIDE_SPACER,
-            extra: self.spacer_extra(&mut None),
         }
     }
-    /// [`Self::wide_spacer`] written in place, without a temporary cell.
-    #[inline]
-    pub(super) fn become_wide_spacer_of(
-        &mut self,
-        wide: &Cell,
-        cache: &mut Option<Arc<CellExtra>>,
-    ) {
-        self.character = ' ';
-        self.style = wide.style;
-        self.flags = Self::WIDE_SPACER;
-        self.extra = wide.spacer_extra(cache);
-    }
+}
+
+/// A cell's metadata where it is held apart from the cell: the pen's, or a
+/// row table entry taken out to edit.
+pub(super) trait ExtraSlot {
+    fn combining(&self) -> &str;
+    fn hyperlink(&self) -> Option<&Arc<Hyperlink>>;
+    fn underline_color(&self) -> Color;
+    fn set_underline_color(&mut self, color: Color);
+    fn push_combining(&mut self, character: char);
     /// Metadata for this wide cell's spacer: only its underline color.
-    /// `cache` keeps the last color-only extra built for a cell that also has
-    /// text or a link, so a run of such glyphs shares one allocation.
-    #[inline]
-    fn spacer_extra(&self, cache: &mut Option<Arc<CellExtra>>) -> Option<Arc<CellExtra>> {
-        self.extra
-            .as_ref()
-            .and_then(|extra| Self::spacer_extra_of(extra, cache))
+    /// `cache` keeps the last color-only extra built for a cell that also
+    /// has text or a link, so a run of such glyphs shares one allocation.
+    fn spacer_extra(&self, cache: &mut Option<Arc<CellExtra>>) -> Option<Arc<CellExtra>>;
+}
+
+impl ExtraSlot for Option<Arc<CellExtra>> {
+    fn combining(&self) -> &str {
+        self.as_ref().map_or("", |extra| extra.combining.as_str())
     }
-    #[cold]
-    fn spacer_extra_of(
-        extra: &Arc<CellExtra>,
-        cache: &mut Option<Arc<CellExtra>>,
-    ) -> Option<Arc<CellExtra>> {
-        if extra.underline_color == Color::DEFAULT {
-            None
-        } else if extra.combining.is_empty() && extra.hyperlink.is_none() {
-            Some(Arc::clone(extra))
-        } else {
-            // Cells copy-on-write shared extras, so the cached one never changes.
-            if cache
-                .as_ref()
-                .is_none_or(|cached| cached.underline_color != extra.underline_color)
-            {
-                *cache = Some(Arc::new(CellExtra {
-                    underline_color: extra.underline_color,
-                    ..CellExtra::default()
-                }));
-            }
-            cache.clone()
+    fn hyperlink(&self) -> Option<&Arc<Hyperlink>> {
+        self.as_ref().and_then(|extra| extra.hyperlink.as_ref())
+    }
+    fn underline_color(&self) -> Color {
+        self.as_ref()
+            .map_or(Color::DEFAULT, |extra| extra.underline_color)
+    }
+    fn set_underline_color(&mut self, color: Color) {
+        if self.underline_color() == color {
+            return;
+        }
+        let extra = self.get_or_insert_with(|| Arc::new(CellExtra::default()));
+        Arc::make_mut(extra).underline_color = color;
+        if extra.is_empty() {
+            *self = None;
         }
     }
-    pub(super) fn push_combining(&mut self, character: char) {
+    fn push_combining(&mut self, character: char) {
         // Bound a hostile stream of combining marks attached to a single cell.
         if self.combining().len().saturating_add(character.len_utf8()) > MAX_COMBINING_BYTES {
             return;
         }
-        let extra = self
-            .extra
-            .get_or_insert_with(|| Arc::new(CellExtra::default()));
+        let extra = self.get_or_insert_with(|| Arc::new(CellExtra::default()));
         Arc::make_mut(extra).combining.push(character);
+    }
+    #[inline]
+    fn spacer_extra(&self, cache: &mut Option<Arc<CellExtra>>) -> Option<Arc<CellExtra>> {
+        self.as_ref()
+            .and_then(|extra| spacer_extra_of(extra, cache))
+    }
+}
+
+#[cold]
+fn spacer_extra_of(
+    extra: &Arc<CellExtra>,
+    cache: &mut Option<Arc<CellExtra>>,
+) -> Option<Arc<CellExtra>> {
+    if extra.underline_color == Color::DEFAULT {
+        None
+    } else if extra.combining.is_empty() && extra.hyperlink.is_none() {
+        Some(Arc::clone(extra))
+    } else {
+        // Cells copy-on-write shared extras, so the cached one never changes.
+        if cache
+            .as_ref()
+            .is_none_or(|cached| cached.underline_color != extra.underline_color)
+        {
+            *cache = Some(Arc::new(CellExtra {
+                underline_color: extra.underline_color,
+                ..CellExtra::default()
+            }));
+        }
+        cache.clone()
+    }
+}
+
+/// The rendition printed cells take: a style, and the metadata (an OSC 8
+/// link, an SGR 58 color) they share.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct Pen {
+    pub(super) style: Style,
+    pub(super) extra: Option<Arc<CellExtra>>,
+}
+
+impl Pen {
+    pub(super) fn hyperlink(&self) -> Option<&Arc<Hyperlink>> {
+        self.extra.hyperlink()
+    }
+    pub(super) fn underline_color(&self) -> Color {
+        self.extra.underline_color()
+    }
+    pub(super) fn set_underline_color(&mut self, color: Color) {
+        self.extra.set_underline_color(color);
+    }
+}
+
+/// A row's cells, with the metadata of those that have some: combining
+/// text, an OSC 8 link, an underline color. Indexes like the cell slice it
+/// derefs to; column arguments count from its first cell.
+#[derive(Clone, Copy)]
+pub struct Line<'a> {
+    cells: &'a [Cell],
+    // Sorted by column, counted from the row's first cell, `start` columns
+    // before this line's first cell.
+    extras: &'a [(usize, Arc<CellExtra>)],
+    start: usize,
+}
+
+impl<'a> Line<'a> {
+    pub(super) fn new(cells: &'a [Cell], extras: &'a [(usize, Arc<CellExtra>)]) -> Self {
+        Self {
+            cells,
+            extras,
+            start: 0,
+        }
+    }
+
+    pub fn cells(&self) -> &'a [Cell] {
+        self.cells
+    }
+
+    /// The metadata of the cell at `col`, if it has any.
+    #[inline]
+    pub fn extra(&self, col: usize) -> Option<&'a CellExtra> {
+        if self.extras.is_empty() {
+            return None;
+        }
+        let col = self.start + col;
+        self.extras
+            .binary_search_by_key(&col, |(col, _)| *col)
+            .ok()
+            .map(|index| &*self.extras[index].1)
+    }
+
+    pub fn combining(&self, col: usize) -> &'a str {
+        self.extra(col).map_or("", |extra| extra.combining.as_str())
+    }
+
+    pub fn hyperlink(&self, col: usize) -> Option<&'a Arc<Hyperlink>> {
+        self.extra(col).and_then(|extra| extra.hyperlink.as_ref())
+    }
+
+    pub fn underline_color(&self, col: usize) -> Color {
+        self.extra(col)
+            .map_or(Color::DEFAULT, |extra| extra.underline_color)
+    }
+
+    /// The cells of `range`, with their metadata.
+    pub fn slice(&self, range: std::ops::Range<usize>) -> Self {
+        let cells = &self.cells[range.clone()];
+        let (first, last) = (self.start + range.start, self.start + range.end);
+        let from = self.extras.partition_point(|(col, _)| *col < first);
+        let to = self.extras.partition_point(|(col, _)| *col < last);
+        Self {
+            cells,
+            extras: &self.extras[from..to],
+            start: first,
+        }
+    }
+
+    /// Each cell that has metadata: its column and the metadata.
+    pub fn extras(&self) -> impl Iterator<Item = (usize, &'a CellExtra)> + 'a {
+        let start = self.start;
+        self.extras
+            .iter()
+            .map(move |(col, extra)| (col - start, &**extra))
+    }
+}
+
+#[cfg(test)]
+impl Line<'_> {
+    /// An owned copy of the cells and their metadata, to compare later.
+    pub(crate) fn snapshot(&self) -> (Vec<Cell>, Vec<(usize, CellExtra)>) {
+        let extras = self.extras().map(|(col, extra)| (col, extra.clone()));
+        (self.cells.to_vec(), extras.collect())
+    }
+}
+
+impl std::ops::Deref for Line<'_> {
+    type Target = [Cell];
+
+    fn deref(&self) -> &[Cell] {
+        self.cells
+    }
+}
+
+impl PartialEq for Line<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.cells == other.cells && self.extras().eq(other.extras())
+    }
+}
+
+impl Eq for Line<'_> {}
+
+// Plain cells carry no metadata: a line equals them only when it has none.
+impl PartialEq<[Cell]> for Line<'_> {
+    fn eq(&self, other: &[Cell]) -> bool {
+        self.extras.is_empty() && self.cells == other
+    }
+}
+
+impl PartialEq<&[Cell]> for Line<'_> {
+    fn eq(&self, other: &&[Cell]) -> bool {
+        *self == **other
+    }
+}
+
+impl PartialEq<Vec<Cell>> for Line<'_> {
+    fn eq(&self, other: &Vec<Cell>) -> bool {
+        *self == **other
+    }
+}
+
+impl PartialEq<&Vec<Cell>> for Line<'_> {
+    fn eq(&self, other: &&Vec<Cell>) -> bool {
+        *self == ***other
+    }
+}
+
+impl<'a> IntoIterator for Line<'a> {
+    type Item = &'a Cell;
+    type IntoIter = std::slice::Iter<'a, Cell>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.cells.iter()
+    }
+}
+
+impl<'a> IntoIterator for &Line<'a> {
+    type Item = &'a Cell;
+    type IntoIter = std::slice::Iter<'a, Cell>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.cells.iter()
+    }
+}
+
+impl std::fmt::Debug for Line<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Line")
+            .field("cells", &self.cells)
+            .field("extras", &self.extras().collect::<Vec<_>>())
+            .finish()
     }
 }
 

@@ -165,7 +165,7 @@ mod tests {
         let mut real = 0;
         for row in &grid.history {
             real += row.cells.capacity() * size_of::<Cell>();
-            for extra in row.cells().iter().filter_map(|cell| cell.extra.as_ref()) {
+            for (_, extra) in &row.extras {
                 if seen.insert(Arc::as_ptr(extra)) {
                     real += 2 * size_of::<usize>()
                         + size_of_val(extra.as_ref())

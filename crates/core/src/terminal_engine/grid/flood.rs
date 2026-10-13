@@ -28,7 +28,6 @@ impl PendingClear {
 /// The blank a full-screen scroll clears with while the pen has the default
 /// background. A constant, so reading it never waits on recent stores.
 const DEFAULT_BLANK: Cell = Cell {
-    extra: None,
     style: Style {
         foreground: Color::DEFAULT,
         background: Color::DEFAULT,
@@ -143,14 +142,13 @@ impl Grid {
         self.pending_compaction = (self.pending_compaction + 1).min(self.history.len());
         let recycled = self.primary.rows.back_mut().expect("screen row");
         if self.defer_scroll_clear {
-            if let Some(end) = recycled.clear_deferring_fill(cols, &DEFAULT_BLANK) {
-                self.pending_clear = PendingClear {
-                    row: rows - 1,
-                    start: 0,
-                    end,
-                    background: Color::DEFAULT,
-                };
-            }
+            let end = recycled.clear_deferring_fill(cols, &DEFAULT_BLANK);
+            self.pending_clear = PendingClear {
+                row: rows - 1,
+                start: 0,
+                end,
+                background: Color::DEFAULT,
+            };
         } else {
             recycled.clear(cols, &DEFAULT_BLANK);
         }
@@ -241,7 +239,7 @@ impl Grid {
                 removed
             };
             let deferred = if defer_clear {
-                recycled.clear_deferring_fill(cols, &blank)
+                Some(recycled.clear_deferring_fill(cols, &blank))
             } else {
                 recycled.clear(cols, &blank);
                 None

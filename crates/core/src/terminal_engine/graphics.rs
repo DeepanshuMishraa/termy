@@ -80,7 +80,7 @@ impl State {
                 continue;
             };
             let placeholders = &mut self.graphics.placeholders;
-            line.with_cells(&mut scratch, |cells| {
+            line.with_line(&mut scratch, |cells| {
                 let mut previous = None;
                 for (col, cell) in cells.iter().enumerate() {
                     if cell.character != unicode::PLACEHOLDER {
@@ -88,14 +88,15 @@ impl State {
                         continue;
                     }
                     let mut diacritics = [None; 3];
-                    for (slot, character) in diacritics.iter_mut().zip(cell.combining().chars()) {
+                    for (slot, character) in diacritics.iter_mut().zip(cells.combining(col).chars())
+                    {
                         *slot = unicode::diacritic_index(character);
                     }
                     let placeholder = KittyGraphicsPlaceholder::from_cell(
                         row as i64,
                         col,
                         placeholder_id(cell.style.foreground),
-                        placeholder_id(cell.underline_color()),
+                        placeholder_id(cells.underline_color(col)),
                         diacritics,
                         previous,
                     );

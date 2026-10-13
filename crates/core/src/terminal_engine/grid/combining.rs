@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use super::super::types::{Cell, CellExtra, MAX_COMBINING_BYTES};
+use super::super::types::{CellExtra, ExtraSlot, MAX_COMBINING_BYTES};
 
 const BUCKETS: usize = 64;
 const WAYS: usize = 4;
@@ -71,24 +71,25 @@ impl CombiningCache {
         self.next.fill(0);
     }
 
-    pub(super) fn append(&mut self, cell: &mut Cell, character: char) {
-        let suffix = cell.combining();
+    /// Append `character` to the combining text of a cell's metadata.
+    pub(super) fn append(&mut self, slot: &mut Option<Arc<CellExtra>>, character: char) {
+        let suffix = slot.combining();
         let mut encoded = [0; 4];
         let encoded = character.encode_utf8(&mut encoded).as_bytes();
         let len = suffix.len() + encoded.len();
         if len > MAX_COMBINING_BYTES {
             return;
         }
-        let hyperlink = cell.hyperlink();
+        let hyperlink = slot.hyperlink();
         if hyperlink.is_some_and(|link| {
             link.id.capacity().saturating_add(link.uri.capacity()) > MAX_CACHED_HYPERLINK_BYTES
         }) {
-            cell.push_combining(character);
+            slot.push_combining(character);
             return;
         }
 
         let link_pointer = hyperlink.map_or(std::ptr::null(), Arc::as_ptr);
-        let underline_color = cell.underline_color();
+        let underline_color = slot.underline_color();
         // Use the full resulting byte string as the key; grouping does not
         // affect identity when a value was built over different feed chunks.
         let bucket = bucket_for(suffix.as_bytes(), encoded, link_pointer as usize);
@@ -107,7 +108,7 @@ impl CombiningCache {
                 )
                 && bytes_equal(&entry.combining.as_bytes()[suffix.len()..], encoded)
             {
-                cell.extra = Some(Arc::clone(entry));
+                *slot = Some(Arc::clone(entry));
                 return;
             }
         }
@@ -120,10 +121,10 @@ impl CombiningCache {
             hyperlink: hyperlink.cloned(),
             underline_color,
         });
-        let slot = usize::from(self.next[bucket]);
-        self.next[bucket] = ((slot + 1) % WAYS) as u8;
-        self.slots[bucket][slot] = Some(Arc::clone(&extra));
-        cell.extra = Some(extra);
+        let way = usize::from(self.next[bucket]);
+        self.next[bucket] = ((way + 1) % WAYS) as u8;
+        self.slots[bucket][way] = Some(Arc::clone(&extra));
+        *slot = Some(extra);
     }
 }
 
@@ -154,20 +155,20 @@ mod tests {
     #[test]
     fn repeated_compositions_share_immutable_metadata() {
         let mut cache = CombiningCache::default();
-        let mut first = Cell::default();
-        let mut second = Cell::default();
+        let mut first = None;
+        let mut second = None;
         cache.append(&mut first, '\u{301}');
         cache.append(&mut second, '\u{301}');
         assert!(Arc::ptr_eq(
-            first.extra.as_ref().unwrap(),
-            second.extra.as_ref().unwrap()
+            first.as_ref().unwrap(),
+            second.as_ref().unwrap()
         ));
         cache.append(&mut second, '\u{308}');
         assert_eq!(first.combining(), "\u{301}");
         assert_eq!(second.combining(), "\u{301}\u{308}");
         assert!(!Arc::ptr_eq(
-            first.extra.as_ref().unwrap(),
-            second.extra.as_ref().unwrap()
+            first.as_ref().unwrap(),
+            second.as_ref().unwrap()
         ));
     }
 
@@ -187,20 +188,20 @@ mod tests {
         let mut cache = CombiningCache::default();
         let mut cells = Vec::new();
         for &character in &colliding {
-            let mut cell = Cell::default();
+            let mut cell = None;
             cache.append(&mut cell, character);
             assert_eq!(cell.combining(), character.to_string());
-            let mut repeated = Cell::default();
+            let mut repeated = None;
             cache.append(&mut repeated, character);
             assert!(Arc::ptr_eq(
-                cell.extra.as_ref().unwrap(),
-                repeated.extra.as_ref().unwrap()
+                cell.as_ref().unwrap(),
+                repeated.as_ref().unwrap()
             ));
             cells.push(cell);
         }
 
         // A full bucket evicts the oldest entry, but the cell still owns it.
-        assert_eq!(Arc::strong_count(cells[0].extra.as_ref().unwrap()), 1);
+        assert_eq!(Arc::strong_count(cells[0].as_ref().unwrap()), 1);
         let original = cells[0].clone();
         cache.append(&mut cells[0], '\u{308}');
         assert_eq!(original.combining(), colliding[0].to_string());
@@ -214,28 +215,22 @@ mod tests {
     #[test]
     fn distinct_hyperlinks_never_share_composed_metadata() {
         let mut cache = CombiningCache::default();
-        let mut first = Cell {
-            extra: Some(Arc::new(CellExtra {
-                combining: String::new(),
-                hyperlink: Some(Arc::new(Hyperlink {
-                    id: "first".into(),
-                    uri: "https://one.test".into(),
-                })),
-                ..CellExtra::default()
+        let mut first = Some(Arc::new(CellExtra {
+            combining: String::new(),
+            hyperlink: Some(Arc::new(Hyperlink {
+                id: "first".into(),
+                uri: "https://one.test".into(),
             })),
-            ..Cell::default()
-        };
-        let mut second = Cell {
-            extra: Some(Arc::new(CellExtra {
-                combining: String::new(),
-                hyperlink: Some(Arc::new(Hyperlink {
-                    id: "second".into(),
-                    uri: "https://two.test".into(),
-                })),
-                ..CellExtra::default()
+            ..CellExtra::default()
+        }));
+        let mut second = Some(Arc::new(CellExtra {
+            combining: String::new(),
+            hyperlink: Some(Arc::new(Hyperlink {
+                id: "second".into(),
+                uri: "https://two.test".into(),
             })),
-            ..Cell::default()
-        };
+            ..CellExtra::default()
+        }));
         cache.append(&mut first, '\u{301}');
         // Force a pointer-hash collision so this exercises the full hyperlink
         // identity check rather than relying on placement in different buckets.
@@ -244,14 +239,14 @@ mod tests {
             "\u{301}".as_bytes(),
             Arc::as_ptr(second.hyperlink().unwrap()) as usize,
         );
-        cache.slots[second_bucket][0] = first.extra.clone();
+        cache.slots[second_bucket][0] = first.clone();
         cache.next[second_bucket] = 1;
         cache.append(&mut second, '\u{301}');
         assert_eq!(first.hyperlink().unwrap().id, "first");
         assert_eq!(second.hyperlink().unwrap().id, "second");
         assert!(!Arc::ptr_eq(
-            first.extra.as_ref().unwrap(),
-            second.extra.as_ref().unwrap()
+            first.as_ref().unwrap(),
+            second.as_ref().unwrap()
         ));
     }
 
@@ -268,7 +263,7 @@ mod tests {
     fn cache_storage_and_suffixes_are_bounded_under_unique_input() {
         let mut cache = CombiningCache::default();
         for index in 0..10_000 {
-            let mut cell = Cell::default();
+            let mut cell = None;
             cache.append(&mut cell, char::from_u32(0x1000 + index).unwrap());
         }
         let slots: Vec<_> = cache.slots.iter().flatten().flatten().collect();
@@ -278,7 +273,7 @@ mod tests {
                 .iter()
                 .all(|entry| entry.combining.capacity() <= MAX_COMBINING_BYTES)
         );
-        let mut cell = Cell::default();
+        let mut cell = None;
         for _ in 0..1000 {
             cache.append(&mut cell, '\u{1d185}');
         }
@@ -293,14 +288,11 @@ mod tests {
             id: String::new(),
             uri: "x".repeat(MAX_CACHED_HYPERLINK_BYTES + 1),
         });
-        let mut cell = Cell {
-            extra: Some(Arc::new(CellExtra {
-                combining: String::new(),
-                hyperlink: Some(Arc::clone(&link)),
-                ..CellExtra::default()
-            })),
-            ..Cell::default()
-        };
+        let mut cell = Some(Arc::new(CellExtra {
+            combining: String::new(),
+            hyperlink: Some(Arc::clone(&link)),
+            ..CellExtra::default()
+        }));
         let mut cache = CombiningCache::default();
         cache.append(&mut cell, '\u{301}');
         assert_eq!(cell.combining(), "\u{301}");

@@ -1,20 +1,20 @@
 //! Streaming graphemes and the ASCII output fast path.
 use super::super::parser::complete_utf8;
-use super::super::types::MAX_COMBINING_BYTES;
-use super::super::types::PlainCell;
+use super::super::types::{CellExtra, ExtraSlot, MAX_COMBINING_BYTES, PlainCell};
 use super::{Cell, Grid};
 use std::sync::Arc;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-pub(super) fn cell_width(cell: &Cell) -> usize {
-    if cell.combining().is_empty() {
+/// The display width of `cell` with its `combining` text.
+pub(super) fn cell_width(cell: &Cell, combining: &str) -> usize {
+    if combining.is_empty() {
         return cell.character.width().unwrap_or(0);
     }
     let mut bytes = [0; MAX_COMBINING_BYTES + 4];
     let len = cell.character.encode_utf8(&mut bytes).len();
-    bytes[len..len + cell.combining().len()].copy_from_slice(cell.combining().as_bytes());
-    std::str::from_utf8(&bytes[..len + cell.combining().len()])
+    bytes[len..len + combining.len()].copy_from_slice(combining.as_bytes());
+    std::str::from_utf8(&bytes[..len + combining.len()])
         .expect("cell UTF-8")
         .width()
 }
@@ -214,18 +214,18 @@ impl Grid {
         if self.screen().rows[row].cells[col].flags & Cell::WIDE_SPACER != 0 {
             col = col.saturating_sub(1);
         }
-        let previous = &self.screen().rows[row].cells[col];
+        let previous = self.screen().rows[row].cells[col];
+        let mut extra = self.screen().rows[row].extra(col).cloned();
         // Match the existing bound on untrusted combining sequences. Discard
         // excess suffixes without moving the cursor or splitting a cluster.
-        let over_limit = previous.combining().len() + character.len_utf8() > MAX_COMBINING_BYTES;
+        let over_limit = extra.combining().len() + character.len_utf8() > MAX_COMBINING_BYTES;
         if over_limit && always_extends(character) {
             return true;
         }
         let mut bytes = [0; MAX_COMBINING_BYTES + 8];
         let mut len = previous.character.encode_utf8(&mut bytes).len();
-        bytes[len..len + previous.combining().len()]
-            .copy_from_slice(previous.combining().as_bytes());
-        len += previous.combining().len();
+        bytes[len..len + extra.combining().len()].copy_from_slice(extra.combining().as_bytes());
+        len += extra.combining().len();
         len += character.encode_utf8(&mut bytes[len..]).len();
         let text = std::str::from_utf8(&bytes[..len]).expect("grapheme UTF-8");
         if text.graphemes(true).nth(1).is_some() {
@@ -244,12 +244,11 @@ impl Grid {
         if !self.autowrap && col + width > right {
             width = old_width;
         }
-        let mut cell = previous.clone();
-        self.combining_cache.append(&mut cell, character);
+        let cell = previous;
+        self.combining_cache.append(&mut extra, character);
         if width == old_width {
             let active = &mut self.screen_mut().rows[row];
-            active.has_extras = true;
-            active.cells[col] = cell;
+            active.put(col, cell, extra);
             active.occupied = active.occupied.max(col + width);
             self.mark(row, col, col + width);
             return true;
@@ -275,8 +274,7 @@ impl Grid {
             self.cursor.col = col;
         }
         self.insert_mode = false;
-        self.put_cell(cell, width);
-        self.flag_extras_at_cursor();
+        self.put_cell(cell, extra, width);
         self.insert_mode = insert_mode;
         self.mark_cursor(old_cursor);
         true
@@ -328,9 +326,9 @@ impl Grid {
                 &mut self.primary.rows[row]
             };
             active.occupied = active.occupied.max(col + 1);
-            active.has_extras = true;
-            let cell = &mut active.cells[col];
-            self.combining_cache.append(cell, character);
+            let mut extra = active.take_extra(col);
+            self.combining_cache.append(&mut extra, character);
+            active.set_extra(col, extra);
             self.mark(row, col, col + 1);
             return;
         }
@@ -339,26 +337,12 @@ impl Grid {
             character,
             style: self.pen.style,
             flags: 0,
-            extra: self.pen.extra.clone(),
         };
         self.grapheme_ordinary = ordinary;
-        self.put_cell(cell, width);
-        // `put_cell` leaves the cursor on the row it wrote. Flagging here
-        // rather than per stored cell keeps plain pens off this path.
-        if self.pen.extra.is_some() {
-            self.flag_extras_at_cursor();
-        }
+        self.put_cell(cell, self.pen.extra.clone(), width);
     }
 
-    /// Note that the cursor row may hold cell metadata; see `Row::has_extras`.
-    #[cold]
-    #[inline(never)]
-    fn flag_extras_at_cursor(&mut self) {
-        let row = self.cursor.row;
-        self.screen_mut().rows[row].has_extras = true;
-    }
-
-    fn put_cell(&mut self, mut cell: Cell, width: usize) {
+    fn put_cell(&mut self, mut cell: Cell, extra: Option<Arc<CellExtra>>, width: usize) {
         if self.pending_wrap {
             if self.autowrap {
                 self.wrap_line();
@@ -412,16 +396,17 @@ impl Grid {
         // would write/drop each cell twice on ordinary Unicode output.
         if active.cells[col].flags & Cell::WIDE_SPACER != 0 && col > 0 {
             start -= 1;
-            active.cells[start] = Self::blank_on(background);
+            active.blank_cell(start, Self::blank_on(background));
         }
         if active.cells[end - 1].flags & Cell::WIDE != 0 && end < active.cells.len() {
-            active.cells[end] = Self::blank_on(background);
+            active.blank_cell(end, Self::blank_on(background));
             end += 1;
         }
         if width == 2 {
-            active.cells[col + 1].become_wide_spacer_of(&cell, &mut self.spacer_extra);
+            let spacer_extra = extra.spacer_extra(&mut self.spacer_extra);
+            active.put(col + 1, cell.wide_spacer(), spacer_extra);
         }
-        active.cells[col] = cell;
+        active.put(col, cell, extra);
         active.occupied = active.occupied.max(end);
         self.grapheme_at_margin = col + width >= right;
         if self.grapheme_at_margin {
@@ -519,7 +504,7 @@ impl Grid {
         let right = self.right_limit();
         let style = self.pen.style;
         let active = &mut self.screen_mut().rows[row];
-        if active.has_extras {
+        if active.has_extras() {
             return (0, None);
         }
         let occupied = active.occupied;
@@ -621,7 +606,7 @@ impl Grid {
         }
         let style = self.pen.style;
         let active = &mut self.screen_mut().rows[row];
-        if active.has_extras || (col < active.occupied && active.cells[col].flags != 0) {
+        if active.has_extras() || (col < active.occupied && active.cells[col].flags != 0) {
             return false;
         }
         Cell::plain(style, 0).store(&mut active.cells[col], char::from(byte));
@@ -681,29 +666,10 @@ impl Grid {
             let style = self.pen.style;
             let extra = self.pen.extra.clone();
             let active = &mut self.screen_mut().rows[row];
-            let cells = active.cells[col..col + count].iter_mut().zip(text);
-            // Build whole cells so a plain pen is stored without reloading it.
-            if let Some(extra) = extra {
-                active.has_extras = true;
-                for (cell, &byte) in cells {
-                    *cell = Cell {
-                        character: char::from(byte),
-                        style,
-                        flags: 0,
-                        extra: Some(Arc::clone(&extra)),
-                    };
-                }
-            } else if !active.has_extras {
-                Cell::write_plain_ascii(&mut active.cells[col..col + count], text, style);
-            } else {
-                for (cell, &byte) in cells {
-                    *cell = Cell {
-                        character: char::from(byte),
-                        style,
-                        flags: 0,
-                        extra: None,
-                    };
-                }
+            Cell::write_plain_ascii(&mut active.cells[col..col + count], text, style);
+            match &extra {
+                Some(extra) => active.fill_extras(col..col + count, extra),
+                None => active.clear_extras(col..col + count),
             }
             active.occupied = active.occupied.max(col + count);
             // A row scrolled in by the last line feed is blanked only around

@@ -25,7 +25,7 @@ use std::collections::VecDeque;
 use web_time::Instant;
 
 pub use types::{
-    Cell, CellExtra, Color, Cursor, CursorShape, Damage, DirtySpan, Hyperlink, Size, Style,
+    Cell, CellExtra, Color, Cursor, CursorShape, Damage, DirtySpan, Hyperlink, Line, Size, Style,
     UnderlineStyle, ViewportScroll,
 };
 
@@ -384,9 +384,9 @@ impl Engine {
         self.generation = self.generation.wrapping_add(1);
     }
 
-    /// The lifetime of the slice prevents mutation while the renderer reads it.
-    pub fn viewport_row(&self, row: usize) -> Option<&[Cell]> {
-        self.state.grid.visible_row_cells(row)
+    /// The lifetime of the line prevents mutation while the renderer reads it.
+    pub fn viewport_row(&self, row: usize) -> Option<Line<'_>> {
+        self.state.grid.visible_row_line(row)
     }
 
     /// Visit a viewport row without retaining a dense copy of cold history.
@@ -395,12 +395,12 @@ impl Engine {
         &self,
         row: usize,
         scratch: &mut Vec<Cell>,
-        read: impl FnOnce(&[Cell]) -> T,
+        read: impl FnOnce(Line<'_>) -> T,
     ) -> Option<T> {
         self.state
             .grid
             .visible_row(row)
-            .map(|row| row.with_cells(scratch, read))
+            .map(|row| row.with_line(scratch, read))
     }
 
     /// [`Self::with_viewport_row`], also passing where the row's erase
@@ -430,8 +430,8 @@ impl Engine {
     /// A cold history row is expanded on demand. Expanded history is released
     /// on the next output, resize, or scroll; the borrowed slice remains valid
     /// until that exclusive mutation.
-    pub fn line(&self, line: i32) -> Option<&[Cell]> {
-        self.state.grid.row_cells(line)
+    pub fn line(&self, line: i32) -> Option<Line<'_>> {
+        self.state.grid.row_line(line)
     }
 
     /// Visit a line without retaining a dense copy of cold history. Scratch
@@ -440,12 +440,12 @@ impl Engine {
         &self,
         line: i32,
         scratch: &mut Vec<Cell>,
-        read: impl FnOnce(&[Cell]) -> T,
+        read: impl FnOnce(Line<'_>) -> T,
     ) -> Option<T> {
         self.state
             .grid
             .row(line)
-            .map(|row| row.with_cells(scratch, read))
+            .map(|row| row.with_line(scratch, read))
     }
 
     pub fn line_wrapped(&self, line: i32) -> bool {

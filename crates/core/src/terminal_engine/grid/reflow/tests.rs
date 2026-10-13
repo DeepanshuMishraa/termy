@@ -9,12 +9,12 @@ fn wide_glyphs_recover_their_spacers_after_single_column_resize() {
     assert_eq!((grid.cursor.row, grid.cursor.col), (0, 3));
     grid.resize(Size { cols: 1, rows: 3 });
     grid.resize(Size { cols: 4, rows: 3 });
-    let row = grid.row(0).unwrap().cells();
+    let row = grid.row(0).unwrap().line();
     assert_eq!(row[0].character, '界');
     assert_eq!(row[0].flags, Cell::WIDE);
     assert_eq!(row[1].flags, Cell::WIDE_SPACER);
     assert_eq!(row[2].character, 'e');
-    assert_eq!(row[2].combining(), "\u{301}");
+    assert_eq!(row.combining(2), "\u{301}");
     assert_eq!((grid.cursor.row, grid.cursor.col), (0, 3));
 }
 
@@ -43,10 +43,7 @@ fn width_reflow_preserves_hard_breaks_soft_wraps_cursor_and_style() {
     assert_eq!(text(&grid, 2), "m     ");
     assert_eq!(text(&grid, 3), "$     ");
     assert_eq!((grid.cursor.row, grid.cursor.col), (3, 2));
-    assert_eq!(
-        grid.row(1).unwrap().cells()[0].style.attributes,
-        Style::BOLD
-    );
+    assert_eq!(grid.row(1).unwrap().line()[0].style.attributes, Style::BOLD);
     assert!(grid.row(0).unwrap().wrapped);
     assert!(!grid.row(2).unwrap().wrapped);
     grid.resize(Size { cols: 10, rows: 6 });
@@ -110,7 +107,7 @@ fn widening_packs_rewrapped_history_instead_of_evicting_it() {
     assert_eq!(grid.display_offset(), 400);
     assert!(grid.history_bytes <= HISTORY_BYTE_BUDGET);
     assert_eq!(
-        grid.row(-1).unwrap().cells()[0].character,
+        grid.row(-1).unwrap().line()[0].character,
         char::from(b'a' + (1021 % 26) as u8)
     );
     assert_eq!((grid.cursor.row, grid.cursor.col), (2, 0));
@@ -156,7 +153,7 @@ fn narrowing_one_long_logical_line_recycles_rows_and_preserves_its_tail() {
     assert_eq!(text(&grid, 2), "z");
     assert_eq!((grid.cursor.row, grid.cursor.col), (2, 0));
     assert!(grid.pending_wrap);
-    assert_eq!(grid.row(-1).unwrap().cells()[0].character, 'w');
+    assert_eq!(grid.row(-1).unwrap().line()[0].character, 'w');
 }
 
 #[test]
@@ -197,7 +194,7 @@ fn width_resize_keeps_fitting_history_rows_packed() {
     }
     assert_history_compacted(&mut grid);
     let before = (-(grid.history_size() as i32)..4)
-        .map(|line| grid.row_cells(line).unwrap()[..20].to_vec())
+        .map(|line| grid.row_line(line).unwrap().slice(0..20).snapshot())
         .collect::<Vec<_>>();
     for cols in [100, 120] {
         grid.resize(Size { cols, rows: 4 });
@@ -212,7 +209,7 @@ fn width_resize_keeps_fitting_history_rows_packed() {
         );
     }
     let after = (-(grid.history_size() as i32)..4)
-        .map(|line| grid.row_cells(line).unwrap()[..20].to_vec())
+        .map(|line| grid.row_line(line).unwrap().slice(0..20).snapshot())
         .collect::<Vec<_>>();
     assert_eq!(after, before);
 }

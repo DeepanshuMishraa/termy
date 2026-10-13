@@ -103,10 +103,11 @@ impl Grid {
                 (bottom - 1 - step, bottom - 1 - step - count)
             };
             let mut source_cells = std::mem::take(&mut rows[source].cells);
+            let mut source_extras = std::mem::take(&mut rows[source].extras);
             rows[destination].cells[left..right].swap_with_slice(&mut source_cells[left..right]);
+            rows[destination].swap_extras(&mut source_extras, left..right);
             rows[source].cells = source_cells;
-            let source_extras = rows[source].has_extras;
-            rows[destination].has_extras |= source_extras;
+            rows[source].extras = source_extras;
         }
         let exposed = if up {
             bottom - count..bottom
@@ -114,7 +115,8 @@ impl Grid {
             top..top + count
         };
         for row in exposed {
-            rows[row].cells[left..right].fill(blank.clone());
+            rows[row].cells[left..right].fill(blank);
+            rows[row].clear_extras(left..right);
         }
         for row in rows.range_mut(top..bottom) {
             row.occupied = row.occupied.max(right);

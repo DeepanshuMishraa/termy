@@ -9,12 +9,13 @@ use std::{
 };
 
 use super::types::{
-    Cell, CellExtra, Color, Cursor, CursorShape, Damage, DirtySpan, GridEffect, Size, Style,
-    ViewportScroll,
+    Cell, CellExtra, Color, Cursor, CursorShape, Damage, DirtySpan, GridEffect, Line, Pen, Size,
+    Style, ViewportScroll,
 };
 
 mod combining;
 mod damage;
+mod extras;
 mod flood;
 mod history;
 mod margins;
@@ -32,6 +33,8 @@ const COMPACT_OUTPUT_BURST_BYTES: usize = 4096;
 #[derive(Clone, Debug)]
 pub(super) struct Row {
     cells: Vec<Cell>,
+    // Metadata of the cells that have some, by column; see `extras.rs`.
+    extras: Vec<(usize, Arc<CellExtra>)>,
     packed: Option<Box<PackedCells>>,
     // Cells after this prefix still equal the blank used by the last clear.
     // Keeping a conservative upper bound avoids rewriting an entire row when
@@ -39,9 +42,6 @@ pub(super) struct Row {
     occupied: usize,
     clear_background: Color,
     pub(super) wrapped: bool,
-    // Set by the writers that store cell metadata, so measuring a dense row
-    // without any skips scanning it. Changes only while the row is live.
-    has_extras: bool,
     // Metadata bytes measured as the row entered history; see `row.rs`.
     extra_units: u16,
 }
@@ -51,26 +51,25 @@ impl Row {
     // varies. Text, attributes, wide flags and metadata belong in `occupied`.
     fn new(cols: usize, blank: &Cell) -> Self {
         Self {
-            cells: vec![blank.clone(); cols],
+            cells: vec![*blank; cols],
+            extras: Vec::new(),
             packed: None,
             occupied: 0,
             clear_background: blank.style.background,
             wrapped: false,
-            has_extras: blank.extra.is_some(),
             extra_units: 0,
         }
     }
 
     fn clear(&mut self, cols: usize, blank: &Cell) {
-        if let Some(end) = self.clear_deferring_fill(cols, blank) {
-            Cell::fill_plain(&mut self.cells[..end], blank.character, blank.style);
-        }
+        let end = self.clear_deferring_fill(cols, blank);
+        Cell::fill_plain(&mut self.cells[..end], blank.character, blank.style);
     }
 
-    /// Clear the row except, for a plain row, blanking its first cells:
-    /// returns how many leading cells still hold old content and must be
-    /// filled with `blank` (which has no metadata) before anything reads them.
-    fn clear_deferring_fill(&mut self, cols: usize, blank: &Cell) -> Option<usize> {
+    /// Clear the row except blanking its first cells: returns how many
+    /// leading cells still hold old content and must be filled with `blank`
+    /// before anything reads them.
+    fn clear_deferring_fill(&mut self, cols: usize, blank: &Cell) -> usize {
         // Recycled history rows are usually packed. Their contents are about
         // to be blanked, so reuse a decoded cache if any but skip decoding.
         if self.discard_packed() {
@@ -81,41 +80,32 @@ impl Row {
         } else {
             cols
         };
-        let deferred = if blank.extra.is_none() && !self.has_extras {
-            // Every scrolled line clears a row; plain rows skip drop glue.
-            let (character, style) = (blank.character, blank.style);
-            let len = self.cells.len().min(cols);
-            if self.cells.len() != cols {
-                self.cells.truncate(cols);
-                self.cells.extend((len..cols).map(|_| Cell {
-                    extra: None,
-                    style,
-                    flags: 0,
-                    character,
-                }));
-            }
-            Some(end.min(len))
-        } else {
-            self.cells.resize(cols, blank.clone());
-            self.cells[..end].fill(blank.clone());
-            None
-        };
+        let len = self.cells.len().min(cols);
+        if self.cells.len() != cols {
+            self.cells.truncate(cols);
+            self.cells.resize(cols, *blank);
+        }
+        self.extras.clear();
         self.occupied = 0;
         self.clear_background = blank.style.background;
         self.wrapped = false;
-        self.has_extras = blank.extra.is_some();
         self.extra_units = 0;
-        deferred
+        end.min(len)
     }
 
     fn content_len(&self) -> usize {
+        let cells = self.cells();
         if self.wrapped {
-            return self.cells().len();
+            return cells.len();
         }
-        self.cells()
+        let text = cells
             .iter()
             .rposition(|cell| cell != &Cell::default())
-            .map_or(0, |index| index + 1)
+            .map_or(0, |index| index + 1);
+        // A default cell with metadata (a linked or underlined space) counts.
+        self.extras
+            .last()
+            .map_or(text, |(col, _)| text.max(col + 1).min(cells.len()))
     }
 }
 
@@ -124,7 +114,7 @@ struct SavedCursor {
     // Only the position is restored. Visibility, shape and blinking are
     // terminal-wide, as in xterm, so DECRC never changes them.
     cursor: Cursor,
-    pen: Cell,
+    pen: Pen,
     pending_wrap: bool,
     origin_mode: bool,
     autowrap: bool,
@@ -212,7 +202,7 @@ pub(super) struct Grid {
     #[cfg(test)]
     last_reflow_row_allocations: usize,
     pub(super) cursor: Cursor,
-    pub(super) pen: Cell,
+    pub(super) pen: Pen,
     pub(super) autowrap: bool,
     pub(super) origin_mode: bool,
     pub(super) insert_mode: bool,
@@ -311,7 +301,7 @@ impl Grid {
             #[cfg(test)]
             last_reflow_row_allocations: 0,
             cursor: Cursor::default(),
-            pen: Cell::default(),
+            pen: Pen::default(),
             autowrap: true,
             origin_mode: false,
             insert_mode: false,
@@ -386,7 +376,7 @@ impl Grid {
         self.row(row as i32 - self.display_offset() as i32)
     }
 
-    pub(super) fn row_cells(&self, line: i32) -> Option<&[Cell]> {
+    pub(super) fn row_line(&self, line: i32) -> Option<Line<'_>> {
         let row = self.row(line)?;
         if line < 0 && row.packed.is_some() {
             let index = self.history.len() - line.unsigned_abs() as usize;
@@ -394,14 +384,14 @@ impl Grid {
             self.history_read_end
                 .fetch_max(index + 1, Ordering::Relaxed);
         }
-        Some(row.cells())
+        Some(row.line())
     }
 
-    pub(super) fn visible_row_cells(&self, row: usize) -> Option<&[Cell]> {
+    pub(super) fn visible_row_line(&self, row: usize) -> Option<Line<'_>> {
         if row >= self.size.rows {
             return None;
         }
-        self.row_cells(row as i32 - self.display_offset() as i32)
+        self.row_line(row as i32 - self.display_offset() as i32)
     }
 
     pub(super) fn tracks_effects(&self) -> bool {
@@ -494,13 +484,13 @@ impl Grid {
         let mut end = col + 1;
         if row.cells[col].flags & Cell::WIDE_SPACER != 0 && col > 0 {
             start -= 1;
-            row.cells[start] = blank.clone();
+            row.blank_cell(start, *blank);
         }
         if row.cells[col].flags & Cell::WIDE != 0 && end < row.cells.len() {
-            row.cells[end] = blank.clone();
+            row.blank_cell(end, *blank);
             end += 1;
         }
-        row.cells[col] = blank.clone();
+        row.blank_cell(col, *blank);
         row.occupied = row.occupied.max(end);
         (start, end)
     }
@@ -677,11 +667,8 @@ impl Grid {
             } else {
                 end
             };
-            if active.has_extras {
-                active.cells[start..filled].fill(blank);
-            } else {
-                Cell::fill_plain(&mut active.cells[start..filled], ' ', blank.style);
-            }
+            Cell::fill_plain(&mut active.cells[start..filled], ' ', blank.style);
+            active.clear_extras(start..end);
             if end == active.cells.len() {
                 active.wrapped = false;
                 // Every cell from the erase start is now this blank, so the
@@ -795,11 +782,11 @@ impl Grid {
         let cols = self.size.cols;
         for row in &mut self.screen_mut().rows {
             row.discard_packed();
-            row.cells.resize(cols, fill.clone());
-            row.cells.fill(fill.clone());
+            row.cells.resize(cols, fill);
+            row.cells.fill(fill);
+            row.extras.clear();
             row.occupied = cols;
             row.wrapped = false;
-            row.has_extras = false;
         }
         // The text under any image is gone, as after ED 2.
         self.effect(GridEffect::Clear {
@@ -832,7 +819,7 @@ impl Grid {
             || (flags & Cell::LEADING_WIDE_SPACER != 0
                 && (!row.wrapped || col + 1 != row.cells.len()));
         if invalid {
-            row.cells[col] = blank.clone();
+            row.blank_cell(col, *blank);
         }
     }
 
@@ -868,7 +855,9 @@ impl Grid {
         }
         Self::clear_straddling_right_margin(active, right, &blank);
         active.cells[col..right].rotate_right(count);
-        active.cells[col..col + count].fill(blank.clone());
+        active.rotate_extras_right(col..right, count);
+        active.cells[col..col + count].fill(blank);
+        active.clear_extras(col..col + count);
         if right == cols {
             active.wrapped = false;
         }
@@ -907,7 +896,9 @@ impl Grid {
         }
         Self::clear_straddling_right_margin(active, right, &blank);
         active.cells[col..right].rotate_left(count);
-        active.cells[right - count..right].fill(blank.clone());
+        active.rotate_extras_left(col..right, count);
+        active.cells[right - count..right].fill(blank);
+        active.clear_extras(right - count..right);
         if right == cols {
             active.wrapped = false;
         }
@@ -1027,7 +1018,7 @@ impl Grid {
         // one and take everything else, including SGR 58, from the save.
         let link = self.pen.extra.take();
         let underline_color = saved.pen.underline_color();
-        self.pen = Cell {
+        self.pen = Pen {
             extra: link,
             ..saved.pen
         };
@@ -1165,7 +1156,7 @@ impl Grid {
             shape: cursor_shape,
             ..Cursor::default()
         };
-        self.pen = Cell::default();
+        self.pen = Pen::default();
         self.scroll_top = 0;
         self.scroll_bottom = self.size.rows;
         // A program that dies with DECLRMM set would otherwise turn every
@@ -1193,14 +1184,14 @@ impl Grid {
         self.pending_compaction = 0;
         self.display_offset = 0;
         self.cursor = Cursor::default();
-        self.pen = Cell::default();
+        self.pen = Pen::default();
         self.primary.saved = SavedCursor {
             autowrap: true,
             ..SavedCursor::default()
         };
         self.primary.cursor = self.cursor;
         for row in &mut self.primary.rows {
-            row.clear(self.size.cols, &self.pen);
+            row.clear(self.size.cols, &Cell::default());
         }
         self.tabs = Self::default_tabs(self.size.cols);
         self.scroll_top = 0;
@@ -1247,6 +1238,7 @@ impl Grid {
                 alternate.rows.truncate(size.rows);
                 for row in &mut alternate.rows {
                     row.cells.resize(size.cols, Cell::default());
+                    row.clear_extras(size.cols..usize::MAX);
                     row.wrapped = false;
                     Self::repair_wide(row, &Cell::default());
                 }

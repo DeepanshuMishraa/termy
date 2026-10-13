@@ -213,7 +213,7 @@ impl TermyEngine {
     pub fn line_text(&self, line: i32, trim_end: bool) -> Option<String> {
         self.engine
             .line(line)
-            .map(|cells| cells::line_text(cells, trim_end))
+            .map(|cells| cells::line_text(&cells, trim_end))
     }
 
     /// Text of columns `[start, end)` of a buffer line; wide characters are
@@ -228,7 +228,7 @@ impl TermyEngine {
         self.engine.line(line).map(|cells| {
             let end = (end as usize).min(cells.len());
             let start = (start as usize).min(end);
-            cells::line_text(&cells[start..end], trim_end)
+            cells::line_text(&cells.slice(start..end), trim_end)
         })
     }
 

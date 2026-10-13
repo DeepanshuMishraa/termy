@@ -212,7 +212,7 @@ mod engine {
         let mut whole = engine();
         whole.feed(bytes);
         let rows: Vec<_> = (0..3)
-            .map(|row| whole.viewport_row(row).unwrap().to_vec())
+            .map(|row| whole.viewport_row(row).unwrap().snapshot())
             .collect();
         let expected_replies = replies(&mut whole);
         for split in 0..=bytes.len() {
@@ -222,7 +222,7 @@ mod engine {
             assert_eq!(fragmented.cursor(), whole.cursor(), "split {split}");
             for (row, expected) in rows.iter().enumerate() {
                 assert_eq!(
-                    fragmented.viewport_row(row).unwrap(),
+                    &fragmented.viewport_row(row).unwrap().snapshot(),
                     expected,
                     "split {split}, row {row}"
                 );

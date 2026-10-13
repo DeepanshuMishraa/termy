@@ -596,8 +596,12 @@ impl State {
         for row in 0..usize::from(self.size.rows) {
             let wrapped = self.engine.viewport_row_wrapped(row);
             self.engine.with_viewport_row(row, &mut scratch, |source| {
-                for (col, cell) in source.iter().enumerate() {
-                    cells.push(render_cell(cell, wrapped && col + 1 == source.len()));
+                for col in 0..source.len() {
+                    cells.push(render_cell(
+                        &source,
+                        col,
+                        wrapped && col + 1 == source.len(),
+                    ));
                 }
             });
         }
@@ -1144,7 +1148,7 @@ impl CustomBackend {
                             continue;
                         }
                         let start = text.len();
-                        append_search_cell(&mut text, cell);
+                        append_search_cell(&mut text, cell, cells.combining(col));
                         mapping.record_cell(
                             &text,
                             start,
@@ -1293,15 +1297,18 @@ fn render_color(color: engine::Color, foreground: bool) -> TerminalRenderColor {
         TerminalRenderColor::DefaultBackground
     }
 }
-fn render_cell(cell: &engine::Cell, wrapped: bool) -> TerminalRenderCell {
+/// The cell of `line` at `col`, with its metadata.
+fn render_cell(line: &engine::Line<'_>, col: usize, wrapped: bool) -> TerminalRenderCell {
+    let cell = &line[col];
     let style = cell.style;
     let attr = style.attributes;
+    let underline_color = line.underline_color(col);
     TerminalRenderCell {
-        text: TerminalRenderText::from_cell_suffix(cell.character, Some(cell.combining())),
+        text: TerminalRenderText::from_cell_suffix(cell.character, Some(line.combining(col))),
         foreground: render_color(style.foreground, true),
         background: render_color(style.background, false),
-        underline_color: (cell.underline_color() != engine::Color::DEFAULT)
-            .then(|| render_color(cell.underline_color(), true)),
+        underline_color: (underline_color != engine::Color::DEFAULT)
+            .then(|| render_color(underline_color, true)),
         bold: attr & engine::Style::BOLD != 0,
         dim: attr & engine::Style::DIM != 0,
         italic: attr & engine::Style::ITALIC != 0,
@@ -1316,7 +1323,7 @@ fn render_cell(cell: &engine::Cell, wrapped: bool) -> TerminalRenderCell {
             engine::UnderlineStyle::Dotted => TerminalUnderlineStyle::Dotted,
             engine::UnderlineStyle::Dashed => TerminalUnderlineStyle::Dashed,
         },
-        hyperlink: cell.hyperlink().is_some(),
+        hyperlink: line.hyperlink(col).is_some(),
         wide_character_spacer: cell.flags & engine::Cell::WIDE_SPACER != 0,
         leading_wide_character_spacer: cell.flags & engine::Cell::LEADING_WIDE_SPACER != 0,
         line_wrapped: wrapped,
@@ -1346,7 +1353,7 @@ fn resolve_color(
         a: 255,
     }
 }
-fn append_search_cell(text: &mut String, cell: &engine::Cell) {
+fn append_search_cell(text: &mut String, cell: &engine::Cell, combining: &str) {
     if cell.flags & engine::Cell::WIDE_SPACER != 0 {
         return;
     }
@@ -1357,7 +1364,7 @@ fn append_search_cell(text: &mut String, cell: &engine::Cell) {
         text.push(' ');
     } else {
         text.push(cell.character);
-        text.push_str(cell.combining());
+        text.push_str(combining);
     }
 }
 // Legacy frame consumers replay only cell patches, so include the rows moved

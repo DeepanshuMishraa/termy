@@ -110,10 +110,10 @@ pub(crate) fn hyperlink_at_viewport_cell(
     // metadata for every visible cell on every mouse-hover lookup.
     let line = row as i32 - grid.display_offset() as i32;
     let row_cells = grid.line(line)?;
-    let target = row_cells[col].hyperlink()?;
+    let target = row_cells.hyperlink(col)?;
     let matches_target = |candidate_col: usize| {
-        row_cells[candidate_col]
-            .hyperlink()
+        row_cells
+            .hyperlink(candidate_col)
             .is_some_and(|other| other == target)
     };
 
@@ -157,12 +157,13 @@ pub(crate) fn link_at_viewport_cell(
     };
     let bounds = grid_line_bounds(grid)?;
 
-    if let Some(target) = grid.line(hovered.line)?[hovered.col].hyperlink() {
+    if let Some(target) = grid.line(hovered.line)?.hyperlink(hovered.col) {
         let target_uri = target.uri.clone();
         let mut start = hovered;
         while let Some(previous) = previous_wrapped_position(grid, start, bounds, columns) {
-            if grid.line(previous.line)?[previous.col]
-                .hyperlink()
+            if grid
+                .line(previous.line)?
+                .hyperlink(previous.col)
                 .is_some_and(|candidate| candidate == target)
             {
                 start = previous;
@@ -173,8 +174,9 @@ pub(crate) fn link_at_viewport_cell(
 
         let mut end = hovered;
         while let Some(next) = next_wrapped_position(grid, end, bounds, columns) {
-            if grid.line(next.line)?[next.col]
-                .hyperlink()
+            if grid
+                .line(next.line)?
+                .hyperlink(next.col)
                 .is_some_and(|candidate| candidate == target)
             {
                 end = next;
@@ -301,7 +303,7 @@ fn next_wrapped_position(
 fn grid_cell_char(grid: &Engine, position: GridPosition) -> char {
     let Some(cell) = grid
         .line(position.line)
-        .and_then(|row| row.get(position.col))
+        .and_then(|row| row.cells().get(position.col))
     else {
         return ' ';
     };
