@@ -74,6 +74,20 @@ impl Style {
             self.attributes &= !flags;
         }
     }
+
+    /// The style's ten bytes as two words, in memory order: equal styles
+    /// have equal words, so hot loops compare two words instead of fields.
+    #[inline(always)]
+    pub(crate) fn bits(self) -> (u64, u16) {
+        // SAFETY: `Style` is ten 1-byte fields (`UnderlineStyle` is
+        // `repr(u8)`), so it has no padding and every byte is initialized.
+        let [s0, s1, s2, s3, s4, s5, s6, s7, s8, s9] =
+            unsafe { std::mem::transmute::<Self, [u8; 10]>(self) };
+        (
+            u64::from_ne_bytes([s0, s1, s2, s3, s4, s5, s6, s7]),
+            u16::from_ne_bytes([s8, s9]),
+        )
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -145,16 +159,9 @@ impl PlainCell {
             // above). The words are assembled in registers: a cell built on
             // the stack and reread as words would make each template wait
             // for every store queued before it.
-            // SAFETY: `Style` is ten 1-byte fields (`UnderlineStyle` is
-            // `repr(u8)`), so it has no padding and every byte is initialized.
-            let [s0, s1, s2, s3, s4, s5, s6, s7, s8, s9] =
-                unsafe { std::mem::transmute::<Style, [u8; 10]>(style) };
+            let (head, [s8, s9]) = (style.bits().0, style.bits().1.to_ne_bytes());
             let [l0, l1] = flags.to_ne_bytes();
-            let words = [
-                0,
-                u64::from_ne_bytes([s0, s1, s2, s3, s4, s5, s6, s7]),
-                u64::from_ne_bytes([s8, s9, l0, l1, 0, 0, 0, 0]),
-            ];
+            let words = [0, head, u64::from_ne_bytes([s8, s9, l0, l1, 0, 0, 0, 0])];
             Self { words }
         }
         #[cfg(not(target_pointer_width = "64"))]

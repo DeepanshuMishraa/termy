@@ -1017,9 +1017,11 @@ impl CustomBackend {
         let mut scratch = Vec::new();
         for row in 0..usize::from(state.size.rows) {
             let wrapped = state.engine.viewport_row_wrapped(row);
-            state.engine.with_viewport_row(row, &mut scratch, |line| {
-                legacy.extend(&mut cells, line, wrapped);
-            });
+            state
+                .engine
+                .with_viewport_row_blanks(row, &mut scratch, |line, blanks, background| {
+                    legacy.extend_row(&mut cells, line, wrapped, blanks, background);
+                });
         }
         TermyFrame {
             cols: state.size.cols,
@@ -1055,17 +1057,25 @@ impl CustomBackend {
         let mut scratch = Vec::new();
         for span in spans {
             let wrapped = state.engine.viewport_row_wrapped(span.row);
-            state
-                .engine
-                .with_viewport_row(span.row, &mut scratch, |line| {
+            state.engine.with_viewport_row_blanks(
+                span.row,
+                &mut scratch,
+                |line, blanks, background| {
                     let right = span.right_col.min(line.len() - 1);
                     if span.left_col > right {
                         return;
                     }
                     // Only the row's last cell carries its wrap flag.
                     let wraps = wrapped && right + 1 == line.len();
-                    legacy.extend(&mut cells, &line[span.left_col..=right], wraps);
-                });
+                    legacy.extend_row(
+                        &mut cells,
+                        &line[span.left_col..=right],
+                        wraps,
+                        blanks.saturating_sub(span.left_col),
+                        background,
+                    );
+                },
+            );
         }
         TermyFrameUpdate {
             cols: state.size.cols,
@@ -1364,7 +1374,13 @@ fn expand_legacy_scroll_damage(update: &mut TerminalRenderDamageSnapshot, cols: 
 }
 
 fn normalize_spans(spans: &mut Vec<TerminalDirtySpan>) {
-    spans.sort_unstable_by_key(|span| (span.row, span.left_col));
+    // Spans arrive as a few sorted runs (rows, then scrolled rows or cursor
+    // cells), which the stable sort merges in linear time. Equal keys merge
+    // to the same span in either order.
+    let key = |span: &TerminalDirtySpan| (span.row, span.left_col);
+    if !spans.is_sorted_by_key(key) {
+        spans.sort_by_key(key);
+    }
     let mut len = 0;
     for index in 0..spans.len() {
         let span = spans[index];

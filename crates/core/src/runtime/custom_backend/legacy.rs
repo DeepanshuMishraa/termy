@@ -10,6 +10,10 @@ pub(super) struct LegacyCells<'a> {
     palette: &'a TerminalPalette,
     fallback: TerminalQueryColors,
     style: Option<(engine::Style, Template)>,
+    // Erase blanks on `blank_background`, copied for each row's blank
+    // suffix; see `extend_row`.
+    blank_row: Vec<TermyCell>,
+    blank_background: engine::Color,
 }
 
 impl<'a> LegacyCells<'a> {
@@ -18,6 +22,8 @@ impl<'a> LegacyCells<'a> {
             palette,
             fallback,
             style: None,
+            blank_row: Vec::new(),
+            blank_background: engine::Color::DEFAULT,
         }
     }
 
@@ -28,43 +34,81 @@ impl<'a> LegacyCells<'a> {
         line: &[engine::Cell],
         wrapped: bool,
     ) {
-        let Some(first) = line.first() else {
+        if line.is_empty() {
             return;
-        };
-        // Work on a local copy of the cached style, so the loop keeps it in
-        // registers instead of reloading it around every stored cell.
-        let (mut key, mut template) = match self.style {
-            Some((key, template)) if key == first.style => (key, template),
-            _ => (first.style, self.template(first.style)),
-        };
+        }
         cells.reserve(line.len());
         let start = cells.len();
         // Writing into the reserved tail, rather than pushing, keeps the
         // vector's length and capacity out of the per-cell loop.
-        for (slot, cell) in cells.spare_capacity_mut().iter_mut().zip(line) {
-            if cell.style != key {
-                key = cell.style;
-                template = self.template(key);
-            }
-            let spacer =
-                cell.flags & (engine::Cell::WIDE_SPACER | engine::Cell::LEADING_WIDE_SPACER) != 0;
-            let character = cell.character;
-            // `render_text` is false for hidden text.
-            let control = character < ' ' || ('\u{7f}'..='\u{9f}').contains(&character);
-            template.store(
-                slot,
-                character,
-                template.render_text && !spacer && !control,
-                spacer,
-            );
+        let slots = &mut cells.spare_capacity_mut()[..line.len()];
+        let mut done = 0;
+        while let Some(cell) = line.get(done) {
+            let style = cell.style;
+            let template = match self.style {
+                Some((key, template)) if key == style => template,
+                _ => {
+                    let template = self.template(style);
+                    self.style = Some((style, template));
+                    template
+                }
+            };
+            // The run's first cell has its style, so every pass stores one.
+            done += template.store_run(&mut slots[done..], &line[done..], style.bits());
         }
         // SAFETY: `reserve` made room for `line.len()` cells after `start`,
-        // and the loop above initialized every one of them.
+        // and the runs above initialized every one of them.
         unsafe { cells.set_len(start + line.len()) };
-        self.style = Some((key, template));
         if wrapped && let Some(last) = cells.last_mut() {
             last.line_wrapped = true;
         }
+    }
+
+    /// [`Self::extend`] for a row read with `Engine::with_viewport_row_blanks`:
+    /// the cells of `line` from `blanks` on are erase blanks on `background`,
+    /// so they are stored from one template without being read.
+    pub(super) fn extend_row(
+        &mut self,
+        cells: &mut Vec<TermyCell>,
+        line: &[engine::Cell],
+        wrapped: bool,
+        blanks: usize,
+        background: engine::Color,
+    ) {
+        let blanks = blanks.min(line.len());
+        self.extend(cells, &line[..blanks], false);
+        let count = line.len() - blanks;
+        if count != 0 {
+            // Every row's blanks are the same frame cell: copied from one
+            // row of them, they cost a copy instead of a conversion each.
+            if self.blank_background != background || self.blank_row.len() < count {
+                self.fill_blank_row(background, count);
+            }
+            cells.extend_from_slice(&self.blank_row[..count]);
+        }
+        if wrapped
+            && !line.is_empty()
+            && let Some(last) = cells.last_mut()
+        {
+            last.line_wrapped = true;
+        }
+    }
+
+    #[inline(never)]
+    fn fill_blank_row(&mut self, background: engine::Color, count: usize) {
+        let blank = engine::Cell {
+            style: engine::Style {
+                background,
+                ..engine::Style::default()
+            },
+            ..engine::Cell::default()
+        };
+        self.blank_row.clear();
+        self.blank_row.resize(
+            count,
+            legacy_cell(&blank, false, self.palette, self.fallback),
+        );
+        self.blank_background = background;
     }
 
     /// The frame cell fields `style` determines, for a printable character.
@@ -129,6 +173,36 @@ impl Template {
             high: u32::from_ne_bytes([h0, h1, h2, h3]),
             render_text: cell.render_text,
         }
+    }
+
+    /// Store the leading cells of `line` whose style has `key` bits into
+    /// `slots`, returning how many. Out of line, so the template and key
+    /// stay in registers across the loop.
+    #[inline(never)]
+    fn store_run(
+        self,
+        slots: &mut [MaybeUninit<TermyCell>],
+        line: &[engine::Cell],
+        key: (u64, u16),
+    ) -> usize {
+        for (index, (slot, cell)) in slots.iter_mut().zip(line).enumerate() {
+            if cell.style.bits() != key {
+                return index;
+            }
+            let spacer =
+                cell.flags & (engine::Cell::WIDE_SPACER | engine::Cell::LEADING_WIDE_SPACER) != 0;
+            // C0 and C1 controls don't render, nor does hidden text (whose
+            // template has `render_text` clear).
+            let code = u32::from(cell.character);
+            let control = code < 0x20 || code.wrapping_sub(0x7f) <= 0x9f - 0x7f;
+            self.store(
+                slot,
+                cell.character,
+                self.render_text && !spacer && !control,
+                spacer,
+            );
+        }
+        slots.len().min(line.len())
     }
 
     #[inline(always)]

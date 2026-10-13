@@ -1,6 +1,7 @@
 //! Streaming graphemes and the ASCII output fast path.
 use super::super::parser::complete_utf8;
 use super::super::types::MAX_COMBINING_BYTES;
+use super::super::types::PlainCell;
 use super::{Cell, Grid};
 use std::sync::Arc;
 use unicode_segmentation::UnicodeSegmentation;
@@ -119,15 +120,65 @@ fn always_extends(c: char) -> bool {
 /// resolves first (CJK ideographs, extension A, Hangul syllables).
 #[inline(always)]
 fn wide_cjk(lead: u8, second: u8, third: u8) -> Option<char> {
-    if lead & 0xf0 != 0xe0 || second & 0xc0 != 0x80 || third & 0xc0 != 0x80 {
+    wide_cjk_word(u32::from_le_bytes([lead, second, third, 0]))
+}
+
+/// `wide_cjk` of the low three bytes of `word`, read little-endian; the
+/// high byte is ignored.
+#[inline(always)]
+fn wide_cjk_word(word: u32) -> Option<char> {
+    // The lead and continuation bit patterns are checked at once:
+    // 1110xxxx 10xxxxxx 10xxxxxx.
+    if word & 0x00c0_c0f0 != 0x0080_80e0 {
         return None;
     }
-    let value =
-        (u32::from(lead & 0x0f) << 12) | (u32::from(second & 0x3f) << 6) | u32::from(third & 0x3f);
+    let value = (word & 0x0f) << 12 | (word & 0x3f00) >> 2 | (word >> 16) & 0x3f;
     // Values from 0x800 can't be overlong, and these blocks hold no
-    // surrogates, so each is a scalar encoded canonically.
-    matches!(value, 0x3400..=0x4dbf | 0x4e00..=0x9fff | 0xac00..=0xd7a3)
-        .then(|| char::from_u32(value).expect("CJK scalar"))
+    // surrogates, so each is a scalar encoded canonically. Ideographs come
+    // first: they are most of this text.
+    (matches!(value, 0x4e00..=0x9fff) || matches!(value, 0x3400..=0x4dbf | 0xac00..=0xd7a3))
+        // SAFETY: every value in these blocks is a Unicode scalar value.
+        .then(|| unsafe { char::from_u32_unchecked(value) })
+}
+
+/// Store the leading run of `bytes` that `wide_cjk` accepts as wide cells
+/// from `col`, stopping before the last cell of `cells` (where `put_cell`
+/// handles the margin) and before overwriting half of a wide glyph (cells
+/// from `occupied` on are erase blanks). Returns the column and byte count
+/// reached and the last scalar written. Out of line, so its loop keeps the
+/// cell templates in registers rather than reloading them per glyph.
+#[inline(never)]
+fn write_wide_cjk(
+    cells: &mut [Cell],
+    col: usize,
+    occupied: usize,
+    bytes: &[u8],
+    wide: PlainCell,
+    spacer: PlainCell,
+) -> (usize, usize, Option<char>) {
+    // Whole pairs that end before the last cell, and whole scalars: with
+    // the trip count fixed up front, the loop indexes nothing.
+    let room = cells.len().saturating_sub(col + 1) / 2;
+    let (pairs, _) = cells[col..].as_chunks_mut::<2>();
+    let (scalars, _) = bytes.as_chunks::<3>();
+    let count = room.min(scalars.len());
+    let mut written = 0;
+    let mut last = None;
+    for ([glyph, right_half], &[lead, second, third]) in
+        pairs[..count].iter_mut().zip(&scalars[..count])
+    {
+        let Some(character) = wide_cjk(lead, second, third) else {
+            break;
+        };
+        if col + 2 * written < occupied && (glyph.flags | right_half.flags) != 0 {
+            break;
+        }
+        wide.store(glyph, character);
+        spacer.store(right_half, ' ');
+        last = Some(character);
+        written += 1;
+    }
+    (col + 2 * written, 3 * written, last)
 }
 
 impl Grid {
@@ -458,6 +509,9 @@ impl Grid {
         let plain = Cell::plain(style, 0);
         let wide = Cell::plain(style, Cell::WIDE);
         let spacer = Cell::plain(style, Cell::WIDE_SPACER);
+        // Every store is left of the limit: bounding the cells by it lets
+        // the loops index them without further checks.
+        let cells = &mut active.cells[..right];
         let mut col = start;
         let mut consumed = 0;
         let mut last = None;
@@ -467,52 +521,39 @@ impl Grid {
             // decode and classification. Anything else, including a cell
             // that needs wide-glyph repair, is left to the general path.
             if byte & 0xf0 == 0xe0 {
-                let before = consumed;
-                while col + 2 < right
-                    && let Some(&[lead, second, third]) = bytes.get(consumed..consumed + 3)
-                    && let Some(character) = wide_cjk(lead, second, third)
-                    && (col >= occupied
-                        || active.cells[col..col + 2]
-                            .iter()
-                            .all(|cell| cell.flags == 0))
-                {
-                    wide.store(&mut active.cells[col], character);
-                    spacer.store(&mut active.cells[col + 1], ' ');
-                    last = Some(character);
-                    col += 2;
-                    consumed += 3;
-                }
-                if consumed != before {
+                let (end, len, run_last) =
+                    write_wide_cjk(cells, col, occupied, &bytes[consumed..], wide, spacer);
+                if len != 0 {
+                    (col, last) = (end, run_last);
+                    consumed += len;
                     continue;
                 }
             }
-            let (character, len) = if (0x20..=0x7e).contains(&byte) {
-                (char::from(byte), 1)
+            // Printable ASCII is narrow and ordinary; anything else is
+            // looked up.
+            let (character, len, width, ordinary) = if (0x20..=0x7e).contains(&byte) {
+                (char::from(byte), 1, 1, true)
             } else {
-                match complete_utf8(&bytes[consumed..]) {
-                    Some(scalar) => scalar,
-                    None => break,
-                }
+                let Some((character, len)) = complete_utf8(&bytes[consumed..]) else {
+                    break;
+                };
+                let (width, ordinary) = scalar_properties(character);
+                (character, len, width, ordinary)
             };
-            let (width, ordinary) = scalar_properties(character);
             // Reaching the limit sets a pending wrap (or wraps a wide glyph);
             // `put_cell` owns that.
             if !ordinary || col + width >= right {
                 break;
             }
             // Overwriting either half of a wide glyph needs its repair.
-            if col < occupied
-                && active.cells[col..col + width]
-                    .iter()
-                    .any(|cell| cell.flags != 0)
-            {
+            if col < occupied && cells[col..col + width].iter().any(|cell| cell.flags != 0) {
                 break;
             }
             if width == 2 {
-                wide.store(&mut active.cells[col], character);
-                spacer.store(&mut active.cells[col + 1], ' ');
+                wide.store(&mut cells[col], character);
+                spacer.store(&mut cells[col + 1], ' ');
             } else {
-                plain.store(&mut active.cells[col], character);
+                plain.store(&mut cells[col], character);
             }
             col += width;
             consumed += len;

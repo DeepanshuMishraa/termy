@@ -296,6 +296,23 @@ impl Row {
         }
     }
 
+    /// Where this row's erase blanks start, and their background: every
+    /// cell from that column on is a blank on that background. Packed rows
+    /// report none.
+    pub(in crate::terminal_engine) fn blank_suffix(&self) -> (usize, Color) {
+        if self.packed.is_some() {
+            return (usize::MAX, self.clear_background);
+        }
+        let start = self.occupied.min(self.cells.len());
+        debug_assert!(
+            self.cells[start..]
+                .iter()
+                .all(|cell| *cell == super::Grid::blank_on(self.clear_background)),
+            "cells past `occupied` are not erase blanks"
+        );
+        (start, self.clear_background)
+    }
+
     pub(in crate::terminal_engine) fn cells(&self) -> &[Cell] {
         if let Some(packed) = &self.packed {
             packed.decoded.get_or_init(|| {
