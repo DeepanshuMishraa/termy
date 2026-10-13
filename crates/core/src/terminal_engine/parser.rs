@@ -324,6 +324,12 @@ impl Parser {
                 if bytes[offset] < 0x20 && bytes[offset] != 0x1b {
                     handler.execute(bytes[offset]);
                     offset += 1;
+                    // A line ending's line feed executes here, as the next
+                    // pass would: a carriage return requests no pause.
+                    if bytes[offset - 1] == b'\r' && bytes.get(offset) == Some(&b'\n') {
+                        handler.execute(b'\n');
+                        offset += 1;
+                    }
                     if PAUSABLE && handler.pause_requested() {
                         break;
                     }

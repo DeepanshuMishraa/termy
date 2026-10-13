@@ -705,3 +705,39 @@ fn complete_utf8_matches_std_for_every_two_and_three_byte_sequence() {
         }
     }
 }
+
+// Line endings execute their line feed together with the carriage return
+// when both are in one chunk; parsed whole or a byte at a time, text with
+// line endings, lone controls and escapes yields the same events.
+#[test]
+fn line_endings_parse_alike_whole_and_bytewise() {
+    let pieces: [&[u8]; 8] = [
+        b"\r\n",
+        b"\r",
+        b"\n",
+        b"ab",
+        b"\x1b[2J",
+        b"\t",
+        "é".as_bytes(),
+        b"\r\r\n",
+    ];
+    let mut seed = 0x9e37_79b9_u32;
+    let mut next = |bound: usize| {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        seed as usize % bound
+    };
+    for _ in 0..500 {
+        let mut bytes = Vec::new();
+        for _ in 0..next(12) {
+            bytes.extend_from_slice(pieces[next(pieces.len())]);
+        }
+        let mut bytewise = Recorder::default();
+        let mut parser = Parser::default();
+        for byte in &bytes {
+            parser.advance(&mut bytewise, std::slice::from_ref(byte));
+        }
+        assert_eq!(parse(&bytes), bytewise.events, "{bytes:02x?}");
+    }
+}
