@@ -223,6 +223,21 @@ mod tests {
                         text.extend_from_slice(&[0xe4, 0xb8][..1 + next(2) as usize]);
                         continue;
                     }
+                    // A jump back over text written earlier, so later text
+                    // overwrites halves of its wide glyphs; and spaces.
+                    6 => {
+                        let jump = format!("\x1b[{};{}H", 1 + next(6), 1 + next(37));
+                        text.extend_from_slice(jump.as_bytes());
+                        continue;
+                    }
+                    7 => ' ',
+                    // ASCII words.
+                    8 => {
+                        for _ in 0..2 + next(5) {
+                            text.push(b'a' + next(26) as u8);
+                        }
+                        continue;
+                    }
                     _ => char::from_u32(0x4e00 + next(0x5200)).unwrap(),
                 };
                 let mut buffer = [0; 4];

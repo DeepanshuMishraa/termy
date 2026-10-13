@@ -550,13 +550,17 @@ impl Grid {
         // end, rather than carried through the loops.
         let mut last = 0;
         while let Some(&byte) = bytes.get(consumed) {
-            // CJK ideographs and Hangul syllables are three-byte scalars that
-            // are all wide ordinary bases, which skip the general decode and
-            // classification. A run of four or more is stored out of line,
-            // mostly four at a time; a shorter one, here. Anything else,
-            // including a cell that needs wide-glyph repair, is left to the
-            // general path.
-            let cjk = if byte & 0xf0 == 0xe0 {
+            // The most common scalars skip the general decode and
+            // classification below: CJK ideographs and Hangul syllables
+            // (three-byte, wide), the common two-byte scripts' letters and
+            // printable ASCII (narrow), all ordinary bases. Each fast path
+            // stores only where the general path would neither break nor
+            // repair a wide glyph, and leaves anything else to it. Taking the
+            // cells up to one past the scalar's checks the right limit (the
+            // general path breaks at it) and bounds the stores at once.
+            if byte & 0xf0 == 0xe0 {
+                // A run of four or more is stored out of line, mostly four at
+                // a time.
                 if bytes
                     .get(consumed + 9)
                     .is_some_and(|lead| lead & 0xf0 == 0xe0)
@@ -569,23 +573,29 @@ impl Grid {
                         continue;
                     }
                 }
-                match bytes.get(consumed..consumed + 3) {
-                    Some(&[lead, second, third]) => wide_cjk(lead, second, third),
-                    _ => None,
+                if let Some(&[lead, second, third]) =
+                    bytes.get(consumed..).and_then(<[u8]>::first_chunk)
+                    && let Some(character) = wide_cjk(lead, second, third)
+                    && let Some([glyph, half, _]) = cells.get_mut(col..col + 3)
+                    && (col >= occupied || glyph.flags | half.flags == 0)
+                {
+                    wide.store(glyph, character);
+                    spacer.store(half, ' ');
+                    col += 2;
+                    last = consumed;
+                    consumed += 3;
+                    continue;
                 }
-            } else {
-                None
-            };
-            // So are the common two-byte scripts' letters: narrow ordinary
-            // bases, which a run of them stores one after another here.
-            if byte & 0xe0 == 0xc0 {
+            } else if byte & 0xe0 == 0xc0 {
+                // Their words are runs of letters, stored by a loop.
                 let from = col;
-                while col + 1 < right
-                    && (col >= occupied || cells[col].flags == 0)
-                    && let Some(&[lead, second]) = bytes.get(consumed..consumed + 2)
+                while let Some([cell, _]) = cells.get_mut(col..col + 2)
+                    && (col >= occupied || cell.flags == 0)
+                    && let Some(&[lead, second]) =
+                        bytes.get(consumed..).and_then(<[u8]>::first_chunk)
                     && let Some(character) = narrow_two_byte(lead, second)
                 {
-                    plain.store(&mut cells[col], character);
+                    plain.store(cell, character);
                     col += 1;
                     last = consumed;
                     consumed += 2;
@@ -593,13 +603,31 @@ impl Grid {
                 if col != from {
                     continue;
                 }
+            } else if (0x20..=0x7e).contains(&byte)
+                && let Some([cell, _]) = cells.get_mut(col..col + 2)
+                && (col >= occupied || cell.flags == 0)
+            {
+                // Spaces between words come one at a time, other ASCII text
+                // in runs: the rest of a run is stored by a loop.
+                plain.store(cell, char::from(byte));
+                col += 1;
+                last = consumed;
+                consumed += 1;
+                while let Some(&byte @ 0x20..=0x7e) = bytes.get(consumed)
+                    && let Some([cell, _]) = cells.get_mut(col..col + 2)
+                    && (col >= occupied || cell.flags == 0)
+                {
+                    plain.store(cell, char::from(byte));
+                    col += 1;
+                    last = consumed;
+                    consumed += 1;
+                }
+                continue;
             }
             // Printable ASCII and the common two-byte scripts are narrow and
             // ordinary, and other ASCII is a control, which ends the run;
             // anything else is looked up.
-            let (character, len, width, ordinary) = if let Some(character) = cjk {
-                (character, 3, 2, true)
-            } else if (0x20..=0x7e).contains(&byte) {
+            let (character, len, width, ordinary) = if (0x20..=0x7e).contains(&byte) {
                 (char::from(byte), 1, 1, true)
             } else if byte < 0x80 {
                 break;
