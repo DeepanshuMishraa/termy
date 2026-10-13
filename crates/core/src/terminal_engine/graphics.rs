@@ -107,6 +107,21 @@ impl State {
     }
 
     pub(super) fn flush_graphics_effects(&mut self) {
+        // Every feed flushes. With nothing placed or pending, the grid records
+        // no effects and no text edit or scroll can change graphics; only the
+        // view is kept current, as the full path below does.
+        if !self.grid.tracks_effects() && !self.graphics.state.needs_grid_effects() {
+            let size = self.grid.size();
+            self.graphics.last_view = Some((
+                self.alternate_screen,
+                self.grid.history_size(),
+                self.grid.display_offset(),
+                size.rows,
+                size.cols,
+            ));
+            self.grid.take_visual_dirty();
+            return;
+        }
         self.grid.drain_effects(&mut self.graphics.effects);
         let mut changed = false;
         for effect in self.graphics.effects.drain(..) {

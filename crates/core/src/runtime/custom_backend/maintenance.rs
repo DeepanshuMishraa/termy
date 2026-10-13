@@ -2,8 +2,19 @@
 use super::*;
 
 impl Shared {
-    pub(super) fn schedule_maintenance(self: &Arc<Self>, state: &State) {
+    /// Hand the timer the state's deadline, if it changed. Called under the
+    /// engine lock after every feed, so the unchanged case stays inline.
+    #[inline]
+    pub(super) fn schedule_maintenance(self: &Arc<Self>, state: &mut State) {
         let deadline = state.maintenance_deadline();
+        if state.published_maintenance != Some(deadline) {
+            state.published_maintenance = Some(deadline);
+            self.publish_maintenance(deadline);
+        }
+    }
+
+    #[inline(never)]
+    fn publish_maintenance(self: &Arc<Self>, deadline: Option<Instant>) {
         let mut signal = self
             .sync_signal
             .state
@@ -57,7 +68,13 @@ impl Shared {
                             return;
                         };
                         let mut state = shared.state();
+                        // The timer just dropped its deadline, so the next
+                        // schedule must hand it one even if it is unchanged.
+                        state.published_maintenance = None;
                         if state.maintenance_deadline() != Some(deadline) {
+                            // A feed changed the deadline after the timer took
+                            // this one; give the timer the new one.
+                            shared.schedule_maintenance(&mut state);
                             break;
                         }
                         let now = Instant::now();
@@ -92,7 +109,7 @@ impl Shared {
                             state.generation = state.generation.wrapping_add(1);
                         }
                         let tab_chrome_changed = committed && state.take_tab_chrome_changed();
-                        shared.schedule_maintenance(&state);
+                        shared.schedule_maintenance(&mut state);
                         if !replies.is_empty() {
                             match shared.live_transport() {
                                 Some(transport) => {

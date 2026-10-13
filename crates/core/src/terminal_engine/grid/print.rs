@@ -1,4 +1,5 @@
 //! Streaming graphemes and the ASCII output fast path.
+use super::super::parser::complete_utf8;
 use super::super::types::MAX_COMBINING_BYTES;
 use super::{Cell, Grid};
 use std::sync::Arc;
@@ -112,6 +113,21 @@ fn always_extends(c: char) -> bool {
         .graphemes(true)
         .nth(1)
         .is_none()
+}
+
+/// A three-byte UTF-8 scalar in the wide ordinary blocks `scalar_properties`
+/// resolves first (CJK ideographs, extension A, Hangul syllables).
+#[inline(always)]
+fn wide_cjk(lead: u8, second: u8, third: u8) -> Option<char> {
+    if lead & 0xf0 != 0xe0 || second & 0xc0 != 0x80 || third & 0xc0 != 0x80 {
+        return None;
+    }
+    let value =
+        (u32::from(lead & 0x0f) << 12) | (u32::from(second & 0x3f) << 6) | u32::from(third & 0x3f);
+    // Values from 0x800 can't be overlong, and these blocks hold no
+    // surrogates, so each is a scalar encoded canonically.
+    matches!(value, 0x3400..=0x4dbf | 0x4e00..=0x9fff | 0xac00..=0xd7a3)
+        .then(|| char::from_u32(value).expect("CJK scalar"))
 }
 
 impl Grid {
@@ -412,21 +428,131 @@ impl Grid {
         }
     }
 
+    /// Write the leading ordinary bases of UTF-8 `bytes` (complete scalars
+    /// and printable ASCII) that fit before the right limit, returning the
+    /// bytes consumed and the last scalar written. The result equals
+    /// `put_char` per scalar: two ordinary bases never form one grapheme, and
+    /// a run stops before any wrap, insert, metadata or wide-cell repair that
+    /// `put_cell` would do, leaving that scalar to the caller.
+    pub(in crate::terminal_engine) fn write_utf8_run(
+        &mut self,
+        bytes: &[u8],
+    ) -> (usize, Option<char>) {
+        // An open grapheme that isn't ordinary may absorb the next scalar.
+        if self.pending_wrap
+            || self.insert_mode
+            || self.pen.extra.is_some()
+            || (self.grapheme_open && !self.grapheme_ordinary)
+        {
+            return (0, None);
+        }
+        let row = self.cursor.row;
+        let start = self.cursor.col;
+        let right = self.right_limit();
+        let style = self.pen.style;
+        let active = &mut self.screen_mut().rows[row];
+        if active.has_extras {
+            return (0, None);
+        }
+        let occupied = active.occupied;
+        let plain = Cell::plain(style, 0);
+        let wide = Cell::plain(style, Cell::WIDE);
+        let spacer = Cell::plain(style, Cell::WIDE_SPACER);
+        let mut col = start;
+        let mut consumed = 0;
+        let mut last = None;
+        while let Some(&byte) = bytes.get(consumed) {
+            // CJK ideographs and Hangul syllables are three-byte scalars that
+            // are all wide ordinary bases: a run of them skips the general
+            // decode and classification. Anything else, including a cell
+            // that needs wide-glyph repair, is left to the general path.
+            if byte & 0xf0 == 0xe0 {
+                let before = consumed;
+                while col + 2 < right
+                    && let Some(&[lead, second, third]) = bytes.get(consumed..consumed + 3)
+                    && let Some(character) = wide_cjk(lead, second, third)
+                    && (col >= occupied
+                        || active.cells[col..col + 2]
+                            .iter()
+                            .all(|cell| cell.flags == 0))
+                {
+                    wide.store(&mut active.cells[col], character);
+                    spacer.store(&mut active.cells[col + 1], ' ');
+                    last = Some(character);
+                    col += 2;
+                    consumed += 3;
+                }
+                if consumed != before {
+                    continue;
+                }
+            }
+            let (character, len) = if (0x20..=0x7e).contains(&byte) {
+                (char::from(byte), 1)
+            } else {
+                match complete_utf8(&bytes[consumed..]) {
+                    Some(scalar) => scalar,
+                    None => break,
+                }
+            };
+            let (width, ordinary) = scalar_properties(character);
+            // Reaching the limit sets a pending wrap (or wraps a wide glyph);
+            // `put_cell` owns that.
+            if !ordinary || col + width >= right {
+                break;
+            }
+            // Overwriting either half of a wide glyph needs its repair.
+            if col < occupied
+                && active.cells[col..col + width]
+                    .iter()
+                    .any(|cell| cell.flags != 0)
+            {
+                break;
+            }
+            if width == 2 {
+                wide.store(&mut active.cells[col], character);
+                spacer.store(&mut active.cells[col + 1], ' ');
+            } else {
+                plain.store(&mut active.cells[col], character);
+            }
+            col += width;
+            consumed += len;
+            last = Some(character);
+        }
+        if consumed == 0 {
+            return (0, None);
+        }
+        active.occupied = occupied.max(col);
+        // As in `write_ascii`: a pending row is blanked around the text.
+        if let Some(pending) = self.take_pending_clear(row) {
+            self.fill_pending_clear(pending, start, col);
+        }
+        self.observe_output();
+        self.cursor.col = col;
+        self.grapheme_open = true;
+        self.grapheme_ordinary = true;
+        self.grapheme_at_margin = false;
+        self.mark(row, start, (col + 1).min(self.size.cols));
+        (consumed, last)
+    }
+
     /// Ordinary ASCII uses one bounds/damage update per row-local run.
     #[inline]
     pub(in crate::terminal_engine) fn write_ascii(&mut self, mut text: &[u8]) {
         debug_assert!(text.iter().all(|byte| (0x20..=0x7e).contains(byte)));
         // A prepend character can absorb the first ASCII scalar. Ordinary
         // ASCII runs still take the row-local fast path.
-        if !self.grapheme_ordinary
-            && let Some(&first) = text.first()
-            && self.extend_grapheme(char::from(first))
-        {
-            text = &text[1..];
+        if !self.grapheme_ordinary {
+            self.flush_pending_clear();
+            if let Some(&first) = text.first()
+                && self.extend_grapheme(char::from(first))
+            {
+                text = &text[1..];
+            }
         }
         while !text.is_empty() {
             self.observe_output();
             if self.pending_wrap || self.insert_mode {
+                self.flush_pending_clear();
                 self.put_char(char::from(text[0]));
                 text = &text[1..];
                 continue;
@@ -442,16 +568,20 @@ impl Grid {
             let count = text.len().min(right - col);
             // Wide-cell repair is uncommon, and the scalar path handles both
             // ends of an overwritten glyph without a second general scan.
-            if self.screen().rows[row].cells[col..col + count]
-                .iter()
-                .any(|cell| cell.flags != 0)
-            {
+            // Cells past `occupied` are erase blanks, so a fresh row skips it.
+            let written = &self.screen().rows[row];
+            let scanned = col..(col + count).min(written.occupied).max(col);
+            if written.cells[scanned].iter().any(|cell| cell.flags != 0) {
+                self.flush_pending_clear();
                 for &byte in &text[..count] {
                     self.put_char(char::from(byte));
                 }
                 text = &text[count..];
                 continue;
             }
+            // A row scrolled in by the last line feed is blanked only around
+            // this text; its cells hold no metadata, so the plain writes hold.
+            let pending = self.take_pending_clear(row);
             let style = self.pen.style;
             let extra = self.pen.extra.clone();
             let active = &mut self.screen_mut().rows[row];
@@ -467,6 +597,8 @@ impl Grid {
                         extra: Some(Arc::clone(&extra)),
                     };
                 }
+            } else if !active.has_extras {
+                Cell::write_plain_ascii(&mut active.cells[col..col + count], text, style);
             } else {
                 for (cell, &byte) in cells {
                     *cell = Cell {
@@ -478,6 +610,9 @@ impl Grid {
                 }
             }
             active.occupied = active.occupied.max(col + count);
+            if let Some(pending) = pending {
+                self.fill_pending_clear(pending, col, col + count);
+            }
             self.cursor.col += count;
             let at_margin = self.cursor.col == right;
             if at_margin {
@@ -539,6 +674,28 @@ mod tests {
                     mark as u32,
                     *base as u32
                 );
+            }
+        }
+    }
+
+    // The CJK run loop must accept exactly the three-byte scalars the general
+    // path writes as wide ordinary bases.
+    #[test]
+    fn wide_cjk_matches_the_general_decode_and_classification() {
+        for lead in 0xe0..=0xefu8 {
+            for second in 0..=0xffu8 {
+                for third in 0..=0xffu8 {
+                    let bytes = [lead, second, third];
+                    let general = complete_utf8(&bytes)
+                        .filter(|&(character, _)| scalar_properties(character) == (2, true))
+                        .map(|(character, _)| character);
+                    let fast = wide_cjk(lead, second, third);
+                    if fast.is_some() {
+                        assert_eq!(fast, general, "{bytes:02x?}");
+                    }
+                    let block = |c: char| matches!(c, '\u{3400}'..='\u{4dbf}' | '\u{4e00}'..='\u{9fff}' | '\u{ac00}'..='\u{d7a3}');
+                    assert_eq!(fast, general.filter(|&c| block(c)), "{bytes:02x?}");
+                }
             }
         }
     }

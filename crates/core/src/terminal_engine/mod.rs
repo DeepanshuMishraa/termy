@@ -192,6 +192,8 @@ impl Engine {
                 let end = offset.saturating_add(PARSE_CHUNK).min(bytes.len());
                 self.state.set_defer_uploads(defer_uploads);
                 let consumed = self.parser.advance(&mut self.state, &bytes[offset..end]);
+                // Nothing outside parsing may see a partly blanked row.
+                self.state.grid.flush_pending_clear();
                 self.state.set_defer_uploads(false);
                 offset += consumed;
                 self.state.flush_graphics_effects();
@@ -225,6 +227,7 @@ impl Engine {
         };
         for chunk in bytes.chunks(PARSE_CHUNK) {
             self.parser.advance_uninterrupted(&mut self.state, chunk);
+            self.state.grid.flush_pending_clear();
             self.state.flush_graphics_effects();
         }
         self.state.modes.synchronized_update = false;

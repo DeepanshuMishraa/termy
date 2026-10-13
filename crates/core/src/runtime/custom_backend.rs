@@ -30,7 +30,7 @@ use flume::Sender;
 use std::{
     collections::VecDeque,
     sync::{
-        Arc, Condvar, Mutex, MutexGuard, Weak,
+        Arc, Condvar, Mutex, Weak,
         atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
@@ -56,7 +56,9 @@ pub(super) struct CustomBackend {
 }
 
 struct Shared {
-    state: Mutex<State>,
+    // Taken for every feed and read; parking_lot's uncontended lock is a
+    // single atomic, where the macOS pthread mutex costs far more per call.
+    state: parking_lot::Mutex<State>,
     lock_waiters: lock::LockWaiters,
     clipboard: Mutex<KittyClipboardHostState>,
     notifier: Option<TerminalWakeupNotifier>,
@@ -112,6 +114,10 @@ struct State {
     history_quiet: bool,
     // A title event was queued since the last feed or commit woke the host.
     title_changed: bool,
+    // The maintenance deadline last handed to the timer, or `None` when the
+    // timer may hold a different one. Feeds skip the timer's lock while their
+    // deadline is unchanged.
+    published_maintenance: Option<Option<Instant>>,
 }
 
 enum PendingEvent {
@@ -160,7 +166,11 @@ impl Shared {
     }
 
     fn queue_wakeup(&self) {
-        if !self.wakeup_queued.swap(true, Ordering::AcqRel) {
+        // Output arrives far faster than hosts drain wakeups, so the flag is
+        // usually set already; a plain load avoids an atomic swap per feed.
+        if !self.wakeup_queued.load(Ordering::Acquire)
+            && !self.wakeup_queued.swap(true, Ordering::AcqRel)
+        {
             crate::render_metrics::increment_runtime_wakeup_count();
             if let Some(notifier) = &self.notifier {
                 notifier.notify();
@@ -185,12 +195,15 @@ impl State {
         self.history_deadline = Some(idle.min(cap));
     }
 
+    #[inline]
     fn maintenance_deadline(&self) -> Option<Instant> {
-        self.engine
-            .synchronized_update_deadline()
-            .into_iter()
-            .chain(self.history_deadline)
-            .min()
+        match (
+            self.engine.synchronized_update_deadline(),
+            self.history_deadline,
+        ) {
+            (Some(sync), Some(history)) => Some(sync.min(history)),
+            (sync, history) => sync.or(history),
+        }
     }
 
     fn new(size: TerminalSize, config: &TerminalRuntimeConfig) -> Self {
@@ -226,6 +239,7 @@ impl State {
             history_pending_since: None,
             history_quiet: true,
             title_changed: false,
+            published_maintenance: None,
         }
     }
 
@@ -703,7 +717,10 @@ impl CustomBackend {
     ) -> Self {
         Self {
             shared: Arc::new(Shared {
-                state: Mutex::new(State::new(size, &config.cloned().unwrap_or_default())),
+                state: parking_lot::Mutex::new(State::new(
+                    size,
+                    &config.cloned().unwrap_or_default(),
+                )),
                 lock_waiters: lock::LockWaiters::default(),
                 clipboard: Mutex::new(KittyClipboardHostState::new()),
                 notifier,
@@ -771,10 +788,16 @@ impl CustomBackend {
     pub(super) fn write_str(&self, input: &str) {
         self.write(input.as_bytes());
     }
+    #[inline]
     fn send_reply(&self, bytes: Vec<u8>) {
         if bytes.is_empty() {
             return;
         }
+        self.send_nonempty_reply(bytes);
+    }
+
+    #[inline(never)]
+    fn send_nonempty_reply(&self, bytes: Vec<u8>) {
         if let Some(transport) = &self.transport {
             if let Err(error) = transport.write_protocol_reply_owned(bytes) {
                 log::warn!("terminal reply failed: {error}");
@@ -811,7 +834,7 @@ impl CustomBackend {
         }
         let mut replies = Vec::new();
         state.engine.drain_replies(&mut replies);
-        self.shared.schedule_maintenance(&state);
+        self.shared.schedule_maintenance(&mut state);
         drop(state);
         self.send_reply(replies);
         if let Some(transport) = &self.transport
@@ -976,19 +999,12 @@ impl CustomBackend {
         let palette = state.palette();
         let mut cells =
             Vec::with_capacity(usize::from(state.size.cols) * usize::from(state.size.rows));
-        let query_colors = state.query_colors;
+        let mut legacy = LegacyCells::new(&palette, state.query_colors);
         let mut scratch = Vec::new();
         for row in 0..usize::from(state.size.rows) {
             let wrapped = state.engine.viewport_row_wrapped(row);
             state.engine.with_viewport_row(row, &mut scratch, |line| {
-                for (col, cell) in line.iter().enumerate() {
-                    cells.push(legacy_cell(
-                        cell,
-                        wrapped && col + 1 == line.len(),
-                        &palette,
-                        query_colors,
-                    ));
-                }
+                legacy.extend(&mut cells, line, wrapped);
             });
         }
         TermyFrame {
@@ -1015,8 +1031,13 @@ impl CustomBackend {
                 .collect(),
             TerminalDamageSnapshot::Partial(spans) => spans.clone(),
         };
-        let mut cells = Vec::new();
-        let query_colors = state.query_colors;
+        let mut cells = Vec::with_capacity(
+            spans
+                .iter()
+                .map(|span| span.right_col + 1 - span.left_col.min(span.right_col + 1))
+                .sum(),
+        );
+        let mut legacy = LegacyCells::new(&palette, state.query_colors);
         let mut scratch = Vec::new();
         for span in spans {
             let wrapped = state.engine.viewport_row_wrapped(span.row);
@@ -1024,14 +1045,12 @@ impl CustomBackend {
                 .engine
                 .with_viewport_row(span.row, &mut scratch, |line| {
                     let right = span.right_col.min(line.len() - 1);
-                    for col in span.left_col..=right {
-                        cells.push(legacy_cell(
-                            &line[col],
-                            wrapped && col + 1 == line.len(),
-                            &palette,
-                            query_colors,
-                        ));
+                    if span.left_col > right {
+                        return;
                     }
+                    // Only the row's last cell carries its wrap flag.
+                    let wraps = wrapped && right + 1 == line.len();
+                    legacy.extend(&mut cells, &line[span.left_col..=right], wraps);
                 });
         }
         TermyFrameUpdate {
@@ -1300,6 +1319,62 @@ fn resolve_color(
         a: 255,
     }
 }
+/// Converts runs of engine cells to legacy frame cells. Neighbouring cells
+/// almost always share a style, so its colors and attribute flags are
+/// resolved once per run instead of once per cell.
+struct LegacyCells<'a> {
+    palette: &'a TerminalPalette,
+    fallback: TerminalQueryColors,
+    style: Option<(engine::Style, TermyCell)>,
+}
+
+impl<'a> LegacyCells<'a> {
+    fn new(palette: &'a TerminalPalette, fallback: TerminalQueryColors) -> Self {
+        Self {
+            palette,
+            fallback,
+            style: None,
+        }
+    }
+
+    /// Append `line`, whose last cell ends a wrapped row when `wrapped`.
+    fn extend(&mut self, cells: &mut Vec<TermyCell>, line: &[engine::Cell], wrapped: bool) {
+        cells.extend(line.iter().map(|cell| self.cell(cell, false)));
+        if wrapped && let Some(last) = cells.last_mut() {
+            last.line_wrapped = true;
+        }
+    }
+
+    #[inline]
+    fn cell(&mut self, cell: &engine::Cell, wrapped: bool) -> TermyCell {
+        let styled = match &self.style {
+            Some((style, styled)) if *style == cell.style => *styled,
+            _ => {
+                // Only the style feeds these fields; the rest are per cell.
+                let blank = engine::Cell {
+                    style: cell.style,
+                    ..engine::Cell::default()
+                };
+                let styled = legacy_cell(&blank, false, self.palette, self.fallback);
+                self.style = Some((cell.style, styled));
+                styled
+            }
+        };
+        let spacer =
+            cell.flags & (engine::Cell::WIDE_SPACER | engine::Cell::LEADING_WIDE_SPACER) != 0;
+        TermyCell {
+            char: cell.character,
+            render_text: !spacer
+                && cell.style.attributes & engine::Style::HIDDEN == 0
+                && cell.character != '\0'
+                && !cell.character.is_control(),
+            wide_character_spacer: spacer,
+            line_wrapped: wrapped,
+            ..styled
+        }
+    }
+}
+
 fn legacy_cell(
     cell: &engine::Cell,
     wrapped: bool,

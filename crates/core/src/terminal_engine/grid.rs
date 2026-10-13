@@ -14,12 +14,14 @@ use super::types::{
 };
 
 mod combining;
+mod flood;
 mod history;
 mod margins;
 mod print;
 mod reflow;
 mod row;
 use combining::CombiningCache;
+use flood::PendingClear;
 use row::PackedCells;
 
 const MAX_HISTORY_ROWS: usize = 20_000;
@@ -59,6 +61,15 @@ impl Row {
     }
 
     fn clear(&mut self, cols: usize, blank: &Cell) {
+        if let Some(end) = self.clear_deferring_fill(cols, blank) {
+            Cell::fill_plain(&mut self.cells[..end], blank.character, blank.style);
+        }
+    }
+
+    /// Clear the row except, for a plain row, blanking its first cells:
+    /// returns how many leading cells still hold old content and must be
+    /// filled with `blank` (which has no metadata) before anything reads them.
+    fn clear_deferring_fill(&mut self, cols: usize, blank: &Cell) -> Option<usize> {
         // Recycled history rows are usually packed. Their contents are about
         // to be blanked, so reuse a decoded cache if any but skip decoding.
         if self.discard_packed() {
@@ -69,13 +80,29 @@ impl Row {
         } else {
             cols
         };
-        self.cells.resize(cols, blank.clone());
-        self.cells[..end].fill(blank.clone());
+        let deferred = if blank.extra.is_none() && !self.has_extras {
+            // Every scrolled line clears a row; plain rows skip drop glue.
+            let (character, style) = (blank.character, blank.style);
+            let len = self.cells.len().min(cols);
+            self.cells.truncate(cols);
+            self.cells.extend((len..cols).map(|_| Cell {
+                extra: None,
+                style,
+                flags: 0,
+                character,
+            }));
+            Some(end.min(len))
+        } else {
+            self.cells.resize(cols, blank.clone());
+            self.cells[..end].fill(blank.clone());
+            None
+        };
         self.occupied = 0;
         self.clear_background = blank.style.background;
         self.wrapped = false;
         self.has_extras = blank.extra.is_some();
         self.extra_units = 0;
+        deferred
     }
 
     fn content_len(&self) -> usize {
@@ -158,6 +185,11 @@ pub(super) struct Grid {
     combining_cache: CombiningCache,
     // Last color-only spacer extra; see `Cell::spacer_extra`.
     spacer_extra: Option<Arc<CellExtra>>,
+    // The row a line feed just scrolled in, whose leading cells still hold
+    // old content until the next write fills around its text (or anything
+    // else fills them first); see `flush_pending_clear`.
+    pending_clear: Option<PendingClear>,
+    defer_scroll_clear: bool,
     grapheme_open: bool,
     grapheme_ordinary: bool,
     // Only meaningful while a grapheme is open. A closed grapheme at the
@@ -203,10 +235,16 @@ impl Grid {
         self.output_since_compaction = 0;
     }
 
+    #[inline]
     pub(super) fn release_history_read_cache(&mut self) {
         if *self.history_read_end.get_mut() == 0 {
             return;
         }
+        self.release_history_read_cache_slow();
+    }
+
+    #[inline(never)]
+    fn release_history_read_cache_slow(&mut self) {
         let start = std::mem::replace(self.history_read_start.get_mut(), usize::MAX);
         // Every history mutation releases first, so `end` should still be in
         // bounds; clamping keeps a missed caller from panicking here.
@@ -252,6 +290,8 @@ impl Grid {
             pending_scrolls: Vec::with_capacity(MAX_SCROLL_DAMAGE),
             combining_cache: CombiningCache::default(),
             spacer_extra: None,
+            pending_clear: None,
+            defer_scroll_clear: false,
             grapheme_open: false,
             grapheme_ordinary: true,
             grapheme_at_margin: false,
@@ -413,6 +453,10 @@ impl Grid {
         } else {
             self.mark_full_damage();
         }
+    }
+
+    pub(super) fn tracks_effects(&self) -> bool {
+        self.track_effects
     }
 
     pub(super) fn set_effect_tracking(&mut self, enabled: bool) {
@@ -740,7 +784,18 @@ impl Grid {
             let background = blank.style.background;
             let (first_left, first_right) = Self::clear_wide_at(active, start, &blank);
             let (last_left, last_right) = Self::clear_wide_at(active, end - 1, &blank);
-            active.cells[start..end].fill(blank);
+            // Past `occupied`, cells already equal a blank on the same
+            // background, so erasing to the end of a short line writes little.
+            let filled = if active.clear_background == background {
+                end.min(occupied.max(start))
+            } else {
+                end
+            };
+            if active.has_extras {
+                active.cells[start..filled].fill(blank);
+            } else {
+                Cell::fill_plain(&mut active.cells[start..filled], ' ', blank.style);
+            }
             if end == active.cells.len() {
                 active.wrapped = false;
                 // Every cell from the erase start is now this blank, so the
@@ -978,56 +1033,6 @@ impl Grid {
         }
         Self::edited_occupied(active, 0, right, &blank);
         self.mark(row, col.saturating_sub(1), cols);
-    }
-
-    fn scroll_region_up(&mut self, top: usize, bottom: usize, count: usize, retain_history: bool) {
-        let blank = self.blank();
-        let cols = self.size.cols;
-        let count = count.min(bottom - top);
-        let history_before = self.history_size();
-        for _ in 0..count {
-            let removed = self
-                .screen_mut()
-                .rows
-                .remove(top)
-                .expect("scroll region row");
-            let mut recycled = if retain_history && self.history_limit != 0 {
-                let recycled = if self.history.len() == self.history_limit {
-                    self.pop_history_front()
-                } else {
-                    None
-                };
-                let (retained, recycled) = if self.compact_on_scroll {
-                    removed.retain(recycled, cols, &blank)
-                } else {
-                    (removed, recycled.unwrap_or_else(|| Row::new(cols, &blank)))
-                };
-                self.push_history(retained);
-                self.history_activity = true;
-                self.pending_compaction = (self.pending_compaction + 1).min(self.history.len());
-                if self.display_offset != 0 {
-                    self.display_offset = (self.display_offset + 1).min(self.history.len());
-                }
-                recycled
-            } else {
-                removed
-            };
-            recycled.clear(cols, &blank);
-            self.screen_mut().rows.insert(bottom - 1, recycled);
-        }
-        if count != 0 {
-            self.mark_scroll_damage(top, bottom, count as i32);
-            self.effect(GridEffect::Scroll {
-                alternate: self.alternate_active,
-                top,
-                bottom,
-                lines: count as i64,
-                retains_history: retain_history && self.history_limit != 0,
-                history_before,
-                history_after: self.history_size(),
-            });
-            self.enforce_history_bytes();
-        }
     }
 
     fn scroll_region_down(&mut self, top: usize, bottom: usize, count: usize) {

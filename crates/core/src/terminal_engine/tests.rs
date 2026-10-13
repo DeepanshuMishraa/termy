@@ -439,3 +439,41 @@ fn arbitrary_bytes_and_resizes_keep_grid_invariants() {
         }
     }
 }
+
+// A line feed blanks the row it scrolls in lazily: the next text write fills
+// only around itself. Recycled history content must never show through,
+// whatever follows the line feed or wherever a feed ends.
+#[test]
+fn rows_scrolled_in_by_line_feeds_never_show_their_recycled_content() {
+    let full_row = format!("{}\r\n", "x".repeat(20));
+    let cases = [
+        ("ab\r\n", "ab"),
+        ("\r\n", ""),
+        ("\x1b[31mab\x1b[0m\r\n", "ab"),
+        ("界a\r\n", "界a"),
+        ("e\u{301}\r\n", "e\u{301}"),
+        ("\x1b[3Cab\r\n", "   ab"),
+        ("\x1b]0;title\x07ab\r\n", "ab"),
+        // LF without CR keeps the column, so the text starts mid-row.
+        ("ab\n", "ab"),
+    ];
+    for (line, visible) in cases {
+        for chunk in [1, 3, usize::MAX] {
+            let mut engine = engine(20, 3, 2);
+            engine.feed(full_row.repeat(6).as_bytes());
+            let input = line.repeat(4);
+            for part in input.as_bytes().chunks(chunk.min(input.len())) {
+                engine.feed(part);
+            }
+            for row in 0..2 {
+                let text = text(&engine, row);
+                assert!(
+                    !text.contains('x'),
+                    "{line:?} in chunks of {chunk}: {text:?}"
+                );
+                assert_eq!(text.trim(), visible.trim(), "{line:?} in chunks of {chunk}");
+            }
+            assert_eq!(text(&engine, 2).trim(), "", "{line:?} in chunks of {chunk}");
+        }
+    }
+}

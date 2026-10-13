@@ -5,6 +5,7 @@
 //! wait many frames for a snapshot during `cat`-style floods. Other callers
 //! announce themselves, and the reader yields to them before relocking.
 use super::*;
+use parking_lot::MutexGuard;
 use std::sync::atomic::AtomicUsize;
 
 /// Output fed under one lock hold; the reader yields between slices.
@@ -58,9 +59,7 @@ impl Shared {
     }
 
     fn lock_state(&self) -> MutexGuard<'_, State> {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.state.lock()
     }
 
     /// Lock for feeding output, after any announced waiter got its turn.
@@ -124,7 +123,7 @@ impl Shared {
             tab_chrome_changed |= state.take_tab_chrome_changed();
             // Publish while the engine lock still protects this deadline: a later
             // feed must not have its timer replaced by an earlier feed's deadline.
-            self.schedule_maintenance(&state);
+            self.schedule_maintenance(&mut state);
         }
         if should_notify {
             self.notify();

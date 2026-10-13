@@ -650,3 +650,58 @@ fn full_reset_recovers_from_an_oversized_string() {
         );
     }
 }
+
+#[test]
+fn printable_ascii_scan_stops_at_every_other_byte_in_every_position() {
+    for byte in 0..=u8::MAX {
+        let printable = (0x20..=0x7e).contains(&byte);
+        for len in 0..=19 {
+            for position in 0..len {
+                let mut bytes = vec![b'a'; len];
+                bytes[position] = byte;
+                let expected = if printable { len } else { position };
+                assert_eq!(
+                    printable_ascii_len(&bytes),
+                    expected,
+                    "byte {byte:#04x} at {position} of {len}"
+                );
+            }
+        }
+    }
+}
+
+// The text fast path decodes with `complete_utf8`, so it must accept exactly
+// the scalars `str::from_utf8` accepts as a prefix, for every lead byte.
+#[test]
+fn complete_utf8_matches_std_for_every_two_and_three_byte_sequence() {
+    let expect = |bytes: &[u8]| {
+        let valid = match std::str::from_utf8(bytes) {
+            Ok(text) => text,
+            Err(error) => std::str::from_utf8(&bytes[..error.valid_up_to()]).unwrap(),
+        };
+        valid
+            .chars()
+            .next()
+            .filter(|character| !character.is_ascii())
+            .map(|character| (character, character.len_utf8()))
+    };
+    for first in 0x80..=0xffu8 {
+        for second in 0..=0xffu8 {
+            assert_eq!(complete_utf8(&[first, second]), expect(&[first, second]));
+            for third in 0..=0xffu8 {
+                let bytes = [first, second, third];
+                assert_eq!(complete_utf8(&bytes), expect(&bytes), "{bytes:02x?}");
+            }
+        }
+    }
+    for first in 0xf0..=0xffu8 {
+        for second in 0..=0xffu8 {
+            for fourth in [0x00, 0x7f, 0x80, 0xbf, 0xc0] {
+                for third in [0x00, 0x7f, 0x80, 0xa5, 0xbf, 0xc0] {
+                    let bytes = [first, second, third, fourth];
+                    assert_eq!(complete_utf8(&bytes), expect(&bytes), "{bytes:02x?}");
+                }
+            }
+        }
+    }
+}

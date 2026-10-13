@@ -115,6 +115,69 @@ pub struct Cell {
 // 24 B on 64-bit targets; the extra pointer is 4 B on wasm32, so 20 B there.
 const _: () = assert!(size_of::<Style>() == 10 && size_of::<Cell>() == size_of::<usize>() + 16);
 
+/// A metadata-free cell as the words it occupies, so the print and clear
+/// loops store each cell with two or three full-width writes instead of one
+/// per field (a 10-byte style and 2-byte flags otherwise split into narrow
+/// stores, reloaded every iteration because the output may alias them).
+#[derive(Clone, Copy)]
+pub(super) struct PlainCell {
+    #[cfg(target_pointer_width = "64")]
+    words: [u64; 3],
+    #[cfg(not(target_pointer_width = "64"))]
+    style: Style,
+    #[cfg(not(target_pointer_width = "64"))]
+    flags: u16,
+}
+
+impl PlainCell {
+    #[inline(always)]
+    fn new(style: Style, flags: u16) -> Self {
+        #[cfg(target_pointer_width = "64")]
+        {
+            let cell = std::mem::ManuallyDrop::new(Cell {
+                extra: None,
+                style,
+                flags,
+                character: '\0',
+            });
+            // SAFETY: `Cell` is `repr(C)`, 24 bytes and 8-aligned with no
+            // padding (asserted above), so every byte is initialized and it
+            // reads as three words. `ManuallyDrop` keeps the `None` alive.
+            let words = unsafe { std::ptr::read((&raw const *cell).cast::<[u64; 3]>()) };
+            Self { words }
+        }
+        #[cfg(not(target_pointer_width = "64"))]
+        Self { style, flags }
+    }
+
+    /// Overwrite `cell`, which must hold no metadata (it isn't released).
+    #[inline(always)]
+    pub(super) fn store(self, cell: &mut Cell, character: char) {
+        debug_assert!(cell.extra.is_none(), "unflagged row holds cell metadata");
+        #[cfg(target_pointer_width = "64")]
+        {
+            // `character` is the last field: the high half of the last word.
+            let shift = if cfg!(target_endian = "little") {
+                32
+            } else {
+                0
+            };
+            let last = self.words[2] | (u64::from(u32::from(character)) << shift);
+            // SAFETY: as in `new`; the words are a valid `Cell` whose `extra`
+            // is the null `None`, and the replaced `None` owns nothing.
+            unsafe {
+                std::ptr::from_mut(cell).cast::<[u64; 3]>().write([
+                    self.words[0],
+                    self.words[1],
+                    last,
+                ]);
+            }
+        }
+        #[cfg(not(target_pointer_width = "64"))]
+        cell.overwrite_plain(character, self.style, self.flags);
+    }
+}
+
 impl Default for Cell {
     fn default() -> Self {
         Self {
@@ -156,6 +219,50 @@ impl Cell {
         if extra.is_empty() {
             self.extra = None;
         }
+    }
+    /// A word-store template for metadata-free cells in `style`; see
+    /// [`PlainCell`].
+    #[inline(always)]
+    pub(super) fn plain(style: Style, flags: u16) -> PlainCell {
+        PlainCell::new(style, flags)
+    }
+
+    /// Fill `cells`, which hold no metadata (see [`Self::overwrite_plain`]),
+    /// with a plain character in `style`.
+    #[inline]
+    pub(super) fn fill_plain(cells: &mut [Cell], character: char, style: Style) {
+        let template = PlainCell::new(style, 0);
+        for cell in cells {
+            template.store(cell, character);
+        }
+    }
+
+    /// Write printable ASCII into `cells`, which hold no metadata.
+    #[inline]
+    pub(super) fn write_plain_ascii(cells: &mut [Cell], text: &[u8], style: Style) {
+        let template = PlainCell::new(style, 0);
+        for (cell, &byte) in cells.iter_mut().zip(text) {
+            template.store(cell, char::from(byte));
+        }
+    }
+
+    /// Overwrite a cell that holds no metadata, without its drop glue. Rows
+    /// that `has_extras` doesn't flag hold none, and skipping the per-cell
+    /// release check lets runs of writes compile to plain wide stores.
+    #[cfg(not(target_pointer_width = "64"))]
+    #[inline(always)]
+    fn overwrite_plain(&mut self, character: char, style: Style, flags: u16) {
+        debug_assert!(self.extra.is_none(), "unflagged row holds cell metadata");
+        // Forgetting an `extra` of `None` releases nothing.
+        std::mem::forget(std::mem::replace(
+            self,
+            Self {
+                extra: None,
+                style,
+                flags,
+                character,
+            },
+        ));
     }
     /// The right half of a wide character. It keeps the style and underline
     /// color so decorations span both columns, but no text or link.

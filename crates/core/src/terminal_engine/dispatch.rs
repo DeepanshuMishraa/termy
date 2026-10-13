@@ -564,6 +564,7 @@ impl Handler for State {
     }
 
     fn print(&mut self, character: char) {
+        self.grid.flush_pending_clear();
         let character = if self.charsets[self.active_charset] {
             dec_graphic(character)
         } else {
@@ -571,6 +572,17 @@ impl Handler for State {
         };
         self.grid.put_char(character);
         self.last_printed = Some(character);
+    }
+
+    fn print_utf8(&mut self, bytes: &[u8]) -> usize {
+        if self.charsets[self.active_charset] {
+            return 0;
+        }
+        let (written, last) = self.grid.write_utf8_run(bytes);
+        if let Some(character) = last {
+            self.last_printed = Some(character);
+        }
+        written
     }
 
     fn print_ascii(&mut self, bytes: &[u8]) {
@@ -587,12 +599,13 @@ impl Handler for State {
     }
 
     fn execute(&mut self, byte: u8) {
+        self.grid.flush_pending_clear();
         self.grid.end_grapheme();
         match byte {
             0x07 => self.event(Event::Bell),
             0x08 => self.grid.backspace(),
             0x09 => self.grid.tab(),
-            0x0a..=0x0c => self.grid.linefeed(),
+            0x0a..=0x0c => self.grid.linefeed_deferring_clear(),
             0x0d => self.grid.carriage_return(),
             0x0e => self.active_charset = 1,
             0x0f => self.active_charset = 0,
@@ -601,6 +614,7 @@ impl Handler for State {
     }
 
     fn escape(&mut self, intermediates: &[u8], final_byte: u8) {
+        self.grid.flush_pending_clear();
         self.grid.end_grapheme();
         match (intermediates, final_byte) {
             ([], b'D') => {
@@ -658,8 +672,11 @@ impl Handler for State {
 
     fn csi(&mut self, params: &[Param], private: Option<u8>, intermediates: &[u8], final_byte: u8) {
         if final_byte != b'm' || private.is_some() || !intermediates.is_empty() {
+            self.grid.flush_pending_clear();
             self.grid.end_grapheme();
         }
+        // SGR only changes the pen. A pending clear keeps the blank chosen
+        // when its line feed scrolled, so it may stay pending across colors.
         let count = count(params, 0);
         if intermediates == b"$" && final_byte == b'p' && matches!(private, None | Some(b'?')) {
             for param in params {
@@ -871,6 +888,7 @@ impl Handler for State {
     }
 
     fn osc_terminated(&mut self, bytes: &[u8], bell: bool) {
+        self.grid.flush_pending_clear();
         if let Some(body) = bytes.strip_prefix(b"5522;") {
             let terminator = if bell {
                 crate::KittyClipboardOscTerminator::Bell
@@ -886,13 +904,16 @@ impl Handler for State {
     }
 
     fn osc(&mut self, bytes: &[u8]) {
+        self.grid.flush_pending_clear();
         self.osc_with_terminator(bytes, false);
     }
 
     fn dcs(&mut self, bytes: &[u8]) {
+        self.grid.flush_pending_clear();
         self.device_control_query(bytes);
     }
     fn apc(&mut self, bytes: &mut Vec<u8>) {
+        self.grid.flush_pending_clear();
         self.apply_graphics(bytes);
     }
 }
