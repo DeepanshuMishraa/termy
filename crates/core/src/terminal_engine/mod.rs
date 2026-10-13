@@ -410,19 +410,21 @@ impl Engine {
             .map(|row| row.with_line(scratch, read))
     }
 
-    /// [`Self::with_viewport_row`], also passing where the row's erase
-    /// blanks start (at most its length; past it for no blanks) and their
-    /// background. Every cell from there on is a space in the default style
-    /// on that background, so a renderer can fill instead of converting.
+    /// [`Self::with_viewport_row`], also passing whether the row wraps
+    /// ([`Self::viewport_row_wrapped`]), where its erase blanks start (at
+    /// most its length; past it for no blanks) and their background. Every
+    /// cell from there on is a space in the default style on that
+    /// background, so a renderer can fill instead of converting.
     pub(crate) fn with_viewport_row_blanks<T>(
         &self,
         row: usize,
         scratch: &mut Vec<Cell>,
-        read: impl FnOnce(&[Cell], usize, Color) -> T,
+        read: impl FnOnce(&[Cell], bool, usize, Color) -> T,
     ) -> Option<T> {
         self.state.grid.visible_row(row).map(|row| {
             let (blanks, background) = row.blank_suffix();
-            row.with_cells(scratch, |cells| read(cells, blanks, background))
+            let wrapped = row.wrapped;
+            row.with_cells(scratch, |cells| read(cells, wrapped, blanks, background))
         })
     }
 

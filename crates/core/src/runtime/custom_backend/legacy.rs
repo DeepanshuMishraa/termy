@@ -12,10 +12,9 @@ pub(super) struct LegacyCells<'a> {
     style: Option<(engine::Style, Template)>,
     // The four-cell stores of that style, built on first use.
     quads: [Option<Quad>; 2],
-    // Erase blanks on `blank_background`, copied for each row's blank
-    // suffix; see `extend_row`.
-    blank_row: Vec<TermyCell>,
-    blank_background: engine::Color,
+    // The erase blank on a background, and four of it as stored; see
+    // `extend_row`.
+    blank: Option<(engine::Color, TermyCell, Blocks)>,
 }
 
 impl<'a> LegacyCells<'a> {
@@ -25,17 +24,26 @@ impl<'a> LegacyCells<'a> {
             fallback,
             style: None,
             quads: [None, None],
-            blank_row: Vec::new(),
-            blank_background: engine::Color::DEFAULT,
+            blank: None,
         }
     }
 
     /// Append `line`, whose last cell ends a wrapped row when `wrapped`.
-    pub(super) fn extend(
+    #[cfg(test)]
+    fn extend(&mut self, cells: &mut Vec<TermyCell>, line: &[engine::Cell], wrapped: bool) {
+        self.extend_row(cells, line, wrapped, line.len(), engine::Color::DEFAULT);
+    }
+
+    /// [`Self::extend`] for a row read with `Engine::with_viewport_row_blanks`:
+    /// the cells of `line` from `blanks` on are erase blanks on `background`,
+    /// so they are stored from one template without being read.
+    pub(super) fn extend_row(
         &mut self,
         cells: &mut Vec<TermyCell>,
         line: &[engine::Cell],
         wrapped: bool,
+        blanks: usize,
+        background: engine::Color,
     ) {
         if line.is_empty() {
             return;
@@ -43,8 +51,30 @@ impl<'a> LegacyCells<'a> {
         cells.reserve(line.len());
         let start = cells.len();
         // Writing into the reserved tail, rather than pushing, keeps the
-        // vector's length and capacity out of the per-cell loop.
+        // vector's length and capacity out of the per-cell loops.
         let slots = &mut cells.spare_capacity_mut()[..line.len()];
+        let (text, rest) = slots.split_at_mut(blanks.min(line.len()));
+        self.store_text(text, &line[..text.len()]);
+        if !rest.is_empty() {
+            // Every row's blanks are the same frame cell: stored four at a
+            // time from one pattern, they cost stores instead of a
+            // conversion each.
+            let (blank, blocks) = match self.blank {
+                Some((key, blank, blocks)) if key == background => (blank, blocks),
+                _ => self.blank(background),
+            };
+            fill(rest, blank, &blocks);
+        }
+        // SAFETY: `reserve` made room for `line.len()` cells after `start`,
+        // and the stores above initialized every one of them.
+        unsafe { cells.set_len(start + line.len()) };
+        if wrapped && let Some(last) = cells.last_mut() {
+            last.line_wrapped = true;
+        }
+    }
+
+    /// Store the frame cells of `line` into `slots`, its length.
+    fn store_text(&mut self, slots: &mut [MaybeUninit<TermyCell>], line: &[engine::Cell]) {
         let mut done = 0;
         while let Some(cell) = line.get(done) {
             let style = cell.style;
@@ -65,46 +95,11 @@ impl<'a> LegacyCells<'a> {
                 &mut self.quads,
             );
         }
-        // SAFETY: `reserve` made room for `line.len()` cells after `start`,
-        // and the runs above initialized every one of them.
-        unsafe { cells.set_len(start + line.len()) };
-        if wrapped && let Some(last) = cells.last_mut() {
-            last.line_wrapped = true;
-        }
     }
 
-    /// [`Self::extend`] for a row read with `Engine::with_viewport_row_blanks`:
-    /// the cells of `line` from `blanks` on are erase blanks on `background`,
-    /// so they are stored from one template without being read.
-    pub(super) fn extend_row(
-        &mut self,
-        cells: &mut Vec<TermyCell>,
-        line: &[engine::Cell],
-        wrapped: bool,
-        blanks: usize,
-        background: engine::Color,
-    ) {
-        let blanks = blanks.min(line.len());
-        self.extend(cells, &line[..blanks], false);
-        let count = line.len() - blanks;
-        if count != 0 {
-            // Every row's blanks are the same frame cell: copied from one
-            // row of them, they cost a copy instead of a conversion each.
-            if self.blank_background != background || self.blank_row.len() < count {
-                self.fill_blank_row(background, count);
-            }
-            cells.extend_from_slice(&self.blank_row[..count]);
-        }
-        if wrapped
-            && !line.is_empty()
-            && let Some(last) = cells.last_mut()
-        {
-            last.line_wrapped = true;
-        }
-    }
-
+    /// The erase blank on `background`, and four of it as stored.
     #[inline(never)]
-    fn fill_blank_row(&mut self, background: engine::Color, count: usize) {
+    fn blank(&mut self, background: engine::Color) -> (TermyCell, Blocks) {
         let blank = engine::Cell {
             style: engine::Style {
                 background,
@@ -112,12 +107,14 @@ impl<'a> LegacyCells<'a> {
             },
             ..engine::Cell::default()
         };
-        self.blank_row.clear();
-        self.blank_row.resize(
-            count,
-            legacy_cell(&blank, false, self.palette, self.fallback),
-        );
-        self.blank_background = background;
+        let blank = legacy_cell(&blank, false, self.palette, self.fallback);
+        let mut bytes = [0; 80];
+        for record in bytes.as_chunks_mut::<20>().0 {
+            record.copy_from_slice(&cell_bytes(blank));
+        }
+        let blocks = blocks(&bytes);
+        self.blank = Some((background, blank, blocks));
+        (blank, blocks)
     }
 
     /// The frame cell fields `style` determines, for a printable character.
@@ -161,11 +158,74 @@ pub(super) struct Template {
     render_text: bool,
 }
 
+/// A frame cell's bytes.
+fn cell_bytes(cell: TermyCell) -> [u8; 20] {
+    // SAFETY: `TermyCell` is `repr(C)` with no padding (asserted above):
+    // every byte of a valid cell is initialized.
+    unsafe { std::mem::transmute::<TermyCell, [u8; 20]>(cell) }
+}
+
+/// Four frame cells as the five 16-byte blocks they are stored in.
+type Blocks = [[u32; 4]; 5];
+
+fn blocks(bytes: &[u8; 80]) -> Blocks {
+    std::array::from_fn(|block| {
+        std::array::from_fn(|lane| {
+            let at = block * 16 + lane * 4;
+            u32::from_ne_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
+        })
+    })
+}
+
+/// Fill `slots` with `cell`, four of which are `blocks`.
+#[inline]
+fn fill(slots: &mut [MaybeUninit<TermyCell>], cell: TermyCell, blocks: &Blocks) {
+    let (groups, rest) = slots.as_chunks_mut::<4>();
+    // SAFETY: SSE2 is part of the x86_64 baseline. Four slots are 80 bytes,
+    // the five blocks, which hold four copies of `cell`'s bytes.
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        use std::arch::x86_64::{__m128i, _mm_loadu_si128, _mm_storeu_si128};
+        let blocks = blocks
+            .each_ref()
+            .map(|block| _mm_loadu_si128(block.as_ptr().cast::<__m128i>()));
+        for group in groups {
+            let out = group.as_mut_ptr().cast::<__m128i>();
+            for (index, block) in blocks.into_iter().enumerate() {
+                _mm_storeu_si128(out.add(index), block);
+            }
+        }
+    }
+    // SAFETY: NEON is part of the aarch64 baseline; as above.
+    #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+    unsafe {
+        use std::arch::aarch64::{vld1q_u32, vst1q_u32};
+        let blocks = blocks.each_ref().map(|block| vld1q_u32(block.as_ptr()));
+        for group in groups {
+            let out = group.as_mut_ptr().cast::<u32>();
+            for (index, block) in blocks.into_iter().enumerate() {
+                vst1q_u32(out.add(index * 4), block);
+            }
+        }
+    }
+    #[cfg(not(any(
+        target_arch = "x86_64",
+        all(target_arch = "aarch64", target_endian = "little")
+    )))]
+    {
+        let _ = blocks;
+        for slot in groups.as_flattened_mut() {
+            slot.write(cell);
+        }
+    }
+    for slot in rest {
+        slot.write(cell);
+    }
+}
+
 impl Template {
     fn new(cell: TermyCell) -> Self {
-        // SAFETY: `TermyCell` is `repr(C)` with no padding (asserted above):
-        // every byte of a valid cell is initialized.
-        let bytes = unsafe { std::mem::transmute::<TermyCell, [u8; 20]>(cell) };
+        let bytes = cell_bytes(cell);
         let word = |range: std::ops::Range<usize>| {
             let mut word = [0; 8];
             word[..range.len()].copy_from_slice(&bytes[range]);
@@ -294,7 +354,7 @@ const VECTOR_QUADS: bool = cfg!(any(
 /// for, but for their characters (the style and flags of each).
 #[derive(Clone, Copy)]
 struct Quad {
-    blocks: [[u32; 4]; 5],
+    blocks: Blocks,
     keys: [[u32; 4]; 4],
 }
 
@@ -309,9 +369,7 @@ impl Quad {
             record[16..].copy_from_slice(&template.high.to_ne_bytes());
         }
         let word = |bytes: &[u8]| u32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-        let blocks = std::array::from_fn(|block| {
-            std::array::from_fn(|lane| word(&bytes[block * 16 + lane * 4..]))
-        });
+        let blocks = blocks(&bytes);
         // An engine cell's first twelve bytes: its style, then its flags.
         let head = key.0.to_ne_bytes();
         let [t0, t1] = key.1.to_ne_bytes();
@@ -586,6 +644,55 @@ mod tests {
                 })
                 .collect();
             assert_eq!(cells, expected);
+        }
+    }
+
+    // A row's erase blanks are stored from a pattern of four, not read: for
+    // every suffix length and background they must be the cells resolved
+    // one by one.
+    #[test]
+    fn blank_suffixes_match_cells_resolved_one_by_one() {
+        let mut palette = TerminalPalette {
+            indexed: [None; 256],
+            foreground: None,
+            background: Some(TerminalColor { r: 7, g: 7, b: 7 }),
+            cursor: None,
+            revision: 0,
+        };
+        palette.indexed[4] = Some(TerminalColor { r: 1, g: 2, b: 3 });
+        let fallback = TerminalQueryColors::default();
+        let backgrounds = [
+            engine::Color::DEFAULT,
+            engine::Color::indexed(4),
+            engine::Color::rgb(9, 8, 7),
+        ];
+        let mut legacy = LegacyCells::new(&palette, fallback);
+        let mut cells = Vec::new();
+        let mut expected = Vec::new();
+        for count in 0..14 {
+            for (index, &background) in backgrounds.iter().enumerate() {
+                let wrapped = count % 2 == index % 2;
+                let mut line: Vec<_> = "abc"[..index]
+                    .chars()
+                    .map(|character| engine::Cell {
+                        character,
+                        ..engine::Cell::default()
+                    })
+                    .collect();
+                let text = line.len();
+                line.extend((0..count).map(|_| engine::Cell {
+                    style: engine::Style {
+                        background,
+                        ..engine::Style::default()
+                    },
+                    ..engine::Cell::default()
+                }));
+                legacy.extend_row(&mut cells, &line, wrapped, text, background);
+                expected.extend(line.iter().enumerate().map(|(col, cell)| {
+                    legacy_cell(cell, wrapped && col + 1 == line.len(), &palette, fallback)
+                }));
+                assert_eq!(cells, expected, "{count} blanks on {background:?}");
+            }
         }
     }
 

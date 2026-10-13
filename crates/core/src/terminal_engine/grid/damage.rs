@@ -27,16 +27,27 @@ impl Grid {
         self.record_scroll_damage(top, bottom, lines);
     }
 
+    /// [`Self::mark_scroll_damage`] for the whole screen scrolling up a
+    /// line while the viewport shows the live screen, as a flood does.
+    #[inline]
+    pub(super) fn mark_live_scroll_damage(&mut self) {
+        debug_assert_eq!(self.display_offset(), 0);
+        let rows = self.size.rows;
+        self.visual_dirty = true;
+        if self.full_damage || (self.damage_saturated && self.exposes_region(0, rows, 1)) {
+            return;
+        }
+        self.record_scroll_damage(0, rows, 1);
+    }
+
     /// Whether the last pending scroll moved `top..bottom` the same way as
     /// `lines`, by the whole region.
     #[inline]
     fn exposes_region(&self, top: usize, bottom: usize, lines: i32) -> bool {
-        self.pending_scrolls.last().is_some_and(|previous| {
-            previous.top == top
-                && previous.bottom == bottom
-                && previous.lines.signum() == lines.signum()
-                && previous.lines.unsigned_abs() as usize == bottom - top
-        })
+        // Pending scrolls move a region by at most its height.
+        let whole = (bottom - top) as i32;
+        let lines = if lines > 0 { whole } else { -whole };
+        self.pending_scrolls.last() == Some(&ViewportScroll { top, bottom, lines })
     }
 
     #[inline(never)]

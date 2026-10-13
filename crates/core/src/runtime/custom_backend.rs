@@ -1019,12 +1019,13 @@ impl CustomBackend {
         let mut legacy = LegacyCells::new(&palette, state.query_colors);
         let mut scratch = Vec::new();
         for row in 0..usize::from(state.size.rows) {
-            let wrapped = state.engine.viewport_row_wrapped(row);
-            state
-                .engine
-                .with_viewport_row_blanks(row, &mut scratch, |line, blanks, background| {
+            state.engine.with_viewport_row_blanks(
+                row,
+                &mut scratch,
+                |line, wrapped, blanks, background| {
                     legacy.extend_row(&mut cells, line, wrapped, blanks, background);
-                });
+                },
+            );
         }
         TermyFrame {
             cols: state.size.cols,
@@ -1063,11 +1064,10 @@ impl CustomBackend {
         let mut legacy = LegacyCells::new(&palette, state.query_colors);
         let mut scratch = Vec::new();
         for &span in spans {
-            let wrapped = state.engine.viewport_row_wrapped(span.row);
             state.engine.with_viewport_row_blanks(
                 span.row,
                 &mut scratch,
-                |line, blanks, background| {
+                |line, wrapped, blanks, background| {
                     let right = span.right_col.min(line.len() - 1);
                     if span.left_col > right {
                         return;
@@ -1390,13 +1390,19 @@ fn expand_legacy_scroll_damage(update: &mut TerminalRenderDamageSnapshot, cols: 
 /// Add `extra` to `spans` and normalize them. A span that one already in
 /// `spans` covers would merge into it unchanged, so it is left out: damage
 /// that already covers the additions (a scroll over rows that are dirty
-/// across the width) needs no sort.
+/// across the width) needs no sort, and normalized damage none at all.
 fn add_spans(
     spans: &mut Vec<TerminalDirtySpan>,
     extra: impl IntoIterator<Item = TerminalDirtySpan>,
 ) {
     let len = spans.len();
     let sorted = spans.is_sorted_by_key(|span| (span.row, span.left_col));
+    // Sorted spans that `normalize_spans` would not merge, as `take_damage`
+    // builds them (one per row): normalizing them changes nothing.
+    let normalized = sorted
+        && spans.windows(2).all(|pair| {
+            pair[0].row != pair[1].row || pair[1].left_col > pair[0].right_col.saturating_add(1)
+        });
     // Additions mostly come in row order: each walk resumes at the last
     // row found.
     let (mut from, mut last_row) = (0, 0);
@@ -1424,7 +1430,9 @@ fn add_spans(
         }
         spans.push(span);
     }
-    normalize_spans(spans);
+    if !normalized || spans.len() != len {
+        normalize_spans(spans);
+    }
 }
 
 fn normalize_spans(spans: &mut Vec<TerminalDirtySpan>) {

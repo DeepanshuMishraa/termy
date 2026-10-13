@@ -106,6 +106,7 @@ impl Grid {
 
     /// `scroll_region_up` of one full-screen line, retaining it in history
     /// at its row limit: the oldest history row is recycled as the new line.
+    /// The viewport shows the live screen.
     #[inline]
     pub(super) fn scroll_line_into_full_history(&mut self) {
         self.flush_pending_clear();
@@ -149,7 +150,8 @@ impl Grid {
         } else {
             recycled.clear(cols, &DEFAULT_BLANK);
         }
-        self.mark_scroll_damage(0, rows, 1);
+        // The caller checked that the viewport shows the live screen.
+        self.mark_live_scroll_damage();
         if self.track_effects {
             self.effect(GridEffect::Scroll {
                 alternate: false,
