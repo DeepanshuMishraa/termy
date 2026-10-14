@@ -30,15 +30,17 @@ use flume::Sender;
 use std::{
     collections::VecDeque,
     sync::{
-        Arc, Condvar, Mutex, MutexGuard, Weak,
+        Arc, Condvar, Mutex, Weak,
         atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
 };
 
+mod legacy;
 mod lock;
 mod maintenance;
 mod viewport;
+use legacy::LegacyCells;
 
 const EVENT_BATCH: usize = 2048;
 const MAX_EVENTS: usize = 65_536;
@@ -56,7 +58,9 @@ pub(super) struct CustomBackend {
 }
 
 struct Shared {
-    state: Mutex<State>,
+    // Taken for every feed and read; see `lock::RawEngineLock`. The macOS
+    // pthread mutex costs far more per call.
+    state: lock::EngineMutex,
     lock_waiters: lock::LockWaiters,
     clipboard: Mutex<KittyClipboardHostState>,
     notifier: Option<TerminalWakeupNotifier>,
@@ -112,6 +116,10 @@ struct State {
     history_quiet: bool,
     // A title event was queued since the last feed or commit woke the host.
     title_changed: bool,
+    // The maintenance deadline last handed to the timer, or `None` when the
+    // timer may hold a different one. Feeds skip the timer's lock while their
+    // deadline is unchanged.
+    published_maintenance: Option<Option<Instant>>,
 }
 
 enum PendingEvent {
@@ -160,7 +168,11 @@ impl Shared {
     }
 
     fn queue_wakeup(&self) {
-        if !self.wakeup_queued.swap(true, Ordering::AcqRel) {
+        // Output arrives far faster than hosts drain wakeups, so the flag is
+        // usually set already; a plain load avoids an atomic swap per feed.
+        if !self.wakeup_queued.load(Ordering::Acquire)
+            && !self.wakeup_queued.swap(true, Ordering::AcqRel)
+        {
             crate::render_metrics::increment_runtime_wakeup_count();
             if let Some(notifier) = &self.notifier {
                 notifier.notify();
@@ -185,12 +197,15 @@ impl State {
         self.history_deadline = Some(idle.min(cap));
     }
 
+    #[inline]
     fn maintenance_deadline(&self) -> Option<Instant> {
-        self.engine
-            .synchronized_update_deadline()
-            .into_iter()
-            .chain(self.history_deadline)
-            .min()
+        match (
+            self.engine.synchronized_update_deadline(),
+            self.history_deadline,
+        ) {
+            (Some(sync), Some(history)) => Some(sync.min(history)),
+            (sync, history) => sync.or(history),
+        }
     }
 
     fn new(size: TerminalSize, config: &TerminalRuntimeConfig) -> Self {
@@ -226,6 +241,7 @@ impl State {
             history_pending_since: None,
             history_quiet: true,
             title_changed: false,
+            published_maintenance: None,
         }
     }
 
@@ -346,6 +362,18 @@ impl State {
             self.generation = self.generation.wrapping_add(1);
         }
         (replies, consumed)
+    }
+
+    /// Queue the engine's events and buffer its replies, as `feed` does for
+    /// a display terminal.
+    #[inline(never)]
+    fn drain_engine_output(&mut self) {
+        while let Some(event) = self.engine.pop_event() {
+            self.engine_event(event);
+        }
+        let mut replies = Vec::new();
+        self.engine.drain_replies(&mut replies);
+        self.append_replies(&replies);
     }
 
     fn commit_upload(&mut self, prepared: KittyPreparedUpload) -> Vec<u8> {
@@ -537,19 +565,18 @@ impl State {
         let cursor = self.cursor();
         if cursor != self.last_damage_cursor || !scrolls.is_empty() {
             if let TerminalDamageSnapshot::Partial(spans) = &mut damage {
-                for cursor in previous_cursor.into_iter().chain(cursor) {
-                    if cursor.row < self.engine.size().rows {
-                        spans.push(TerminalDirtySpan {
+                let size = self.engine.size();
+                let cursors = previous_cursor.into_iter().chain(cursor);
+                add_spans(
+                    spans,
+                    cursors
+                        .filter(|cursor| cursor.row < size.rows)
+                        .map(|cursor| TerminalDirtySpan {
                             row: cursor.row,
                             left_col: cursor.col.saturating_sub(1),
-                            right_col: cursor
-                                .col
-                                .saturating_add(1)
-                                .min(self.engine.size().cols - 1),
-                        });
-                    }
-                }
-                normalize_spans(spans);
+                            right_col: cursor.col.saturating_add(1).min(size.cols - 1),
+                        }),
+                );
             }
             self.last_damage_cursor = cursor;
         }
@@ -569,8 +596,12 @@ impl State {
         for row in 0..usize::from(self.size.rows) {
             let wrapped = self.engine.viewport_row_wrapped(row);
             self.engine.with_viewport_row(row, &mut scratch, |source| {
-                for (col, cell) in source.iter().enumerate() {
-                    cells.push(render_cell(cell, wrapped && col + 1 == source.len()));
+                for col in 0..source.len() {
+                    cells.push(render_cell(
+                        &source,
+                        col,
+                        wrapped && col + 1 == source.len(),
+                    ));
                 }
             });
         }
@@ -703,7 +734,10 @@ impl CustomBackend {
     ) -> Self {
         Self {
             shared: Arc::new(Shared {
-                state: Mutex::new(State::new(size, &config.cloned().unwrap_or_default())),
+                state: lock::EngineMutex::new(State::new(
+                    size,
+                    &config.cloned().unwrap_or_default(),
+                )),
                 lock_waiters: lock::LockWaiters::default(),
                 clipboard: Mutex::new(KittyClipboardHostState::new()),
                 notifier,
@@ -771,10 +805,16 @@ impl CustomBackend {
     pub(super) fn write_str(&self, input: &str) {
         self.write(input.as_bytes());
     }
+    #[inline]
     fn send_reply(&self, bytes: Vec<u8>) {
         if bytes.is_empty() {
             return;
         }
+        self.send_nonempty_reply(bytes);
+    }
+
+    #[inline(never)]
+    fn send_nonempty_reply(&self, bytes: Vec<u8>) {
         if let Some(transport) = &self.transport {
             if let Err(error) = transport.write_protocol_reply_owned(bytes) {
                 log::warn!("terminal reply failed: {error}");
@@ -811,7 +851,7 @@ impl CustomBackend {
         }
         let mut replies = Vec::new();
         state.engine.drain_replies(&mut replies);
-        self.shared.schedule_maintenance(&state);
+        self.shared.schedule_maintenance(&mut state);
         drop(state);
         self.send_reply(replies);
         if let Some(transport) = &self.transport
@@ -976,20 +1016,16 @@ impl CustomBackend {
         let palette = state.palette();
         let mut cells =
             Vec::with_capacity(usize::from(state.size.cols) * usize::from(state.size.rows));
-        let query_colors = state.query_colors;
+        let mut legacy = LegacyCells::new(&palette, state.query_colors);
         let mut scratch = Vec::new();
         for row in 0..usize::from(state.size.rows) {
-            let wrapped = state.engine.viewport_row_wrapped(row);
-            state.engine.with_viewport_row(row, &mut scratch, |line| {
-                for (col, cell) in line.iter().enumerate() {
-                    cells.push(legacy_cell(
-                        cell,
-                        wrapped && col + 1 == line.len(),
-                        &palette,
-                        query_colors,
-                    ));
-                }
-            });
+            state.engine.with_viewport_row_blanks(
+                row,
+                &mut scratch,
+                |line, wrapped, blanks, background| {
+                    legacy.extend_row(&mut cells, line, wrapped, blanks, background);
+                },
+            );
         }
         TermyFrame {
             cols: state.size.cols,
@@ -1005,34 +1041,48 @@ impl CustomBackend {
         let mut update = state.take_damage(force_full);
         expand_legacy_scroll_damage(&mut update, usize::from(state.size.cols));
         let palette = state.palette();
+        let full_rows: Vec<_>;
         let spans = match &update.damage {
-            TerminalDamageSnapshot::Full => (0..usize::from(state.size.rows))
-                .map(|row| TerminalDirtySpan {
-                    row,
-                    left_col: 0,
-                    right_col: usize::from(state.size.cols) - 1,
-                })
-                .collect(),
-            TerminalDamageSnapshot::Partial(spans) => spans.clone(),
+            TerminalDamageSnapshot::Full => {
+                full_rows = (0..usize::from(state.size.rows))
+                    .map(|row| TerminalDirtySpan {
+                        row,
+                        left_col: 0,
+                        right_col: usize::from(state.size.cols) - 1,
+                    })
+                    .collect();
+                &full_rows
+            }
+            TerminalDamageSnapshot::Partial(spans) => spans,
         };
-        let mut cells = Vec::new();
-        let query_colors = state.query_colors;
+        let mut cells = crate::frame::frame_cells(
+            spans
+                .iter()
+                .map(|span| span.right_col + 1 - span.left_col.min(span.right_col + 1))
+                .sum(),
+        );
+        let mut legacy = LegacyCells::new(&palette, state.query_colors);
         let mut scratch = Vec::new();
-        for span in spans {
-            let wrapped = state.engine.viewport_row_wrapped(span.row);
-            state
-                .engine
-                .with_viewport_row(span.row, &mut scratch, |line| {
+        for &span in spans {
+            state.engine.with_viewport_row_blanks(
+                span.row,
+                &mut scratch,
+                |line, wrapped, blanks, background| {
                     let right = span.right_col.min(line.len() - 1);
-                    for col in span.left_col..=right {
-                        cells.push(legacy_cell(
-                            &line[col],
-                            wrapped && col + 1 == line.len(),
-                            &palette,
-                            query_colors,
-                        ));
+                    if span.left_col > right {
+                        return;
                     }
-                });
+                    // Only the row's last cell carries its wrap flag.
+                    let wraps = wrapped && right + 1 == line.len();
+                    legacy.extend_row(
+                        &mut cells,
+                        &line[span.left_col..=right],
+                        wraps,
+                        blanks.saturating_sub(span.left_col),
+                        background,
+                    );
+                },
+            );
         }
         TermyFrameUpdate {
             cols: state.size.cols,
@@ -1098,7 +1148,7 @@ impl CustomBackend {
                             continue;
                         }
                         let start = text.len();
-                        append_search_cell(&mut text, cell);
+                        append_search_cell(&mut text, cell, cells.combining(col));
                         mapping.record_cell(
                             &text,
                             start,
@@ -1247,15 +1297,18 @@ fn render_color(color: engine::Color, foreground: bool) -> TerminalRenderColor {
         TerminalRenderColor::DefaultBackground
     }
 }
-fn render_cell(cell: &engine::Cell, wrapped: bool) -> TerminalRenderCell {
+/// The cell of `line` at `col`, with its metadata.
+fn render_cell(line: &engine::Line<'_>, col: usize, wrapped: bool) -> TerminalRenderCell {
+    let cell = &line[col];
     let style = cell.style;
     let attr = style.attributes;
+    let underline_color = line.underline_color(col);
     TerminalRenderCell {
-        text: TerminalRenderText::from_cell_suffix(cell.character, Some(cell.combining())),
+        text: TerminalRenderText::from_cell_suffix(cell.character, Some(line.combining(col))),
         foreground: render_color(style.foreground, true),
         background: render_color(style.background, false),
-        underline_color: (cell.underline_color() != engine::Color::DEFAULT)
-            .then(|| render_color(cell.underline_color(), true)),
+        underline_color: (underline_color != engine::Color::DEFAULT)
+            .then(|| render_color(underline_color, true)),
         bold: attr & engine::Style::BOLD != 0,
         dim: attr & engine::Style::DIM != 0,
         italic: attr & engine::Style::ITALIC != 0,
@@ -1270,7 +1323,7 @@ fn render_cell(cell: &engine::Cell, wrapped: bool) -> TerminalRenderCell {
             engine::UnderlineStyle::Dotted => TerminalUnderlineStyle::Dotted,
             engine::UnderlineStyle::Dashed => TerminalUnderlineStyle::Dashed,
         },
-        hyperlink: cell.hyperlink().is_some(),
+        hyperlink: line.hyperlink(col).is_some(),
         wide_character_spacer: cell.flags & engine::Cell::WIDE_SPACER != 0,
         leading_wide_character_spacer: cell.flags & engine::Cell::LEADING_WIDE_SPACER != 0,
         line_wrapped: wrapped,
@@ -1300,51 +1353,7 @@ fn resolve_color(
         a: 255,
     }
 }
-fn legacy_cell(
-    cell: &engine::Cell,
-    wrapped: bool,
-    palette: &TerminalPalette,
-    fallback: TerminalQueryColors,
-) -> TermyCell {
-    let attributes = cell.style.attributes;
-    let bold = attributes & engine::Style::BOLD != 0;
-    let inverse = attributes & engine::Style::INVERSE != 0;
-    let foreground = render_color(cell.style.foreground, true);
-    let background = render_color(cell.style.background, false);
-    let (mut foreground, background) = if inverse {
-        (background, foreground)
-    } else {
-        (foreground, background)
-    };
-    if bold && let TerminalRenderColor::Indexed(index @ 0..=7) = foreground {
-        foreground = TerminalRenderColor::Indexed(index + 8);
-    }
-    let mut fg = resolve_color(foreground, palette, fallback);
-    if attributes & engine::Style::DIM != 0 {
-        fg.r /= 2;
-        fg.g /= 2;
-        fg.b /= 2;
-    }
-    let spacer = cell.flags & (engine::Cell::WIDE_SPACER | engine::Cell::LEADING_WIDE_SPACER) != 0;
-    TermyCell {
-        char: cell.character,
-        fg,
-        bg: resolve_color(background, palette, fallback),
-        uses_terminal_default_bg: background == TerminalRenderColor::DefaultBackground,
-        bold,
-        italic: attributes & engine::Style::ITALIC != 0,
-        underline: cell.style.underline != engine::UnderlineStyle::None,
-        strikethrough: attributes & engine::Style::STRIKE != 0,
-        render_text: !spacer
-            && attributes & engine::Style::HIDDEN == 0
-            && cell.character != '\0'
-            && !cell.character.is_control(),
-        wide_character_spacer: spacer,
-        line_wrapped: wrapped,
-    }
-}
-
-fn append_search_cell(text: &mut String, cell: &engine::Cell) {
+fn append_search_cell(text: &mut String, cell: &engine::Cell, combining: &str) {
     if cell.flags & engine::Cell::WIDE_SPACER != 0 {
         return;
     }
@@ -1355,27 +1364,85 @@ fn append_search_cell(text: &mut String, cell: &engine::Cell) {
         text.push(' ');
     } else {
         text.push(cell.character);
-        text.push_str(cell.combining());
+        text.push_str(combining);
     }
 }
 // Legacy frame consumers replay only cell patches, so include the rows moved
 // by scroll operations rather than silently dropping that part of the update.
 fn expand_legacy_scroll_damage(update: &mut TerminalRenderDamageSnapshot, cols: usize) {
     if let TerminalDamageSnapshot::Partial(spans) = &mut update.damage {
-        for scroll in &update.scrolls {
-            spans.extend((scroll.top..=scroll.bottom).map(|row| TerminalDirtySpan {
+        let rows = update
+            .scrolls
+            .iter()
+            .flat_map(|scroll| scroll.top..=scroll.bottom);
+        add_spans(
+            spans,
+            rows.map(|row| TerminalDirtySpan {
                 row,
                 left_col: 0,
                 right_col: cols.saturating_sub(1),
-            }));
-        }
-        normalize_spans(spans);
+            }),
+        );
     }
     update.scrolls.clear();
 }
 
+/// Add `extra` to `spans` and normalize them. A span that one already in
+/// `spans` covers would merge into it unchanged, so it is left out: damage
+/// that already covers the additions (a scroll over rows that are dirty
+/// across the width) needs no sort, and normalized damage none at all.
+fn add_spans(
+    spans: &mut Vec<TerminalDirtySpan>,
+    extra: impl IntoIterator<Item = TerminalDirtySpan>,
+) {
+    let len = spans.len();
+    let sorted = spans.is_sorted_by_key(|span| (span.row, span.left_col));
+    // Sorted spans that `normalize_spans` would not merge, as `take_damage`
+    // builds them (one per row): normalizing them changes nothing.
+    let normalized = sorted
+        && spans.windows(2).all(|pair| {
+            pair[0].row != pair[1].row || pair[1].left_col > pair[0].right_col.saturating_add(1)
+        });
+    // Additions mostly come in row order: each walk resumes at the last
+    // row found.
+    let (mut from, mut last_row) = (0, 0);
+    for span in extra {
+        if sorted {
+            if span.row < last_row {
+                from = 0;
+            }
+            last_row = span.row;
+            let existing = &spans[..len];
+            while existing.get(from).is_some_and(|other| other.row < span.row) {
+                from += 1;
+            }
+            let covered = existing[from..]
+                .iter()
+                .take_while(|other| other.row == span.row)
+                .any(|other| {
+                    other.left_col <= span.left_col
+                        && span.left_col <= other.right_col
+                        && span.right_col <= other.right_col
+                });
+            if covered {
+                continue;
+            }
+        }
+        spans.push(span);
+    }
+    if !normalized || spans.len() != len {
+        normalize_spans(spans);
+    }
+}
+
 fn normalize_spans(spans: &mut Vec<TerminalDirtySpan>) {
-    spans.sort_unstable_by_key(|span| (span.row, span.left_col));
+    // Spans arrive as a few sorted runs (rows, then scrolled rows or cursor
+    // cells), which the stable sort merges in linear time. Equal keys merge
+    // to the same span in either order.
+    let key = |span: &TerminalDirtySpan| (span.row, span.left_col);
+    if !spans.is_sorted_by_key(key) {
+        spans.sort_by_key(key);
+    }
     let mut len = 0;
     for index in 0..spans.len() {
         let span = spans[index];

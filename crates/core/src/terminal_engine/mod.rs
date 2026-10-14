@@ -25,7 +25,7 @@ use std::collections::VecDeque;
 use web_time::Instant;
 
 pub use types::{
-    Cell, CellExtra, Color, Cursor, CursorShape, Damage, DirtySpan, Hyperlink, Size, Style,
+    Cell, CellExtra, Color, Cursor, CursorShape, Damage, DirtySpan, Hyperlink, Line, Size, Style,
     UnderlineStyle, ViewportScroll,
 };
 
@@ -163,7 +163,96 @@ impl Engine {
 
     /// Only synchronized updates need the time, and reading the clock would
     /// dominate small PTY reads, so `now` is read when first needed.
+    #[inline]
     fn feed_impl(&mut self, bytes: &[u8], now: Option<Instant>, defer_uploads: bool) -> usize {
+        if let [byte] = *bytes
+            && self.feed_ascii_cell(byte)
+        {
+            return 1;
+        }
+        self.feed_parsed(bytes, now, defer_uploads)
+    }
+
+    /// `feed_impl` through the parser.
+    #[inline(never)]
+    fn feed_parsed(&mut self, bytes: &[u8], now: Option<Instant>, defer_uploads: bool) -> usize {
+        // Most feeds are one parse pass with nothing deferred or buffered.
+        if bytes.len() <= PARSE_CHUNK
+            && !self.state.has_deferred_upload()
+            && self.synchronized_update_deadline().is_none()
+        {
+            self.state.reset_animation_work();
+            self.state.grid.prepare_output(bytes.len());
+            let consumed = self.parse_pass(bytes, defer_uploads, &mut || {
+                now.unwrap_or_else(Instant::now)
+            });
+            if consumed == bytes.len()
+                || self.state.has_deferred_upload()
+                || (defer_uploads && self.state.animation_budget_spent())
+            {
+                return consumed;
+            }
+            // A synchronized update began: the general path buffers the rest.
+            return consumed + self.feed_impl_general(&bytes[consumed..], now, defer_uploads);
+        }
+        self.feed_impl_general(bytes, now, defer_uploads)
+    }
+
+    /// Typed and echoed text arrives a byte at a time. Feed one printable
+    /// byte that the grid writes in place with exactly the effects of
+    /// `parse_pass`, minus its setup; returns false, having changed nothing,
+    /// when that pass would do more (an upload or synchronized update is
+    /// pending, a sequence is open, or the write wraps, inserts or repairs).
+    #[inline]
+    fn feed_ascii_cell(&mut self, byte: u8) -> bool {
+        if !(0x20..=0x7e).contains(&byte)
+            || !self.parser.at_ground()
+            || self.state.has_deferred_upload()
+            || self.state.modes.synchronized_update
+            || self.synchronized_update_deadline().is_some()
+            || !self.state.print_ascii_cell(byte)
+        {
+            return false;
+        }
+        // The rest of `feed_impl` and `parse_pass` for this byte: printing
+        // leaves no pending clear, upload deferral or synchronized update.
+        self.state.reset_animation_work();
+        self.state.grid.prepare_output(1);
+        self.state.flush_graphics_effects();
+        self.generation = self.generation.wrapping_add(1);
+        true
+    }
+
+    /// Parse `bytes` (at most one chunk) through the grid, as one iteration
+    /// of `feed_impl_general`'s loop outside a synchronized update.
+    #[inline]
+    fn parse_pass(
+        &mut self,
+        bytes: &[u8],
+        defer_uploads: bool,
+        now: &mut impl FnMut() -> Instant,
+    ) -> usize {
+        self.state.set_defer_uploads(defer_uploads);
+        let consumed = self.parser.advance(&mut self.state, bytes);
+        // Nothing outside parsing may see a partly blanked row.
+        self.state.grid.flush_pending_clear();
+        self.state.set_defer_uploads(false);
+        self.state.flush_graphics_effects();
+        self.generation = self.generation.wrapping_add(1);
+        if self.state.modes.synchronized_update {
+            self.synchronized_update
+                .begin(now(), self.state.saved_private_mode(2026));
+        }
+        consumed
+    }
+
+    #[inline(never)]
+    fn feed_impl_general(
+        &mut self,
+        bytes: &[u8],
+        now: Option<Instant>,
+        defer_uploads: bool,
+    ) -> usize {
         let mut now = now;
         let mut now = move || *now.get_or_insert_with(Instant::now);
         // An upload nobody took must not keep pausing the parser.
@@ -190,16 +279,7 @@ impl Engine {
                 }
             } else {
                 let end = offset.saturating_add(PARSE_CHUNK).min(bytes.len());
-                self.state.set_defer_uploads(defer_uploads);
-                let consumed = self.parser.advance(&mut self.state, &bytes[offset..end]);
-                self.state.set_defer_uploads(false);
-                offset += consumed;
-                self.state.flush_graphics_effects();
-                self.generation = self.generation.wrapping_add(1);
-                if self.state.modes.synchronized_update {
-                    self.synchronized_update
-                        .begin(now(), self.state.saved_private_mode(2026));
-                }
+                offset += self.parse_pass(&bytes[offset..end], defer_uploads, &mut now);
                 if self.state.has_deferred_upload()
                     || (defer_uploads && self.state.animation_budget_spent())
                 {
@@ -225,6 +305,7 @@ impl Engine {
         };
         for chunk in bytes.chunks(PARSE_CHUNK) {
             self.parser.advance_uninterrupted(&mut self.state, chunk);
+            self.state.grid.flush_pending_clear();
             self.state.flush_graphics_effects();
         }
         self.state.modes.synchronized_update = false;
@@ -310,9 +391,9 @@ impl Engine {
         self.generation = self.generation.wrapping_add(1);
     }
 
-    /// The lifetime of the slice prevents mutation while the renderer reads it.
-    pub fn viewport_row(&self, row: usize) -> Option<&[Cell]> {
-        self.state.grid.visible_row_cells(row)
+    /// The lifetime of the line prevents mutation while the renderer reads it.
+    pub fn viewport_row(&self, row: usize) -> Option<Line<'_>> {
+        self.state.grid.visible_row_line(row)
     }
 
     /// Visit a viewport row without retaining a dense copy of cold history.
@@ -321,12 +402,30 @@ impl Engine {
         &self,
         row: usize,
         scratch: &mut Vec<Cell>,
-        read: impl FnOnce(&[Cell]) -> T,
+        read: impl FnOnce(Line<'_>) -> T,
     ) -> Option<T> {
         self.state
             .grid
             .visible_row(row)
-            .map(|row| row.with_cells(scratch, read))
+            .map(|row| row.with_line(scratch, read))
+    }
+
+    /// [`Self::with_viewport_row`], also passing whether the row wraps
+    /// ([`Self::viewport_row_wrapped`]), where its erase blanks start (at
+    /// most its length; past it for no blanks) and their background. Every
+    /// cell from there on is a space in the default style on that
+    /// background, so a renderer can fill instead of converting.
+    pub(crate) fn with_viewport_row_blanks<T>(
+        &self,
+        row: usize,
+        scratch: &mut Vec<Cell>,
+        read: impl FnOnce(&[Cell], bool, usize, Color) -> T,
+    ) -> Option<T> {
+        self.state.grid.visible_row(row).map(|row| {
+            let (blanks, background) = row.blank_suffix();
+            let wrapped = row.wrapped;
+            row.with_cells(scratch, |cells| read(cells, wrapped, blanks, background))
+        })
     }
 
     pub fn viewport_row_wrapped(&self, row: usize) -> bool {
@@ -340,8 +439,8 @@ impl Engine {
     /// A cold history row is expanded on demand. Expanded history is released
     /// on the next output, resize, or scroll; the borrowed slice remains valid
     /// until that exclusive mutation.
-    pub fn line(&self, line: i32) -> Option<&[Cell]> {
-        self.state.grid.row_cells(line)
+    pub fn line(&self, line: i32) -> Option<Line<'_>> {
+        self.state.grid.row_line(line)
     }
 
     /// Visit a line without retaining a dense copy of cold history. Scratch
@@ -350,12 +449,12 @@ impl Engine {
         &self,
         line: i32,
         scratch: &mut Vec<Cell>,
-        read: impl FnOnce(&[Cell]) -> T,
+        read: impl FnOnce(Line<'_>) -> T,
     ) -> Option<T> {
         self.state
             .grid
             .row(line)
-            .map(|row| row.with_cells(scratch, read))
+            .map(|row| row.with_line(scratch, read))
     }
 
     pub fn line_wrapped(&self, line: i32) -> bool {
@@ -423,6 +522,12 @@ impl Engine {
         self.state.grid.clear_scrollback();
         self.state.flush_graphics_effects();
         self.generation = self.generation.wrapping_add(1);
+    }
+
+    /// Whether `pop_event` or `drain_replies` has anything to hand out.
+    #[inline]
+    pub(crate) fn has_output(&self) -> bool {
+        !self.state.events.is_empty() || !self.state.replies.is_empty()
     }
 
     pub fn pop_event(&mut self) -> Option<Event> {

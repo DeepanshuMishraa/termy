@@ -54,6 +54,92 @@ impl Param {
     }
 }
 
+/// Length of the printable ASCII (`0x20..=0x7e`) prefix of `bytes`, tested
+/// eight bytes at a time: ordinary output is long runs of it.
+#[inline]
+fn printable_ascii_len(bytes: &[u8]) -> usize {
+    const ONES: u64 = 0x0101_0101_0101_0101;
+    const HIGH: u64 = 0x8080_8080_8080_8080;
+    let (blocks, rest) = bytes.as_chunks::<16>();
+    let mut len = 0;
+    for block in blocks {
+        if let Some(stop) = first_unprintable(block) {
+            return len + stop;
+        }
+        len += 16;
+    }
+    let (chunks, remainder) = rest.as_chunks::<8>();
+    for chunk in chunks {
+        let word = u64::from_le_bytes(*chunk);
+        // Per byte, neither sum carries into the next byte. A high bit is set
+        // where the byte is 0x7f or above (any non-ASCII byte included) ...
+        let low = word & !HIGH;
+        let from_delete = (low + ONES) | word;
+        // ... or below 0x20, where adding 0x60 to the low seven bits stays
+        // under 0x80.
+        let below_space = !((low + 0x60 * ONES) | word);
+        let stop = (from_delete | below_space) & HIGH;
+        if stop != 0 {
+            return len + (stop.trailing_zeros() / 8) as usize;
+        }
+        len += 8;
+    }
+    len + remainder
+        .iter()
+        .take_while(|byte| (0x20..=0x7e).contains(*byte))
+        .count()
+}
+
+/// The index of the first byte of `block` outside `0x20..=0x7e`, with the
+/// baseline vector instructions of the target (NEON, SSE2).
+#[inline(always)]
+fn first_unprintable(block: &[u8; 16]) -> Option<usize> {
+    #[cfg(target_arch = "aarch64")]
+    {
+        use std::arch::aarch64::{
+            vcltq_u8, vdupq_n_u8, vget_lane_u64, vld1q_u8, vminvq_u8, vmvnq_u8,
+            vreinterpret_u64_u8, vreinterpretq_u16_u8, vshrn_n_u16, vsubq_u8,
+        };
+        // SAFETY: NEON is part of the aarch64 baseline, and the load reads
+        // exactly the 16 bytes of `block`.
+        unsafe {
+            let bytes = vld1q_u8(block.as_ptr());
+            let printable = vcltq_u8(vsubq_u8(bytes, vdupq_n_u8(0x20)), vdupq_n_u8(0x5f));
+            if vminvq_u8(printable) == u8::MAX {
+                return None;
+            }
+            // Narrow to four mask bits per byte to find the first stop.
+            let stops = vreinterpretq_u16_u8(vmvnq_u8(printable));
+            let mask = vget_lane_u64::<0>(vreinterpret_u64_u8(vshrn_n_u16::<4>(stops)));
+            Some((mask.trailing_zeros() / 4) as usize)
+        }
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        use std::arch::x86_64::{
+            __m128i, _mm_and_si128, _mm_cmpgt_epi8, _mm_cmplt_epi8, _mm_loadu_si128,
+            _mm_movemask_epi8, _mm_set1_epi8,
+        };
+        // SAFETY: SSE2 is part of the x86_64 baseline, and the unaligned load
+        // reads exactly the 16 bytes of `block`.
+        unsafe {
+            let bytes = _mm_loadu_si128(block.as_ptr().cast::<__m128i>());
+            // As signed bytes, 0x20..=0x7e is 32..=126 and every byte from
+            // 0x80 is negative.
+            let printable = _mm_and_si128(
+                _mm_cmpgt_epi8(bytes, _mm_set1_epi8(0x1f)),
+                _mm_cmplt_epi8(bytes, _mm_set1_epi8(0x7f)),
+            );
+            let mask = _mm_movemask_epi8(printable) as u32;
+            (mask != 0xffff).then(|| (!mask).trailing_zeros() as usize)
+        }
+    }
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+    {
+        block.iter().position(|byte| !(0x20..=0x7e).contains(byte))
+    }
+}
+
 pub(super) trait Handler {
     fn print(&mut self, character: char);
 
@@ -62,6 +148,14 @@ pub(super) trait Handler {
         for &byte in bytes {
             self.print(char::from(byte));
         }
+    }
+
+    /// Print a leading run of `bytes`, which starts with a non-ASCII byte,
+    /// and return how many bytes it consumed. Only complete scalars and
+    /// printable ASCII may be consumed, each exactly as `print` would; the
+    /// parser handles everything else, so consuming nothing is always valid.
+    fn print_utf8(&mut self, _bytes: &[u8]) -> usize {
+        0
     }
 
     fn execute(&mut self, byte: u8);
@@ -175,6 +269,13 @@ impl Parser {
         self.utf8_remaining = 0;
     }
 
+    /// Between sequences and scalars, where a printable ASCII byte is
+    /// printed and nothing else.
+    #[inline]
+    pub(super) fn at_ground(&self) -> bool {
+        self.state == State::Ground && self.utf8_remaining == 0
+    }
+
     pub(super) fn advance(&mut self, handler: &mut impl Handler, bytes: &[u8]) -> usize {
         self.advance_impl::<true>(handler, bytes)
     }
@@ -198,9 +299,7 @@ impl Parser {
         while offset < bytes.len() {
             if self.state == State::Ground && self.utf8_remaining == 0 {
                 let start = offset;
-                while offset < bytes.len() && (0x20..=0x7e).contains(&bytes[offset]) {
-                    offset += 1;
-                }
+                offset += printable_ascii_len(&bytes[offset..]);
                 if offset != start {
                     handler.print_ascii(&bytes[start..offset]);
                     if PAUSABLE && handler.pause_requested() {
@@ -212,14 +311,89 @@ impl Parser {
                 // than revisiting the VT state machine for each continuation.
                 // Invalid and fragmented sequences keep the streaming path's
                 // replacement/reconsumption behavior below.
-                if bytes[offset] >= 0xc2
-                    && let Some((character, len)) = complete_utf8(&bytes[offset..])
-                {
-                    handler.print(character);
-                    offset += len;
+                // Line endings and the other C0 controls but ESC execute
+                // directly, as `ground` would.
+                // A control sequence introducer opens most escapes, and calls
+                // no handler: both bytes are taken at once.
+                if bytes[offset] == 0x1b && bytes.get(offset + 1) == Some(&b'[') {
+                    self.begin_escape();
+                    self.state = State::Csi;
+                    offset += 2;
+                    continue;
+                }
+                if bytes[offset] < 0x20 && bytes[offset] != 0x1b {
+                    handler.execute(bytes[offset]);
+                    offset += 1;
+                    // A line ending's line feed executes here, as the next
+                    // pass would: a carriage return requests no pause.
+                    if bytes[offset - 1] == b'\r' && bytes.get(offset) == Some(&b'\n') {
+                        handler.execute(b'\n');
+                        offset += 1;
+                    }
                     if PAUSABLE && handler.pause_requested() {
                         break;
                     }
+                    continue;
+                }
+                if bytes[offset] >= 0xc2 {
+                    // The handler may write a whole run of text, decoding it
+                    // as it goes. Printing never requests a pause, so one
+                    // check after the run matches checking per scalar.
+                    let written = handler.print_utf8(&bytes[offset..]);
+                    if written != 0 {
+                        offset += written;
+                        if PAUSABLE && handler.pause_requested() {
+                            break;
+                        }
+                        continue;
+                    }
+                    if let Some((character, len)) = complete_utf8(&bytes[offset..]) {
+                        handler.print(character);
+                        offset += len;
+                        if PAUSABLE && handler.pause_requested() {
+                            break;
+                        }
+                        continue;
+                    }
+                }
+            } else if self.state == State::Csi && !self.discarded && self.intermediate_len == 0 {
+                // Parameters are most of a CSI sequence's bytes; take their
+                // run here instead of dispatching each through the state
+                // machine. Anything else but the final byte does.
+                let start = offset;
+                while let Some(&byte) = bytes.get(offset) {
+                    match byte {
+                        b'0'..=b'9' => {
+                            self.ensure_param();
+                            self.params[self.param_len - 1].digit(byte - b'0');
+                        }
+                        b';' => {
+                            self.ensure_param();
+                            if self.param_len == MAX_PARAMS {
+                                self.discarded = true;
+                                offset += 1;
+                                break;
+                            }
+                            self.params[self.param_len] = Param::EMPTY;
+                            self.param_len += 1;
+                        }
+                        _ => break,
+                    }
+                    offset += 1;
+                }
+                // So does the final byte, as `csi_byte` would.
+                if !self.discarded
+                    && let Some(&byte @ 0x40..=0x7e) = bytes.get(offset)
+                {
+                    self.state = State::Ground;
+                    handler.csi(&self.params[..self.param_len], self.private, &[], byte);
+                    offset += 1;
+                    if PAUSABLE && handler.pause_requested() {
+                        break;
+                    }
+                    continue;
+                }
+                if offset != start {
                     continue;
                 }
             } else if let State::String(kind) = self.state {
@@ -551,20 +725,28 @@ impl Parser {
 
 /// Decode only a complete, valid non-ASCII scalar. The caller retains the
 /// streaming decoder for all other input, including incomplete chunk tails.
-#[inline]
-fn complete_utf8(bytes: &[u8]) -> Option<(char, usize)> {
-    let (&first, rest) = bytes.split_first()?;
+#[inline(always)]
+pub(super) fn complete_utf8(bytes: &[u8]) -> Option<(char, usize)> {
     let continuation = |byte: u8| byte & 0xc0 == 0x80;
-    let (value, len) = match (first, rest) {
-        (0xc2..=0xdf, &[second, ..]) if continuation(second) => {
+    let (value, len) = match *bytes.first()? {
+        first @ 0xc2..=0xdf => {
+            let second = *bytes.get(1)?;
+            if !continuation(second) {
+                return None;
+            }
             ((u32::from(first & 0x1f) << 6) | u32::from(second & 0x3f), 2)
         }
-        (0xe0..=0xef, &[second, third, ..])
-            if continuation(second)
-                && continuation(third)
-                && (first != 0xe0 || second >= 0xa0)
-                && (first != 0xed || second < 0xa0) =>
-        {
+        first @ 0xe0..=0xef => {
+            let [_, second, third, ..] = *bytes else {
+                return None;
+            };
+            if !continuation(second)
+                || !continuation(third)
+                || (first == 0xe0 && second < 0xa0)
+                || (first == 0xed && second >= 0xa0)
+            {
+                return None;
+            }
             (
                 (u32::from(first & 0x0f) << 12)
                     | (u32::from(second & 0x3f) << 6)
@@ -572,13 +754,18 @@ fn complete_utf8(bytes: &[u8]) -> Option<(char, usize)> {
                 3,
             )
         }
-        (0xf0..=0xf4, &[second, third, fourth, ..])
-            if continuation(second)
-                && continuation(third)
-                && continuation(fourth)
-                && (first != 0xf0 || second >= 0x90)
-                && (first != 0xf4 || second < 0x90) =>
-        {
+        first @ 0xf0..=0xf4 => {
+            let [_, second, third, fourth, ..] = *bytes else {
+                return None;
+            };
+            if !continuation(second)
+                || !continuation(third)
+                || !continuation(fourth)
+                || (first == 0xf0 && second < 0x90)
+                || (first == 0xf4 && second >= 0x90)
+            {
+                return None;
+            }
             (
                 (u32::from(first & 7) << 18)
                     | (u32::from(second & 0x3f) << 12)
@@ -589,7 +776,10 @@ fn complete_utf8(bytes: &[u8]) -> Option<(char, usize)> {
         }
         _ => return None,
     };
-    char::from_u32(value).map(|character| (character, len))
+    // SAFETY: the lead and continuation ranges above exclude overlong
+    // encodings, surrogates (ED A0..) and values above U+10FFFF (F4 90..),
+    // so `value` is a Unicode scalar value.
+    Some((unsafe { char::from_u32_unchecked(value) }, len))
 }
 
 #[cfg(test)]

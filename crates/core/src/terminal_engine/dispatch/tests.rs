@@ -69,8 +69,8 @@ fn invalid_extended_colors_preserve_style_and_do_not_leak_components() {
         let row = engine.viewport_row(0).unwrap();
         assert_eq!(row[0].style, row[1].style, "{rendition}");
         assert_eq!(
-            row[0].underline_color(),
-            row[1].underline_color(),
+            row.underline_color(0),
+            row.underline_color(1),
             "{rendition}"
         );
     }
@@ -94,8 +94,8 @@ fn unsupported_subparameters_do_not_activate_unrelated_renditions() {
         let row = engine.viewport_row(0).unwrap();
         assert_eq!(row[0].style, row[1].style, "{rendition}");
         assert_eq!(
-            row[0].underline_color(),
-            row[1].underline_color(),
+            row.underline_color(0),
+            row.underline_color(1),
             "{rendition}"
         );
     }
@@ -302,9 +302,9 @@ fn soft_reset_restores_vt_modes_without_erasing_or_moving_content() {
     engine.feed(b"history\r\nfirst\r\nsecond\r\nthird\r\nfourth");
     engine.feed(b"\x1b[?25l\x1b[2 q\x1b[?1h\x1b=\x1b[4h\x1b[?7l\x1b[2;3r\x1b[?6h\x1b[31;1;4m\x1b[1\"q\x1b(0\x1b7\x1b[2;5H");
     let screen: Vec<_> = (0..4)
-        .map(|row| engine.viewport_row(row).unwrap().to_vec())
+        .map(|row| engine.viewport_row(row).unwrap().snapshot())
         .collect();
-    let history = engine.line(-1).unwrap().to_vec();
+    let history = engine.line(-1).unwrap().snapshot();
     let position = (engine.cursor().row, engine.cursor().col);
     engine.take_damage();
     // Exercise the parser's fragmented intermediate/final handling too.
@@ -317,9 +317,9 @@ fn soft_reset_restores_vt_modes_without_erasing_or_moving_content() {
     assert!(!engine.cursor().blinking);
     assert!(!engine.modes().application_keypad);
     assert_eq!(engine.history_size(), 1);
-    assert_eq!(engine.line(-1).unwrap(), history);
+    assert_eq!(engine.line(-1).unwrap().snapshot(), history);
     for (row, expected) in screen.iter().enumerate() {
-        assert_eq!(engine.viewport_row(row).unwrap(), expected);
+        assert_eq!(&engine.viewport_row(row).unwrap().snapshot(), expected);
     }
     assert!(matches!(engine.take_damage(), Damage::Partial(spans) if !spans.is_empty()));
     engine.feed(b"\x1b[?25;6;1;7$p\x1b[4$p\x1bP$qr\x1b\\\x1bP$qm\x1b\\\x1bP$q\"q\x1b\\");
@@ -578,15 +578,15 @@ fn restore_cursor_keeps_the_current_hyperlink_and_restores_underline_color() {
             )
             .as_bytes(),
         );
-        let cell = &open.viewport_row(0).unwrap()[0];
-        assert_eq!(cell.hyperlink().unwrap().uri, "https://new", "{save:?}");
-        assert_eq!(cell.underline_color(), Color::indexed(1), "{save:?}");
+        let row = open.viewport_row(0).unwrap();
+        assert_eq!(row.hyperlink(0).unwrap().uri, "https://new", "{save:?}");
+        assert_eq!(row.underline_color(0), Color::indexed(1), "{save:?}");
 
         // A link closed before the restore stays closed.
         let mut closed = engine(10, 2);
         closed.feed(format!("\x1b]8;;https://old\x1b\\{save}\x1b]8;;\x1b\\{restore}x").as_bytes());
         assert!(
-            closed.viewport_row(0).unwrap()[0].extra.is_none(),
+            closed.viewport_row(0).unwrap().extra(0).is_none(),
             "{save:?}"
         );
     }
@@ -687,9 +687,10 @@ fn screen_alignment_fills_with_e_resets_margins_and_homes() {
     engine.feed(b"\x1b#8");
     for row in 0..3 {
         assert_eq!(text(&engine, row), "EEEE");
-        for cell in engine.viewport_row(row).unwrap() {
+        let line = engine.viewport_row(row).unwrap();
+        assert!(line.extras().next().is_none());
+        for cell in line {
             assert_eq!(cell.flags, 0);
-            assert!(cell.extra.is_none());
             assert_eq!(cell.style.foreground, Color::indexed(1));
             assert_eq!(cell.style.attributes, 0);
             assert_eq!(cell.style.underline, UnderlineStyle::None);

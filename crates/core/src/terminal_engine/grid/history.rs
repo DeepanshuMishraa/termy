@@ -9,10 +9,13 @@ pub(super) const HISTORY_BYTE_BUDGET: usize = Size::MAX_CELLS * size_of::<Cell>(
 const BUDGET_COMPACTION_CHUNK: usize = 256;
 
 impl Grid {
-    pub(super) fn push_history(&mut self, mut row: Row) {
+    pub(super) fn push_history(&mut self, row: Row) {
+        // Charged in place: editing the row before the push would make the
+        // push wait for that store (and every cell store queued before it).
+        self.history.push_back(row);
+        let row = self.history.back_mut().expect("pushed history row");
         row.bound_extras();
         self.history_bytes += row.heap_bytes();
-        self.history.push_back(row);
     }
 
     pub(super) fn pop_history_front(&mut self) -> Option<Row> {
@@ -162,7 +165,7 @@ mod tests {
         let mut real = 0;
         for row in &grid.history {
             real += row.cells.capacity() * size_of::<Cell>();
-            for extra in row.cells().iter().filter_map(|cell| cell.extra.as_ref()) {
+            for (_, extra) in &row.extras {
                 if seen.insert(Arc::as_ptr(extra)) {
                     real += 2 * size_of::<usize>()
                         + size_of_val(extra.as_ref())

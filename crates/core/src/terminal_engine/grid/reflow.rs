@@ -1,13 +1,14 @@
 //! Width-change reflow: rewraps logical lines into a bounded output window.
+use super::super::types::{CellExtra, ExtraSlot};
 use super::history::HISTORY_BYTE_BUDGET;
-use super::{Cell, Grid, Row, Size, print};
-use std::collections::VecDeque;
+use super::{Cell, Grid, Ring, Row, Size, print};
+use std::sync::Arc;
 
 /// Keep only the rows a resized viewport and its bounded history can retain.
 /// Row positions remain absolute while old rows are evicted, so cursor and
 /// viewport anchors can be remapped without materializing the entire result.
 struct ReflowWindow {
-    rows: VecDeque<Row>,
+    rows: Ring<Row>,
     // Heap bytes of `rows`, and the oldest row not yet packed for the budget.
     bytes: usize,
     next_pack: usize,
@@ -26,7 +27,7 @@ struct ReflowWindow {
 impl ReflowWindow {
     fn new(size: Size, history_limit: usize) -> Self {
         Self {
-            rows: VecDeque::new(),
+            rows: Ring::new(),
             bytes: 0,
             next_pack: 0,
             spare: Vec::new(),
@@ -67,6 +68,7 @@ impl ReflowWindow {
         if self.spare.len() < Self::MAX_SPARE {
             // Its remaining cells are not known to be blank.
             row.cells.clear();
+            row.extras.clear();
             row.occupied = 0;
             row.clear_background = Cell::default().style.background;
             self.spare.push(row);
@@ -145,6 +147,8 @@ impl Grid {
         let mut output =
             ReflowWindow::new(size, Self::bounded_history(self.requested_history_limit));
         let mut logical = Vec::new();
+        // The metadata of `logical`'s cells, by index.
+        let mut logical_extras = Vec::new();
         let mut logical_cursor = None;
         let mut logical_boundary = None;
         let mut logical_viewport = None;
@@ -186,15 +190,22 @@ impl Grid {
             };
             let len = row.content_len().max(required).min(row.cells.len());
             logical.reserve(len);
-            logical.extend(
-                row.cells
-                    .drain(..len)
-                    .filter(|cell| cell.flags & Cell::LEADING_WIDE_SPACER == 0),
-            );
+            let mut extras = std::mem::take(&mut row.extras).into_iter().peekable();
+            for (col, cell) in row.cells.drain(..len).enumerate() {
+                if cell.flags & Cell::LEADING_WIDE_SPACER != 0 {
+                    continue;
+                }
+                while extras.next_if(|(extra_col, _)| *extra_col < col).is_some() {}
+                if let Some((_, extra)) = extras.next_if(|(extra_col, _)| *extra_col == col) {
+                    logical_extras.push((logical.len(), extra));
+                }
+                logical.push(cell);
+            }
             output.recycle(row);
             if !joining {
                 Self::wrap_logical(
                     &mut logical,
+                    &mut logical_extras,
                     &mut output,
                     logical_cursor.take(),
                     logical_boundary.take(),
@@ -210,6 +221,7 @@ impl Grid {
         {
             Self::wrap_logical(
                 &mut logical,
+                &mut logical_extras,
                 &mut output,
                 logical_cursor,
                 logical_boundary,
@@ -246,6 +258,7 @@ impl Grid {
 
     fn wrap_logical(
         cells: &mut Vec<Cell>,
+        extras: &mut Vec<(usize, Arc<CellExtra>)>,
         output: &mut ReflowWindow,
         cursor: Option<usize>,
         boundary: Option<usize>,
@@ -259,13 +272,23 @@ impl Grid {
         let mut boundary_mapped = false;
         let mut viewport_mapped = false;
         let mut input = cells.drain(..).enumerate().peekable();
+        let mut extras = extras.drain(..).peekable();
         while let Some((index, mut cell)) = input.next() {
+            // Metadata of cells skipped below (narrowed spacers) is dropped.
+            while extras
+                .next_if(|(extra_index, _)| *extra_index < index)
+                .is_some()
+            {}
+            let extra = extras
+                .next_if(|(extra_index, _)| *extra_index == index)
+                .map(|(_, extra)| extra);
             // A one-column screen must keep making progress, so wide glyphs
             // temporarily occupy one cell there. Recover their second cell
             // when the viewport grows again rather than permanently narrowing
             // the saved text.
-            let expanded_wide =
-                cols > 1 && cell.flags & Cell::WIDE == 0 && print::cell_width(&cell) == 2;
+            let expanded_wide = cols > 1
+                && cell.flags & Cell::WIDE == 0
+                && print::cell_width(&cell, extra.combining()) == 2;
             let wide = cell.flags & Cell::WIDE != 0 || expanded_wide;
             if col == cols || (wide && cols > 1 && col + 1 == cols) {
                 if col < cols {
@@ -312,10 +335,9 @@ impl Grid {
             }
             if expanded_wide {
                 cell.flags |= Cell::WIDE;
-                row.cells[col + 1] = cell.wide_spacer();
+                row.put(col + 1, cell.wide_spacer(), extra.spacer_extra(&mut None));
             }
-            row.has_extras |= cell.extra.is_some();
-            row.cells[col] = cell;
+            row.put(col, cell, extra);
             col += if expanded_wide { 2 } else { 1 };
             row.occupied = col;
         }

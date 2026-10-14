@@ -7903,6 +7903,7 @@ dependencies = [
  "keyring",
  "libc",
  "log",
+ "parking_lot",
  "png 0.18.1",
  "polling",
  "rand_core 0.6.4",

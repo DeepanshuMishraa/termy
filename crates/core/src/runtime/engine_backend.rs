@@ -101,6 +101,7 @@ impl Backend {
         ))
     }
 
+    #[inline]
     pub(super) fn feed_output(&self, bytes: &[u8]) {
         match self {
             Self::Custom(backend) => backend.feed_output(bytes),

@@ -1,25 +1,30 @@
 //! Row-oriented terminal storage. Scrolling moves row handles, not cells.
 
-use std::{
-    collections::VecDeque,
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
 };
 
 use super::types::{
-    Cell, CellExtra, Color, Cursor, CursorShape, Damage, DirtySpan, GridEffect, Size, Style,
-    ViewportScroll,
+    Cell, CellExtra, Color, Cursor, CursorShape, Damage, DirtySpan, GridEffect, Line, Pen, Size,
+    Style, ViewportScroll,
 };
 
+mod cjk;
 mod combining;
+mod damage;
+mod extras;
+mod flood;
 mod history;
 mod margins;
+mod narrow;
 mod print;
 mod reflow;
+mod ring;
 mod row;
 use combining::CombiningCache;
+use flood::PendingClear;
+use ring::Ring;
 use row::PackedCells;
 
 const MAX_HISTORY_ROWS: usize = 20_000;
@@ -29,6 +34,8 @@ const COMPACT_OUTPUT_BURST_BYTES: usize = 4096;
 #[derive(Clone, Debug)]
 pub(super) struct Row {
     cells: Vec<Cell>,
+    // Metadata of the cells that have some, by column; see `extras.rs`.
+    extras: Vec<(usize, Arc<CellExtra>)>,
     packed: Option<Box<PackedCells>>,
     // Cells after this prefix still equal the blank used by the last clear.
     // Keeping a conservative upper bound avoids rewriting an entire row when
@@ -36,9 +43,6 @@ pub(super) struct Row {
     occupied: usize,
     clear_background: Color,
     pub(super) wrapped: bool,
-    // Set by the writers that store cell metadata, so measuring a dense row
-    // without any skips scanning it. Changes only while the row is live.
-    has_extras: bool,
     // Metadata bytes measured as the row entered history; see `row.rs`.
     extra_units: u16,
 }
@@ -48,17 +52,25 @@ impl Row {
     // varies. Text, attributes, wide flags and metadata belong in `occupied`.
     fn new(cols: usize, blank: &Cell) -> Self {
         Self {
-            cells: vec![blank.clone(); cols],
+            cells: vec![*blank; cols],
+            extras: Vec::new(),
             packed: None,
             occupied: 0,
             clear_background: blank.style.background,
             wrapped: false,
-            has_extras: blank.extra.is_some(),
             extra_units: 0,
         }
     }
 
     fn clear(&mut self, cols: usize, blank: &Cell) {
+        let end = self.clear_deferring_fill(cols, blank);
+        Cell::fill_plain(&mut self.cells[..end], blank.character, blank.style);
+    }
+
+    /// Clear the row except blanking its first cells: returns how many
+    /// leading cells still hold old content and must be filled with `blank`
+    /// before anything reads them.
+    fn clear_deferring_fill(&mut self, cols: usize, blank: &Cell) -> usize {
         // Recycled history rows are usually packed. Their contents are about
         // to be blanked, so reuse a decoded cache if any but skip decoding.
         if self.discard_packed() {
@@ -69,23 +81,32 @@ impl Row {
         } else {
             cols
         };
-        self.cells.resize(cols, blank.clone());
-        self.cells[..end].fill(blank.clone());
+        let len = self.cells.len().min(cols);
+        if self.cells.len() != cols {
+            self.cells.truncate(cols);
+            self.cells.resize(cols, *blank);
+        }
+        self.extras.clear();
         self.occupied = 0;
         self.clear_background = blank.style.background;
         self.wrapped = false;
-        self.has_extras = blank.extra.is_some();
         self.extra_units = 0;
+        end.min(len)
     }
 
     fn content_len(&self) -> usize {
+        let cells = self.cells();
         if self.wrapped {
-            return self.cells().len();
+            return cells.len();
         }
-        self.cells()
+        let text = cells
             .iter()
             .rposition(|cell| cell != &Cell::default())
-            .map_or(0, |index| index + 1)
+            .map_or(0, |index| index + 1);
+        // A default cell with metadata (a linked or underlined space) counts.
+        self.extras
+            .last()
+            .map_or(text, |(col, _)| text.max(col + 1).min(cells.len()))
     }
 }
 
@@ -94,7 +115,7 @@ struct SavedCursor {
     // Only the position is restored. Visibility, shape and blinking are
     // terminal-wide, as in xterm, so DECRC never changes them.
     cursor: Cursor,
-    pen: Cell,
+    pen: Pen,
     pending_wrap: bool,
     origin_mode: bool,
     autowrap: bool,
@@ -103,7 +124,7 @@ struct SavedCursor {
 }
 
 struct Screen {
-    rows: VecDeque<Row>,
+    rows: Ring<Row>,
     saved: SavedCursor,
     cursor: Cursor,
     pending_wrap: bool,
@@ -130,7 +151,7 @@ pub(super) struct Grid {
     primary: Screen,
     alternate: Option<Screen>,
     alternate_active: bool,
-    history: VecDeque<Row>,
+    history: Ring<Row>,
     // Heap bytes of `history` rows; see `history.rs`.
     history_bytes: usize,
     requested_history_limit: usize,
@@ -152,12 +173,25 @@ pub(super) struct Grid {
     // cross when choosing the new live viewport.
     clear_anchor: bool,
     full_damage: bool,
+    // Marking cells can change no damage: full damage is pending, or a
+    // pending scroll exposed the whole screen, so every row is fully dirty.
+    damage_saturated: bool,
+    // Damage is saturated and the last pending scroll moved the whole screen
+    // up by its height: a live flood's scroll changes no damage. Only ever
+    // set while that holds; see `mark_live_scroll_damage`.
+    flood_exposed: bool,
     visual_dirty: bool,
     dirty: Vec<Option<(usize, usize)>>,
     pending_scrolls: Vec<ViewportScroll>,
     combining_cache: CombiningCache,
     // Last color-only spacer extra; see `Cell::spacer_extra`.
     spacer_extra: Option<Arc<CellExtra>>,
+    // Cells of the row a line feed just scrolled in that still hold old
+    // content. The line's text runs cover them from the left; whatever they
+    // skip or leave is filled before anything else reads the row (see
+    // `flush_pending_clear`).
+    pending_clear: PendingClear,
+    defer_scroll_clear: bool,
     grapheme_open: bool,
     grapheme_ordinary: bool,
     // Only meaningful while a grapheme is open. A closed grapheme at the
@@ -173,7 +207,7 @@ pub(super) struct Grid {
     #[cfg(test)]
     last_reflow_row_allocations: usize,
     pub(super) cursor: Cursor,
-    pub(super) pen: Cell,
+    pub(super) pen: Pen,
     pub(super) autowrap: bool,
     pub(super) origin_mode: bool,
     pub(super) insert_mode: bool,
@@ -203,10 +237,16 @@ impl Grid {
         self.output_since_compaction = 0;
     }
 
+    #[inline]
     pub(super) fn release_history_read_cache(&mut self) {
         if *self.history_read_end.get_mut() == 0 {
             return;
         }
+        self.release_history_read_cache_slow();
+    }
+
+    #[inline(never)]
+    fn release_history_read_cache_slow(&mut self) {
         let start = std::mem::replace(self.history_read_start.get_mut(), usize::MAX);
         // Every history mutation releases first, so `end` should still be in
         // bounds; clamping keeps a missed caller from panicking here.
@@ -230,7 +270,7 @@ impl Grid {
             primary: Screen::new(size),
             alternate: None,
             alternate_active: false,
-            history: VecDeque::new(),
+            history: Ring::new(),
             history_bytes: 0,
             requested_history_limit: history_limit.min(MAX_HISTORY_ROWS),
             history_limit: Self::bounded_history(history_limit),
@@ -247,11 +287,15 @@ impl Grid {
             pending_wrap: false,
             clear_anchor: false,
             full_damage: true,
+            damage_saturated: true,
+            flood_exposed: false,
             visual_dirty: false,
             dirty: vec![None; size.rows],
             pending_scrolls: Vec::with_capacity(MAX_SCROLL_DAMAGE),
             combining_cache: CombiningCache::default(),
             spacer_extra: None,
+            pending_clear: PendingClear::NONE,
+            defer_scroll_clear: false,
             grapheme_open: false,
             grapheme_ordinary: true,
             grapheme_at_margin: false,
@@ -263,7 +307,7 @@ impl Grid {
             #[cfg(test)]
             last_reflow_row_allocations: 0,
             cursor: Cursor::default(),
-            pen: Cell::default(),
+            pen: Pen::default(),
             autowrap: true,
             origin_mode: false,
             insert_mode: false,
@@ -338,7 +382,7 @@ impl Grid {
         self.row(row as i32 - self.display_offset() as i32)
     }
 
-    pub(super) fn row_cells(&self, line: i32) -> Option<&[Cell]> {
+    pub(super) fn row_line(&self, line: i32) -> Option<Line<'_>> {
         let row = self.row(line)?;
         if line < 0 && row.packed.is_some() {
             let index = self.history.len() - line.unsigned_abs() as usize;
@@ -346,73 +390,18 @@ impl Grid {
             self.history_read_end
                 .fetch_max(index + 1, Ordering::Relaxed);
         }
-        Some(row.cells())
+        Some(row.line())
     }
 
-    pub(super) fn visible_row_cells(&self, row: usize) -> Option<&[Cell]> {
+    pub(super) fn visible_row_line(&self, row: usize) -> Option<Line<'_>> {
         if row >= self.size.rows {
             return None;
         }
-        self.row_cells(row as i32 - self.display_offset() as i32)
+        self.row_line(row as i32 - self.display_offset() as i32)
     }
 
-    pub(super) fn mark_full_damage(&mut self) {
-        self.visual_dirty = true;
-        self.full_damage = true;
-        self.pending_scrolls.clear();
-    }
-
-    fn mark_scroll_damage(&mut self, top: usize, bottom: usize, lines: i32) {
-        self.visual_dirty = true;
-        if self.full_damage {
-            return;
-        }
-        // While browsing history, scrolling can change both history and live
-        // rows in the viewport. A full refresh also covers eviction at its top.
-        if self.display_offset() != 0 {
-            self.mark_full_damage();
-            return;
-        }
-        let count = lines.unsigned_abs() as usize;
-        debug_assert!(count != 0 && count <= bottom - top);
-        // Once a pending scroll exposed the whole region, every row in it is
-        // fully dirty, so rotating again (per line of a flood) changes nothing.
-        if self.pending_scrolls.last().is_some_and(|previous| {
-            previous.top == top
-                && previous.bottom == bottom
-                && previous.lines.signum() == lines.signum()
-                && previous.lines.unsigned_abs() as usize == bottom - top
-        }) {
-            self.mark_cursor(self.cursor);
-            return;
-        }
-        // The renderer may have painted the old cursor into a cached row. Its
-        // old mark must travel with that row before marking its new position.
-        self.mark_cursor(self.cursor);
-        let exposed = Some((0, self.size.cols));
-        if lines > 0 {
-            self.dirty[top..bottom].rotate_left(count);
-            self.dirty[bottom - count..bottom].fill(exposed);
-        } else {
-            self.dirty[top..bottom].rotate_right(count);
-            self.dirty[top..top + count].fill(exposed);
-        }
-        self.mark_cursor(self.cursor);
-        if let Some(previous) = self.pending_scrolls.last_mut()
-            && previous.top == top
-            && previous.bottom == bottom
-            && previous.lines.signum() == lines.signum()
-        {
-            // Once the entire region was exposed, every cell is dirty, so a
-            // full rotation plus those patches represents any further scroll.
-            let count = (previous.lines.unsigned_abs() as usize + count).min(bottom - top);
-            previous.lines = count as i32 * lines.signum();
-        } else if self.pending_scrolls.len() < MAX_SCROLL_DAMAGE {
-            self.pending_scrolls
-                .push(ViewportScroll { top, bottom, lines });
-        } else {
-            self.mark_full_damage();
-        }
+    pub(super) fn tracks_effects(&self) -> bool {
+        self.track_effects
     }
 
     pub(super) fn set_effect_tracking(&mut self, enabled: bool) {
@@ -462,87 +451,24 @@ impl Grid {
         self.effects.push(effect);
     }
 
-    fn mark(&mut self, row: usize, start: usize, end: usize) {
-        self.visual_dirty = true;
-        self.mark_damage(row, start, end);
-    }
-
-    fn mark_damage(&mut self, row: usize, start: usize, end: usize) {
-        if self.full_damage || row >= self.size.rows || start >= end {
-            return;
-        }
-        let row = row.saturating_add(self.display_offset());
-        if let Some(dirty) = self.dirty.get_mut(row) {
-            let end = end.min(self.size.cols);
-            *dirty = Some(match *dirty {
-                Some((old_start, old_end)) => (old_start.min(start), old_end.max(end)),
-                None => (start, end),
-            });
-        }
-    }
-
-    fn mark_cursor(&mut self, cursor: Cursor) {
-        if cursor.visible {
-            // Cursor overlays need text damage but do not edit placeholder cells.
-            self.mark_damage(cursor.row, cursor.col, cursor.col.saturating_add(1));
-        }
-    }
-
-    /// Tracks edits independently of damage consumption, including while full
-    /// damage is already pending. Graphics consume it to notice placeholder edits.
-    pub(super) fn take_visual_dirty(&mut self) -> bool {
-        std::mem::take(&mut self.visual_dirty)
-    }
-
     pub(super) fn end_grapheme(&mut self) {
         self.grapheme_open = false;
         self.grapheme_at_margin = false;
     }
 
+    #[inline]
     fn motion_done(&mut self, old: Cursor) {
         self.end_grapheme();
         self.pending_wrap = false;
-        self.mark_cursor(old);
-        self.mark_cursor(self.cursor);
+        if !self.damage_saturated {
+            self.mark_cursor(old);
+            self.mark_cursor(self.cursor);
+        }
     }
 
     pub(super) fn cursor_changed(&mut self, old: Cursor) {
         self.mark_cursor(old);
         self.mark_cursor(self.cursor);
-    }
-
-    pub(super) fn take_damage(&mut self) -> Damage {
-        // Cell-only consumers cannot replay row rotations. Expand the affected
-        // regions so their usual span patching still reconstructs the viewport.
-        for scroll in &self.pending_scrolls {
-            self.dirty[scroll.top..scroll.bottom].fill(Some((0, self.size.cols)));
-        }
-        self.pending_scrolls.clear();
-        self.take_cell_damage()
-    }
-
-    pub(super) fn take_render_damage(&mut self) -> (Damage, Vec<ViewportScroll>) {
-        let scrolls = self.pending_scrolls.clone();
-        self.pending_scrolls.clear();
-        (self.take_cell_damage(), scrolls)
-    }
-
-    fn take_cell_damage(&mut self) -> Damage {
-        if std::mem::take(&mut self.full_damage) {
-            self.dirty.fill(None);
-            return Damage::Full;
-        }
-        let spans = self
-            .dirty
-            .iter_mut()
-            .enumerate()
-            .filter_map(|(row, dirty)| {
-                dirty
-                    .take()
-                    .map(|(start, end)| DirtySpan { row, start, end })
-            })
-            .collect();
-        Damage::Partial(spans)
     }
 
     fn blank(&self) -> Cell {
@@ -564,13 +490,13 @@ impl Grid {
         let mut end = col + 1;
         if row.cells[col].flags & Cell::WIDE_SPACER != 0 && col > 0 {
             start -= 1;
-            row.cells[start] = blank.clone();
+            row.blank_cell(start, *blank);
         }
         if row.cells[col].flags & Cell::WIDE != 0 && end < row.cells.len() {
-            row.cells[end] = blank.clone();
+            row.blank_cell(end, *blank);
             end += 1;
         }
-        row.cells[col] = blank.clone();
+        row.blank_cell(col, *blank);
         row.occupied = row.occupied.max(end);
         (start, end)
     }
@@ -740,7 +666,15 @@ impl Grid {
             let background = blank.style.background;
             let (first_left, first_right) = Self::clear_wide_at(active, start, &blank);
             let (last_left, last_right) = Self::clear_wide_at(active, end - 1, &blank);
-            active.cells[start..end].fill(blank);
+            // Past `occupied`, cells already equal a blank on the same
+            // background, so erasing to the end of a short line writes little.
+            let filled = if active.clear_background == background {
+                end.min(occupied.max(start))
+            } else {
+                end
+            };
+            Cell::fill_plain(&mut active.cells[start..filled], ' ', blank.style);
+            active.clear_extras(start..end);
             if end == active.cells.len() {
                 active.wrapped = false;
                 // Every cell from the erase start is now this blank, so the
@@ -854,11 +788,11 @@ impl Grid {
         let cols = self.size.cols;
         for row in &mut self.screen_mut().rows {
             row.discard_packed();
-            row.cells.resize(cols, fill.clone());
-            row.cells.fill(fill.clone());
+            row.cells.resize(cols, fill);
+            row.cells.fill(fill);
+            row.extras.clear();
             row.occupied = cols;
             row.wrapped = false;
-            row.has_extras = false;
         }
         // The text under any image is gone, as after ED 2.
         self.effect(GridEffect::Clear {
@@ -891,7 +825,7 @@ impl Grid {
             || (flags & Cell::LEADING_WIDE_SPACER != 0
                 && (!row.wrapped || col + 1 != row.cells.len()));
         if invalid {
-            row.cells[col] = blank.clone();
+            row.blank_cell(col, *blank);
         }
     }
 
@@ -927,7 +861,9 @@ impl Grid {
         }
         Self::clear_straddling_right_margin(active, right, &blank);
         active.cells[col..right].rotate_right(count);
-        active.cells[col..col + count].fill(blank.clone());
+        active.rotate_extras_right(col..right, count);
+        active.cells[col..col + count].fill(blank);
+        active.clear_extras(col..col + count);
         if right == cols {
             active.wrapped = false;
         }
@@ -966,7 +902,9 @@ impl Grid {
         }
         Self::clear_straddling_right_margin(active, right, &blank);
         active.cells[col..right].rotate_left(count);
-        active.cells[right - count..right].fill(blank.clone());
+        active.rotate_extras_left(col..right, count);
+        active.cells[right - count..right].fill(blank);
+        active.clear_extras(right - count..right);
         if right == cols {
             active.wrapped = false;
         }
@@ -978,56 +916,6 @@ impl Grid {
         }
         Self::edited_occupied(active, 0, right, &blank);
         self.mark(row, col.saturating_sub(1), cols);
-    }
-
-    fn scroll_region_up(&mut self, top: usize, bottom: usize, count: usize, retain_history: bool) {
-        let blank = self.blank();
-        let cols = self.size.cols;
-        let count = count.min(bottom - top);
-        let history_before = self.history_size();
-        for _ in 0..count {
-            let removed = self
-                .screen_mut()
-                .rows
-                .remove(top)
-                .expect("scroll region row");
-            let mut recycled = if retain_history && self.history_limit != 0 {
-                let recycled = if self.history.len() == self.history_limit {
-                    self.pop_history_front()
-                } else {
-                    None
-                };
-                let (retained, recycled) = if self.compact_on_scroll {
-                    removed.retain(recycled, cols, &blank)
-                } else {
-                    (removed, recycled.unwrap_or_else(|| Row::new(cols, &blank)))
-                };
-                self.push_history(retained);
-                self.history_activity = true;
-                self.pending_compaction = (self.pending_compaction + 1).min(self.history.len());
-                if self.display_offset != 0 {
-                    self.display_offset = (self.display_offset + 1).min(self.history.len());
-                }
-                recycled
-            } else {
-                removed
-            };
-            recycled.clear(cols, &blank);
-            self.screen_mut().rows.insert(bottom - 1, recycled);
-        }
-        if count != 0 {
-            self.mark_scroll_damage(top, bottom, count as i32);
-            self.effect(GridEffect::Scroll {
-                alternate: self.alternate_active,
-                top,
-                bottom,
-                lines: count as i64,
-                retains_history: retain_history && self.history_limit != 0,
-                history_before,
-                history_after: self.history_size(),
-            });
-            self.enforce_history_bytes();
-        }
     }
 
     fn scroll_region_down(&mut self, top: usize, bottom: usize, count: usize) {
@@ -1136,7 +1024,7 @@ impl Grid {
         // one and take everything else, including SGR 58, from the save.
         let link = self.pen.extra.take();
         let underline_color = saved.pen.underline_color();
-        self.pen = Cell {
+        self.pen = Pen {
             extra: link,
             ..saved.pen
         };
@@ -1274,7 +1162,7 @@ impl Grid {
             shape: cursor_shape,
             ..Cursor::default()
         };
-        self.pen = Cell::default();
+        self.pen = Pen::default();
         self.scroll_top = 0;
         self.scroll_bottom = self.size.rows;
         // A program that dies with DECLRMM set would otherwise turn every
@@ -1302,14 +1190,14 @@ impl Grid {
         self.pending_compaction = 0;
         self.display_offset = 0;
         self.cursor = Cursor::default();
-        self.pen = Cell::default();
+        self.pen = Pen::default();
         self.primary.saved = SavedCursor {
             autowrap: true,
             ..SavedCursor::default()
         };
         self.primary.cursor = self.cursor;
         for row in &mut self.primary.rows {
-            row.clear(self.size.cols, &self.pen);
+            row.clear(self.size.cols, &Cell::default());
         }
         self.tabs = Self::default_tabs(self.size.cols);
         self.scroll_top = 0;
@@ -1356,6 +1244,7 @@ impl Grid {
                 alternate.rows.truncate(size.rows);
                 for row in &mut alternate.rows {
                     row.cells.resize(size.cols, Cell::default());
+                    row.clear_extras(size.cols..usize::MAX);
                     row.wrapped = false;
                     Self::repair_wide(row, &Cell::default());
                 }
@@ -1370,6 +1259,7 @@ impl Grid {
             self.primary.saved.pending_wrap = self.primary.pending_wrap;
         }
         self.size = size;
+        self.flood_exposed = false;
         self.history_limit = Self::bounded_history(self.requested_history_limit);
         self.recount_history_bytes();
         self.trim_history();

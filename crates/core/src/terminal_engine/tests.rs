@@ -10,14 +10,13 @@ fn engine(cols: usize, rows: usize, history: usize) -> Engine {
 }
 
 fn text(engine: &Engine, row: usize) -> String {
-    engine
-        .viewport_row(row)
-        .unwrap()
-        .iter()
-        .filter(|cell| cell.flags & Cell::WIDE_SPACER == 0)
-        .map(|cell| {
+    let line = engine.viewport_row(row).unwrap();
+    line.iter()
+        .enumerate()
+        .filter(|(_, cell)| cell.flags & Cell::WIDE_SPACER == 0)
+        .map(|(col, cell)| {
             let mut text = cell.character.to_string();
-            text.push_str(cell.combining());
+            text.push_str(line.combining(col));
             text
         })
         .collect()
@@ -117,16 +116,16 @@ fn underline_color_follows_text_into_spacers_marks_links_and_history() {
     engine.feed("\x1b[4;58:2::255:0:0m界e\u{301}".as_bytes());
     let row = engine.viewport_row(0).unwrap();
     assert_eq!(row[1].flags, Cell::WIDE_SPACER);
-    assert!(row[..3].iter().all(|cell| cell.underline_color() == red));
-    assert_eq!(row[2].combining(), "\u{301}");
+    assert!((0..3).all(|col| row.underline_color(col) == red));
+    assert_eq!(row.combining(2), "\u{301}");
 
     // OSC 8 keeps the color; SGR 0 clears it but keeps the link.
     engine.feed(b"\x1b]8;;https://example.test\x1b\\L\x1b[0mM");
     let row = engine.viewport_row(0).unwrap();
-    assert_eq!(row[3].underline_color(), red);
-    assert!(row[3].hyperlink().is_some());
-    assert_eq!(row[4].underline_color(), Color::DEFAULT);
-    assert!(row[4].hyperlink().is_some());
+    assert_eq!(row.underline_color(3), red);
+    assert!(row.hyperlink(3).is_some());
+    assert_eq!(row.underline_color(4), Color::DEFAULT);
+    assert!(row.hyperlink(4).is_some());
 
     // Packed history rows keep colors, flags and marks.
     engine.feed(b"\r\n\r\n\r\n");
@@ -134,8 +133,8 @@ fn underline_color_follows_text_into_spacers_marks_links_and_history() {
     assert!(engine.state.grid.row(-2).unwrap().is_packed());
     let line = engine.line(-2).unwrap();
     assert_eq!(line[1].flags, Cell::WIDE_SPACER);
-    assert_eq!(line[2].combining(), "\u{301}");
-    assert!(line[..4].iter().all(|cell| cell.underline_color() == red));
+    assert_eq!(line.combining(2), "\u{301}");
+    assert!((0..4).all(|col| line.underline_color(col) == red));
 
     engine.feed(b"\x1b[58:5:9m\x1bP$qm\x1b\\\x1b[59m\x1bP$qm\x1b\\");
     assert_eq!(
@@ -146,7 +145,7 @@ fn underline_color_follows_text_into_spacers_marks_links_and_history() {
 
 #[test]
 fn cell_layout_and_screen_dimensions_stay_bounded() {
-    assert_eq!(size_of::<Cell>(), 24, "hot cell size changed");
+    assert_eq!(size_of::<Cell>(), 16, "hot cell size changed");
     assert_eq!(size_of::<Color>(), 4);
     assert_eq!(
         Size { cols: 0, rows: 0 }.clamped(),
@@ -194,42 +193,82 @@ fn sgr_semicolon_and_colon_forms_keep_style_and_hyperlink_independent() {
     let cells = engine.viewport_row(0).unwrap();
     assert_eq!(cells[0].style.foreground.as_rgb(), Some((1, 2, 3)));
     assert_eq!(cells[0].style.background.as_indexed(), Some(42));
-    assert_eq!(cells[0].underline_color().as_rgb(), Some((4, 5, 6)));
-    assert_eq!(cells[1].underline_color(), Color::DEFAULT);
+    assert_eq!(cells.underline_color(0).as_rgb(), Some((4, 5, 6)));
+    assert_eq!(cells.underline_color(1), Color::DEFAULT);
     assert_eq!(cells[0].style.underline, UnderlineStyle::Curly);
     assert_eq!(cells[0].style.attributes, Style::BOLD | Style::ITALIC);
     assert_eq!(cells[1].style, Style::default());
-    assert_eq!(cells[1].hyperlink().unwrap().uri, "https://example.com");
-    assert!(cells[2].hyperlink().is_none());
+    assert_eq!(cells.hyperlink(1).unwrap().uri, "https://example.com");
+    assert!(cells.hyperlink(2).is_none());
 }
 
 #[test]
 fn reopened_links_and_wide_spacers_reuse_shared_metadata() {
     use std::sync::Arc;
 
-    let extra = |cell: &Cell| cell.extra.clone().unwrap();
+    let extra = |engine: &Engine, col: usize| {
+        Arc::clone(
+            engine
+                .state
+                .grid
+                .visible_row(0)
+                .unwrap()
+                .extra(col)
+                .unwrap(),
+        )
+    };
     let mut engine = engine(20, 2, 0);
     // Reopening the pen's current link keeps its metadata allocation.
     engine.feed(b"\x1b]8;;https://example.test\x1b\\A\x1b]8;;https://example.test\x1b\\B");
-    let cells = engine.viewport_row(0).unwrap();
-    assert!(Arc::ptr_eq(&extra(&cells[0]), &extra(&cells[1])));
+    assert!(Arc::ptr_eq(&extra(&engine, 0), &extra(&engine, 1)));
     // Closing a link that isn't open is a no-op, and keeps the color.
     engine.feed(b"\x1b]8;;\x1b\\\x1b[58:5:1m\x1b]8;;\x1b\\C");
     let cells = engine.viewport_row(0).unwrap();
-    assert!(cells[2].hyperlink().is_none());
-    assert_eq!(cells[2].underline_color(), Color::indexed(1));
+    assert!(cells.hyperlink(2).is_none());
+    assert_eq!(cells.underline_color(2), Color::indexed(1));
     // Spacers of linked, colored wide glyphs share one color-only extra.
     engine.feed("\x1b]8;;https://example.test\x1b\\界界".as_bytes());
-    let cells = engine.viewport_row(0).unwrap();
-    let (first, second) = (extra(&cells[4]), extra(&cells[6]));
+    let (first, second) = (extra(&engine, 4), extra(&engine, 6));
     assert!(Arc::ptr_eq(&first, &second));
     assert!(first.hyperlink.is_none());
     assert_eq!(first.underline_color, Color::indexed(1));
     // A new color gets its own spacer extra.
     engine.feed("\x1b[58:5:2m界".as_bytes());
     let cells = engine.viewport_row(0).unwrap();
-    assert_eq!(cells[8].underline_color(), Color::indexed(2));
-    assert!(!Arc::ptr_eq(&first, &extra(&cells[8])));
+    assert_eq!(cells.underline_color(8), Color::indexed(2));
+    assert!(!Arc::ptr_eq(&first, &extra(&engine, 8)));
+}
+
+// Single printable bytes take a shortcut past the parser; any byte the full
+// path would treat differently must still reach it.
+#[test]
+fn byte_at_a_time_output_matches_one_write() {
+    let input = concat!(
+        "plain text that wraps past the edge\r\n",
+        "\x1b[31mred\x1b[0m \x1b(0lqk\x1b(B x\r\n",
+        "\x1b[4hins\x1b[4l\x1b[1;3Hover\x1b[3;1H",
+        "\x1b]8;;https://example.test\x07link\x1b]8;;\x07 ",
+        "\x1b[?2026hsync\x1b[?2026l e\u{301}界\x1b[?7lno wrap at the margin here\x1b[?7h",
+        "\r\nmore\r\nlines\r\nscroll\r\nthe\r\nscreen\x1b[2;5r\x1b[5;1Hregion\n\n",
+        // Control sequences the parser's fast paths take whole, and their
+        // edge cases: intermediates, controls, cancels, escapes and deletes
+        // inside, subparameters and too many parameters.
+        "\x1b[38;2;120;180;255;48;5;234;1mstatus\x1b[0m\x1b[2;1H\x1b[Kbuild\x1b[H",
+        "\x1b[4 q\x1b[2\r;3HA\x1b[31\x18mB\x1b[3\x1b[1mC\x1b[4:3mD\x1b[3\x7f2mE",
+        "\x1b[1;2;3;4;5;6;7;8;9;1;2;3;4;5;6;7;8;9;1;2;3;4;5;6;7;8;9;1;2;3;4;5;6;7mF\x1b[m",
+    );
+    let mut whole = engine(16, 4, 8);
+    whole.feed(input.as_bytes());
+    let mut bytewise = engine(16, 4, 8);
+    for byte in input.as_bytes() {
+        bytewise.feed(std::slice::from_ref(byte));
+    }
+    for line in -(whole.history_size() as i32)..4 {
+        assert_eq!(whole.line(line), bytewise.line(line), "line {line}");
+    }
+    assert_eq!(whole.cursor(), bytewise.cursor());
+    assert_eq!(whole.modes(), bytewise.modes());
+    assert_eq!(whole.history_size(), bytewise.history_size());
 }
 
 #[test]
@@ -242,7 +281,7 @@ fn wide_and_combining_text_survive_bytewise_input() {
     assert_eq!(cells[1].character, '界');
     assert_ne!(cells[2].flags & Cell::WIDE_SPACER, 0);
     assert_eq!(cells[3].character, 'e');
-    assert_eq!(cells[3].combining(), "\u{301}");
+    assert_eq!(cells.combining(3), "\u{301}");
     assert_eq!(cells[4].character, '🙂');
     assert_ne!(cells[5].flags & Cell::WIDE_SPACER, 0);
 }
@@ -313,7 +352,7 @@ fn all_chunk_boundaries_produce_identical_terminal_state() {
     let mut whole = engine(16, 4, 5);
     whole.feed(input);
     let expected_rows: Vec<_> = (0..4)
-        .map(|row| whole.viewport_row(row).unwrap().to_vec())
+        .map(|row| whole.viewport_row(row).unwrap().snapshot())
         .collect();
     let expected_reply = replies(&mut whole);
     for split in 0..=input.len() {
@@ -323,7 +362,7 @@ fn all_chunk_boundaries_produce_identical_terminal_state() {
         assert_eq!(fragmented.cursor(), whole.cursor(), "split {split}");
         for (row, expected) in expected_rows.iter().enumerate() {
             assert_eq!(
-                fragmented.viewport_row(row).unwrap(),
+                &fragmented.viewport_row(row).unwrap().snapshot(),
                 expected,
                 "split {split}, row {row}"
             );
@@ -363,15 +402,20 @@ fn damage_covers_every_changed_cell_across_screen_operations() {
     ];
     for operation in operations.iter().cycle().take(100) {
         let before: Vec<_> = (0..5)
-            .map(|row| engine.viewport_row(row).unwrap().to_vec())
+            .map(|row| engine.viewport_row(row).unwrap().snapshot())
             .collect();
         engine.take_damage();
         engine.feed(operation);
         let damage = engine.take_damage();
         if let Damage::Partial(spans) = damage {
-            for (row, cells) in before.iter().enumerate() {
+            for (row, (cells, extras)) in before.iter().enumerate() {
+                let line = engine.viewport_row(row).unwrap();
                 for (col, cell) in cells.iter().enumerate() {
-                    if cell != &engine.viewport_row(row).unwrap()[col] {
+                    let extra = extras
+                        .iter()
+                        .find(|(at, _)| *at == col)
+                        .map(|(_, extra)| extra);
+                    if cell != &line[col] || extra != line.extra(col) {
                         assert!(
                             spans
                                 .iter()
@@ -436,6 +480,52 @@ fn arbitrary_bytes_and_resizes_keep_grid_invariants() {
                     assert!(col + 1 < size.cols && cells[col + 1].flags & Cell::WIDE_SPACER != 0);
                 }
             }
+        }
+    }
+}
+
+// A line feed blanks the row it scrolls in lazily: the next text write fills
+// only around itself. Recycled history content must never show through,
+// whatever follows the line feed or wherever a feed ends.
+#[test]
+fn rows_scrolled_in_by_line_feeds_never_show_their_recycled_content() {
+    let full_row = format!("{}\r\n", "x".repeat(20));
+    let cases = [
+        ("ab\r\n", "ab"),
+        ("\r\n", ""),
+        ("\x1b[31mab\x1b[0m\r\n", "ab"),
+        ("界a\r\n", "界a"),
+        ("e\u{301}\r\n", "e\u{301}"),
+        ("\x1b[3Cab\r\n", "   ab"),
+        ("\x1b]0;title\x07ab\r\n", "ab"),
+        // LF without CR keeps the column, so the text starts mid-row.
+        ("ab\n", "ab"),
+        // Consecutive runs (ASCII, then UTF-8, across SGR) each take their
+        // part of the row; only what no run covers is blanked.
+        (
+            "ab caf\u{e9} \u{3b5}\u{3bb} \u{65e5}z\r\n",
+            "ab caf\u{e9} \u{3b5}\u{3bb} \u{65e5}z",
+        ),
+        ("\u{e9}a\u{e9}a\r\n", "\u{e9}a\u{e9}a"),
+        ("ab\x1b[1m\u{e9}\u{65e5}\x1b[0mz\r\n", "ab\u{e9}\u{65e5}z"),
+    ];
+    for (line, visible) in cases {
+        for chunk in [1, 3, usize::MAX] {
+            let mut engine = engine(20, 3, 2);
+            engine.feed(full_row.repeat(6).as_bytes());
+            let input = line.repeat(4);
+            for part in input.as_bytes().chunks(chunk.min(input.len())) {
+                engine.feed(part);
+            }
+            for row in 0..2 {
+                let text = text(&engine, row);
+                assert!(
+                    !text.contains('x'),
+                    "{line:?} in chunks of {chunk}: {text:?}"
+                );
+                assert_eq!(text.trim(), visible.trim(), "{line:?} in chunks of {chunk}");
+            }
+            assert_eq!(text(&engine, 2).trim(), "", "{line:?} in chunks of {chunk}");
         }
     }
 }

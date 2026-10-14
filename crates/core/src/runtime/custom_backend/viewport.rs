@@ -33,12 +33,12 @@ impl CustomBackend {
         for row in 0..usize::from(state.size.rows) {
             let wrapped = state.engine.viewport_row_wrapped(row);
             state.engine.with_viewport_row(row, &mut scratch, |line| {
-                for (col, cell) in line.iter().enumerate() {
+                for col in 0..line.len() {
                     visitor(
                         offset,
                         row as i32 - offset as i32,
                         col,
-                        &render_cell(cell, wrapped && col + 1 == line.len()),
+                        &render_cell(&line, col, wrapped && col + 1 == line.len()),
                     );
                 }
             });
@@ -130,12 +130,12 @@ impl CustomBackend {
         for line in requested_first.max(range.0)..=requested_last.min(range.1) {
             let wrapped = state.engine.line_wrapped(line);
             state.engine.with_line(line, &mut scratch, |cells| {
-                for (col, cell) in cells.iter().enumerate() {
+                for col in 0..cells.len() {
                     visitor(
                         range,
                         line,
                         col,
-                        &render_cell(cell, wrapped && col + 1 == cells.len()),
+                        &render_cell(&cells, col, wrapped && col + 1 == cells.len()),
                     );
                 }
             });
@@ -159,7 +159,7 @@ impl State {
                             offset,
                             span.row as i32 - offset as i32,
                             col,
-                            &render_cell(&line[col], wrapped && col + 1 == line.len()),
+                            &render_cell(&line, col, wrapped && col + 1 == line.len()),
                         );
                     }
                 });

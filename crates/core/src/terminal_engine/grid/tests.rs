@@ -81,10 +81,10 @@ fn short_composed_lines_recycle_only_the_occupied_prefix() {
     }
     for row in grid.history.iter().chain(&grid.primary.rows) {
         assert!(row.occupied <= 3);
-        assert!(row.cells()[3..].iter().all(|cell| cell == &Cell::default()));
+        assert!(row.line()[3..].iter().all(|cell| cell == &Cell::default()));
         if row.occupied != 0 {
-            assert_eq!(row.cells()[0].combining(), "\u{301}");
-            assert_eq!(row.cells()[2].combining(), "\u{308}");
+            assert_eq!(row.line().combining(0), "\u{301}");
+            assert_eq!(row.line().combining(2), "\u{308}");
         }
     }
     assert_eq!(grid.primary.rows[1].occupied, 0);
@@ -108,7 +108,8 @@ fn recycled_rows_clear_metadata_and_repaint_the_entire_background() {
     }));
     grid.write_ascii(b"e");
     grid.put_char('\u{301}');
-    let snapshot = grid.primary.rows[0].cells[0].clone();
+    let snapshot = grid.primary.rows[0].cells[0];
+    let snapshot_extra = grid.primary.rows[0].extra(0).cloned().unwrap();
     grid.pen.extra = None;
 
     // Changing the erase background invalidates even the untouched suffix.
@@ -125,12 +126,16 @@ fn recycled_rows_clear_metadata_and_repaint_the_entire_background() {
             ..Cell::default()
         };
         assert!(row.cells().iter().all(|cell| cell == &blank));
+        assert!(row.extras.is_empty());
         assert_eq!(row.occupied, 0);
         assert!(!row.wrapped);
     }
     assert_eq!(snapshot.character, 'e');
-    assert_eq!(snapshot.combining(), "\u{301}");
-    assert_eq!(snapshot.hyperlink().unwrap().id, "retained snapshot");
+    assert_eq!(snapshot_extra.combining, "\u{301}");
+    assert_eq!(
+        snapshot_extra.hyperlink.as_ref().unwrap().id,
+        "retained snapshot"
+    );
 }
 
 #[test]
@@ -141,7 +146,7 @@ fn combining_on_blank_cells_and_selective_erases_survive_until_recycling() {
     grid.pen.style.set(Style::PROTECTED, false);
     grid.goto(0, 7);
     grid.put_char('\u{301}');
-    assert_eq!(grid.primary.rows[0].cells[6].combining(), "\u{301}");
+    assert_eq!(grid.primary.rows[0].line().combining(6), "\u{301}");
 
     grid.pen.style.background = Color::indexed(5);
     grid.goto(0, 9);
@@ -171,7 +176,7 @@ fn viewport_remains_anchored_while_new_output_enters_history() {
     print(&mut grid, "four\r\n");
     assert_eq!([text(&grid, 0), text(&grid, 1)], before);
     assert_eq!(grid.display_offset(), 3);
-    assert_eq!(grid.row(-1).unwrap().cells()[0].character, 't');
+    assert_eq!(grid.row(-1).unwrap().line()[0].character, 't');
 }
 
 #[test]
@@ -196,8 +201,8 @@ fn partial_scroll_regions_never_enter_history() {
 fn wide_character_overwrite_cleans_both_halves() {
     let mut grid = grid(6, 2, 0);
     print(&mut grid, "a界b");
-    assert_eq!(grid.row(0).unwrap().cells()[1].flags, Cell::WIDE);
-    assert_eq!(grid.row(0).unwrap().cells()[2].flags, Cell::WIDE_SPACER);
+    assert_eq!(grid.row(0).unwrap().line()[1].flags, Cell::WIDE);
+    assert_eq!(grid.row(0).unwrap().line()[2].flags, Cell::WIDE_SPACER);
     grid.goto(0, 2);
     grid.put_char('x');
     assert_eq!(text(&grid, 0), "a xb  ");
@@ -264,7 +269,9 @@ fn wide_overwrite_preserves_styles_and_owns_only_its_base_metadata() {
         ..CellExtra::default()
     }));
     print(&mut grid, "a界\u{301}界\u{308}z");
-    let before = grid.row(0).unwrap().cells().to_vec();
+    let before_cells = grid.row(0).unwrap().cells().to_vec();
+    let before_extras = grid.row(0).unwrap().extras.clone();
+    let before = Line::new(&before_cells, &before_extras);
     let extra = Arc::new(CellExtra {
         hyperlink: Some(Arc::new(Hyperlink {
             id: "new".into(),
@@ -279,7 +286,8 @@ fn wide_overwrite_preserves_styles_and_owns_only_its_base_metadata() {
     grid.goto(0, 2);
     grid.put_char('語');
 
-    let cells = grid.row(0).unwrap().cells();
+    let row = grid.row(0).unwrap();
+    let cells = row.cells();
     let blank = Cell {
         style: Style {
             background: Color::indexed(4),
@@ -289,17 +297,19 @@ fn wide_overwrite_preserves_styles_and_owns_only_its_base_metadata() {
     };
     assert_eq!(cells[1], blank);
     assert_eq!(cells[4], blank);
+    assert!(row.extra(1).is_none() && row.extra(4).is_none());
     assert_eq!(cells[2].style, grid.pen.style);
     assert_eq!(cells[3].style, grid.pen.style);
-    assert!(Arc::ptr_eq(cells[2].extra.as_ref().unwrap(), &extra));
-    assert!(cells[3].extra.is_none());
+    assert!(Arc::ptr_eq(row.extra(2).unwrap(), &extra));
+    assert!(row.extra(3).is_none());
     assert_eq!(Arc::strong_count(&extra), 3);
     for column in [0, 5, 6, 7] {
         assert_eq!(cells[column], before[column]);
+        assert_eq!(row.line().extra(column), before.extra(column));
     }
-    assert_eq!(before[1].combining(), "\u{301}");
-    assert_eq!(before[3].combining(), "\u{308}");
-    assert_eq!(before[1].hyperlink().unwrap().id, "old");
+    assert_eq!(before.combining(1), "\u{301}");
+    assert_eq!(before.combining(3), "\u{308}");
+    assert_eq!(before.hyperlink(1).unwrap().id, "old");
 }
 
 #[test]
@@ -307,16 +317,16 @@ fn wide_wrap_and_combining_marks_follow_the_base_cell() {
     let mut grid = grid(4, 2, 4);
     print(&mut grid, "abc界\u{301}");
     assert_eq!(
-        grid.row(0).unwrap().cells()[3].flags,
+        grid.row(0).unwrap().line()[3].flags,
         Cell::LEADING_WIDE_SPACER
     );
     assert!(grid.row(0).unwrap().wrapped);
-    assert_eq!(grid.row(1).unwrap().cells()[0].character, '界');
-    assert_eq!(grid.row(1).unwrap().cells()[0].combining(), "\u{301}");
-    assert_eq!(grid.row(1).unwrap().cells()[1].combining(), "");
+    assert_eq!(grid.row(1).unwrap().line()[0].character, '界');
+    assert_eq!(grid.row(1).unwrap().line().combining(0), "\u{301}");
+    assert_eq!(grid.row(1).unwrap().line().combining(1), "");
     grid.resize(Size { cols: 6, rows: 2 });
     assert_eq!(text(&grid, 0), "abc界  ");
-    assert_eq!(grid.row(0).unwrap().cells()[3].combining(), "\u{301}");
+    assert_eq!(grid.row(0).unwrap().line().combining(3), "\u{301}");
 }
 
 #[test]
@@ -326,10 +336,9 @@ fn combining_sequences_are_bounded_and_owned_by_each_cell() {
     for _ in 0..1000 {
         grid.put_char('\u{301}');
     }
-    let cell = &grid.row(0).unwrap().cells()[0];
-    assert!(cell.combining().len() <= 256);
+    assert!(grid.row(0).unwrap().line().combining(0).len() <= 256);
     grid.put_char('a');
-    assert_eq!(grid.row(0).unwrap().cells()[1].combining(), "");
+    assert_eq!(grid.row(0).unwrap().line().combining(1), "");
 }
 
 #[test]
@@ -402,9 +411,9 @@ fn selective_erasure_respects_protection_and_background() {
     grid.pen.style.background = Color::indexed(4);
     grid.erase_line(2, true);
     assert_eq!(text(&grid, 0), "界     ");
-    assert_eq!(grid.row(0).unwrap().cells()[0].flags, Cell::WIDE);
+    assert_eq!(grid.row(0).unwrap().line()[0].flags, Cell::WIDE);
     assert_eq!(
-        grid.row(0).unwrap().cells()[2].style.background,
+        grid.row(0).unwrap().line()[2].style.background,
         Color::indexed(4)
     );
     grid.erase_line(2, false);
@@ -782,12 +791,10 @@ fn mixed_edit_sequence_preserves_grid_invariants(mut seed: u32, cols: usize, mar
         {
             assert_eq!(row.cells().len(), grid.size.cols);
             assert!(row.occupied <= row.cells().len());
-            // History accounting relies on writers flagging dense metadata.
-            assert!(
-                row.has_extras
-                    || row.packed.is_some()
-                    || row.cells.iter().all(|cell| cell.extra.is_none())
-            );
+            // The metadata table is sorted, one entry per column, and holds
+            // only cells of the row's text: past `occupied` are erase blanks.
+            assert!(row.extras.windows(2).all(|pair| pair[0].0 < pair[1].0));
+            assert!(row.extras.last().is_none_or(|(col, _)| *col < row.occupied));
             let blank = Cell {
                 style: Style {
                     background: row.clear_background,
@@ -795,19 +802,15 @@ fn mixed_edit_sequence_preserves_grid_invariants(mut seed: u32, cols: usize, mar
                 },
                 ..Cell::default()
             };
-            assert!(
-                row.cells()[row.occupied..]
-                    .iter()
-                    .all(|cell| cell == &blank)
-            );
+            assert!(row.line()[row.occupied..].iter().all(|cell| cell == &blank));
             for (col, cell) in row.cells().iter().enumerate() {
                 if cell.flags & Cell::WIDE != 0 {
                     assert!(col + 1 < row.cells().len());
-                    assert_ne!(row.cells()[col + 1].flags & Cell::WIDE_SPACER, 0);
+                    assert_ne!(row.line()[col + 1].flags & Cell::WIDE_SPACER, 0);
                 }
                 if cell.flags & Cell::WIDE_SPACER != 0 {
                     assert!(col > 0);
-                    assert_ne!(row.cells()[col - 1].flags & Cell::WIDE, 0);
+                    assert_ne!(row.line()[col - 1].flags & Cell::WIDE, 0);
                 }
                 if cell.flags & Cell::LEADING_WIDE_SPACER != 0 {
                     assert_eq!(col + 1, row.cells().len());
@@ -1014,7 +1017,7 @@ fn rendered_rows(grid: &Grid) -> Vec<Vec<(Cell, bool)>> {
             let row = grid.visible_row(row).unwrap();
             row.cells()
                 .iter()
-                .cloned()
+                .copied()
                 .enumerate()
                 .map(|(col, cell)| (cell, row.wrapped && col + 1 == grid.size.cols))
                 .collect()
@@ -1366,15 +1369,16 @@ fn forced_compaction_does_not_restart_the_fragmented_output_budget() {
 
 #[test]
 fn borrowed_history_caches_release_before_output_trimming_and_clear() {
+    use super::super::types::ExtraSlot;
     use std::sync::Arc;
 
     let mut grid = grid(40, 4, 100);
     for _ in 0..110 {
         print(&mut grid, "older line\r\n");
     }
-    let mut marked = Cell::default();
+    let mut marked = None;
     marked.push_combining('\u{301}');
-    let extra = marked.extra.take().unwrap();
+    let extra = marked.unwrap();
     grid.pen.extra = Some(Arc::clone(&extra));
     print(&mut grid, "x\r\n");
     grid.pen.extra = None;
@@ -1382,22 +1386,26 @@ fn borrowed_history_caches_release_before_output_trimming_and_clear() {
         grid.linefeed();
     }
     grid.compact_history(usize::MAX);
+    // Packed rows keep their metadata in their table: reads borrow it.
     assert_eq!(Arc::strong_count(&extra), 2);
 
-    assert_eq!(grid.row_cells(-1).unwrap()[0].combining(), "\u{301}");
-    assert_eq!(Arc::strong_count(&extra), 3);
+    assert_eq!(grid.row_line(-1).unwrap().combining(0), "\u{301}");
+    assert!(grid.has_history_read_cache());
+    assert_eq!(Arc::strong_count(&extra), 2);
     grid.set_history_limit(2);
+    assert!(!grid.has_history_read_cache());
     assert_eq!(Arc::strong_count(&extra), 2);
 
-    grid.row_cells(-1).unwrap();
-    assert_eq!(Arc::strong_count(&extra), 3);
+    grid.row_line(-1).unwrap();
+    assert!(grid.has_history_read_cache());
     grid.prepare_output(1);
-    assert_eq!(Arc::strong_count(&extra), 2);
+    assert!(!grid.has_history_read_cache());
 
     grid.scroll_display(1);
-    assert_eq!(grid.visible_row_cells(0).unwrap()[0].combining(), "\u{301}");
-    assert_eq!(Arc::strong_count(&extra), 3);
+    assert_eq!(grid.visible_row_line(0).unwrap().combining(0), "\u{301}");
+    assert!(grid.has_history_read_cache());
     grid.clear_scrollback();
+    assert!(!grid.has_history_read_cache());
     assert_eq!(Arc::strong_count(&extra), 1);
     grid.prepare_output(1);
 }
@@ -1409,21 +1417,21 @@ fn history_cache_tracking_survives_sparse_reads_resize_and_reset() {
         print(&mut grid, &format!("line {line}\r\n"));
     }
     grid.compact_history(usize::MAX);
-    let first = grid.row_cells(-100).unwrap().to_vec();
-    let last = grid.row_cells(-1).unwrap().to_vec();
+    let first = grid.row_line(-100).unwrap().snapshot();
+    let last = grid.row_line(-1).unwrap().snapshot();
     grid.prepare_output(1);
-    assert_eq!(grid.row_cells(-100).unwrap(), first);
-    assert_eq!(grid.row_cells(-1).unwrap(), last);
+    assert_eq!(grid.row_line(-100).unwrap().snapshot(), first);
+    assert_eq!(grid.row_line(-1).unwrap().snapshot(), last);
 
     grid.resize(Size { cols: 40, rows: 6 });
     grid.compact_history(usize::MAX);
-    grid.row_cells(-1).unwrap();
+    grid.row_line(-1).unwrap();
     grid.resize(Size { cols: 80, rows: 4 });
     grid.compact_history(usize::MAX);
     grid.scroll_display(2);
-    grid.visible_row_cells(0).unwrap();
-    assert!(grid.visible_row_cells(usize::MAX).is_none());
-    assert!(grid.row_cells(i32::MIN).is_none());
+    grid.visible_row_line(0).unwrap();
+    assert!(grid.visible_row_line(usize::MAX).is_none());
+    assert!(grid.row_line(i32::MIN).is_none());
     grid.reset();
     grid.prepare_output(1);
     assert_eq!(grid.history_size(), 0);
@@ -1445,9 +1453,9 @@ fn erase_to_end_of_line_shrinks_the_occupied_prefix() {
     let row = &grid.primary.rows[0];
     assert_eq!(row.occupied, 1);
     assert_eq!(row.clear_background, Color::rgb(1, 2, 3));
-    assert_eq!(row.cells()[0].character, 'a');
+    assert_eq!(row.line()[0].character, 'a');
     assert!(
-        row.cells()[1..]
+        row.line()[1..]
             .iter()
             .all(|cell| cell.style.background == Color::rgb(1, 2, 3))
     );

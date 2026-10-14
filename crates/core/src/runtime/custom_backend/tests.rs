@@ -687,3 +687,45 @@ fn reverse_video_swaps_the_resolved_default_colors() {
     terminal.feed_output(b"\x1b[?5l");
     assert_eq!(terminal.palette().background, None);
 }
+
+// Spans left out because existing damage covers them must not change the
+// normalized result.
+#[test]
+fn covered_additions_normalize_like_every_addition() {
+    let span = |row, left_col, right_col| TerminalDirtySpan {
+        row,
+        left_col,
+        right_col,
+    };
+    let mut seed = 0x2545_f491_4f6c_dd1du64;
+    let mut next = |limit: usize| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        (seed % limit as u64) as usize
+    };
+    for case in 0..2000 {
+        let random = |next: &mut dyn FnMut(usize) -> usize, count| {
+            (0..count)
+                .map(|_| {
+                    let left = next(12);
+                    span(next(6), left, left + next(8))
+                })
+                .collect::<Vec<_>>()
+        };
+        let count = next(10);
+        let mut spans = random(&mut next, count);
+        // Half the cases start from normalized damage, as `take_damage`'s
+        // usually is; the rest exercise the unsorted fallback.
+        if case % 2 == 0 {
+            normalize_spans(&mut spans);
+        }
+        let count = next(10);
+        let extra = random(&mut next, count);
+        let mut expected = spans.clone();
+        expected.extend(extra.iter().copied());
+        normalize_spans(&mut expected);
+        add_spans(&mut spans, extra.iter().copied());
+        assert_eq!(spans, expected, "case {case}");
+    }
+}

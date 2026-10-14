@@ -14,7 +14,7 @@
 //! Raw colors keep the engine's tag in the top byte: `0` default, `1` indexed
 //! (low byte is the palette index), `2` RGB (`0x02RRGGBB`).
 
-use termy_core::terminal_engine::{Cell, Color, Engine, UnderlineStyle};
+use termy_core::terminal_engine::{Cell, Color, Engine, Line, UnderlineStyle};
 
 pub const CELL_STRIDE: usize = 6;
 pub const STRING_FLAG: u32 = 0x8000_0000;
@@ -36,9 +36,9 @@ impl CellBuffer {
                 continue;
             };
             let base = offset * size.cols * CELL_STRIDE;
-            for (col, cell) in cells.iter().take(size.cols).enumerate() {
+            for col in 0..cells.len().min(size.cols) {
                 let slot = base + col * CELL_STRIDE;
-                self.encode(cell, &mut out[slot..slot + CELL_STRIDE]);
+                self.encode(&cells, col, &mut out[slot..slot + CELL_STRIDE]);
             }
         }
         out
@@ -50,9 +50,9 @@ impl CellBuffer {
         let cols = engine.size().cols;
         let mut out = vec![0; cols * CELL_STRIDE];
         if let Some(cells) = engine.line(line) {
-            for (col, cell) in cells.iter().take(cols).enumerate() {
+            for col in 0..cells.len().min(cols) {
                 let slot = col * CELL_STRIDE;
-                self.encode(cell, &mut out[slot..slot + CELL_STRIDE]);
+                self.encode(&cells, col, &mut out[slot..slot + CELL_STRIDE]);
             }
         }
         out
@@ -71,8 +71,9 @@ impl CellBuffer {
         (self.strings.len() - 1) as u32
     }
 
-    fn encode(&mut self, cell: &Cell, out: &mut [u32]) {
-        let combining = cell.combining();
+    fn encode(&mut self, line: &Line<'_>, col: usize, out: &mut [u32]) {
+        let cell = &line[col];
+        let combining = line.combining(col);
         out[0] = if combining.is_empty() {
             u32::from(cell.character)
         } else {
@@ -83,12 +84,12 @@ impl CellBuffer {
         };
         out[1] = raw_color(cell.style.foreground);
         out[2] = raw_color(cell.style.background);
-        out[3] = raw_color(cell.underline_color());
+        out[3] = raw_color(line.underline_color(col));
         out[4] = u32::from(cell.style.attributes)
             | (u32::from(cell.flags & 0x7) << 16)
             | (underline_code(cell.style.underline) << 20);
-        out[5] = cell
-            .hyperlink()
+        out[5] = line
+            .hyperlink(col)
             .map_or(0, |link| self.intern(link.uri.clone()) + 1);
     }
 }
@@ -115,14 +116,14 @@ fn underline_code(style: UnderlineStyle) -> u32 {
 }
 
 /// Plain text of a row, skipping wide-character spacer cells.
-pub fn line_text(cells: &[Cell], trim_end: bool) -> String {
-    let mut text = String::with_capacity(cells.len());
-    for cell in cells {
+pub fn line_text(line: &Line<'_>, trim_end: bool) -> String {
+    let mut text = String::with_capacity(line.len());
+    for (col, cell) in line.iter().enumerate() {
         if cell.flags & (Cell::WIDE_SPACER | Cell::LEADING_WIDE_SPACER) != 0 {
             continue;
         }
         text.push(cell.character);
-        text.push_str(cell.combining());
+        text.push_str(line.combining(col));
     }
     if trim_end {
         text.truncate(text.trim_end_matches(' ').len());
