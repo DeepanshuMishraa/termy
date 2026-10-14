@@ -587,8 +587,23 @@ impl Grid {
                     continue;
                 }
             } else if byte & 0xe0 == 0xc0 {
-                // Their words are runs of letters, stored by a loop.
+                // Their words are runs of letters, stored by a loop. Where the
+                // byte that would lead an eighth letter does, eight at a time
+                // first, out of line.
                 let from = col;
+                if col >= occupied
+                    && bytes
+                        .get(consumed + 14)
+                        .is_some_and(|lead| lead & 0xe0 == 0xc0)
+                {
+                    let groups =
+                        super::narrow::store_octets(&mut cells[col..], &bytes[consumed..], plain);
+                    if groups != 0 {
+                        col += 8 * groups;
+                        consumed += 16 * groups;
+                        last = consumed - 2;
+                    }
+                }
                 while let Some([cell, _]) = cells.get_mut(col..col + 2)
                     && (col >= occupied || cell.flags == 0)
                     && let Some(&[lead, second]) =
@@ -909,6 +924,58 @@ mod tests {
                     "{bytes:02x?}"
                 );
             }
+        }
+    }
+
+    // The eight-at-a-time stores accept a group exactly when the loop
+    // decoding one scalar at a time accepts each of its pairs, and store the
+    // same cells; they leave the last cell to the caller.
+    #[test]
+    fn octets_store_what_narrow_two_byte_does() {
+        use super::super::super::types::{Color, Style, UnderlineStyle};
+        let style = Style {
+            foreground: Color::rgb(1, 2, 3),
+            background: Color::indexed(4),
+            attributes: Style::BOLD,
+            underline: UnderlineStyle::Double,
+        };
+        let plain = Cell::plain(style, 0);
+        let lambda = [0xce, 0xbb];
+        for lead in 0..=0xffu8 {
+            for second in 0..=0xffu8 {
+                let accepted = narrow_two_byte(lead, second);
+                for lane in 0..8 {
+                    let mut bytes = [0; 16];
+                    for (index, pair) in bytes.as_chunks_mut::<2>().0.iter_mut().enumerate() {
+                        *pair = if index == lane {
+                            [lead, second]
+                        } else {
+                            lambda
+                        };
+                    }
+                    let mut cells = [Cell::default(); 9];
+                    let groups = super::super::narrow::store_octets(&mut cells, &bytes, plain);
+                    assert_eq!(groups, usize::from(accepted.is_some()), "{bytes:02x?}");
+                    let mut expected = [Cell::default(); 9];
+                    if let Some(character) = accepted {
+                        for (index, cell) in expected[..8].iter_mut().enumerate() {
+                            plain.store(cell, if index == lane { character } else { 'λ' });
+                        }
+                    }
+                    assert_eq!(cells, expected, "{bytes:02x?}");
+                }
+            }
+        }
+        let bytes = "λ".repeat(24);
+        for (len, groups) in [(0, 0), (8, 0), (9, 1), (16, 1), (17, 2), (40, 3)] {
+            let mut cells = vec![Cell::default(); len];
+            let stored = super::super::narrow::store_octets(&mut cells, bytes.as_bytes(), plain);
+            assert_eq!(stored, groups, "{len} cells");
+            assert!(
+                cells[groups * 8..]
+                    .iter()
+                    .all(|cell| *cell == Cell::default())
+            );
         }
     }
 

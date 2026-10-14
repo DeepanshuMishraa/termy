@@ -17,6 +17,7 @@ mod extras;
 mod flood;
 mod history;
 mod margins;
+mod narrow;
 mod print;
 mod reflow;
 mod ring;
