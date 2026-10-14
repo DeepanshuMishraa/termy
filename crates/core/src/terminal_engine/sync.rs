@@ -90,6 +90,56 @@ impl SynchronizedUpdate {
     }
 }
 
+impl SynchronizedUpdate {
+    /// A pending update: its buffered bytes, marker scanner and the time
+    /// left before it must commit. Timing is relative, so the decoded
+    /// update commits no later than the original would have.
+    pub(super) fn write_snapshot(&self, writer: &mut super::snapshot::Writer) {
+        let Some(deadline) = self.deadline else {
+            writer.bool(false);
+            return;
+        };
+        writer.bool(true);
+        writer.bytes(&self.bytes);
+        self.scanner.write_snapshot(writer);
+        writer.option_bool(self.saved_mode);
+        if writer.canonical() {
+            writer.varint(0);
+            writer.varint(0);
+            return;
+        }
+        let now = Instant::now();
+        let millis = |duration: Duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
+        writer.varint(millis(deadline.saturating_duration_since(now)));
+        writer.varint(
+            self.started
+                .map_or(0, |started| millis(now.saturating_duration_since(started))),
+        );
+    }
+
+    pub(super) fn read_snapshot(
+        reader: &mut super::snapshot::Reader<'_>,
+    ) -> super::snapshot::Result<Self> {
+        use super::snapshot::SnapshotError::Corrupt;
+        let mut update = Self::default();
+        if !reader.bool()? {
+            return Ok(update);
+        }
+        update.bytes = reader.bytes()?.to_vec();
+        if update.bytes.len() > MAX_SYNC_BYTES {
+            return Err(Corrupt("synchronized update"));
+        }
+        update.scanner = Parser::read_snapshot(reader)?;
+        update.saved_mode = reader.option_bool()?;
+        let remaining = Duration::from_millis(reader.varint()?).min(SYNC_TIMEOUT);
+        let held = Duration::from_millis(reader.varint()?).min(SYNC_MAX_HOLD);
+        let now = Instant::now();
+        update.deadline = Some(now + remaining);
+        update.started = Some(now.checked_sub(held).unwrap_or(now));
+        Ok(update)
+    }
+}
+
 #[derive(Default)]
 struct Marker {
     refreshed: bool,

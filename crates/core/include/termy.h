@@ -21,6 +21,10 @@ typedef enum {
   /* A Rust panic was caught before it could unwind across the C ABI. */
   TERMY_FFI_PANICKED = 8,
   TERMY_FFI_INVALID_ARGUMENT = 9,
+  /* The snapshot was written by an incompatible format version. */
+  TERMY_FFI_UNSUPPORTED_SNAPSHOT_VERSION = 10,
+  /* The bytes are not a snapshot, or it is truncated or corrupt. */
+  TERMY_FFI_INVALID_SNAPSHOT = 11,
 } TermyFfiStatus;
 
 typedef enum {
@@ -656,6 +660,48 @@ TermyFfiStatus termy_terminal_feed_output(
     TermyFfiTerminal *terminal,
     const uint8_t *bytes_ptr,
     size_t bytes_len);
+/* Display terminals: feed output and return every protocol reply queued so
+ * far (DA, DSR, DECRQM, color and status reports), synchronously and in the
+ * order the engine produced them, so a status report precedes a following
+ * DA reply. Replies otherwise wait for the protocol_reply_callback of
+ * termy_terminal_drain_events_with_clipboard. Free with termy_buffer_free;
+ * an empty result has a null pointer. Terminals with a PTY send replies to
+ * the child themselves and return none. */
+TermyFfiStatus termy_terminal_feed_output_with_replies(
+    TermyFfiTerminal *terminal,
+    const uint8_t *bytes_ptr,
+    size_t bytes_len,
+    TermyFfiBytes *out_replies);
+/* Replica mode for display terminals that mirror another terminal's output,
+ * which already answered: with replies disabled, queries are parsed and
+ * change no state, and every reply is dropped instead of queued. Enabled by
+ * default. */
+TermyFfiStatus termy_terminal_set_protocol_replies_enabled(
+    TermyFfiTerminal *terminal,
+    bool enabled);
+/* Full terminal state: screens and scrollback with cells, graphemes, styles,
+ * links and wrap flags; cursors, saved cursors, margins, tab stops, charsets,
+ * modes, kitty keyboard stacks, palette overrides, title stack, OSC 7
+ * directory and the parser's in-progress sequence. Versioned and
+ * little-endian; see crates/core/src/terminal_engine/snapshot.rs. Queued
+ * events and replies and kitty graphics are not included. Release the
+ * buffer like other returned bytes. Multiplexer-backed terminals return
+ * TERMY_FFI_INVALID_ARGUMENT. */
+TermyFfiStatus termy_terminal_snapshot_encode(
+    TermyFfiTerminal *terminal,
+    TermyFfiBytes *out_snapshot);
+/* A new display terminal holding a snapshot's state. Feeding it the bytes
+ * the original receives next leaves both in the same state. */
+TermyFfiStatus termy_terminal_snapshot_decode(
+    const uint8_t *snapshot_ptr,
+    size_t snapshot_len,
+    TermyFfiTerminal **out_terminal);
+/* Replace an existing terminal's state with a snapshot. The terminal keeps
+ * its configured query colors, default cursor style and cell size. */
+TermyFfiStatus termy_terminal_snapshot_restore(
+    TermyFfiTerminal *terminal,
+    const uint8_t *snapshot_ptr,
+    size_t snapshot_len);
 TermyFfiStatus termy_terminal_encode_key(
     TermyFfiTerminal *terminal,
     const TermyFfiKeystroke *keystroke,
@@ -762,7 +808,9 @@ TermyFfiStatus termy_terminal_drain_events(
  * host must enforce its own clipboard permission policy using the request
  * permission fields. protocol_reply_callback receives reply bytes for
  * display-only terminals without an owned PTY; its byte slice is borrowed only
- * for that callback. No callback may re-enter the same terminal handle. */
+ * for that callback. A NULL protocol_reply_callback drops the queued replies
+ * without changing any other state. No callback may re-enter the same
+ * terminal handle. */
 TermyFfiStatus termy_terminal_drain_events_with_clipboard(
     TermyFfiTerminal *terminal,
     TermyFfiUserData user_data,

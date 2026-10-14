@@ -39,6 +39,7 @@ use std::{
 mod legacy;
 mod lock;
 mod maintenance;
+mod replica;
 mod viewport;
 use legacy::LegacyCells;
 
@@ -116,6 +117,8 @@ struct State {
     history_quiet: bool,
     // A title event was queued since the last feed or commit woke the host.
     title_changed: bool,
+    // False for replicas of another terminal: protocol replies are dropped.
+    replies_enabled: bool,
     // The maintenance deadline last handed to the timer, or `None` when the
     // timer may hold a different one. Feeds skip the timer's lock while their
     // deadline is unchanged.
@@ -241,6 +244,7 @@ impl State {
             history_pending_since: None,
             history_quiet: true,
             title_changed: false,
+            replies_enabled: true,
             published_maintenance: None,
         }
     }
@@ -445,6 +449,9 @@ impl State {
     }
 
     fn append_replies(&mut self, bytes: &[u8]) {
+        if !self.replies_enabled {
+            return;
+        }
         let available = MAX_PENDING_REPLIES.saturating_sub(self.replies.len());
         if bytes.len() <= available {
             self.replies.extend_from_slice(bytes);
@@ -756,6 +763,7 @@ impl CustomBackend {
         let replies = self.shared.feed(bytes, false, self.transport.is_none());
         self.send_reply(replies);
     }
+
     pub(super) fn hydrate_output(&self, bytes: &[u8]) {
         self.shared.feed(bytes, true, false);
     }

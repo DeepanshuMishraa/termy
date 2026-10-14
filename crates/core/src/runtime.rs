@@ -888,6 +888,35 @@ impl Terminal {
         self.backend.feed_output(bytes);
     }
 
+    /// For display terminals: feed output and return the protocol replies
+    /// queued so far, in order, instead of waiting for `drain_events`.
+    pub fn feed_output_with_replies(&self, bytes: &[u8]) -> Vec<u8> {
+        self.backend.feed_output_with_replies(bytes)
+    }
+
+    /// Disable protocol replies for a display terminal that mirrors another
+    /// terminal's output (which already answered): queries are parsed and
+    /// change no state, and replies are dropped.
+    pub fn set_protocol_replies_enabled(&self, enabled: bool) {
+        self.backend.set_protocol_replies_enabled(enabled);
+    }
+
+    /// The engine's full state; see `terminal_engine::Engine::encode_snapshot`.
+    /// `None` for multiplexer-backed terminals.
+    pub fn encode_snapshot(&self) -> Option<Vec<u8>> {
+        self.backend.encode_snapshot()
+    }
+
+    /// Replace the engine state with a snapshot, keeping this terminal's
+    /// configured colors, cursor style and cell size. `None` for
+    /// multiplexer-backed terminals.
+    pub fn restore_snapshot(
+        &self,
+        bytes: &[u8],
+    ) -> Option<Result<(), crate::terminal_engine::SnapshotError>> {
+        self.backend.restore_snapshot(bytes)
+    }
+
     pub fn child_pid(&self) -> Option<u32> {
         self.backend.child_pid()
     }

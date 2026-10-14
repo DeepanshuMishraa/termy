@@ -22,6 +22,7 @@ mod print;
 mod reflow;
 mod ring;
 mod row;
+mod snapshot;
 use combining::CombiningCache;
 use flood::PendingClear;
 use ring::Ring;
@@ -198,6 +199,9 @@ pub(super) struct Grid {
     // margin marks a wide base dropped there with autowrap disabled.
     grapheme_at_margin: bool,
     pub(super) history_activity: bool,
+    // Rows output has scrolled into history, for content-anchored ranges.
+    // Resize and reflow move rows without counting them.
+    scrolled_into_history: u64,
     // Borrowed history reads usually decode one contiguous viewport. Track
     // that interval so the next mutation does not scan untouched history.
     history_read_start: AtomicUsize,
@@ -300,6 +304,7 @@ impl Grid {
             grapheme_ordinary: true,
             grapheme_at_margin: false,
             history_activity: false,
+            scrolled_into_history: 0,
             history_read_start: AtomicUsize::new(usize::MAX),
             history_read_end: AtomicUsize::new(0),
             track_effects: false,
@@ -356,6 +361,12 @@ impl Grid {
     }
     pub(super) fn alternate_screen(&self) -> bool {
         self.alternate_active
+    }
+    pub(super) fn scrolled_into_history(&self) -> u64 {
+        self.scrolled_into_history
+    }
+    pub(super) fn history_limit(&self) -> usize {
+        self.history_limit
     }
     pub(super) fn scroll_region(&self) -> (usize, usize) {
         (self.scroll_top, self.scroll_bottom)

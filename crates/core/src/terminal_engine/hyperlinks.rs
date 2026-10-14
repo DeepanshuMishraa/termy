@@ -87,6 +87,32 @@ pub(super) struct Hyperlinks {
 }
 
 impl Hyperlinks {
+    /// Every interned link, referenced by cells or not, for snapshots.
+    pub(super) fn links(&self) -> impl Iterator<Item = &Arc<Hyperlink>> {
+        self.links.iter().map(|link| &link.0)
+    }
+
+    pub(super) fn requests(&self) -> usize {
+        self.requests
+    }
+
+    /// A table holding exactly `links`, which share identity with the
+    /// cells a snapshot restores.
+    pub(super) fn restore(
+        links: impl IntoIterator<Item = Arc<Hyperlink>>,
+        requests: usize,
+    ) -> Self {
+        let mut table = Self {
+            requests,
+            ..Self::default()
+        };
+        for link in links {
+            table.bytes += link.id.len() + link.uri.len();
+            table.links.insert(Interned(link));
+        }
+        table
+    }
+
     /// The shared link for `(id, uri)`, or `None` when it is oversized or the
     /// table is full of links that cells still reference.
     pub(super) fn intern(&mut self, id: &str, uri: &str) -> Option<Arc<Hyperlink>> {

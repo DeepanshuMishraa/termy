@@ -7927,6 +7927,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "termy_engine_ffi"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tempfile",
+ "termy_core",
+]
+
+[[package]]
 name = "termy_pty"
 version = "0.1.0"
 dependencies = [

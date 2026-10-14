@@ -40,6 +40,15 @@ by native, display-only, tmux and persistent Termy sessions.
   DECSTR resets VT state while preserving screen contents. Supported DEC private
   modes can be saved and restored, including synchronized output.
   `queries.rs` reports live VT state.
+- `snapshot.rs` encodes and decodes the engine's full state in a versioned,
+  little-endian format: both screens and history with metadata tables,
+  cursors, margins, tabs, charsets, modes, keyboard stacks, palette, titles,
+  working directory, program status, the parser's in-progress sequence and a
+  pending synchronized update. Rows keep their packed representation, metadata
+  charge and storage capacities, so a decoded engine fed the same bytes evicts
+  the same history. Queued events and replies, damage, kitty graphics and
+  caches are not included. Tests feed random streams split at random points to
+  an engine and to its decoded copy and compare canonical encodings.
 - `sync.rs` buffers synchronized output with a 2 MiB limit and a 150 ms timeout.
   A syntax-aware marker scanner preserves ordering across fragmented strings.
 - `graphics.rs` applies image commands and ordered scroll/clear effects inside

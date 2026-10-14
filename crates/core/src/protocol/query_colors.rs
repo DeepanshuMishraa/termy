@@ -111,7 +111,9 @@ impl Default for TerminalQueryColors {
 }
 
 impl TerminalQueryColors {
-    pub(crate) fn indexed_color(self, idx: u8) -> TerminalColor {
+    /// The color OSC 4 reports for palette `idx`: the theme for 0..=15, then
+    /// the xterm 6x6x6 cube and grayscale ramp.
+    pub fn indexed_color(self, idx: u8) -> TerminalColor {
         match idx {
             0..=15 => self.ansi[idx as usize],
             16..=231 => {

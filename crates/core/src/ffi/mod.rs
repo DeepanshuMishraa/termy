@@ -42,6 +42,8 @@ pub enum TermyFfiStatus {
     SerializeFailed = 7,
     Panicked = 8,
     InvalidArgument = 9,
+    UnsupportedSnapshotVersion = 10,
+    InvalidSnapshot = 11,
 }
 
 #[cfg(test)]
@@ -3266,6 +3268,125 @@ pub unsafe extern "C" fn termy_terminal_feed_output(
             (*terminal).terminal.feed_output(bytes);
         }
         TermyFfiStatus::Ok
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_terminal_feed_output_with_replies(
+    terminal: *mut TermyFfiTerminal,
+    bytes_ptr: *const u8,
+    bytes_len: usize,
+    out_replies: *mut TermyFfiBytes,
+) -> TermyFfiStatus {
+    ffi_status_guard(|| {
+        if terminal.is_null() || out_replies.is_null() {
+            return TermyFfiStatus::Null;
+        }
+        if bytes_len != 0 && bytes_ptr.is_null() {
+            return TermyFfiStatus::Null;
+        }
+        let bytes = if bytes_len == 0 {
+            &[][..]
+        } else {
+            unsafe { slice::from_raw_parts(bytes_ptr, bytes_len) }
+        };
+        let replies = unsafe { (*terminal).terminal.feed_output_with_replies(bytes) };
+        unsafe {
+            *out_replies = if replies.is_empty() {
+                TermyFfiBytes::default()
+            } else {
+                ffi_bytes_from_vec(replies)
+            };
+        }
+        TermyFfiStatus::Ok
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_terminal_set_protocol_replies_enabled(
+    terminal: *mut TermyFfiTerminal,
+    enabled: bool,
+) -> TermyFfiStatus {
+    ffi_status_guard(|| {
+        if terminal.is_null() {
+            return TermyFfiStatus::Null;
+        }
+        unsafe { (*terminal).terminal.set_protocol_replies_enabled(enabled) };
+        TermyFfiStatus::Ok
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_terminal_snapshot_encode(
+    terminal: *mut TermyFfiTerminal,
+    out_snapshot: *mut TermyFfiBytes,
+) -> TermyFfiStatus {
+    ffi_status_guard(|| {
+        if terminal.is_null() || out_snapshot.is_null() {
+            return TermyFfiStatus::Null;
+        }
+        let Some(snapshot) = (unsafe { (*terminal).terminal.encode_snapshot() }) else {
+            return TermyFfiStatus::InvalidArgument;
+        };
+        unsafe { *out_snapshot = ffi_bytes_from_vec(snapshot) };
+        TermyFfiStatus::Ok
+    })
+}
+
+fn ffi_snapshot_status(error: &crate::terminal_engine::SnapshotError) -> TermyFfiStatus {
+    match error {
+        crate::terminal_engine::SnapshotError::UnsupportedVersion(_) => {
+            TermyFfiStatus::UnsupportedSnapshotVersion
+        }
+        _ => TermyFfiStatus::InvalidSnapshot,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_terminal_snapshot_decode(
+    snapshot_ptr: *const u8,
+    snapshot_len: usize,
+    out_terminal: *mut *mut TermyFfiTerminal,
+) -> TermyFfiStatus {
+    ffi_status_guard(|| {
+        if out_terminal.is_null() || snapshot_ptr.is_null() {
+            return TermyFfiStatus::Null;
+        }
+        unsafe { *out_terminal = ptr::null_mut() };
+        let bytes = unsafe { slice::from_raw_parts(snapshot_ptr, snapshot_len) };
+        let terminal = Terminal::new_display(TerminalSize::default(), None);
+        match terminal.restore_snapshot(bytes) {
+            Some(Ok(())) => {}
+            Some(Err(error)) => return ffi_snapshot_status(&error),
+            None => return TermyFfiStatus::InvalidArgument,
+        }
+        unsafe {
+            *out_terminal = Box::into_raw(Box::new(TermyFfiTerminal {
+                terminal,
+                wakeups_tx: None,
+                wakeups_rx: None,
+            }));
+        }
+        TermyFfiStatus::Ok
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_terminal_snapshot_restore(
+    terminal: *mut TermyFfiTerminal,
+    snapshot_ptr: *const u8,
+    snapshot_len: usize,
+) -> TermyFfiStatus {
+    ffi_status_guard(|| {
+        if terminal.is_null() || snapshot_ptr.is_null() {
+            return TermyFfiStatus::Null;
+        }
+        let bytes = unsafe { slice::from_raw_parts(snapshot_ptr, snapshot_len) };
+        match unsafe { (*terminal).terminal.restore_snapshot(bytes) } {
+            Some(Ok(())) => TermyFfiStatus::Ok,
+            Some(Err(error)) => ffi_snapshot_status(&error),
+            None => TermyFfiStatus::InvalidArgument,
+        }
     })
 }
 

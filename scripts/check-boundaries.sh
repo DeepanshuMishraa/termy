@@ -149,6 +149,12 @@ for forbidden_dep in gpui keyring ureq fontdb termy; do
   check_forbidden_all_target_dep termy_pty "$forbidden_dep"
 done
 
+# libtermy_engine is the engine alone: no PTY transport, config, keyring,
+# fonts, network, plugins or multiplexer.
+for forbidden_dep in gpui keyring ureq fontdb flume polling dirs uuid termy; do
+  check_forbidden_all_target_dep termy_engine_ffi "$forbidden_dep"
+done
+
 require_pattern './scripts/build-dmg-signed\.sh' \
   ".github/workflows/release.yml" \
   "release workflow must call scripts/build-dmg-signed.sh"

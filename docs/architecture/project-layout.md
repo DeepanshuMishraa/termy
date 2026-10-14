@@ -55,6 +55,16 @@ The default binary is `termy-cli`. Run repository tooling with
 They are published manually by `.github/workflows/npm-publish.yml`, separate
 from desktop releases.
 
+## Engine C library: `crates/engine_ffi` (`termy_engine_ffi`)
+
+`crates/engine_ffi` builds `libtermy_engine` (static, shared and rlib), a C ABI
+over the engine-only `termy_core` for hosts that own their transport and
+renderer, such as clients mirroring a remote multiplexer. Its header is
+`crates/engine_ffi/include/termy_engine.h`; it covers full-state snapshots,
+a replica mode that never answers queries, cells with grapheme clusters, mode
+queries, input encoders and text extraction. `scripts/package-libtermy-engine.sh`
+packages it per target (musl Linux, macOS, plus an xcframework on macOS).
+
 `crates/pty` (`termy_pty`) is the Node-API addon behind `@termysh/pty`, a
 node-pty replacement. It wraps `termy_core::pty` (the `pty` feature: the native
 PTY process layer with no other dependencies). Prebuilt binaries ship as

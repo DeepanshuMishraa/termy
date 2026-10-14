@@ -723,6 +723,133 @@ impl Parser {
     }
 }
 
+impl Parser {
+    /// The in-progress sequence: a snapshot decoded mid-escape, mid-string
+    /// or mid-scalar continues it exactly as this parser would.
+    pub(super) fn write_snapshot(&self, writer: &mut super::snapshot::Writer) {
+        let kind = |kind: StringKind| match kind {
+            StringKind::Osc => 0,
+            StringKind::Dcs => 1,
+            StringKind::Apc => 2,
+            StringKind::Ignore => 3,
+        };
+        match self.state {
+            State::Ground => writer.u8(0),
+            State::Escape => writer.u8(1),
+            State::Csi => writer.u8(2),
+            State::String(string) => {
+                writer.u8(3);
+                writer.u8(kind(string));
+            }
+            State::StringEscape(string) => {
+                writer.u8(4);
+                writer.u8(kind(string));
+            }
+        }
+        // Parameters past `param_len` are rewritten before they are read.
+        writer.usize(self.param_len);
+        for param in &self.params[..self.param_len] {
+            writer.u8(param.len);
+            for value in &param.values[..usize::from(param.len)] {
+                writer.varint(value.map_or(0, |value| u64::from(value) + 1));
+            }
+        }
+        writer.u8(self.private.map_or(0, |_| 1));
+        writer.u8(self.private.unwrap_or(0));
+        writer.usize(self.intermediate_len);
+        writer.u8(self.intermediates[0]);
+        writer.u8(self.intermediates[1]);
+        writer.bool(self.discarded);
+        writer.bool(self.collect_strings);
+        writer.usize(self.apc_limit);
+        writer.usize(self.string_len);
+        writer.usize(self.string_wire_len);
+        writer.bytes(&self.string);
+        writer.u8(self.prefix[0]);
+        writer.u8(self.prefix[1]);
+        writer.u8(self.prefix[2]);
+        writer.varint(u64::from(self.utf8_value));
+        writer.u8(self.utf8_remaining);
+        writer.u8(self.utf8_min);
+        writer.u8(self.utf8_max);
+    }
+
+    pub(super) fn read_snapshot(
+        reader: &mut super::snapshot::Reader<'_>,
+    ) -> super::snapshot::Result<Self> {
+        use super::snapshot::SnapshotError::Corrupt;
+        let kind = |reader: &mut super::snapshot::Reader<'_>| {
+            Ok(match reader.u8()? {
+                0 => StringKind::Osc,
+                1 => StringKind::Dcs,
+                2 => StringKind::Apc,
+                3 => StringKind::Ignore,
+                _ => return Err(Corrupt("parser string kind")),
+            })
+        };
+        let state = match reader.u8()? {
+            0 => State::Ground,
+            1 => State::Escape,
+            2 => State::Csi,
+            3 => State::String(kind(reader)?),
+            4 => State::StringEscape(kind(reader)?),
+            _ => return Err(Corrupt("parser state")),
+        };
+        let mut parser = Self {
+            state,
+            ..Self::default()
+        };
+        parser.param_len = reader.usize()?;
+        if parser.param_len > MAX_PARAMS {
+            return Err(Corrupt("parser parameters"));
+        }
+        for param in &mut parser.params[..parser.param_len] {
+            param.len = reader.u8()?;
+            if param.len == 0 || usize::from(param.len) > MAX_SUBPARAMS + 1 {
+                return Err(Corrupt("parser parameter"));
+            }
+            for value in &mut param.values[..usize::from(param.len)] {
+                *value = match reader.varint()? {
+                    0 => None,
+                    value => {
+                        Some(u16::try_from(value - 1).map_err(|_| Corrupt("parser parameter"))?)
+                    }
+                };
+            }
+        }
+        let has_private = reader.bool()?;
+        let private = reader.u8()?;
+        parser.private = has_private.then_some(private);
+        parser.intermediate_len = reader.usize()?;
+        if parser.intermediate_len > MAX_INTERMEDIATES {
+            return Err(Corrupt("parser intermediates"));
+        }
+        parser.intermediates = [reader.u8()?, reader.u8()?];
+        parser.discarded = reader.bool()?;
+        parser.collect_strings = reader.bool()?;
+        parser.apc_limit = reader.usize()?.clamp(1, MAX_APC_BYTES);
+        parser.string_len = reader.usize()?;
+        parser.string_wire_len = reader.usize()?;
+        parser.string = reader.bytes()?.to_vec();
+        if parser.string_len > MAX_APC_BYTES
+            || (parser.collect_strings && parser.string.len() != parser.string_len)
+            || (!parser.collect_strings && !parser.string.is_empty())
+        {
+            return Err(Corrupt("parser string"));
+        }
+        parser.prefix = [reader.u8()?, reader.u8()?, reader.u8()?];
+        parser.utf8_value =
+            u32::try_from(reader.varint()?).map_err(|_| Corrupt("parser scalar"))?;
+        parser.utf8_remaining = reader.u8()?;
+        parser.utf8_min = reader.u8()?;
+        parser.utf8_max = reader.u8()?;
+        if parser.utf8_remaining > 3 {
+            return Err(Corrupt("parser scalar"));
+        }
+        Ok(parser)
+    }
+}
+
 /// Decode only a complete, valid non-ASCII scalar. The caller retains the
 /// streaming decoder for all other input, including incomplete chunk tails.
 #[inline(always)]

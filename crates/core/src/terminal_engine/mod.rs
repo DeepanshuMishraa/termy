@@ -14,6 +14,7 @@ mod hyperlinks;
 pub mod media;
 mod parser;
 mod queries;
+mod snapshot;
 mod sync;
 #[cfg(feature = "pty")]
 pub(crate) mod transport;
@@ -28,6 +29,8 @@ pub use types::{
     Cell, CellExtra, Color, Cursor, CursorShape, Damage, DirtySpan, Hyperlink, Line, Size, Style,
     UnderlineStyle, ViewportScroll,
 };
+
+pub use snapshot::{SNAPSHOT_VERSION, SnapshotError, snapshot_version};
 
 use dispatch::State;
 use parser::Parser;
@@ -81,6 +84,9 @@ pub enum MouseEncoding {
     Default,
     Utf8,
     Sgr,
+    /// SGR with pixel coordinates (`?1016`); only recognized after
+    /// [`Engine::set_pixel_mouse_reports`].
+    SgrPixels,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -91,6 +97,9 @@ pub struct Modes {
     pub focus_events: bool,
     pub mouse_tracking: MouseTracking,
     pub mouse_encoding: MouseEncoding,
+    /// `?1007`: on the alternate screen, hosts send wheel motion as cursor
+    /// keys when no mouse tracking is active.
+    pub alternate_scroll: bool,
     pub kitty_keyboard: u8,
     pub synchronized_update: bool,
     pub clipboard_paste_events: bool,
@@ -345,6 +354,49 @@ impl Engine {
     pub fn modes(&self) -> Modes {
         self.state.modes
     }
+
+    /// DECRQM state of an ANSI (`private == false`) or DEC private mode:
+    /// `None` when the engine does not recognize the mode.
+    pub fn mode(&self, private: bool, mode: u16) -> Option<bool> {
+        if private && mode == 2027 {
+            // Grapheme clustering is permanently enabled.
+            return Some(true);
+        }
+        self.state.mode_state(private, mode)
+    }
+
+    /// The window title from OSC 0/2 (and XTWINOPS title restores).
+    pub fn title(&self) -> &str {
+        self.state.title()
+    }
+
+    /// The last working directory reported with OSC 7 or OSC 9;9.
+    pub fn working_directory(&self) -> Option<&str> {
+        self.state.working_directory()
+    }
+
+    /// The configured scrollback, in rows. History also stays within a
+    /// fixed 16 MiB storage budget; see `README.md`.
+    pub fn scrollback_limit(&self) -> usize {
+        self.state.grid.history_limit()
+    }
+
+    /// Rows output has scrolled into history so far. History row `index`
+    /// (0 the oldest) has the stable number `scrolled_into_history() -
+    /// history_size() + index`, and live row `row` has
+    /// `scrolled_into_history() + row`, so a host can anchor a selection to
+    /// content while output scrolls and old history is evicted. Resizing
+    /// reflows rows without updating this count; hosts reset anchors then.
+    pub fn scrolled_into_history(&self) -> u64 {
+        self.state.grid.scrolled_into_history()
+    }
+
+    /// Drop queued protocol replies without touching other state. Replica
+    /// engines, whose replies the authoritative terminal already sent, call
+    /// this after each feed.
+    pub fn discard_replies(&mut self) {
+        self.state.replies.clear();
+    }
     pub fn generation(&self) -> u64 {
         self.generation
     }
@@ -471,6 +523,17 @@ impl Engine {
             let old = self.state.grid.cursor;
             self.state.grid.cursor.shape = shape;
             self.state.grid.cursor_changed(old);
+        }
+    }
+
+    /// Recognize `?1016` (SGR pixel mouse reports). Enable it only when the
+    /// host reports pointer positions in pixels; otherwise the mode stays
+    /// unrecognized, as DECRQM reports. Engines that must agree (a server
+    /// and its replicas) need the same setting; snapshots carry it.
+    pub fn set_pixel_mouse_reports(&mut self, enabled: bool) {
+        self.state.pixel_mouse_reports = enabled;
+        if !enabled && self.state.modes.mouse_encoding == MouseEncoding::SgrPixels {
+            self.state.modes.mouse_encoding = MouseEncoding::Default;
         }
     }
 

@@ -82,7 +82,9 @@ tempfile = { workspace = true }
 unicode-width = { workspace = true }
 
 [lib]
-crate-type = ["rlib", "cdylib"]
+# `staticlib` links the native C ABI into hosts without a dylib. Hosts that
+# need only the engine use `crates/engine_ffi` (libtermy_engine) instead.
+crate-type = ["rlib", "cdylib", "staticlib"]
 
 [[bin]]
 name = "termy-session-host"

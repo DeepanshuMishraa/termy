@@ -34,6 +34,20 @@ impl Color {
             None
         }
     }
+
+    /// The tag and payload bytes, as stored in snapshots.
+    pub(super) const fn to_bytes(self) -> [u8; 4] {
+        self.0
+    }
+
+    /// Inverse of [`Self::to_bytes`]; `None` for an unknown tag or a
+    /// non-canonical default/indexed payload.
+    pub(super) const fn from_bytes(bytes: [u8; 4]) -> Option<Self> {
+        match bytes {
+            [0, 0, 0, 0] | [1, 0, 0, _] | [2, _, _, _] => Some(Self(bytes)),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -46,6 +60,20 @@ pub enum UnderlineStyle {
     Curly,
     Dotted,
     Dashed,
+}
+
+impl UnderlineStyle {
+    pub(super) const fn from_u8(value: u8) -> Option<Self> {
+        Some(match value {
+            0 => Self::None,
+            1 => Self::Single,
+            2 => Self::Double,
+            3 => Self::Curly,
+            4 => Self::Dotted,
+            5 => Self::Dashed,
+            _ => return None,
+        })
+    }
 }
 
 /// Ten 1-aligned bytes, so a cell with its flags and character is 16 B.
