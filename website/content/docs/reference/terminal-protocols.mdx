@@ -77,7 +77,9 @@ and restored with XTSAVE (`CSI ? n s`) and XTRESTORE (`CSI ? n r`).
 | `1048` | Save/restore cursor; DECRQM reports whether a cursor is saved |
 | `1000`, `1002`, `1003` | Mouse click, drag, and motion tracking; resetting any of `9`, `1000`, `1002`, `1003` turns tracking off |
 | `1004` | Focus in/out events |
-| `1005`, `1006` | Mouse encoding: UTF-8, SGR. urxvt (`1015`) and SGR pixels (`1016`) are not supported and report `0` |
+| `1005`, `1006` | Mouse encoding: UTF-8, SGR. urxvt (`1015`) is not supported and reports `0` |
+| `1007` | Alternate scroll: the host may send wheel motion as cursor keys on the alternate screen when no mouse tracking is active |
+| `1016` | SGR pixel mouse encoding. Recognized only where the host reports pointer pixels: the [engine C library](/docs/developer/libtermy/engine) with `pixel_mouse_reports`. Elsewhere, including the Termy app, it is not supported and reports `0` |
 | `2004` | Bracketed paste |
 | `2026` | Synchronized output |
 | `2027` | Grapheme clustering: always on; DECRQM reports `3` (permanently set) |

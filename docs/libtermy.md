@@ -11,6 +11,14 @@ This repository note is a compact source-oriented overview; use the matching
 
 - `termy_core`: Rust API for a single headless terminal surface.
 - `termy_core::ffi`: C ABI wrapper over `termy_core`.
+- `libtermy_engine` ([`crates/engine_ffi`](../crates/engine_ffi/README.md)): a
+  static C library over the engine alone (no PTY, config, keyring, fonts or
+  network), with full-state snapshots, a replica mode that never answers
+  queries, rich cells, mode queries, input encoders and text extraction.
+
+Both C surfaces can save and restore the engine's full state as a versioned,
+little-endian snapshot (`termy_terminal_snapshot_*`, `termy_engine_snapshot_*`);
+see `crates/core/src/terminal_engine/snapshot.rs` for what it contains.
 
 The Swift SDK in [`sdk/swift`](../sdk/swift/README.md) wraps the C ABI and adds
 AppKit and SwiftUI terminal views.

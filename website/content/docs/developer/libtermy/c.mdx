@@ -26,7 +26,15 @@ With Cargo's default target directory, the native shared library is:
 
 An explicit `--target` adds a target-triple directory. `CARGO_TARGET_DIR` changes
 the base directory. Match the library architecture to your host process.
-The crate builds `rlib` and `cdylib` artifacts; it does not declare a `staticlib`.
+The crate builds `rlib`, `cdylib` and `staticlib` artifacts; the static library
+is `libtermy_core.a` (`termy_core.lib` on Windows). Linking it statically also
+needs the system libraries Rust's standard library uses; print them with
+`cargo rustc --release -p termy_core --lib --crate-type staticlib -- --print native-static-libs`.
+
+If your host owns the PTY and transport and needs only the parser, screens and
+encoders (for example a client mirroring a remote multiplexer), link the
+[engine-only C library](/docs/developer/libtermy/engine) instead. It has no PTY,
+config, keyring, font or network code.
 
 ## Run a deterministic example
 

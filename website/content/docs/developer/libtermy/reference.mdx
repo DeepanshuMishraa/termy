@@ -18,6 +18,10 @@ checkout with `cargo doc -p termy_core --no-deps`.
 | Launch PTY | `Terminal::new` and launch variants | `termy_terminal_new_with_options` |
 | Create parser without PTY | `Terminal::new_display` | `termy_display_terminal_new` |
 | Deliver process output | `feed_output` | `termy_terminal_feed_output` |
+| Deliver output, return replies in order | `feed_output_with_replies` | `termy_terminal_feed_output_with_replies` |
+| Mirror another terminal without replying | `set_protocol_replies_enabled(false)` | `termy_terminal_set_protocol_replies_enabled` |
+| Save full terminal state | `encode_snapshot` | `termy_terminal_snapshot_encode` |
+| Restore full terminal state | `restore_snapshot` | `termy_terminal_snapshot_decode`, `termy_terminal_snapshot_restore` |
 | Send input to owned PTY | `write` | `termy_terminal_write` |
 | Change dimensions | `resize` | `termy_terminal_resize` |
 | Read full compact frame | `snapshot` | `termy_terminal_snapshot` |
@@ -59,7 +63,7 @@ the next call does not release the previous allocation for you.
 | `TermyFfiConfigDiagnosticBatch` | `termy_config_diagnostics_free` | Diagnostics and their messages |
 | `TermyFfiRenderConfig` | `termy_render_config_free` | Font-family and active-theme bytes |
 | `TermyFfiKittyGraphicsBatch` | `termy_kitty_graphics_batch_free` | Placements and their PNG buffers |
-| Standalone `TermyFfiBytes` | `termy_buffer_free` | Its byte buffer |
+| Standalone `TermyFfiBytes` (including snapshots and replies) | `termy_buffer_free` | Its byte buffer |
 
 Never free a nested byte field separately from its owning batch. Do not edit
 returned allocation pointers, lengths, or capacities; the free functions need
@@ -109,6 +113,8 @@ particular, locked visitors must not re-enter the same terminal.
 | `TERMY_FFI_SERIALIZE_FAILED` | `7` | Serialization failed |
 | `TERMY_FFI_PANICKED` | `8` | A Rust panic was caught at the ABI boundary |
 | `TERMY_FFI_INVALID_ARGUMENT` | `9` | Arguments were rejected |
+| `TERMY_FFI_UNSUPPORTED_SNAPSHOT_VERSION` | `10` | A snapshot was written by an incompatible format version |
+| `TERMY_FFI_INVALID_SNAPSHOT` | `11` | The bytes are not a snapshot, or it is truncated or corrupt |
 
 Not every function returns every status. For example, `OK` from an encoder can
 mean no bytes were produced; `OK` from a search can mean no matches. Function

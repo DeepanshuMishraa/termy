@@ -87,7 +87,26 @@ impl TerminalReplyHost for ReplyHost {
 In C, provide the `protocol_reply_callback` to
 `termy_terminal_drain_events_with_clipboard`. Copy the callback's borrowed slice
 into a transport queue before returning. Do not feed reply bytes back into
-`termy_terminal_feed_output`; they are input for the external process.
+`termy_terminal_feed_output`; they are input for the external process. A NULL
+`protocol_reply_callback` drops the queued replies without changing any other
+state.
+
+To get replies without waiting for a drain, feed with
+`termy_terminal_feed_output_with_replies` (Rust: `feed_output_with_replies`). It
+returns every reply queued so far, in the order the engine produced them, so a
+status report precedes a following device-attributes reply. Release the bytes
+with `termy_buffer_free`.
+
+### Replicas
+
+A display terminal that mirrors output another terminal already answered must
+not reply again. Call `termy_terminal_set_protocol_replies_enabled(terminal,
+false)` (Rust: `set_protocol_replies_enabled(false)`): queries are still parsed
+and change no state, and every reply is dropped. To start a replica from an
+existing terminal, copy its state with `termy_terminal_snapshot_encode` and
+create the replica with `termy_terminal_snapshot_decode`; feeding both the same
+bytes afterwards leaves them in the same state. See
+[snapshots](/docs/developer/libtermy/engine#snapshots) for what a snapshot holds.
 
 ## Kitty OSC 5522 clipboard
 
