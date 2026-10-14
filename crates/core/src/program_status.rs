@@ -48,6 +48,16 @@ pub(crate) struct ProgramStatus {
 }
 
 impl ProgramStatus {
+    /// Stored records, least recently updated first, and whether a change
+    /// is still unreported; for engine snapshots.
+    pub(crate) fn stored(&self) -> (&[ProgramStatusRecord], bool) {
+        (&self.records, self.changed)
+    }
+
+    pub(crate) fn restore(records: Vec<ProgramStatusRecord>, changed: bool) -> Self {
+        Self { records, changed }
+    }
+
     pub(crate) fn report(&mut self, body: &str) {
         let Some(report) = parse(body) else { return };
         match report {

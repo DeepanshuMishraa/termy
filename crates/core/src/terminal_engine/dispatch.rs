@@ -30,9 +30,12 @@ pub(super) struct State {
     pub(super) default_cursor_shape: CursorShape,
     pub(super) cursor_shape_overridden: bool,
     pub(super) cell_pixels: (u16, u16),
+    pub(super) pixel_mouse_reports: bool,
     pub(super) program_status: crate::program_status::ProgramStatus,
     title: String,
     title_stack: Vec<String>,
+    /// The last OSC 7 (or OSC 9;9) working directory.
+    working_directory: Option<String>,
     keyboard_stack: [Vec<u8>; 2],
     keyboard_flags: [u8; 2],
     charsets: [bool; 2],
@@ -64,9 +67,11 @@ impl State {
             default_cursor_shape: CursorShape::Block,
             cursor_shape_overridden: false,
             cell_pixels: (9, 18),
+            pixel_mouse_reports: false,
             program_status: crate::program_status::ProgramStatus::default(),
             title: String::new(),
             title_stack: Vec::new(),
+            working_directory: None,
             keyboard_stack: [Vec::new(), Vec::new()],
             keyboard_flags: [0, 0],
             charsets: [false; 2],
@@ -86,6 +91,19 @@ impl State {
             self.modes.clipboard_paste_events,
             event,
         );
+    }
+
+    fn set_working_directory(&mut self, path: String) {
+        self.working_directory = Some(path.clone());
+        self.event(Event::WorkingDirectory(path));
+    }
+
+    pub(super) fn title(&self) -> &str {
+        &self.title
+    }
+
+    pub(super) fn working_directory(&self) -> Option<&str> {
+        self.working_directory.as_deref()
     }
 
     pub(super) fn reply(&mut self, bytes: &[u8]) {
@@ -246,9 +264,14 @@ impl State {
             1004 => self.modes.focus_events = enabled,
             1005 => self.mouse_encoding(MouseEncoding::Utf8, enabled),
             1006 => self.mouse_encoding(MouseEncoding::Sgr, enabled),
-            // 1015 (urxvt) and 1016 (SGR pixels) are not implemented: hosts
-            // report cell positions only. Leaving them unrecognized keeps the
-            // current encoding and makes DECRQM answer 0.
+            1007 => self.modes.alternate_scroll = enabled,
+            // 1016 needs a host that reports pixel positions; see
+            // `Engine::set_pixel_mouse_reports`. 1015 (urxvt) is not
+            // implemented. Unrecognized modes keep the current encoding and
+            // make DECRQM answer 0.
+            1016 if self.pixel_mouse_reports => {
+                self.mouse_encoding(MouseEncoding::SgrPixels, enabled);
+            }
             2004 => self.modes.bracketed_paste = enabled,
             2026 => self.modes.synchronized_update = enabled,
             5522 => {
@@ -476,7 +499,7 @@ impl State {
                     None => Some(rest.to_owned()),
                 };
                 if let Some(path) = path {
-                    self.event(Event::WorkingDirectory(path));
+                    self.set_working_directory(path);
                 }
             }
             9 => {
@@ -491,7 +514,7 @@ impl State {
                 } else if let Some(path) = rest.strip_prefix("9;") {
                     let path = path.trim().trim_matches('"');
                     if !path.is_empty() {
-                        self.event(Event::WorkingDirectory(path.to_owned()));
+                        self.set_working_directory(path.to_owned());
                     }
                 }
             }
@@ -1086,3 +1109,6 @@ mod tests;
 #[cfg(test)]
 #[path = "dispatch/margin_tests.rs"]
 mod margin_tests;
+
+#[path = "dispatch/snapshot.rs"]
+mod snapshot;

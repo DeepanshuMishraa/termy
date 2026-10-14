@@ -109,6 +109,40 @@ impl Backend {
         }
     }
 
+    pub(super) fn feed_output_with_replies(&self, bytes: &[u8]) -> Vec<u8> {
+        match self {
+            Self::Custom(backend) => backend.feed_output_with_replies(bytes),
+            Self::Remote(backend) => {
+                backend.feed_output(bytes);
+                Vec::new()
+            }
+        }
+    }
+
+    pub(super) fn set_protocol_replies_enabled(&self, enabled: bool) {
+        if let Self::Custom(backend) = self {
+            backend.set_protocol_replies_enabled(enabled);
+        }
+    }
+
+    /// `None` for multiplexer sessions, whose state lives in the server.
+    pub(super) fn encode_snapshot(&self) -> Option<Vec<u8>> {
+        match self {
+            Self::Custom(backend) => Some(backend.encode_snapshot()),
+            Self::Remote(_) => None,
+        }
+    }
+
+    pub(super) fn restore_snapshot(
+        &self,
+        bytes: &[u8],
+    ) -> Option<Result<(), crate::terminal_engine::SnapshotError>> {
+        match self {
+            Self::Custom(backend) => Some(backend.restore_snapshot(bytes)),
+            Self::Remote(_) => None,
+        }
+    }
+
     pub(super) fn child_pid(&self) -> Option<u32> {
         match self {
             Self::Custom(backend) => backend.child_pid(),

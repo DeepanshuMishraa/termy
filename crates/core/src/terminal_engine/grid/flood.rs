@@ -153,6 +153,7 @@ impl Grid {
         self.history.rotate_front_to_back();
         self.primary.rows.rotate_front_to_back();
         self.history_activity = true;
+        self.scrolled_into_history = self.scrolled_into_history.wrapping_add(1);
         self.pending_compaction = (self.pending_compaction + 1).min(history_before);
         // The caller checked that the viewport shows the live screen.
         self.mark_live_scroll_damage();
@@ -233,6 +234,7 @@ impl Grid {
                 };
                 self.push_history(retained);
                 self.history_activity = true;
+                self.scrolled_into_history = self.scrolled_into_history.wrapping_add(1);
                 self.pending_compaction = (self.pending_compaction + 1).min(self.history.len());
                 if self.display_offset != 0 {
                     self.display_offset = (self.display_offset + 1).min(self.history.len());

@@ -325,6 +325,37 @@ impl Row {
         true
     }
 
+    /// Capacities of the stored form: dense cells or packed scalars, packed
+    /// style runs, and the metadata table. [`Self::heap_bytes`] and packing
+    /// reuse depend on them, so snapshots restore them exactly.
+    pub(super) fn storage_capacities(&self) -> [usize; 3] {
+        let (cells, styles) = self
+            .packed
+            .as_ref()
+            .map_or((self.cells.capacity(), 0), |packed| {
+                (packed.scalars.capacity(), packed.styles.capacity())
+            });
+        [cells, styles, self.extras.capacity()]
+    }
+
+    pub(super) fn set_storage_capacities(&mut self, [cells, styles, extras]: [usize; 3]) {
+        fn fit<T>(vec: &mut Vec<T>, capacity: usize) {
+            let capacity = capacity.max(vec.len());
+            if vec.capacity() < capacity {
+                vec.reserve_exact(capacity - vec.len());
+            } else if vec.capacity() > capacity {
+                vec.shrink_to(capacity);
+            }
+        }
+        if let Some(packed) = &mut self.packed {
+            fit(&mut packed.scalars, cells);
+            fit(&mut packed.styles, styles);
+        } else {
+            fit(&mut self.cells, cells);
+        }
+        fit(&mut self.extras, extras);
+    }
+
     pub(super) fn release_read_cache(&mut self) {
         if let Some(packed) = &mut self.packed {
             packed.decoded.take();

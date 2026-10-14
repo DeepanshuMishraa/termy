@@ -28,6 +28,10 @@ impl State {
                 1004 => Some(self.modes.focus_events),
                 1005 => Some(self.modes.mouse_encoding == MouseEncoding::Utf8),
                 1006 => Some(self.modes.mouse_encoding == MouseEncoding::Sgr),
+                1007 => Some(self.modes.alternate_scroll),
+                1016 if self.pixel_mouse_reports => {
+                    Some(self.modes.mouse_encoding == MouseEncoding::SgrPixels)
+                }
                 2004 => Some(self.modes.bracketed_paste),
                 2026 => Some(self.modes.synchronized_update),
                 5522 => Some(self.modes.clipboard_paste_events),
