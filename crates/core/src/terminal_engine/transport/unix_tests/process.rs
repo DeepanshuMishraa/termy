@@ -1061,18 +1061,26 @@ fn dropping_after_the_child_exited_does_not_raise_sigpipe() {
 #[test]
 fn a_reply_during_the_drop_grace_keeps_the_hup_handler_running() {
     const READY: &[u8] = b"TERMY_NATIVE_HUP_QUERY_READY";
+    const QUERY: &[u8] = b"\x1b[c";
     let directory = TestDirectory::new("hup-query");
     let marker = directory.path().join("handled");
+    let release = directory.path().join("release");
     let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+    let (query_tx, query_rx) = mpsc::sync_channel(1);
     let mut output = Vec::new();
     let mut ready_reported = false;
+    let mut query_reported = false;
+    // The handler spins on builtins until the test releases it, so it stays
+    // inside the drop grace without a fixed sleep that a loaded runner can
+    // stretch past the grace.
     let terminal = Transport::spawn(
         SpawnConfig {
             program: "/bin/sh".to_string(),
             args: vec![
                 "-c".to_string(),
                 format!(
-                    "trap 'printf \"\\033[c\"; sleep 0.1; : > \"{}\"; exit 0' HUP; printf TERMY_NATIVE_HUP_QUERY_READY; while :; do sleep 0.02; done",
+                    "trap 'printf \"\\033[c\"; while [ ! -e \"{}\" ]; do :; done; : > \"{}\"; exit 0' HUP; printf TERMY_NATIVE_HUP_QUERY_READY; while :; do sleep 0.02; done",
+                    release.display(),
                     marker.display()
                 ),
             ],
@@ -1086,6 +1094,10 @@ fn a_reply_during_the_drop_grace_keeps_the_hup_handler_running() {
                 ready_reported = true;
                 let _ = ready_tx.send(());
             }
+            if !query_reported && output.windows(QUERY.len()).any(|part| part == QUERY) {
+                query_reported = true;
+                let _ = query_tx.send(());
+            }
             // Every chunk "answers" a query, like the engine replying to DA1.
             b"\x1b[?62c".to_vec()
         },
@@ -1097,6 +1109,12 @@ fn a_reply_during_the_drop_grace_keeps_the_hup_handler_running() {
         .recv_timeout(Duration::from_secs(2))
         .expect("child should install its HUP handler");
     drop(terminal);
+    query_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("the HUP handler should print its query");
+    // Give the reader time to queue the reply against the closed writer.
+    thread::sleep(Duration::from_millis(20));
+    std::fs::write(&release, b"").expect("release file should be written");
     let deadline = Instant::now() + Duration::from_secs(2);
     while !marker.exists() && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(10));
