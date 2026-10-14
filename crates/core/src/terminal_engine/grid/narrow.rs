@@ -23,6 +23,14 @@ const ENCODING_MASK: u16 = 0xc0e0;
 const ENCODING: u16 = 0x80c0;
 const BLOCKS: [(u16, u16); 3] = [(0xc0, 0x2ff), (0x370, 0x482), (0x48a, 0x52f)];
 
+/// Whether group `group` (in bounds) of `bytes` may be eight letters: its
+/// eighth pair starts with a lead byte. The caller checked the first; past
+/// it, most words end, and this spares the vector checks that would say so.
+#[inline(always)]
+fn leads_eighth(bytes: &[u8], group: usize) -> bool {
+    group == 0 || bytes[group * 16 + 14] & 0xe0 == 0xc0
+}
+
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
 fn store_groups(cells: &mut [Cell], bytes: &[u8], groups: usize, plain: PlainCell) -> usize {
@@ -45,6 +53,9 @@ fn store_groups(cells: &mut [Cell], bytes: &[u8], groups: usize, plain: PlainCel
         let zero = _mm_setzero_si128();
         let splat = |value: u16| _mm_set1_epi16(value as i16);
         for group in 0..groups {
+            if !leads_eighth(bytes, group) {
+                return group;
+            }
             let lanes = _mm_loadu_si128(bytes.as_ptr().add(group * 16).cast::<__m128i>());
             let encoded =
                 _mm_cmpeq_epi16(_mm_and_si128(lanes, splat(ENCODING_MASK)), splat(ENCODING));
@@ -100,6 +111,9 @@ fn store_groups(cells: &mut [Cell], bytes: &[u8], groups: usize, plain: PlainCel
         let head = vdupq_n_u64(head);
         let tail = vdupq_n_u32(tail as u32);
         for group in 0..groups {
+            if !leads_eighth(bytes, group) {
+                return group;
+            }
             let lanes = vreinterpretq_u16_u8(vld1q_u8(bytes.as_ptr().add(group * 16)));
             let encoded = vceqq_u16(
                 vandq_u16(lanes, vdupq_n_u16(ENCODING_MASK)),
