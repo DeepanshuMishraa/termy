@@ -25,6 +25,9 @@ impl PartialEq for GraphicsImage {
 }
 impl Eq for GraphicsImage {}
 
+/// See [`GraphicsImage::snapshot_parts`].
+pub(crate) type SnapshotParts<'a> = (Option<&'a [u8]>, Option<(&'a [u8], usize)>);
+
 impl GraphicsImage {
     pub fn from_rgba(width: u32, height: u32, mut rgba: Vec<u8>) -> Self {
         assert_eq!(u64::from(width) * u64::from(height) * 4, rgba.len() as u64);
@@ -54,6 +57,29 @@ impl GraphicsImage {
             png_export: Mutex::new(Weak::new()),
             #[cfg(test)]
             png_encodings: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    /// Decoded pixels, else the PNG source and the bytes it was charged.
+    pub(crate) fn snapshot_parts(&self) -> SnapshotParts<'_> {
+        (
+            self.rgba(),
+            self.png
+                .as_deref()
+                .map(|png| (png.as_slice(), self.encoded_source_bytes)),
+        )
+    }
+
+    /// The image [`Self::snapshot_parts`] described.
+    pub(crate) fn from_png_charged(
+        width: u32,
+        height: u32,
+        png: Vec<u8>,
+        encoded_source_bytes: usize,
+    ) -> Self {
+        Self {
+            encoded_source_bytes,
+            ..Self::from_png(width, height, png)
         }
     }
 

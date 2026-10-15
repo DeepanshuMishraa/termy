@@ -8,6 +8,7 @@ fn engine(cols: usize, rows: usize) -> Engine {
         Size { cols, rows },
         Options {
             scrollback_history: 10,
+            ..Default::default()
         },
     )
 }

@@ -233,6 +233,82 @@ impl OwnedFrame {
 fn abi_and_snapshot_versions_are_exposed() {
     assert_eq!(termy_engine_abi_version(), TERMY_ENGINE_ABI_VERSION);
     assert_eq!(termy_engine_snapshot_version(), SNAPSHOT_VERSION);
+    assert_eq!(termy_engine_snapshot_min_version(), MIN_SNAPSHOT_VERSION);
+}
+
+#[test]
+fn scrollback_and_payload_limits_are_configurable() {
+    let mut options = termy_engine_options_default();
+    assert_eq!(options.scrollback_bytes, 16 * 1024 * 1024);
+    assert_eq!(options.max_string_bytes, 64 * 1024);
+    options.scrollback_rows = TERMY_ENGINE_SCROLLBACK_UNLIMITED;
+    options.max_string_bytes = 16;
+    let engine = Handle::with_options(&options);
+    for line in 0..25_000 {
+        engine.feed(format!("line {line}\r\n").as_bytes());
+    }
+    let state = engine.state();
+    assert_eq!(state.scrollback_limit, TERMY_ENGINE_SCROLLBACK_UNLIMITED);
+    assert_eq!(state.scrollback_bytes, 16 * 1024 * 1024);
+    assert_eq!(state.history_size, 25_000 - 23);
+    // An oversized title is dropped.
+    engine.feed(b"\x1b]2;a title past sixteen bytes\x07");
+    let mut title = TermyEngineBytes::EMPTY;
+    // SAFETY: live handle and out buffer.
+    unsafe { termy_engine_title(engine.0, &raw mut title) };
+    assert!(take(title).is_empty());
+
+    // SAFETY: live handle.
+    unsafe {
+        assert_eq!(
+            termy_engine_set_scrollback_bytes(engine.0, 256 * 1024),
+            TermyEngineStatus::Ok
+        );
+        assert_eq!(
+            termy_engine_set_payload_limits(engine.0, 0, 0),
+            TermyEngineStatus::Ok
+        );
+    }
+    let state = engine.state();
+    assert_eq!(state.scrollback_bytes, 256 * 1024);
+    assert_eq!(state.scrollback_limit, TERMY_ENGINE_SCROLLBACK_UNLIMITED);
+    assert!(state.history_size < 25_000 - 23);
+    // Setting rows keeps the byte limit; the defaults are back.
+    // SAFETY: live handle.
+    unsafe { termy_engine_set_scrollback(engine.0, 100) };
+    let state = engine.state();
+    assert_eq!((state.scrollback_limit, state.history_size), (100, 100));
+    assert_eq!(state.scrollback_bytes, 256 * 1024);
+    engine.feed(b"\x1b]2;a title past sixteen bytes\x07");
+    let mut title = TermyEngineBytes::EMPTY;
+    // SAFETY: live handle and out buffer.
+    unsafe { termy_engine_title(engine.0, &raw mut title) };
+    assert_eq!(take(title), b"a title past sixteen bytes");
+}
+
+#[test]
+fn snapshots_encode_for_older_readers() {
+    let server = Handle::new(24, 6, TERMY_ENGINE_REPLIES_RETURN);
+    server.feed("old client \u{4e2d}\r\n".as_bytes());
+    let mut bytes = TermyEngineBytes::EMPTY;
+    // SAFETY: live handle and out buffer.
+    let status = unsafe { termy_engine_snapshot_encode_version(server.0, 1, &raw mut bytes) };
+    assert_eq!(status, TermyEngineStatus::Ok);
+    let v1 = take(bytes);
+    let mut version = 0;
+    // SAFETY: valid input and out pointer.
+    unsafe { termy_engine_snapshot_peek_version(v1.as_ptr(), v1.len(), &raw mut version) };
+    assert_eq!(version, 1);
+    let client = Handle::decode(&v1, TERMY_ENGINE_REPLIES_DISCARD);
+    assert_eq!(client.frame(true), server.frame(true));
+
+    let mut bytes = TermyEngineBytes::EMPTY;
+    // SAFETY: live handle and out buffer.
+    let status = unsafe {
+        termy_engine_snapshot_encode_version(server.0, SNAPSHOT_VERSION + 1, &raw mut bytes)
+    };
+    assert_eq!(status, TermyEngineStatus::UnsupportedSnapshotVersion);
+    assert!(take(bytes).is_empty());
 }
 
 #[test]

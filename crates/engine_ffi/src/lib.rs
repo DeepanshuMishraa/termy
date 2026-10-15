@@ -23,8 +23,9 @@ use std::{
 use termy_core::TerminalColor;
 use termy_core::TerminalQueryColors;
 use termy_core::terminal_engine::{
-    CursorShape, Engine, Event, MouseEncoding, MouseTracking, Options, SNAPSHOT_VERSION, Size,
-    SnapshotError, snapshot_version,
+    CursorShape, DEFAULT_SCROLLBACK_BYTES, Engine, Event, MAX_CLIPBOARD_PAYLOAD_BYTES,
+    MAX_STRING_PAYLOAD_BYTES, MIN_SNAPSHOT_VERSION, MouseEncoding, MouseTracking, Options,
+    SNAPSHOT_VERSION, Size, SnapshotError, snapshot_version,
 };
 
 pub use frame::{
@@ -34,7 +35,10 @@ pub use input::{TermyEngineKeyEvent, TermyEngineMouseEvent};
 pub use text::TermyEngineTextRange;
 
 /// Bumped on every incompatible change to `termy_engine.h`.
-pub const TERMY_ENGINE_ABI_VERSION: u32 = 1;
+pub const TERMY_ENGINE_ABI_VERSION: u32 = 2;
+
+/// `scrollback_rows` value that leaves history bounded by bytes alone.
+pub const TERMY_ENGINE_SCROLLBACK_UNLIMITED: u32 = u32::MAX;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -107,6 +111,40 @@ pub struct TermyEngineOptions {
     pub pixel_mouse_reports: bool,
     pub cell_width_px: u16,
     pub cell_height_px: u16,
+    /// History byte limit; 0 selects the 16 MiB default.
+    pub scrollback_bytes: u64,
+    /// OSC/DCS and OSC 52 payload limits; 0 selects the defaults (64 KiB
+    /// and 8 MiB, also the maxima).
+    pub max_string_bytes: u32,
+    pub max_clipboard_bytes: u32,
+}
+
+fn scrollback_rows(rows: u32) -> usize {
+    if rows == TERMY_ENGINE_SCROLLBACK_UNLIMITED {
+        usize::MAX
+    } else {
+        rows as usize
+    }
+}
+
+fn or_default(value: u64, default: usize) -> usize {
+    if value == 0 {
+        default
+    } else {
+        usize::try_from(value).unwrap_or(usize::MAX)
+    }
+}
+
+fn engine_options(options: &TermyEngineOptions) -> Options {
+    Options {
+        scrollback_history: scrollback_rows(options.scrollback_rows),
+        scrollback_bytes: or_default(options.scrollback_bytes, DEFAULT_SCROLLBACK_BYTES),
+        max_string_bytes: or_default(options.max_string_bytes.into(), MAX_STRING_PAYLOAD_BYTES),
+        max_clipboard_bytes: or_default(
+            options.max_clipboard_bytes.into(),
+            MAX_CLIPBOARD_PAYLOAD_BYTES,
+        ),
+    }
 }
 
 /// Engine state for hosts; see `TermyEngineState` in the header.
@@ -137,6 +175,7 @@ pub struct TermyEngineState {
     pub generation: u64,
     pub palette_revision: u64,
     pub scrolled_into_history: u64,
+    pub scrollback_bytes: u64,
 }
 
 #[repr(C)]
@@ -273,6 +312,11 @@ pub extern "C" fn termy_engine_snapshot_version() -> u32 {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn termy_engine_snapshot_min_version() -> u32 {
+    MIN_SNAPSHOT_VERSION
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn termy_engine_options_default() -> TermyEngineOptions {
     TermyEngineOptions {
         cols: 80,
@@ -282,6 +326,9 @@ pub extern "C" fn termy_engine_options_default() -> TermyEngineOptions {
         pixel_mouse_reports: false,
         cell_width_px: 9,
         cell_height_px: 18,
+        scrollback_bytes: DEFAULT_SCROLLBACK_BYTES as u64,
+        max_string_bytes: MAX_STRING_PAYLOAD_BYTES as u32,
+        max_clipboard_bytes: MAX_CLIPBOARD_PAYLOAD_BYTES as u32,
     }
 }
 
@@ -306,12 +353,7 @@ pub unsafe extern "C" fn termy_engine_new(
         if options.reply_mode > TERMY_ENGINE_REPLIES_DISCARD {
             return TermyEngineStatus::InvalidArgument;
         }
-        let mut engine = Engine::new(
-            size,
-            Options {
-                scrollback_history: options.scrollback_rows as usize,
-            },
-        );
+        let mut engine = Engine::new(size, engine_options(&options));
         engine.set_pixel_mouse_reports(options.pixel_mouse_reports);
         engine.set_cell_pixels(
             f32::from(options.cell_width_px),
@@ -517,8 +559,53 @@ pub unsafe extern "C" fn termy_engine_set_scrollback(
         let Some(engine) = (unsafe { handle(engine) }) else {
             return TermyEngineStatus::Null;
         };
+        let current = engine.engine.options();
         engine.engine.set_options(Options {
-            scrollback_history: rows as usize,
+            scrollback_history: scrollback_rows(rows),
+            ..current
+        });
+        TermyEngineStatus::Ok
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_engine_set_scrollback_bytes(
+    engine: *mut TermyEngine,
+    bytes: u64,
+) -> TermyEngineStatus {
+    guard(|| {
+        // SAFETY: null or a live handle.
+        let Some(engine) = (unsafe { handle(engine) }) else {
+            return TermyEngineStatus::Null;
+        };
+        let current = engine.engine.options();
+        engine.engine.set_options(Options {
+            scrollback_bytes: or_default(bytes, DEFAULT_SCROLLBACK_BYTES),
+            ..current
+        });
+        TermyEngineStatus::Ok
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_engine_set_payload_limits(
+    engine: *mut TermyEngine,
+    max_string_bytes: u32,
+    max_clipboard_bytes: u32,
+) -> TermyEngineStatus {
+    guard(|| {
+        // SAFETY: null or a live handle.
+        let Some(engine) = (unsafe { handle(engine) }) else {
+            return TermyEngineStatus::Null;
+        };
+        let current = engine.engine.options();
+        engine.engine.set_options(Options {
+            max_string_bytes: or_default(max_string_bytes.into(), MAX_STRING_PAYLOAD_BYTES),
+            max_clipboard_bytes: or_default(
+                max_clipboard_bytes.into(),
+                MAX_CLIPBOARD_PAYLOAD_BYTES,
+            ),
+            ..current
         });
         TermyEngineStatus::Ok
     })
@@ -568,6 +655,32 @@ pub unsafe extern "C" fn termy_engine_snapshot_encode(
         };
         *out = TermyEngineBytes::from_vec(engine.engine.encode_snapshot());
         TermyEngineStatus::Ok
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_engine_snapshot_encode_version(
+    engine: *mut TermyEngine,
+    version: u32,
+    out_snapshot: *mut TermyEngineBytes,
+) -> TermyEngineStatus {
+    guard(|| {
+        // SAFETY: null or a live handle.
+        let Some(engine) = (unsafe { handle(engine) }) else {
+            return TermyEngineStatus::Null;
+        };
+        // SAFETY: null or a writable buffer struct.
+        let Some(out) = (unsafe { out_snapshot.as_mut() }) else {
+            return TermyEngineStatus::Null;
+        };
+        *out = TermyEngineBytes::from_vec(Vec::new());
+        match engine.engine.encode_snapshot_version(version) {
+            Ok(bytes) => {
+                *out = TermyEngineBytes::from_vec(bytes);
+                TermyEngineStatus::Ok
+            }
+            Err(error) => error.into(),
+        }
     })
 }
 
@@ -716,6 +829,7 @@ pub unsafe extern "C" fn termy_engine_get_state(
             history_size: clamp(terminal.history_size()),
             display_offset: clamp(terminal.display_offset()),
             scrollback_limit: clamp(terminal.scrollback_limit()),
+            scrollback_bytes: u64::try_from(terminal.scrollback_byte_limit()).unwrap_or(u64::MAX),
             generation: terminal.generation(),
             palette_revision: terminal.palette_revision(),
             scrolled_into_history: terminal.scrolled_into_history(),

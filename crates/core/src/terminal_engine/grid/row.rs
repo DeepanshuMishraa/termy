@@ -123,22 +123,42 @@ const _: () = assert!(
 /// extra's allocation and combining text. Pen metadata and composed-cell cache
 /// entries are shared by runs of cells (and wide glyphs alternate with their
 /// spacers' extras), so an extra equal to one of the last two distinct ones is
-/// not counted again. A pure function of the row's extras, in column order.
+/// not counted again.
+///
+/// Extras are compared by value, never by allocation: whether two equal cells
+/// share one depends on caches (and pointer-keyed buckets) that differ between
+/// an engine and one decoded from its snapshot, and history's eviction must
+/// not. [`Row::share_equal_extras`] makes the sharing match the measurement.
 #[derive(Default)]
-struct ExtraMeter {
-    last: usize,
-    before: usize,
+struct ExtraMeter<'a> {
+    last: Option<&'a Arc<CellExtra>>,
+    before: Option<&'a Arc<CellExtra>>,
     bytes: usize,
 }
 
-impl ExtraMeter {
+fn same_extra(left: &Arc<CellExtra>, right: &Arc<CellExtra>) -> bool {
+    Arc::ptr_eq(left, right)
+        || (left.underline_color == right.underline_color
+            && left.combining == right.combining
+            && match (&left.hyperlink, &right.hyperlink) {
+                (None, None) => true,
+                (Some(left), Some(right)) => Arc::ptr_eq(left, right) || left == right,
+                _ => false,
+            })
+}
+
+impl<'a> ExtraMeter<'a> {
+    /// The recent extra equal to `extra`, if any; otherwise counts it.
     #[inline]
-    fn add(&mut self, extra: &Arc<CellExtra>) {
-        let address = Arc::as_ptr(extra).addr();
-        if address != self.last && address != self.before {
-            (self.before, self.last) = (self.last, address);
-            self.bytes += EXTRA_ALLOCATION + extra.combining.capacity();
+    fn add(&mut self, extra: &'a Arc<CellExtra>) -> Option<&'a Arc<CellExtra>> {
+        for recent in [self.last, self.before].into_iter().flatten() {
+            if same_extra(recent, extra) {
+                return Some(recent);
+            }
         }
+        (self.before, self.last) = (self.last, Some(extra));
+        self.bytes += EXTRA_ALLOCATION + extra.combining.len();
+        None
     }
 }
 
@@ -168,15 +188,16 @@ impl Row {
     /// others are measured from their table, never by scanning cells.
     #[inline]
     pub(super) fn bound_extras(&mut self) {
-        self.extra_units = if self.has_extras() {
-            self.count_extra_units()
+        if self.has_extras() {
+            self.measure_extras();
         } else {
-            0
-        };
+            self.extra_units = 0;
+        }
     }
 
     /// Charge the measured metadata.
     pub(super) fn measure_extras(&mut self) {
+        self.share_equal_extras();
         self.extra_units = self.count_extra_units();
     }
 
@@ -186,6 +207,23 @@ impl Row {
             meter.add(extra);
         }
         extra_units(meter.bytes)
+    }
+
+    /// Point each extra the meter would not count at the equal extra it
+    /// matched, so one it charges once is also stored once.
+    fn share_equal_extras(&mut self) {
+        let mut replace = Vec::new();
+        let mut meter = ExtraMeter::default();
+        for (index, (_, extra)) in self.extras.iter().enumerate() {
+            if let Some(recent) = meter.add(extra)
+                && !Arc::ptr_eq(recent, extra)
+            {
+                replace.push((index, Arc::clone(recent)));
+            }
+        }
+        for (index, extra) in replace {
+            self.extras[index].1 = extra;
+        }
     }
 
     #[cfg(test)]

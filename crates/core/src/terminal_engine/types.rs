@@ -431,7 +431,11 @@ impl ExtraSlot for Option<Arc<CellExtra>> {
             return;
         }
         let extra = self.get_or_insert_with(|| Arc::new(CellExtra::default()));
-        Arc::make_mut(extra).combining.push(character);
+        // Exact capacity, like every other path that builds combining text,
+        // so history's metadata charge (which counts its length) is real.
+        let combining = &mut Arc::make_mut(extra).combining;
+        combining.reserve_exact(character.len_utf8());
+        combining.push(character);
     }
     #[inline]
     fn spacer_extra(&self, cache: &mut Option<Arc<CellExtra>>) -> Option<Arc<CellExtra>> {

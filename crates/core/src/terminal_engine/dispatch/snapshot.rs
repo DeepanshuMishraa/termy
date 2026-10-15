@@ -120,6 +120,9 @@ impl State {
         });
 
         self.grid.write_snapshot(writer);
+        if writer.version() >= 2 {
+            self.graphics.write_snapshot(writer);
+        }
     }
 
     pub(in crate::terminal_engine) fn read_snapshot(reader: &mut Reader<'_>) -> Result<Self> {
@@ -244,6 +247,10 @@ impl State {
         state.grid = Grid::read_snapshot(reader)?;
         if state.alternate_screen != state.grid.alternate_screen() {
             return Err(Corrupt("alternate screen"));
+        }
+        if reader.version() >= 2 {
+            let (graphics, sized) = super::super::graphics::Graphics::read_snapshot(reader)?;
+            state.restore_graphics(graphics, sized);
         }
         Ok(state)
     }

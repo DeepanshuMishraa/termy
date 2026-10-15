@@ -44,10 +44,13 @@ by native, display-only, tmux and persistent Termy sessions.
   little-endian format: both screens and history with metadata tables,
   cursors, margins, tabs, charsets, modes, keyboard stacks, palette, titles,
   working directory, program status, the parser's in-progress sequence and a
-  pending synchronized update. Rows keep their packed representation, metadata
-  charge and storage capacities, so a decoded engine fed the same bytes evicts
-  the same history. Queued events and replies, damage, kitty graphics and
-  caches are not included. Tests feed random streams split at random points to
+  pending synchronized update, the scrollback and payload limits, and kitty
+  graphics (images PNG-compressed). Rows keep their packed representation,
+  metadata charge and storage capacities, so a decoded engine fed the same
+  bytes evicts the same history. Queued events and replies, damage and caches
+  are not included. Every build reads and writes versions
+  `MIN_SNAPSHOT_VERSION..=SNAPSHOT_VERSION`; `snapshot/v1.snap` is a fixture
+  written by the first release. Tests feed random streams split at random points to
   an engine and to its decoded copy and compare canonical encodings.
 - `sync.rs` buffers synchronized output with a 2 MiB limit and a 150 ms timeout.
   A syntax-aware marker scanner preserves ordering across fragmented strings.
@@ -79,8 +82,11 @@ settled retained heap separately from parsing throughput.
 The transition out of quiet compaction counts output bytes across feeds, so
 fragmenting a burst into small writes does not keep packing new history rows.
 Grid dimensions are clamped to 4,096 per axis and 1,048,576 cells in total.
-History retains at most 20,000 rows and 1,048,576 cells, so wide grids can retain
-fewer rows than the configured history count. Combining suffixes, CSI parameters,
+History retains at most the configured rows (`usize::MAX` for no row limit) and
+the configured byte budget (16 MiB by default). Rows are charged their ring slot,
+their stored cells (packed once cold) and their cell metadata measured by value,
+so the charge is a function of contents and engines fed the same bytes evict the
+same rows. Combining suffixes, CSI parameters,
 strings, title stacks, keyboard stacks, events and replies are also bounded. The runtime event queue
 has an 8 MiB retained-payload budget as well as a count limit; dropping clipboard
 chunks aborts the transaction, and resets still revoke permission grants.

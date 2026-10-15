@@ -1,4 +1,4 @@
-use super::super::history::HISTORY_BYTE_BUDGET;
+use super::super::history::DEFAULT_HISTORY_BYTES;
 use super::super::tests::{assert_history_compacted, grid, print, text};
 use super::super::*;
 
@@ -105,7 +105,7 @@ fn widening_packs_rewrapped_history_instead_of_evicting_it() {
     // At 4096 columns the old cell cap kept only 256 rows.
     assert_eq!(grid.history_size(), 1022);
     assert_eq!(grid.display_offset(), 400);
-    assert!(grid.history_bytes <= HISTORY_BYTE_BUDGET);
+    assert!(grid.history_bytes <= DEFAULT_HISTORY_BYTES);
     assert_eq!(
         grid.row(-1).unwrap().line()[0].character,
         char::from(b'a' + (1021 % 26) as u8)
@@ -134,7 +134,7 @@ fn a_transient_widen_keeps_the_requested_scrollback() {
         rows: 40,
     });
     assert_eq!(grid.history_size(), 10_000);
-    assert!(grid.history_bytes <= HISTORY_BYTE_BUDGET);
+    assert!(grid.history_bytes <= DEFAULT_HISTORY_BYTES);
     assert!(text(&grid, 0).starts_with("11961"), "{}", text(&grid, 0));
 }
 

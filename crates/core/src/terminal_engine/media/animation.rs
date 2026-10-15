@@ -72,6 +72,29 @@ impl GraphicsAnimation {
     pub fn byte_len(&self) -> usize {
         self.frames.iter().map(|frame| frame.image.byte_len()).sum()
     }
+
+    /// Playback state, loop count, completed loops and the next deadline.
+    pub(crate) fn playback(&self) -> (u32, Option<u32>, u32, Option<Instant>) {
+        (self.state, self.loops, self.completed_loops, self.deadline)
+    }
+
+    /// An animation with [`Self::playback`]'s state. `frames` must be
+    /// non-empty and `current` one of them.
+    pub(crate) fn from_playback(
+        frames: Vec<GraphicsFrame>,
+        current: usize,
+        (state, loops, completed_loops, deadline): (u32, Option<u32>, u32, Option<Instant>),
+    ) -> Self {
+        debug_assert!(current < frames.len());
+        Self {
+            frames,
+            current,
+            state,
+            loops,
+            completed_loops,
+            deadline,
+        }
+    }
     pub fn current_frame(&self) -> &GraphicsFrame {
         &self.frames[self.current]
     }

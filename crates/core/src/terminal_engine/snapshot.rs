@@ -5,13 +5,27 @@
 //! styles, OSC 8 links, underline colors, wrap flags), cursors and saved
 //! cursors, margins, tab stops, charsets, every mode, the kitty keyboard
 //! stacks, palette overrides, the title and its stack, the OSC 7 working
-//! directory, program status records, the parser's in-progress sequence and
-//! a pending synchronized update. Feeding the same bytes to an engine and to
-//! one decoded from its snapshot leaves both in the same state.
+//! directory, program status records, the parser's in-progress sequence,
+//! a pending synchronized update, and kitty graphics (stored images and
+//! animations, placements and a chunked upload in progress). Feeding the
+//! same bytes to an engine and to one decoded from its snapshot leaves both
+//! in the same state.
 //!
 //! Not included: queued events and protocol replies (drain them first),
-//! render damage (a decoded engine starts with full damage), kitty graphics
-//! images and placements, and memory caches that do not affect behavior.
+//! render damage (a decoded engine starts with full damage), and memory
+//! caches that do not affect behavior.
+//!
+//! # Versions
+//!
+//! Every build decodes [`MIN_SNAPSHOT_VERSION`] through [`SNAPSHOT_VERSION`],
+//! and [`Engine::encode_snapshot_version`] writes any of them, so a server
+//! and its clients may run different releases. Fields a version lacks decode
+//! as their defaults; writing an older version drops newer state (see
+//! `encode_snapshot_version`).
+//!
+//! - 1: the first format.
+//! - 2: adds the scrollback byte limit (and allows more than 20,000 rows),
+//!   the OSC/DCS and OSC 52 payload limits, and kitty graphics.
 //!
 //! # Format
 //!
@@ -35,8 +49,12 @@ use std::{collections::HashMap, sync::Arc};
 use super::{CellExtra, Color, Cursor, CursorShape, Engine, Hyperlink, Style, UnderlineStyle};
 
 const MAGIC: &[u8; 8] = b"TRMYSNAP";
-/// The snapshot format this build writes and reads.
-pub const SNAPSHOT_VERSION: u32 = 1;
+/// The snapshot format this build writes by default.
+pub const SNAPSHOT_VERSION: u32 = 2;
+/// The oldest snapshot format this build reads and writes.
+pub const MIN_SNAPSHOT_VERSION: u32 = 1;
+/// Version 1 kept at most this many history rows.
+pub(super) const V1_MAX_HISTORY_ROWS: usize = 20_000;
 const HEADER_BYTES: usize = 8 + 4 + 4 + 8;
 
 /// Why a snapshot could not be decoded.
@@ -58,7 +76,8 @@ impl std::fmt::Display for SnapshotError {
             Self::NotASnapshot => formatter.write_str("not a termy snapshot"),
             Self::UnsupportedVersion(version) => write!(
                 formatter,
-                "unsupported snapshot version {version} (this build reads {SNAPSHOT_VERSION})"
+                "unsupported snapshot version {version} (this build reads \
+                 {MIN_SNAPSHOT_VERSION} through {SNAPSHOT_VERSION})"
             ),
             Self::Truncated => formatter.write_str("snapshot is truncated"),
             Self::Corrupt(what) => write!(formatter, "corrupt snapshot: {what}"),
@@ -68,7 +87,7 @@ impl std::fmt::Display for SnapshotError {
 
 impl std::error::Error for SnapshotError {}
 
-pub(super) type Result<T> = std::result::Result<T, SnapshotError>;
+pub(crate) type Result<T> = std::result::Result<T, SnapshotError>;
 
 /// Read the version of a snapshot without decoding it.
 pub fn snapshot_version(bytes: &[u8]) -> Result<u32> {
@@ -81,8 +100,9 @@ pub fn snapshot_version(bytes: &[u8]) -> Result<u32> {
     ]))
 }
 
-pub(super) struct Writer {
+pub(crate) struct Writer {
     out: Vec<u8>,
+    version: u32,
     /// Canonical output omits storage details (packing, metadata charges)
     /// and shares metadata by value, so equal states encode equally. Tests
     /// compare engines with it.
@@ -95,9 +115,10 @@ pub(super) struct Writer {
 }
 
 impl Writer {
-    fn new(canonical: bool) -> Self {
+    fn new(canonical: bool, version: u32) -> Self {
         Self {
             out: Vec::new(),
+            version,
             canonical,
             links: Vec::new(),
             link_indices: HashMap::new(),
@@ -107,34 +128,39 @@ impl Writer {
         }
     }
 
-    pub(super) fn canonical(&self) -> bool {
+    pub(crate) fn canonical(&self) -> bool {
         self.canonical
     }
 
-    pub(super) fn reserve(&mut self, bytes: usize) {
+    /// The format version being written.
+    pub(crate) fn version(&self) -> u32 {
+        self.version
+    }
+
+    pub(crate) fn reserve(&mut self, bytes: usize) {
         self.out.reserve(bytes);
     }
 
     #[inline]
-    pub(super) fn u8(&mut self, value: u8) {
+    pub(crate) fn u8(&mut self, value: u8) {
         self.out.push(value);
     }
 
     #[inline]
-    pub(super) fn bool(&mut self, value: bool) {
+    pub(crate) fn bool(&mut self, value: bool) {
         self.out.push(u8::from(value));
     }
 
-    pub(super) fn u16(&mut self, value: u16) {
+    pub(crate) fn u16(&mut self, value: u16) {
         self.out.extend_from_slice(&value.to_le_bytes());
     }
 
-    pub(super) fn u64(&mut self, value: u64) {
+    pub(crate) fn u64(&mut self, value: u64) {
         self.out.extend_from_slice(&value.to_le_bytes());
     }
 
     #[inline]
-    pub(super) fn varint(&mut self, mut value: u64) {
+    pub(crate) fn varint(&mut self, mut value: u64) {
         while value >= 0x80 {
             self.out.push(value as u8 | 0x80);
             value >>= 7;
@@ -143,20 +169,34 @@ impl Writer {
     }
 
     #[inline]
-    pub(super) fn usize(&mut self, value: usize) {
+    pub(crate) fn usize(&mut self, value: usize) {
         self.varint(value as u64);
     }
 
-    pub(super) fn bytes(&mut self, bytes: &[u8]) {
+    /// A signed integer, zigzag encoded.
+    pub(crate) fn i64(&mut self, value: i64) {
+        self.varint(((value << 1) ^ (value >> 63)) as u64);
+    }
+
+    /// A `u32` as a variable-length integer; see `Reader::u32_value`.
+    pub(crate) fn u32_value(&mut self, value: u32) {
+        self.varint(u64::from(value));
+    }
+
+    pub(crate) fn option_u32(&mut self, value: Option<u32>) {
+        self.varint(value.map_or(0, |value| u64::from(value) + 1));
+    }
+
+    pub(crate) fn bytes(&mut self, bytes: &[u8]) {
         self.usize(bytes.len());
         self.out.extend_from_slice(bytes);
     }
 
-    pub(super) fn str(&mut self, text: &str) {
+    pub(crate) fn str(&mut self, text: &str) {
         self.bytes(text.as_bytes());
     }
 
-    pub(super) fn option_bool(&mut self, value: Option<bool>) {
+    pub(crate) fn option_bool(&mut self, value: Option<bool>) {
         self.u8(match value {
             None => 0,
             Some(false) => 1,
@@ -164,11 +204,11 @@ impl Writer {
         });
     }
 
-    pub(super) fn color(&mut self, color: Color) {
+    pub(crate) fn color(&mut self, color: Color) {
         self.out.extend_from_slice(&color.to_bytes());
     }
 
-    pub(super) fn option_color(&mut self, color: Option<Color>) {
+    pub(crate) fn option_color(&mut self, color: Option<Color>) {
         self.bool(color.is_some());
         if let Some(color) = color {
             self.color(color);
@@ -176,14 +216,14 @@ impl Writer {
     }
 
     #[inline]
-    pub(super) fn style(&mut self, style: Style) {
+    pub(crate) fn style(&mut self, style: Style) {
         self.color(style.foreground);
         self.color(style.background);
         self.u8(style.attributes);
         self.u8(style.underline as u8);
     }
 
-    pub(super) fn cursor_shape(&mut self, shape: CursorShape) {
+    pub(crate) fn cursor_shape(&mut self, shape: CursorShape) {
         self.u8(match shape {
             CursorShape::Block => 0,
             CursorShape::Beam => 1,
@@ -191,7 +231,7 @@ impl Writer {
         });
     }
 
-    pub(super) fn cursor(&mut self, cursor: Cursor) {
+    pub(crate) fn cursor(&mut self, cursor: Cursor) {
         self.usize(cursor.row);
         self.usize(cursor.col);
         self.bool(cursor.visible);
@@ -199,7 +239,7 @@ impl Writer {
         self.bool(cursor.blinking);
     }
 
-    pub(super) fn link(&mut self, link: &Arc<Hyperlink>) -> u32 {
+    pub(crate) fn link(&mut self, link: &Arc<Hyperlink>) -> u32 {
         let key = (link.id.clone(), link.uri.clone());
         if let Some(&index) = self.link_indices.get(&key) {
             return index;
@@ -211,7 +251,7 @@ impl Writer {
     }
 
     /// The table index of `extra`. Shared metadata stays shared on decode.
-    pub(super) fn extra(&mut self, extra: &Arc<CellExtra>) -> u32 {
+    pub(crate) fn extra(&mut self, extra: &Arc<CellExtra>) -> u32 {
         if !self.canonical
             && let Some(&index) = self.extra_by_pointer.get(&Arc::as_ptr(extra).addr())
         {
@@ -243,7 +283,7 @@ impl Writer {
         index
     }
 
-    pub(super) fn option_extra(&mut self, extra: Option<&Arc<CellExtra>>) {
+    pub(crate) fn option_extra(&mut self, extra: Option<&Arc<CellExtra>>) {
         let index = extra.map_or(0, |extra| u64::from(self.extra(extra)) + 1);
         self.varint(index);
     }
@@ -271,24 +311,31 @@ impl Writer {
     }
 }
 
-pub(super) struct Reader<'a> {
+pub(crate) struct Reader<'a> {
     bytes: &'a [u8],
     offset: usize,
+    version: u32,
     links: Vec<Arc<Hyperlink>>,
     extras: Vec<Arc<CellExtra>>,
 }
 
 impl<'a> Reader<'a> {
-    fn new(bytes: &'a [u8]) -> Self {
+    fn new(bytes: &'a [u8], version: u32) -> Self {
         Self {
             bytes,
             offset: 0,
+            version,
             links: Vec::new(),
             extras: Vec::new(),
         }
     }
 
-    pub(super) fn take(&mut self, len: usize) -> Result<&'a [u8]> {
+    /// The format version being read.
+    pub(crate) fn version(&self) -> u32 {
+        self.version
+    }
+
+    pub(crate) fn take(&mut self, len: usize) -> Result<&'a [u8]> {
         let end = self
             .offset
             .checked_add(len)
@@ -302,7 +349,7 @@ impl<'a> Reader<'a> {
     }
 
     #[inline]
-    pub(super) fn u8(&mut self) -> Result<u8> {
+    pub(crate) fn u8(&mut self) -> Result<u8> {
         let byte = *self
             .bytes
             .get(self.offset)
@@ -311,7 +358,7 @@ impl<'a> Reader<'a> {
         Ok(byte)
     }
 
-    pub(super) fn bool(&mut self) -> Result<bool> {
+    pub(crate) fn bool(&mut self) -> Result<bool> {
         match self.u8()? {
             0 => Ok(false),
             1 => Ok(true),
@@ -319,17 +366,17 @@ impl<'a> Reader<'a> {
         }
     }
 
-    pub(super) fn u16(&mut self) -> Result<u16> {
+    pub(crate) fn u16(&mut self) -> Result<u16> {
         let bytes = self.take(2)?;
         Ok(u16::from_le_bytes([bytes[0], bytes[1]]))
     }
 
-    pub(super) fn u32(&mut self) -> Result<u32> {
+    pub(crate) fn u32(&mut self) -> Result<u32> {
         let bytes = self.take(4)?;
         Ok(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
     }
 
-    pub(super) fn u64(&mut self) -> Result<u64> {
+    pub(crate) fn u64(&mut self) -> Result<u64> {
         let bytes = self.take(8)?;
         let mut word = [0; 8];
         word.copy_from_slice(bytes);
@@ -337,7 +384,7 @@ impl<'a> Reader<'a> {
     }
 
     #[inline]
-    pub(super) fn varint(&mut self) -> Result<u64> {
+    pub(crate) fn varint(&mut self) -> Result<u64> {
         let mut value = 0_u64;
         for shift in (0..64).step_by(7) {
             let byte = self.u8()?;
@@ -350,13 +397,38 @@ impl<'a> Reader<'a> {
     }
 
     #[inline]
-    pub(super) fn usize(&mut self) -> Result<usize> {
+    pub(crate) fn usize(&mut self) -> Result<usize> {
         usize::try_from(self.varint()?).map_err(|_| SnapshotError::Corrupt("integer"))
+    }
+
+    pub(crate) fn i64(&mut self) -> Result<i64> {
+        let value = self.varint()?;
+        Ok((value >> 1) as i64 ^ -((value & 1) as i64))
+    }
+
+    pub(crate) fn i32(&mut self) -> Result<i32> {
+        i32::try_from(self.i64()?).map_err(|_| SnapshotError::Corrupt("integer"))
+    }
+
+    pub(crate) fn u32_value(&mut self) -> Result<u32> {
+        u32::try_from(self.varint()?).map_err(|_| SnapshotError::Corrupt("integer"))
+    }
+
+    pub(crate) fn option_u32(&mut self) -> Result<Option<u32>> {
+        Ok(match self.varint()? {
+            0 => None,
+            value => Some(u32::try_from(value - 1).map_err(|_| SnapshotError::Corrupt("integer"))?),
+        })
+    }
+
+    /// A limit, where values past `usize::MAX` mean the same: no limit.
+    pub(crate) fn limit(&mut self) -> Result<usize> {
+        Ok(usize::try_from(self.varint()?).unwrap_or(usize::MAX))
     }
 
     /// A count of items each at least `item_bytes` long, checked against
     /// the remaining input before anything is allocated for them.
-    pub(super) fn count(&mut self, item_bytes: usize) -> Result<usize> {
+    pub(crate) fn count(&mut self, item_bytes: usize) -> Result<usize> {
         let count = self.usize()?;
         if count.saturating_mul(item_bytes.max(1)) > self.bytes.len() - self.offset {
             return Err(SnapshotError::Truncated);
@@ -364,21 +436,21 @@ impl<'a> Reader<'a> {
         Ok(count)
     }
 
-    pub(super) fn u16_value(&mut self) -> Result<u16> {
+    pub(crate) fn u16_value(&mut self) -> Result<u16> {
         u16::try_from(self.varint()?).map_err(|_| SnapshotError::Corrupt("integer"))
     }
 
-    pub(super) fn bytes(&mut self) -> Result<&'a [u8]> {
+    pub(crate) fn bytes(&mut self) -> Result<&'a [u8]> {
         let len = self.usize()?;
         self.take(len)
     }
 
-    pub(super) fn string(&mut self) -> Result<String> {
+    pub(crate) fn string(&mut self) -> Result<String> {
         let bytes = self.bytes()?;
         String::from_utf8(bytes.to_vec()).map_err(|_| SnapshotError::Corrupt("string"))
     }
 
-    pub(super) fn option_bool(&mut self) -> Result<Option<bool>> {
+    pub(crate) fn option_bool(&mut self) -> Result<Option<bool>> {
         match self.u8()? {
             0 => Ok(None),
             1 => Ok(Some(false)),
@@ -388,13 +460,13 @@ impl<'a> Reader<'a> {
     }
 
     #[inline]
-    pub(super) fn color(&mut self) -> Result<Color> {
+    pub(crate) fn color(&mut self) -> Result<Color> {
         let bytes = self.take(4)?;
         Color::from_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
             .ok_or(SnapshotError::Corrupt("color"))
     }
 
-    pub(super) fn option_color(&mut self) -> Result<Option<Color>> {
+    pub(crate) fn option_color(&mut self) -> Result<Option<Color>> {
         Ok(if self.bool()? {
             Some(self.color()?)
         } else {
@@ -403,7 +475,7 @@ impl<'a> Reader<'a> {
     }
 
     #[inline]
-    pub(super) fn style(&mut self) -> Result<Style> {
+    pub(crate) fn style(&mut self) -> Result<Style> {
         Ok(Style {
             foreground: self.color()?,
             background: self.color()?,
@@ -413,7 +485,7 @@ impl<'a> Reader<'a> {
         })
     }
 
-    pub(super) fn cursor_shape(&mut self) -> Result<CursorShape> {
+    pub(crate) fn cursor_shape(&mut self) -> Result<CursorShape> {
         match self.u8()? {
             0 => Ok(CursorShape::Block),
             1 => Ok(CursorShape::Beam),
@@ -422,7 +494,7 @@ impl<'a> Reader<'a> {
         }
     }
 
-    pub(super) fn cursor(&mut self) -> Result<Cursor> {
+    pub(crate) fn cursor(&mut self) -> Result<Cursor> {
         Ok(Cursor {
             row: self.usize()?,
             col: self.usize()?,
@@ -432,7 +504,7 @@ impl<'a> Reader<'a> {
         })
     }
 
-    pub(super) fn link(&mut self) -> Result<Arc<Hyperlink>> {
+    pub(crate) fn link(&mut self) -> Result<Arc<Hyperlink>> {
         let index = self.usize()?;
         self.links
             .get(index)
@@ -441,7 +513,7 @@ impl<'a> Reader<'a> {
     }
 
     #[inline]
-    pub(super) fn extra(&mut self) -> Result<Arc<CellExtra>> {
+    pub(crate) fn extra(&mut self) -> Result<Arc<CellExtra>> {
         let index = self.usize()?;
         self.extras
             .get(index)
@@ -449,7 +521,7 @@ impl<'a> Reader<'a> {
             .ok_or(SnapshotError::Corrupt("cell metadata index"))
     }
 
-    pub(super) fn option_extra(&mut self) -> Result<Option<Arc<CellExtra>>> {
+    pub(crate) fn option_extra(&mut self) -> Result<Option<Arc<CellExtra>>> {
         let index = self.usize()?;
         if index == 0 {
             return Ok(None);
@@ -502,20 +574,35 @@ impl Engine {
     /// Encode the engine's full state; see the module documentation.
     /// Queued events and replies are not part of it: drain them first.
     pub fn encode_snapshot(&mut self) -> Vec<u8> {
-        self.encode_snapshot_with(false)
+        self.encode_snapshot_with(false, SNAPSHOT_VERSION)
     }
 
-    fn encode_snapshot_with(&mut self, canonical: bool) -> Vec<u8> {
+    /// Encode for a reader of an older format, such as a client running an
+    /// earlier release. State the version cannot hold is left out:
+    ///
+    /// - 1: history keeps its newest 20,000 rows and the decoded engine has
+    ///   the default 16 MiB byte limit; payload limits decode as defaults;
+    ///   kitty graphics are left out.
+    ///
+    /// The decoded engine then evicts history like an engine of that
+    /// release, not necessarily like this one.
+    pub fn encode_snapshot_version(&mut self, version: u32) -> Result<Vec<u8>> {
+        if !(MIN_SNAPSHOT_VERSION..=SNAPSHOT_VERSION).contains(&version) {
+            return Err(SnapshotError::UnsupportedVersion(version));
+        }
+        Ok(self.encode_snapshot_with(false, version))
+    }
+
+    fn encode_snapshot_with(&mut self, canonical: bool, version: u32) -> Vec<u8> {
         // Nothing outside parsing may see a partly blanked row, and expanded
         // history read caches are not state.
         self.state.grid.flush_pending_clear();
+        self.state.flush_graphics_effects();
         self.state.grid.release_history_read_cache();
-        let mut writer = Writer::new(canonical);
+        let mut writer = Writer::new(canonical, version);
         writer.reserve(HEADER_BYTES + self.state.grid.snapshot_size_hint());
         writer.out.extend_from_slice(MAGIC);
-        writer
-            .out
-            .extend_from_slice(&SNAPSHOT_VERSION.to_le_bytes());
+        writer.out.extend_from_slice(&version.to_le_bytes());
         writer.out.extend_from_slice(&0_u32.to_le_bytes());
         writer.u64(0);
         self.parser.write_snapshot(&mut writer);
@@ -524,13 +611,14 @@ impl Engine {
         writer.finish()
     }
 
-    /// Rebuild an engine from [`Self::encode_snapshot`] output.
+    /// Rebuild an engine from [`Self::encode_snapshot`] output, of any
+    /// version from [`MIN_SNAPSHOT_VERSION`] through [`SNAPSHOT_VERSION`].
     pub fn decode_snapshot(bytes: &[u8]) -> Result<Self> {
         let version = snapshot_version(bytes)?;
-        if version != SNAPSHOT_VERSION {
+        if !(MIN_SNAPSHOT_VERSION..=SNAPSHOT_VERSION).contains(&version) {
             return Err(SnapshotError::UnsupportedVersion(version));
         }
-        let mut reader = Reader::new(bytes);
+        let mut reader = Reader::new(bytes, version);
         reader.offset = 12;
         if reader.u32()? != 0 {
             return Err(SnapshotError::Corrupt("header flags"));
@@ -540,7 +628,7 @@ impl Engine {
         if tables < HEADER_BYTES || tables > bytes.len() {
             return Err(SnapshotError::Corrupt("table offset"));
         }
-        let mut table_reader = Reader::new(bytes);
+        let mut table_reader = Reader::new(bytes, version);
         table_reader.offset = tables;
         table_reader.read_tables()?;
         if table_reader.offset != bytes.len() {
@@ -568,7 +656,7 @@ impl Engine {
     /// independent of storage layout and metadata sharing.
     #[cfg(test)]
     pub(crate) fn canonical_snapshot(&mut self) -> Vec<u8> {
-        self.encode_snapshot_with(true)
+        self.encode_snapshot_with(true, SNAPSHOT_VERSION)
     }
 }
 

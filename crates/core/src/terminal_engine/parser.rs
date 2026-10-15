@@ -8,10 +8,10 @@
 const MAX_PARAMS: usize = 32;
 const MAX_SUBPARAMS: usize = 8;
 const MAX_INTERMEDIATES: usize = 2;
-const MAX_STRING_BYTES: usize = 64 * 1024;
+pub(super) const MAX_STRING_BYTES: usize = 64 * 1024;
 pub(super) const MAX_APC_BYTES: usize = 256 * 1024 * 1024;
 // Base64 for about 6 MiB of copied text, enough for large editor yanks.
-const MAX_CLIPBOARD_OSC_BYTES: usize = 8 * 1024 * 1024;
+pub(super) const MAX_CLIPBOARD_OSC_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Param {
@@ -206,6 +206,9 @@ pub(super) struct Parser {
     string_wire_len: usize,
     collect_strings: bool,
     apc_limit: usize,
+    // OSC and DCS payloads, and OSC 52's; see `set_string_limits`.
+    string_limit: usize,
+    clipboard_limit: usize,
     // The current string's first bytes select its limit, even for scanners
     // that do not collect it. Bytes past `string_len` are stale.
     prefix: [u8; 3],
@@ -230,6 +233,8 @@ impl Default for Parser {
             string_wire_len: 0,
             collect_strings: true,
             apc_limit: MAX_STRING_BYTES,
+            string_limit: MAX_STRING_BYTES,
+            clipboard_limit: MAX_CLIPBOARD_OSC_BYTES,
             prefix: [0; 3],
             utf8_value: 0,
             utf8_remaining: 0,
@@ -247,6 +252,18 @@ impl Parser {
             apc_limit: limit.clamp(1, MAX_APC_BYTES),
             ..Self::default()
         }
+    }
+
+    /// Lower the payload limits: OSC and DCS strings longer than `strings`
+    /// bytes, and OSC 52 strings longer than `clipboard`, are dropped whole.
+    /// Each is clamped to `1..=` its default (64 KiB and 8 MiB).
+    pub(super) fn set_string_limits(&mut self, strings: usize, clipboard: usize) {
+        self.string_limit = strings.clamp(1, MAX_STRING_BYTES);
+        self.clipboard_limit = clipboard.clamp(1, MAX_CLIPBOARD_OSC_BYTES);
+    }
+
+    pub(super) fn string_limits(&self) -> (usize, usize) {
+        (self.string_limit, self.clipboard_limit)
     }
 
     /// Recognize identical string boundaries without retaining their payloads.
@@ -634,10 +651,10 @@ impl Parser {
         // so stale prefix bytes cannot affect the check.
         let limit = match kind {
             StringKind::Apc if self.prefix[0] == b'G' => self.apc_limit,
-            StringKind::Osc if self.prefix == *b"52;" => MAX_CLIPBOARD_OSC_BYTES,
-            _ => MAX_STRING_BYTES,
+            StringKind::Osc if self.prefix == *b"52;" => self.clipboard_limit,
+            _ => self.string_limit,
         };
-        if bytes.len() > limit - self.string_len {
+        if bytes.len() > limit.saturating_sub(self.string_len) {
             self.discarded = true;
             self.clear_string();
             return;
@@ -762,6 +779,10 @@ impl Parser {
         writer.bool(self.discarded);
         writer.bool(self.collect_strings);
         writer.usize(self.apc_limit);
+        if writer.version() >= 2 {
+            writer.usize(self.string_limit);
+            writer.usize(self.clipboard_limit);
+        }
         writer.usize(self.string_len);
         writer.usize(self.string_wire_len);
         writer.bytes(&self.string);
@@ -828,6 +849,10 @@ impl Parser {
         parser.discarded = reader.bool()?;
         parser.collect_strings = reader.bool()?;
         parser.apc_limit = reader.usize()?.clamp(1, MAX_APC_BYTES);
+        if reader.version() >= 2 {
+            let strings = reader.usize()?;
+            parser.set_string_limits(strings, reader.usize()?);
+        }
         parser.string_len = reader.usize()?;
         parser.string_wire_len = reader.usize()?;
         parser.string = reader.bytes()?.to_vec();

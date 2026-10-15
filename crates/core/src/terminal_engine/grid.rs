@@ -25,10 +25,10 @@ mod row;
 mod snapshot;
 use combining::CombiningCache;
 use flood::PendingClear;
+pub(super) use history::DEFAULT_HISTORY_BYTES;
 use ring::Ring;
 use row::PackedCells;
 
-const MAX_HISTORY_ROWS: usize = 20_000;
 const MAX_SCROLL_DAMAGE: usize = 32;
 const COMPACT_OUTPUT_BURST_BYTES: usize = 4096;
 
@@ -153,10 +153,10 @@ pub(super) struct Grid {
     alternate: Option<Screen>,
     alternate_active: bool,
     history: Ring<Row>,
-    // Heap bytes of `history` rows; see `history.rs`.
+    // Bytes charged to `history` rows; see `history.rs`.
     history_bytes: usize,
-    requested_history_limit: usize,
     history_limit: usize,
+    history_byte_limit: usize,
     pending_compaction: usize,
     compact_on_scroll: bool,
     output_since_compaction: usize,
@@ -267,7 +267,15 @@ impl Grid {
         self.history_read_end.load(Ordering::Relaxed) != 0
     }
 
+    #[cfg(test)]
     pub(super) fn new(size: Size, history_limit: usize) -> Self {
+        Self::with_limits(size, history_limit, history::DEFAULT_HISTORY_BYTES)
+    }
+
+    /// History keeps at most `history_limit` rows and `history_byte_limit`
+    /// charged bytes, whichever binds first; `usize::MAX` rows leaves only the
+    /// byte limit.
+    pub(super) fn with_limits(size: Size, history_limit: usize, history_byte_limit: usize) -> Self {
         let size = size.clamped();
         Self {
             size,
@@ -276,8 +284,8 @@ impl Grid {
             alternate_active: false,
             history: Ring::new(),
             history_bytes: 0,
-            requested_history_limit: history_limit.min(MAX_HISTORY_ROWS),
-            history_limit: Self::bounded_history(history_limit),
+            history_limit,
+            history_byte_limit,
             pending_compaction: 0,
             compact_on_scroll: false,
             output_since_compaction: 0,
@@ -318,11 +326,6 @@ impl Grid {
             insert_mode: false,
             newline_mode: false,
         }
-    }
-
-    /// Memory is bounded by `HISTORY_BYTE_BUDGET`, not by rows × width.
-    fn bounded_history(requested: usize) -> usize {
-        requested.min(MAX_HISTORY_ROWS)
     }
 
     fn default_tabs(cols: usize) -> Vec<bool> {
@@ -367,6 +370,9 @@ impl Grid {
     }
     pub(super) fn history_limit(&self) -> usize {
         self.history_limit
+    }
+    pub(super) fn history_byte_limit(&self) -> usize {
+        self.history_byte_limit
     }
     pub(super) fn scroll_region(&self) -> (usize, usize) {
         (self.scroll_top, self.scroll_bottom)
@@ -1143,11 +1149,15 @@ impl Grid {
         changed
     }
 
-    pub(super) fn set_history_limit(&mut self, limit: usize) {
+    pub(super) fn set_history_limits(&mut self, limit: usize, byte_limit: usize) {
+        if (limit, byte_limit) == (self.history_limit, self.history_byte_limit) {
+            return;
+        }
         self.release_history_read_cache();
-        self.requested_history_limit = limit.min(MAX_HISTORY_ROWS);
-        self.history_limit = Self::bounded_history(limit);
+        self.history_limit = limit;
+        self.history_byte_limit = byte_limit;
         self.trim_history();
+        self.enforce_history_bytes();
         self.mark_full_damage();
     }
 
@@ -1156,7 +1166,7 @@ impl Grid {
         while self.history.len() > self.history_limit {
             self.pop_history_front();
         }
-        if self.history.capacity() > 2 * self.history_limit.max(64) {
+        if self.history.capacity() > self.history_limit.max(64).saturating_mul(2) {
             self.history.shrink_to(self.history_limit);
         }
         self.display_offset = self.display_offset.min(self.history.len());
@@ -1271,7 +1281,6 @@ impl Grid {
         }
         self.size = size;
         self.flood_exposed = false;
-        self.history_limit = Self::bounded_history(self.requested_history_limit);
         self.recount_history_bytes();
         self.trim_history();
         self.enforce_history_bytes();

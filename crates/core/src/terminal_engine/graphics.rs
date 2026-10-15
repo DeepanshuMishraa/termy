@@ -39,6 +39,42 @@ impl Graphics {
     fn changed(&mut self) {
         self.revision = self.revision.wrapping_add(1);
     }
+
+    /// Snapshot version 2 and later; see `kitty_graphics/snapshot.rs`.
+    pub(super) fn write_snapshot(&self, writer: &mut super::snapshot::Writer) {
+        writer.u64(self.revision);
+        writer.bool(self.last_view.is_some());
+        let (alternate, history, offset, rows, cols) = self.last_view.unwrap_or_default();
+        writer.bool(alternate);
+        for value in [history, offset, rows, cols] {
+            writer.usize(value);
+        }
+        writer.bool(self.size.is_some());
+        self.state.write_snapshot(writer);
+    }
+
+    /// The decoded graphics, and whether they were sized for the terminal
+    /// (the caller restores that size).
+    pub(super) fn read_snapshot(
+        reader: &mut super::snapshot::Reader<'_>,
+    ) -> super::snapshot::Result<(Self, bool)> {
+        let revision = reader.u64()?;
+        let has_view = reader.bool()?;
+        let alternate = reader.bool()?;
+        let mut view = [0; 4];
+        for value in &mut view {
+            *value = reader.usize()?;
+        }
+        let [history, offset, rows, cols] = view;
+        let sized = reader.bool()?;
+        let graphics = Self {
+            state: KittyGraphicsState::read_snapshot(reader)?,
+            revision,
+            last_view: has_view.then_some((alternate, history, offset, rows, cols)),
+            ..Self::default()
+        };
+        Ok((graphics, sized))
+    }
 }
 
 impl State {
@@ -50,6 +86,20 @@ impl State {
             cell_width: f32::from(self.cell_pixels.0),
             cell_height: f32::from(self.cell_pixels.1),
         }
+    }
+
+    /// Install graphics decoded from a snapshot.
+    pub(super) fn restore_graphics(&mut self, graphics: Graphics, sized: bool) {
+        self.graphics = graphics;
+        if sized {
+            // Placements were laid out for this size already.
+            self.graphics.size = Some(self.graphics_size());
+        }
+        self.grid
+            .set_effect_tracking(self.graphics.state.needs_grid_effects());
+        // The decoded grid's full damage is not an edit of placeholder cells;
+        // the encoded engine had flushed its own.
+        self.grid.take_visual_dirty();
     }
 
     pub(super) fn resize_graphics(&mut self) {
@@ -499,6 +549,7 @@ mod tests {
             Size { cols: 10, rows: 3 },
             Options {
                 scrollback_history: 2,
+                ..Default::default()
             },
         );
         engine.feed(b"\r\n\x1b_Ga=T,f=32,s=1,v=1,i=7,c=1,r=1,C=1;AQID/w==\x1b\\");
@@ -521,6 +572,7 @@ mod tests {
                     Size { cols: 10, rows: 4 },
                     Options {
                         scrollback_history: history,
+                        ..Default::default()
                     },
                 );
                 engine.feed(b"0\r\n1\r\n2\r\n3\r\n4\r\n5");
@@ -566,6 +618,7 @@ mod tests {
             Size { cols: 10, rows: 4 },
             Options {
                 scrollback_history: 2,
+                ..Default::default()
             },
         );
         engine.feed(b"\x1b[3;1H\x1b_Ga=T,f=32,s=1,v=1,i=1,c=1,r=1,C=1;AQID/w==\x1b\\");
@@ -599,6 +652,7 @@ mod tests {
             Size { cols: 10, rows: 4 },
             Options {
                 scrollback_history: 0,
+                ..Default::default()
             },
         );
         engine.feed(b"\x1b[3;1H\x1b_Ga=T,f=32,s=1,v=1,i=1,c=1,r=1,C=1;AQID/w==\x1b\\");
@@ -674,6 +728,7 @@ mod tests {
             Size { cols: 20, rows: 2 },
             Options {
                 scrollback_history: 100,
+                ..Default::default()
             },
         );
         for line in 0..50 {

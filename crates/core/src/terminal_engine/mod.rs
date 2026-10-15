@@ -14,7 +14,7 @@ mod hyperlinks;
 pub mod media;
 mod parser;
 mod queries;
-mod snapshot;
+pub(crate) mod snapshot;
 mod sync;
 #[cfg(feature = "pty")]
 pub(crate) mod transport;
@@ -30,7 +30,14 @@ pub use types::{
     UnderlineStyle, ViewportScroll,
 };
 
-pub use snapshot::{SNAPSHOT_VERSION, SnapshotError, snapshot_version};
+pub use snapshot::{MIN_SNAPSHOT_VERSION, SNAPSHOT_VERSION, SnapshotError, snapshot_version};
+
+/// The default scrollback byte limit, 16 MiB; see [`Options::scrollback_bytes`].
+pub const DEFAULT_SCROLLBACK_BYTES: usize = grid::DEFAULT_HISTORY_BYTES;
+/// The default (and largest) OSC and DCS payload, 64 KiB.
+pub const MAX_STRING_PAYLOAD_BYTES: usize = parser::MAX_STRING_BYTES;
+/// The default (and largest) OSC 52 clipboard payload, 8 MiB.
+pub const MAX_CLIPBOARD_PAYLOAD_BYTES: usize = parser::MAX_CLIPBOARD_OSC_BYTES;
 
 use dispatch::State;
 use parser::Parser;
@@ -44,13 +51,28 @@ const PARSE_CHUNK: usize = 64 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Options {
+    /// History rows to keep. `usize::MAX` leaves only `scrollback_bytes`.
     pub scrollback_history: usize,
+    /// Bytes history may hold, whichever of the two limits binds first. Each
+    /// row is charged its storage (packed once cold) and the cell metadata it
+    /// references, as a function of its contents, so engines fed the same
+    /// bytes evict the same rows.
+    pub scrollback_bytes: usize,
+    /// OSC and DCS payloads longer than this are dropped whole. Clamped to
+    /// `1..=`[`MAX_STRING_PAYLOAD_BYTES`].
+    pub max_string_bytes: usize,
+    /// The same for OSC 52 (clipboard) payloads. Clamped to
+    /// `1..=`[`MAX_CLIPBOARD_PAYLOAD_BYTES`].
+    pub max_clipboard_bytes: usize,
 }
 
 impl Default for Options {
     fn default() -> Self {
         Self {
             scrollback_history: 1000,
+            scrollback_bytes: DEFAULT_SCROLLBACK_BYTES,
+            max_string_bytes: MAX_STRING_PAYLOAD_BYTES,
+            max_clipboard_bytes: MAX_CLIPBOARD_PAYLOAD_BYTES,
         }
     }
 }
@@ -120,8 +142,10 @@ pub struct Engine {
 
 impl Engine {
     pub fn new(size: Size, options: Options) -> Self {
+        let mut parser = Parser::with_apc_limit(parser::MAX_APC_BYTES);
+        parser.set_string_limits(options.max_string_bytes, options.max_clipboard_bytes);
         Self {
-            parser: Parser::with_apc_limit(parser::MAX_APC_BYTES),
+            parser,
             synchronized_update: SynchronizedUpdate::default(),
             state: State::new(size, options),
             generation: 0,
@@ -375,10 +399,26 @@ impl Engine {
         self.state.working_directory()
     }
 
-    /// The configured scrollback, in rows. History also stays within a
-    /// fixed 16 MiB storage budget; see `README.md`.
+    /// The configured scrollback, in rows. History also stays within
+    /// [`Self::scrollback_byte_limit`]; see `README.md`.
     pub fn scrollback_limit(&self) -> usize {
         self.state.grid.history_limit()
+    }
+
+    /// The configured scrollback byte limit.
+    pub fn scrollback_byte_limit(&self) -> usize {
+        self.state.grid.history_byte_limit()
+    }
+
+    /// The options in effect (payload limits after clamping).
+    pub fn options(&self) -> Options {
+        let (max_string_bytes, max_clipboard_bytes) = self.parser.string_limits();
+        Options {
+            scrollback_history: self.scrollback_limit(),
+            scrollback_bytes: self.scrollback_byte_limit(),
+            max_string_bytes,
+            max_clipboard_bytes,
+        }
     }
 
     /// Rows output has scrolled into history so far. History row `index`
@@ -436,9 +476,11 @@ impl Engine {
     }
 
     pub fn set_options(&mut self, options: Options) {
+        self.parser
+            .set_string_limits(options.max_string_bytes, options.max_clipboard_bytes);
         self.state
             .grid
-            .set_history_limit(options.scrollback_history);
+            .set_history_limits(options.scrollback_history, options.scrollback_bytes);
         self.state.flush_graphics_effects();
         self.generation = self.generation.wrapping_add(1);
     }

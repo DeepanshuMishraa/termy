@@ -42,7 +42,8 @@ rlib. The native desktop ABI (`crates/core/include/termy.h`, which needs the
 - **Frames** with partial damage and documented full-frame rules, borrowing
   handle-owned buffers so steady-state rendering does not allocate.
 
-Kitty graphics are not exposed and not part of snapshots.
+Kitty graphics are parsed, stored and kept in snapshots, but not exposed in
+frames yet.
 
 ## Packaging
 

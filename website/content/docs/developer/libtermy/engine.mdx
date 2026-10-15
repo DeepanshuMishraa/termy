@@ -82,7 +82,7 @@ TermyEngine *replica = NULL;
 TermyEngineStatus status = termy_engine_snapshot_decode(
     snapshot_ptr, snapshot_len, TERMY_ENGINE_REPLIES_DISCARD, &replica);
 if (status == TERMY_ENGINE_UNSUPPORTED_SNAPSHOT_VERSION) {
-  /* The server runs an incompatible libtermy_engine. */
+  /* The snapshot is newer than this client reads; see "Versions" below. */
 }
 termy_engine_feed(replica, output_ptr, output_len, NULL);
 ```
@@ -112,25 +112,63 @@ output:
   working directory and OSC 7501 program status
 - the parser's in-progress sequence (mid-escape, mid-string or mid-UTF-8) and
   a pending synchronized update
+- the scrollback and payload limits
+- kitty graphics: stored images and animations, placements, and an upload
+  still arriving in chunks (version 2 and later)
 
 Decoding a snapshot and feeding it bytes B ends in the same state as feeding
 B to the original, including which scrollback rows are evicted. Snapshots do
-not include queued replies and events (drain them first), render damage (a
-decoded engine starts with a full frame), or kitty graphics images.
+not include queued replies and events (drain them first) or render damage (a
+decoded engine starts with a full frame).
 
 The format starts with the magic `TRMYSNAP` and a version number, and all
 integers are little-endian, so snapshots move between Linux and macOS
 unchanged. `termy_engine_snapshot_peek_version` reads the version without
 decoding. Encoding 16 MiB of scrollback takes tens of milliseconds in a
-release build.
+release build. Images are stored PNG-compressed.
+
+### Versions
+
+Every release decodes every version from `termy_engine_snapshot_min_version()`
+through `termy_engine_snapshot_version()`, and can encode any of them with
+`termy_engine_snapshot_encode_version`. When a server and its clients run
+different releases, the newer side adapts: a newer client decodes an older
+server's snapshot as is, and a newer server encodes for an older client
+after learning the client's `termy_engine_snapshot_version()` during the
+attach handshake.
+
+| Version | Adds |
+| --- | --- |
+| 1 | The first format |
+| 2 | Scrollback byte limit (and more than 20,000 rows), payload limits, kitty graphics |
+
+Encoding version 1 keeps the newest 20,000 history rows and leaves out kitty
+graphics; the client gets the default byte and payload limits. Releases may
+charge history rows differently, so identical eviction is only guaranteed
+between a server and replicas on the same release.
 
 ### Scrollback limit
 
-History keeps at most `scrollback_rows` rows (capped at 20,000) and at most
-16 MiB of row storage, whichever limit binds first. Storage depends only on
-the bytes fed, so a server and its replicas evict the same rows. Calling
-`termy_engine_compact_history` changes how later rows are stored, so don't
-call it on a server or its replicas.
+History keeps at most `scrollback_rows` rows and at most `scrollback_bytes`
+of row storage (16 MiB by default), whichever limit binds first. Set
+`scrollback_rows` to `TERMY_ENGINE_SCROLLBACK_UNLIMITED` to bound history by
+bytes alone. Each row is charged its slot, its cells (packed once cold) and
+the grapheme, link and underline-color metadata it references, measured by
+value, so the charge depends only on the bytes fed and a server and its
+replicas evict the same rows. Calling `termy_engine_compact_history` changes
+how later rows are stored, so don't call it on a server or its replicas.
+
+`termy_engine_set_scrollback` and `termy_engine_set_scrollback_bytes` change
+the limits on a live handle.
+
+### Payload limits
+
+OSC and DCS strings longer than `max_string_bytes` (64 KiB by default), and
+OSC 52 clipboard writes longer than `max_clipboard_bytes` (8 MiB by default),
+are dropped whole. The defaults are also the maxima: you can lower the limits
+but not raise them. `termy_engine_set_payload_limits` changes them on a live
+handle; a server and its replicas should use the same values, and snapshots
+carry them. Kitty graphics uploads have their own limit.
 
 ## Frames
 
@@ -207,7 +245,6 @@ without updating that count, so reset anchors on resize.
 
 ## Not included
 
-- kitty graphics, in frames or snapshots
-- a configurable OSC/DCS payload limit: strings are capped at 64 KiB, except
-  OSC 52 clipboard writes (8 MiB) and kitty graphics uploads
+- kitty graphics in frames: the engine parses, stores and snapshots them, but
+  the C API does not expose placements yet
 - platform keycodes: keys use Termy's key names

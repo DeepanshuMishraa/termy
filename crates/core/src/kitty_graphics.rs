@@ -12,6 +12,7 @@ mod animation;
 mod deletion;
 mod image;
 use image::normalize_image;
+mod snapshot;
 mod upload;
 pub(crate) use upload::{KittyPreparedUpload, KittyUpload};
 use upload::{UploadData, validate_dimensions};

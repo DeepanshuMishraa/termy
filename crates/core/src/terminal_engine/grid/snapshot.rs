@@ -9,10 +9,14 @@ use std::sync::Arc;
 
 use super::super::{
     CellExtra, Cursor,
-    snapshot::{Reader, Result, SnapshotError::Corrupt, Writer},
+    snapshot::{Reader, Result, SnapshotError::Corrupt, V1_MAX_HISTORY_ROWS, Writer},
     types::{Pen, Size},
 };
-use super::{Cell, Grid, Row, SavedCursor, Screen, ring::Ring};
+use super::{
+    Cell, Grid, Row, SavedCursor, Screen,
+    history::{DEFAULT_HISTORY_BYTES, history_charge},
+    ring::Ring,
+};
 
 const WRAPPED: u8 = 1;
 const PACKED: u8 = 1 << 1;
@@ -270,21 +274,32 @@ impl Grid {
         let mut scratch = Vec::new();
         writer.usize(self.size.cols);
         writer.usize(self.size.rows);
-        writer.usize(self.requested_history_limit);
+        // Version 1 readers keep at most 20,000 rows; send them the newest.
+        let (limit, skipped) = if writer.version() < 2 {
+            let limit = self.history_limit.min(V1_MAX_HISTORY_ROWS);
+            (limit, self.history.len().saturating_sub(limit))
+        } else {
+            (self.history_limit, 0)
+        };
+        let history = self.history.len() - skipped;
+        writer.usize(limit);
+        if writer.version() >= 2 {
+            writer.usize(self.history_byte_limit);
+        }
         writer.bool(self.alternate_active);
         self.primary.write_snapshot(writer, &mut scratch);
         writer.bool(self.alternate.is_some());
         if let Some(alternate) = &self.alternate {
             alternate.write_snapshot(writer, &mut scratch);
         }
-        writer.usize(self.history.len());
-        for row in &self.history {
+        writer.usize(history);
+        for row in self.history.iter().skip(skipped) {
             row.write_snapshot(writer, &mut scratch);
         }
-        writer.usize(self.pending_compaction.min(self.history.len()));
+        writer.usize(self.pending_compaction.min(history));
         writer.bool(self.compact_on_scroll);
         writer.usize(self.output_since_compaction);
-        writer.usize(self.display_offset);
+        writer.usize(self.display_offset.min(history));
         writer.u64(self.scrolled_into_history);
         writer.usize(self.tabs.len());
         for stops in self.tabs.chunks(8) {
@@ -320,7 +335,13 @@ impl Grid {
         if size.clamped() != size {
             return Err(Corrupt("grid size"));
         }
-        let mut grid = Self::new(size, reader.usize()?);
+        let limit = reader.limit()?;
+        let byte_limit = if reader.version() >= 2 {
+            reader.limit()?
+        } else {
+            DEFAULT_HISTORY_BYTES
+        };
+        let mut grid = Self::with_limits(size, limit, byte_limit);
         grid.alternate_active = reader.bool()?;
         grid.primary = Screen::read_snapshot(reader, size)?;
         grid.alternate = if reader.bool()? {
@@ -341,7 +362,7 @@ impl Grid {
             rows.push(Row::read_snapshot(reader, None)?);
         }
         grid.history = rows.into_iter().collect::<Ring<Row>>();
-        grid.history_bytes = grid.history.iter().map(Row::heap_bytes).sum();
+        grid.history_bytes = grid.history.iter().map(history_charge).sum();
         grid.pending_compaction = reader.usize()?.min(history);
         grid.compact_on_scroll = reader.bool()?;
         grid.output_since_compaction = reader.usize()?;
@@ -382,6 +403,9 @@ impl Grid {
         grid.origin_mode = reader.bool()?;
         grid.insert_mode = reader.bool()?;
         grid.newline_mode = reader.bool()?;
+        // A no-op for snapshots of this release; older ones may have charged
+        // their rows less.
+        grid.enforce_history_bytes();
         grid.mark_full_damage();
         Ok(grid)
     }

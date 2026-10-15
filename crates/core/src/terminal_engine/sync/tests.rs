@@ -89,6 +89,7 @@ mod engine {
             Size { cols: 16, rows: 3 },
             Options {
                 scrollback_history: 20,
+                ..Default::default()
             },
         )
     }

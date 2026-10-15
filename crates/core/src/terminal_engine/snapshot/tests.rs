@@ -1,11 +1,12 @@
 use super::super::{Engine, Options, Size};
-use super::{SNAPSHOT_VERSION, SnapshotError, snapshot_version};
+use super::{MIN_SNAPSHOT_VERSION, SNAPSHOT_VERSION, SnapshotError, snapshot_version};
 
 fn engine(cols: usize, rows: usize, history: usize) -> Engine {
     Engine::new(
         Size { cols, rows },
         Options {
             scrollback_history: history,
+            ..Default::default()
         },
     )
 }
@@ -363,4 +364,291 @@ fn history_byte_budget_evicts_identically_after_decode() {
         source.state.grid.history_bytes()
     );
     assert_eq!(decoded.canonical_snapshot(), source.canonical_snapshot());
+}
+
+/// Lines mixing OSC 8 links (some too long for the composed-cell cache) with
+/// combining marks on linked and unlinked cells.
+fn linked_marks(engine: &mut Engine, lines: std::ops::Range<usize>) {
+    let long = "x".repeat(1200);
+    for line in lines {
+        let uri = if line % 7 == 0 {
+            format!("https://example.com/{long}/{}", line % 3)
+        } else {
+            format!("https://example.com/{}", line % 5)
+        };
+        engine.feed(format!("\x1b]8;id=l{};{uri}\x07", line % 4).as_bytes());
+        for col in 0..30 {
+            let mark = char::from_u32(0x300 + ((line * 31 + col) % 7) as u32).unwrap();
+            engine.feed(format!("e{mark}").as_bytes());
+            if col % 9 == 0 {
+                engine.feed("\u{302}".as_bytes());
+            }
+        }
+        engine.feed(b"\x1b]8;;\x07 ");
+        engine.feed("o\u{308}u\u{308} \u{1f44d}\u{1f3fd}\r\n".as_bytes());
+    }
+}
+
+#[test]
+fn links_with_combining_marks_evict_identically_after_decode() {
+    // A small byte limit makes every few lines evict, so a charge differing
+    // by one unit would show as a different history.
+    let mut source = Engine::new(
+        Size { cols: 80, rows: 6 },
+        Options {
+            scrollback_history: usize::MAX,
+            scrollback_bytes: 96 * 1024,
+            ..Default::default()
+        },
+    );
+    linked_marks(&mut source, 0..400);
+    let mut decoded = roundtrip(&mut source);
+    // Eviction converges again once differently charged rows leave, so
+    // compare after every line.
+    for line in 400..1800 {
+        if line == 1500 {
+            source.resize(Size { cols: 57, rows: 9 });
+            decoded.resize(Size { cols: 57, rows: 9 });
+        }
+        linked_marks(&mut source, line..line + 1);
+        linked_marks(&mut decoded, line..line + 1);
+        assert_eq!(
+            (decoded.history_size(), decoded.state.grid.history_bytes()),
+            (source.history_size(), source.state.grid.history_bytes()),
+            "line {line}"
+        );
+    }
+    assert!(source.history_size() < 1800, "{}", source.history_size());
+    assert_eq!(decoded.history_size(), source.history_size());
+    assert_eq!(
+        decoded.state.grid.history_bytes(),
+        source.state.grid.history_bytes()
+    );
+    assert_eq!(decoded.canonical_snapshot(), source.canonical_snapshot());
+}
+
+#[test]
+fn rows_beyond_twenty_thousand_survive_a_snapshot() {
+    let mut source = Engine::new(
+        Size { cols: 80, rows: 10 },
+        Options {
+            scrollback_history: usize::MAX,
+            ..Default::default()
+        },
+    );
+    for line in 0..50_000 {
+        source.feed(format!("short line {line}\r\n").as_bytes());
+    }
+    assert_eq!(source.history_size(), 50_000 - 9);
+    let mut decoded = roundtrip(&mut source);
+    assert_eq!(decoded.scrollback_limit(), usize::MAX);
+    assert_eq!(decoded.history_size(), source.history_size());
+    assert_eq!(decoded.canonical_snapshot(), source.canonical_snapshot());
+}
+
+/// The stream `snapshot/v1.snap` was written from, by the release that
+/// introduced snapshots (40x6, 500 rows of history, replies drained).
+fn v1_fixture_stream() -> Vec<u8> {
+    let mut out = Vec::new();
+    for line in 0..120 {
+        out.extend_from_slice(format!("\x1b[3{}mline {line} ", line % 8).as_bytes());
+        out.extend_from_slice("e\u{301}\u{302} \u{4e2d}\u{6587} ".as_bytes());
+        out.extend_from_slice(
+            format!(
+                "\x1b]8;id=l{};https://example.com/{}\x07link\x1b]8;;\x07",
+                line % 3,
+                line % 5
+            )
+            .as_bytes(),
+        );
+        out.extend_from_slice("a\u{308}\x1b[4:3;58;5;1mcurly\x1b[0m\r\n".as_bytes());
+    }
+    out.extend_from_slice(
+        b"\x1b]0;fixture title\x07\x1b]7;file://host/tmp\x07\x1b[?2004h\x1b[?1049hALT\x1b[?1049l",
+    );
+    out.extend_from_slice(b"\x1b[2;4r\x1b[?6h\x1b[?6l\x1b[r\x1b]2;partial ti");
+    out
+}
+
+#[test]
+fn snapshots_from_the_previous_release_decode() {
+    let fixture = include_bytes!("v1.snap");
+    assert_eq!(snapshot_version(fixture), Ok(1));
+    let mut decoded = Engine::decode_snapshot(fixture).expect("decode a version 1 snapshot");
+    let mut expected = engine(40, 6, 500);
+    expected.feed(&v1_fixture_stream());
+    let mut sink = Vec::new();
+    expected.drain_replies(&mut sink);
+    assert_eq!(decoded.canonical_snapshot(), expected.canonical_snapshot());
+    assert_eq!(
+        decoded.scrollback_byte_limit(),
+        super::super::DEFAULT_SCROLLBACK_BYTES
+    );
+    // The in-progress OSC 2 completes after decode.
+    decoded.feed(b"tle\x07");
+    assert_eq!(decoded.title(), "partial title");
+    assert_continues_identically(&mut decoded, &corpus(), "after a version 1 decode");
+}
+
+#[test]
+fn older_versions_are_written_for_older_readers() {
+    assert_eq!(MIN_SNAPSHOT_VERSION, 1);
+    let mut source = engine(40, 6, 500);
+    source.feed(&v1_fixture_stream());
+    let v1 = source.encode_snapshot_version(1).expect("encode version 1");
+    assert_eq!(snapshot_version(&v1), Ok(1));
+    let mut decoded = Engine::decode_snapshot(&v1).expect("decode version 1");
+    assert_eq!(decoded.canonical_snapshot(), source.canonical_snapshot());
+    assert_eq!(
+        source.encode_snapshot_version(SNAPSHOT_VERSION + 1).err(),
+        Some(SnapshotError::UnsupportedVersion(SNAPSHOT_VERSION + 1))
+    );
+    assert_eq!(
+        source.encode_snapshot_version(0).err(),
+        Some(SnapshotError::UnsupportedVersion(0))
+    );
+
+    // Version 1 holds at most 20,000 rows: the newest are kept, and newer
+    // limits fall back to the defaults.
+    let mut large = Engine::new(
+        Size { cols: 30, rows: 4 },
+        Options {
+            scrollback_history: usize::MAX,
+            scrollback_bytes: 8 * 1024 * 1024,
+            max_string_bytes: 1024,
+            ..Default::default()
+        },
+    );
+    for line in 0..25_000 {
+        large.feed(format!("row {line}\r\n").as_bytes());
+    }
+    large.scroll_display(24_000);
+    let mut decoded = Engine::decode_snapshot(&large.encode_snapshot_version(1).unwrap()).unwrap();
+    assert_eq!(decoded.history_size(), 20_000);
+    assert_eq!(decoded.scrollback_limit(), 20_000);
+    assert_eq!(decoded.display_offset(), 20_000);
+    assert_eq!(
+        decoded.options(),
+        Options {
+            scrollback_history: 20_000,
+            ..Default::default()
+        }
+    );
+    assert_eq!(decoded.line(-1), large.line(-1));
+    assert_eq!(
+        decoded.line(-20_000),
+        large.line(-20_000),
+        "the oldest row kept"
+    );
+    decoded.feed(b"more\r\n");
+    assert_eq!(decoded.history_size(), 20_000);
+}
+
+#[test]
+fn payload_limits_survive_a_snapshot() {
+    let mut source = Engine::new(
+        Size { cols: 40, rows: 4 },
+        Options {
+            max_string_bytes: 16,
+            max_clipboard_bytes: 32,
+            ..Default::default()
+        },
+    );
+    let mut decoded = roundtrip(&mut source);
+    assert_eq!(decoded.options(), source.options());
+    for engine in [&mut source, &mut decoded] {
+        engine.feed(b"\x1b]2;short\x07");
+        assert_eq!(engine.title(), "short");
+        engine.feed(b"\x1b]2;a title past sixteen bytes\x07");
+        assert_eq!(engine.title(), "short");
+    }
+}
+
+fn graphics_summary(engine: &mut Engine) -> Vec<String> {
+    engine
+        .graphics_placements()
+        .into_iter()
+        .map(|placement| {
+            format!(
+                "{} {} {}x{} gen {} at {},{}+{} z {} rgba {:?}",
+                placement.image_id,
+                placement.placement_id,
+                placement.image_width,
+                placement.image_height,
+                placement.image_generation,
+                placement.viewport_row,
+                placement.col,
+                placement.col_offset,
+                placement.z_index,
+                placement.image.rgba(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn kitty_graphics_survive_a_snapshot() {
+    let mut source = engine(20, 6, 50);
+    // A direct placement, a virtual placement shown by placeholder cells, a
+    // relative placement, an animation frame and an upload still arriving.
+    source.feed(b"text\r\n\x1b_Ga=T,f=32,s=2,v=1,i=1,p=3,c=2,r=1,z=-1,q=2;AQID/wQFBv8=\x1b\\");
+    source.feed(b"\r\n\x1b_Ga=T,f=24,s=1,v=1,i=2,p=1,c=1,r=1,U=1,q=2;CQoL\x1b\\");
+    source.feed("\x1b[38;5;2m\u{10eeee}\u{0305}\u{0305}\x1b[0m\r\n".as_bytes());
+    source.feed(b"\x1b_Ga=p,i=1,p=4,P=1,Q=3,H=1,V=1,q=2\x1b\\");
+    source.feed(b"\x1b_Ga=f,i=1,f=32,s=1,v=1,x=1,q=2;/wAA/w==\x1b\\");
+    source.feed(b"\x1b_Ga=a,i=1,s=3,v=2,z=100,q=2\x1b\\");
+    source.feed(b"\x1b_Ga=t,f=32,s=1,v=1,i=9,m=1,q=2;AQID\x1b\\");
+    assert!(source.graphics_placements().len() >= 3);
+    let mut decoded = roundtrip(&mut source);
+    assert_eq!(decoded.canonical_snapshot(), source.canonical_snapshot());
+    assert_eq!(
+        graphics_summary(&mut decoded),
+        graphics_summary(&mut source)
+    );
+    assert_eq!(decoded.graphics_revision(), source.graphics_revision());
+
+    for engine in [&mut source, &mut decoded] {
+        // Finish the pending upload and place it, then scroll and delete.
+        engine.feed(b"\x1b_Gm=0;/w==\x1b\\\x1b_Ga=p,i=9,q=2\x1b\\");
+        engine.feed(b"\r\n\r\n\r\nscrolled\r\n");
+        engine.feed(b"\x1b_Ga=d,d=i,i=2,q=2\x1b\\");
+        engine.feed(b"\x1b_Ga=T,f=32,s=1,v=1,c=1,r=1,q=2;CAgI/w==\x1b\\");
+    }
+    assert_eq!(
+        graphics_summary(&mut decoded),
+        graphics_summary(&mut source)
+    );
+    assert_eq!(decoded.canonical_snapshot(), source.canonical_snapshot());
+    assert_eq!(decoded.graphics_revision(), source.graphics_revision());
+}
+
+#[test]
+fn version_1_snapshots_leave_graphics_out() {
+    let mut source = engine(20, 4, 10);
+    source.feed(b"\x1b_Ga=T,f=32,s=1,v=1,i=1,c=1,r=1,q=2;AQID/w==\x1b\\");
+    assert_eq!(source.graphics_placements().len(), 1);
+    let v1 = source.encode_snapshot_version(1).unwrap();
+    let mut decoded = Engine::decode_snapshot(&v1).unwrap();
+    assert!(decoded.graphics_placements().is_empty());
+    assert_eq!(source.graphics_placements().len(), 1);
+}
+
+#[test]
+fn damaged_graphics_snapshots_are_rejected_without_panicking() {
+    let mut source = engine(20, 6, 20);
+    source.feed(b"\x1b_Ga=T,f=32,s=2,v=1,i=1,c=2,r=1,q=2;AQID/wQFBv8=\x1b\\");
+    source.feed(b"\x1b_Ga=f,i=1,f=32,s=1,v=1,q=2;/wAA/w==\x1b\\");
+    source.feed(b"\x1b_Ga=t,f=32,s=1,v=1,i=9,m=1,q=2;AQID\x1b\\");
+    let bytes = source.encode_snapshot();
+    let mut random = Lcg(11);
+    for _ in 0..600 {
+        let mut damaged = bytes.clone();
+        let index = 24 + random.below(damaged.len() - 24);
+        damaged[index] ^= 1 << random.below(8);
+        if let Ok(mut decoded) = Engine::decode_snapshot(&damaged) {
+            decoded.feed(b"\x1b_Gm=0;/w==\x1b\\\x1b_Ga=f,i=1,f=32,s=1,v=1,q=2;AQID/w==\x1b\\");
+            decoded.feed(b"\x1b_Ga=a,i=1,s=3,q=2\x1b\\\r\n\r\n\x1b_Ga=d,q=2\x1b\\");
+            let _ = decoded.graphics_placements();
+        }
+    }
 }

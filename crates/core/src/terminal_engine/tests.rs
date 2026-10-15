@@ -5,6 +5,7 @@ fn engine(cols: usize, rows: usize, history: usize) -> Engine {
         Size { cols, rows },
         Options {
             scrollback_history: history,
+            ..Default::default()
         },
     )
 }
@@ -439,6 +440,7 @@ fn history_limit_updates_trim_history_and_clamp_viewport() {
     assert!(engine.scroll_display(20));
     engine.set_options(Options {
         scrollback_history: 2,
+        ..Default::default()
     });
     assert_eq!(engine.history_size(), 2);
     assert!(engine.display_offset() <= 2);
@@ -528,4 +530,76 @@ fn rows_scrolled_in_by_line_feeds_never_show_their_recycled_content() {
             assert_eq!(text(&engine, 2).trim(), "", "{line:?} in chunks of {chunk}");
         }
     }
+}
+
+#[test]
+fn payload_limits_drop_oversized_osc_dcs_and_clipboard_strings() {
+    let mut engine = Engine::new(
+        Size { cols: 20, rows: 3 },
+        Options {
+            max_string_bytes: 64,
+            max_clipboard_bytes: 32,
+            ..Default::default()
+        },
+    );
+    let title = |len: usize| format!("\x1b]2;{}\x07", "t".repeat(len - 2));
+    engine.feed(title(64).as_bytes());
+    assert_eq!(engine.title().len(), 62);
+    engine.feed(b"\x1b]2;x\x07");
+    engine.feed(title(65).as_bytes());
+    assert_eq!(engine.title(), "x");
+    // A dropped DCS gets no reply; one within the limit does.
+    engine.feed(format!("\x1bP$q{}\x1b\\", "m".repeat(64)).as_bytes());
+    assert!(replies(&mut engine).is_empty());
+    engine.feed(b"\x1bP$qm\x1b\\");
+    assert!(!replies(&mut engine).is_empty());
+    while engine.pop_event().is_some() {}
+    // OSC 52 has its own limit, counted over the whole payload.
+    engine.feed(b"\x1b]52;c;aGVsbG8gd29ybGQ=\x07");
+    assert!(matches!(engine.pop_event(), Some(Event::Clipboard { .. })));
+    engine.feed(format!("\x1b]52;c;{}\x07", "QUFB".repeat(8)).as_bytes());
+    assert!(engine.pop_event().is_none());
+    // Limits clamp to their defaults, which are also the maxima.
+    engine.set_options(Options {
+        max_string_bytes: usize::MAX,
+        max_clipboard_bytes: 0,
+        ..engine.options()
+    });
+    assert_eq!(engine.options().max_string_bytes, MAX_STRING_PAYLOAD_BYTES);
+    assert_eq!(engine.options().max_clipboard_bytes, 1);
+}
+
+#[test]
+fn scrollback_is_bounded_by_bytes_alone_without_a_row_limit() {
+    let mut engine = Engine::new(
+        Size { cols: 80, rows: 4 },
+        Options {
+            scrollback_history: usize::MAX,
+            ..Default::default()
+        },
+    );
+    for line in 0..30_000 {
+        engine.feed(format!("line {line}\r\n").as_bytes());
+    }
+    // Past the old 20,000-row cap.
+    assert_eq!(engine.history_size(), 30_000 - 3);
+    // Lowering the byte limit evicts the oldest rows at once.
+    engine.set_options(Options {
+        scrollback_bytes: 1024 * 1024,
+        ..engine.options()
+    });
+    let kept = engine.history_size();
+    assert!(kept < 30_000 - 3 && kept > 1000, "{kept}");
+    assert!(engine.state.grid.history_bytes() <= 1024 * 1024);
+    let oldest: String = engine
+        .line(-(kept as i32))
+        .unwrap()
+        .iter()
+        .map(|cell| cell.character)
+        .collect();
+    assert_eq!(oldest.trim_end(), format!("line {}", 30_000 - 3 - kept));
+    for line in 0..5000 {
+        engine.feed(format!("more {line}\r\n").as_bytes());
+    }
+    assert!(engine.state.grid.history_bytes() <= 1024 * 1024);
 }

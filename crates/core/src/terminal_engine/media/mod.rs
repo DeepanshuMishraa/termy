@@ -7,7 +7,8 @@ mod image;
 mod shared_memory;
 
 pub use animation::{
-    GraphicsAnimation, GraphicsAnimationControl, GraphicsComposition, GraphicsFrameUpdate,
+    GraphicsAnimation, GraphicsAnimationControl, GraphicsComposition, GraphicsFrame,
+    GraphicsFrameUpdate,
 };
 pub use geometry::{
     GraphicsDisplayLayout, GraphicsRowSpan, graphics_display_layout, graphics_display_size,
@@ -15,7 +16,24 @@ pub use geometry::{
 pub use image::GraphicsImage;
 pub use shared_memory::read_graphics_shared_memory;
 
-fn encode_png(width: u32, height: u32, channels: u8, pixels: &[u8]) -> Vec<u8> {
+/// Decode a PNG this module encoded: 8-bit RGBA of exactly `width` x `height`.
+pub(crate) fn decode_rgba_png(png: &[u8], width: u32, height: u32) -> Option<Vec<u8>> {
+    let mut reader = png::Decoder::new(std::io::Cursor::new(png))
+        .read_info()
+        .ok()?;
+    let info = reader.info();
+    if (info.width, info.height, info.color_type, info.bit_depth)
+        != (width, height, png::ColorType::Rgba, png::BitDepth::Eight)
+    {
+        return None;
+    }
+    let mut pixels = vec![0; reader.output_buffer_size()?];
+    let frame = reader.next_frame(&mut pixels).ok()?;
+    pixels.truncate(frame.buffer_size());
+    (pixels.len() as u64 == u64::from(width) * u64::from(height) * 4).then_some(pixels)
+}
+
+pub(crate) fn encode_png(width: u32, height: u32, channels: u8, pixels: &[u8]) -> Vec<u8> {
     let mut output = Vec::new();
     {
         let mut encoder = png::Encoder::new(&mut output, width, height);

@@ -683,9 +683,10 @@ TermyFfiStatus termy_terminal_set_protocol_replies_enabled(
  * links and wrap flags; cursors, saved cursors, margins, tab stops, charsets,
  * modes, kitty keyboard stacks, palette overrides, title stack, OSC 7
  * directory and the parser's in-progress sequence. Versioned and
- * little-endian; see crates/core/src/terminal_engine/snapshot.rs. Queued
- * events and replies and kitty graphics are not included. Release the
- * buffer like other returned bytes. Multiplexer-backed terminals return
+ * little-endian; see crates/core/src/terminal_engine/snapshot.rs. Kitty
+ * graphics are included; queued events and replies are not. Decoding reads
+ * the current and every older snapshot version. Release the buffer like
+ * other returned bytes. Multiplexer-backed terminals return
  * TERMY_FFI_INVALID_ARGUMENT. */
 TermyFfiStatus termy_terminal_snapshot_encode(
     TermyFfiTerminal *terminal,

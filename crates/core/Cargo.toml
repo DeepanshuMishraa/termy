@@ -90,3 +90,62 @@ crate-type = ["rlib", "cdylib", "staticlib"]
 name = "termy-session-host"
 path = "src/bin/termy-session-host.rs"
 required-features = ["native"]
+
+# These drive `Terminal` (or other native-only modules), so
+# `cargo test --no-default-features` builds only the engine targets.
+
+[[test]]
+name = "display_snapshot"
+required-features = ["native"]
+
+[[test]]
+name = "display_terminal"
+required-features = ["native"]
+
+[[test]]
+name = "ipc"
+required-features = ["native"]
+
+[[test]]
+name = "kitty_clipboard"
+required-features = ["native"]
+
+[[test]]
+name = "kitty_conformance"
+required-features = ["native"]
+
+[[test]]
+name = "lifecycle"
+required-features = ["native"]
+
+[[test]]
+name = "remote_graphics"
+required-features = ["native"]
+
+[[test]]
+name = "remote_resize"
+required-features = ["native"]
+
+[[test]]
+name = "remote_selection"
+required-features = ["native"]
+
+[[test]]
+name = "resize_clear"
+required-features = ["native"]
+
+[[test]]
+name = "tmux_control_ffi"
+required-features = ["native"]
+
+[[example]]
+name = "install_cli"
+required-features = ["native"]
+
+[[example]]
+name = "native_roundtrip_bench"
+required-features = ["native"]
+
+[[example]]
+name = "terminal_facade_bench"
+required-features = ["native"]

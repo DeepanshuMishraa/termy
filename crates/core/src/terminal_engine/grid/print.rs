@@ -1148,6 +1148,7 @@ mod tests {
                     Size { cols: 20, rows: 5 },
                     Options {
                         scrollback_history: 4,
+                        ..Default::default()
                     },
                 );
                 engine.feed(&before);

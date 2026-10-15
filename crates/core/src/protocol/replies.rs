@@ -39,7 +39,8 @@ where
     }
 }
 
-#[cfg(test)]
+// The tests drive replies through `Terminal`, which needs `native`.
+#[cfg(all(test, feature = "native"))]
 mod tests {
     use super::{TerminalClipboardTarget, TerminalReplyHost};
     use crate::{Terminal, TerminalSize};

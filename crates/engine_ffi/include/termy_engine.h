@@ -29,7 +29,7 @@
 extern "C" {
 #endif
 
-#define TERMY_ENGINE_ABI_VERSION 1
+#define TERMY_ENGINE_ABI_VERSION 2
 
 typedef enum {
   TERMY_ENGINE_OK = 0,
@@ -67,10 +67,15 @@ void termy_engine_bytes_free(TermyEngineBytes *bytes);
  * dropped. Use it for terminals mirroring another terminal's output. */
 #define TERMY_ENGINE_REPLIES_DISCARD 1
 
+/* scrollback_rows value with no row limit: history is bounded by
+ * scrollback_bytes alone. */
+#define TERMY_ENGINE_SCROLLBACK_UNLIMITED UINT32_MAX
+
 typedef struct {
   uint16_t cols;
   uint16_t rows;
-  /* Scrollback rows, at most 20000; see "Scrollback limit" below. */
+  /* Scrollback rows, or TERMY_ENGINE_SCROLLBACK_UNLIMITED; see "Scrollback
+   * limit" below. */
   uint32_t scrollback_rows;
   uint32_t reply_mode;
   /* Recognize ?1016 (SGR pixel mouse reports). Only for hosts that report
@@ -79,9 +84,17 @@ typedef struct {
   /* Cell size in pixels, for XTWINOPS size reports. */
   uint16_t cell_width_px;
   uint16_t cell_height_px;
+  /* Scrollback byte limit; 0 selects the default, 16 MiB. */
+  uint64_t scrollback_bytes;
+  /* OSC and DCS payloads longer than max_string_bytes, and OSC 52 payloads
+   * longer than max_clipboard_bytes, are dropped whole. 0 selects the
+   * default; the defaults (64 KiB and 8 MiB) are also the maxima. */
+  uint32_t max_string_bytes;
+  uint32_t max_clipboard_bytes;
 } TermyEngineOptions;
 
-/* 80x24, 10000 rows of scrollback, replies returned, no pixel reports. */
+/* 80x24, 10000 rows and 16 MiB of scrollback, replies returned, no pixel
+ * reports, default payload limits. */
 TermyEngineOptions termy_engine_options_default(void);
 /* options may be NULL for the defaults. */
 TermyEngineStatus termy_engine_new(
@@ -124,10 +137,18 @@ TermyEngineStatus termy_engine_tick(
 TermyEngineStatus termy_engine_resize(TermyEngine *engine, uint16_t cols, uint16_t rows);
 TermyEngineStatus termy_engine_set_cell_pixels(TermyEngine *engine, uint16_t width, uint16_t height);
 TermyEngineStatus termy_engine_set_scrollback(TermyEngine *engine, uint32_t rows);
+/* 0 selects the default (16 MiB). */
+TermyEngineStatus termy_engine_set_scrollback_bytes(TermyEngine *engine, uint64_t bytes);
+/* See TermyEngineOptions; 0 selects a default. A server and its replicas
+ * should use the same limits (snapshots carry them). */
+TermyEngineStatus termy_engine_set_payload_limits(
+    TermyEngine *engine,
+    uint32_t max_string_bytes,
+    uint32_t max_clipboard_bytes);
 TermyEngineStatus termy_engine_clear_scrollback(TermyEngine *engine);
 /* Pack cold scrollback after output goes quiet. Optional; it changes no
  * content, but it changes how later scrolled rows are stored, which counts
- * toward the 16 MiB history budget. A server and its replicas should not
+ * toward the history byte limit. A server and its replicas should not
  * call it (the engine packs history itself when the budget requires), so
  * that both evict the same rows. */
 TermyEngineStatus termy_engine_compact_history(TermyEngine *engine);
@@ -149,19 +170,42 @@ TermyEngineStatus termy_engine_process_exited(TermyEngine *engine);
  *
  * decode(encode(t)) fed bytes B ends in the same state as t fed B,
  * including scrollback eviction. Not included: queued replies and events
- * (drain them first), render damage (a decoded engine starts with a full
- * frame), and kitty graphics images.
+ * (drain them first) and render damage (a decoded engine starts with a full
+ * frame). Kitty graphics (images, animations, placements) are included from
+ * version 2.
  *
  * Format: "TRMYSNAP", u32 version, u32 flags, u64 table offset, all
  * little-endian, so snapshots move between Linux x86_64/aarch64 and macOS
- * arm64 unchanged. Unsupported versions fail with
- * TERMY_ENGINE_UNSUPPORTED_SNAPSHOT_VERSION. Encoding 16 MiB of
- * scrollback takes tens of milliseconds in release builds.
+ * arm64 unchanged. Encoding 16 MiB of scrollback takes tens of
+ * milliseconds in release builds.
+ *
+ * Versions: decode reads every version from termy_engine_snapshot_min_version()
+ * through termy_engine_snapshot_version(); others fail with
+ * TERMY_ENGINE_UNSUPPORTED_SNAPSHOT_VERSION. When the two ends of an attach
+ * run different releases, the newer side adapts: a newer client decodes an
+ * older server's snapshot as is, and a newer server encodes for an older
+ * client with termy_engine_snapshot_encode_version(), after learning the
+ * client's termy_engine_snapshot_version() in the attach handshake.
+ *
+ *   1  first format.
+ *   2  adds the scrollback byte limit (rows past 20000), payload limits and
+ *      kitty graphics.
+ *
+ * Writing version 1 keeps the newest 20000 history rows and drops kitty
+ * graphics, and the client gets the default byte and payload limits. Engines of different releases
+ * may charge history rows differently, so eviction is only guaranteed to
+ * match between a server and replicas on the same release.
  * ------------------------------------------------------------------------ */
 
 uint32_t termy_engine_snapshot_version(void);
+uint32_t termy_engine_snapshot_min_version(void);
 TermyEngineStatus termy_engine_snapshot_encode(
     TermyEngine *engine,
+    TermyEngineBytes *out_snapshot);
+/* Encode in an older format; out_snapshot is empty on error. */
+TermyEngineStatus termy_engine_snapshot_encode_version(
+    TermyEngine *engine,
+    uint32_t version,
     TermyEngineBytes *out_snapshot);
 TermyEngineStatus termy_engine_snapshot_peek_version(
     const uint8_t *snapshot_ptr,
@@ -235,6 +279,9 @@ typedef struct {
    * r has scrolled_into_history + r: anchor selections with it while output
    * scrolls and old history is evicted. Resize does not update it. */
   uint64_t scrolled_into_history;
+  /* TERMY_ENGINE_SCROLLBACK_UNLIMITED in scrollback_limit means no row
+   * limit; this is the byte limit. */
+  uint64_t scrollback_bytes;
 } TermyEngineState;
 
 TermyEngineStatus termy_engine_get_state(TermyEngine *engine, TermyEngineState *out_state);
@@ -247,13 +294,14 @@ TermyEngineStatus termy_engine_working_directory(
     bool *out_found,
     TermyEngineBytes *out_path);
 
-/* Scrollback limit: history keeps at most scrollback_rows rows (capped at
- * 20000) and at most 16 MiB of row storage, whichever binds first. Without
- * termy_engine_compact_history() calls, storage follows from the bytes fed
- * alone, and snapshots restore it exactly, so a server and its replicas
- * evict the same rows. (Rows mixing OSC 8 links with combining marks may
- * share metadata differently between processes, which can shift the byte
- * count by a few bytes per such row.) */
+/* Scrollback limit: history keeps at most scrollback_rows rows and at most
+ * scrollback_bytes of row storage, whichever binds first; with
+ * TERMY_ENGINE_SCROLLBACK_UNLIMITED only the byte limit applies. Each row
+ * is charged its slot, its cells (packed once cold) and the grapheme, link
+ * and underline-color metadata it references, measured by value. Without
+ * termy_engine_compact_history() calls the charge follows from the bytes
+ * fed alone, and snapshots restore it exactly, so a server and its
+ * replicas on the same release evict the same rows. */
 
 typedef struct {
   /* history_size + rows. */

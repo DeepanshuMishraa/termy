@@ -57,6 +57,7 @@ impl TermyEngine {
                 size(cols, rows),
                 Options {
                     scrollback_history: scrollback as usize,
+                    ..Options::default()
                 },
             ),
             replies: Vec::new(),
@@ -87,6 +88,7 @@ impl TermyEngine {
     pub fn set_scrollback(&mut self, lines: u32) {
         self.engine.set_options(Options {
             scrollback_history: lines as usize,
+            ..self.engine.options()
         });
     }
 

@@ -51,7 +51,7 @@ impl State {
     pub(super) fn new(size: Size, options: Options) -> Self {
         Self {
             graphics: super::graphics::Graphics::default(),
-            grid: Grid::new(size, options.scrollback_history),
+            grid: Grid::with_limits(size, options.scrollback_history, options.scrollback_bytes),
             modes: Modes::default(),
             alternate_screen: false,
             events: VecDeque::new(),

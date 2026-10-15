@@ -1,10 +1,20 @@
 //! Scrollback storage. History is bounded by a row limit and by a byte budget
 //! that counts packed rows at their real size, so how much history survives
 //! no longer depends on the current width (and a transient widen loses none).
+//! The charge is a function of row contents alone (see `row.rs`), so two
+//! engines fed the same bytes evict the same rows.
 use super::{Cell, Grid, Row, Size};
 
-/// Heap bytes history may hold: what one million dense cells take.
-pub(super) const HISTORY_BYTE_BUDGET: usize = Size::MAX_CELLS * size_of::<Cell>();
+/// The default byte budget: what one million dense cells take (16 MiB).
+pub(in crate::terminal_engine) const DEFAULT_HISTORY_BYTES: usize =
+    Size::MAX_CELLS * size_of::<Cell>();
+
+/// What a history row costs: its ring slot and its heap bytes. Counting the
+/// slot keeps an unlimited row count bounded by the byte budget alone.
+#[inline]
+pub(super) fn history_charge(row: &Row) -> usize {
+    size_of::<Row>() + row.heap_bytes()
+}
 /// Queued rows packed per step when history crosses its byte budget.
 const BUDGET_COMPACTION_CHUNK: usize = 256;
 
@@ -15,18 +25,18 @@ impl Grid {
         self.history.push_back(row);
         let row = self.history.back_mut().expect("pushed history row");
         row.bound_extras();
-        self.history_bytes += row.heap_bytes();
+        self.history_bytes += history_charge(row);
     }
 
     pub(super) fn pop_history_front(&mut self) -> Option<Row> {
         let row = self.history.pop_front()?;
-        self.history_bytes -= row.heap_bytes();
+        self.history_bytes -= history_charge(&row);
         Some(row)
     }
 
     pub(super) fn pop_history_back(&mut self) -> Option<Row> {
         let row = self.history.pop_back()?;
-        self.history_bytes -= row.heap_bytes();
+        self.history_bytes -= history_charge(&row);
         Some(row)
     }
 
@@ -43,7 +53,7 @@ impl Grid {
             .iter_mut()
             .map(|row| {
                 row.measure_extras();
-                row.heap_bytes()
+                history_charge(row)
             })
             .sum();
     }
@@ -52,7 +62,7 @@ impl Grid {
     /// fits its byte budget. Cheap when it already fits.
     #[inline]
     pub(super) fn enforce_history_bytes(&mut self) {
-        if self.history_bytes > HISTORY_BYTE_BUDGET {
+        if self.history_bytes > self.history_byte_limit {
             self.fit_history_bytes();
         }
     }
@@ -61,11 +71,11 @@ impl Grid {
     /// crossing it costs one chunk rather than packing every queued row.
     #[inline(never)]
     fn fit_history_bytes(&mut self) {
-        while self.history_bytes > HISTORY_BYTE_BUDGET && self.needs_compaction() {
+        while self.history_bytes > self.history_byte_limit && self.needs_compaction() {
             self.compact_pending_history(BUDGET_COMPACTION_CHUNK);
         }
         let mut removed = 0;
-        while self.history_bytes > HISTORY_BYTE_BUDGET && self.pop_history_front().is_some() {
+        while self.history_bytes > self.history_byte_limit && self.pop_history_front().is_some() {
             removed += 1;
         }
         if removed != 0 {
@@ -125,7 +135,7 @@ mod tests {
             assert!(grid.history.iter().take(packed).all(Row::is_packed));
             assert_eq!(grid.pending_compaction, grid.history.len() - packed);
             assert_eq!(grid.history_size(), lines - 3);
-            assert!(grid.history_bytes <= HISTORY_BYTE_BUDGET);
+            assert!(grid.history_bytes <= DEFAULT_HISTORY_BYTES);
 
             // Later crossings keep packing chunks instead of evicting rows.
             for _ in 0..4000 {
@@ -133,8 +143,8 @@ mod tests {
                 lines += 1;
             }
             assert_eq!(grid.history_size(), lines - 3);
-            assert!(grid.history_bytes <= HISTORY_BYTE_BUDGET);
-            let bytes: usize = grid.history.iter().map(Row::heap_bytes).sum();
+            assert!(grid.history_bytes <= DEFAULT_HISTORY_BYTES);
+            let bytes: usize = grid.history.iter().map(history_charge).sum();
             assert_eq!(grid.history_bytes, bytes);
         }
     }
@@ -156,8 +166,8 @@ mod tests {
             grid.linefeed();
         }
         assert!(grid.history_size() < 3000, "{}", grid.history_size());
-        assert!(grid.history_bytes <= HISTORY_BYTE_BUDGET);
-        let bytes: usize = grid.history.iter().map(Row::heap_bytes).sum();
+        assert!(grid.history_bytes <= DEFAULT_HISTORY_BYTES);
+        let bytes: usize = grid.history.iter().map(history_charge).sum();
         assert_eq!(grid.history_bytes, bytes);
         // The accounted bytes cover what history really holds: its cells and
         // every distinct extra (allocation and text) they reference.

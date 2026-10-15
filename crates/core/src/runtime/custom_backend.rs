@@ -218,6 +218,7 @@ impl State {
                 scrollback_history: config
                     .scrollback_history
                     .min(MAX_TERMINAL_SCROLLBACK_HISTORY),
+                ..engine::Options::default()
             },
         );
         engine.set_default_cursor_shape(cursor_shape(config.default_cursor_style));
@@ -1219,10 +1220,12 @@ impl CustomBackend {
     }
     pub(super) fn set_term_options(&self, options: TerminalOptions) {
         let mut state = self.shared.state();
+        let current = state.engine.options();
         state.engine.set_options(engine::Options {
             scrollback_history: options
                 .scrollback_history
                 .min(MAX_TERMINAL_SCROLLBACK_HISTORY),
+            ..current
         });
         state
             .engine

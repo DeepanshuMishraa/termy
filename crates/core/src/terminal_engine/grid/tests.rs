@@ -559,9 +559,9 @@ fn clearing_and_trimming_history_release_its_capacity() {
     for _ in 0..5000 {
         print(&mut grid, "x\r\n");
     }
-    grid.set_history_limit(10);
+    grid.set_history_limits(10, DEFAULT_HISTORY_BYTES);
     assert!(grid.history.capacity() <= 2 * 64);
-    grid.set_history_limit(5000);
+    grid.set_history_limits(5000, DEFAULT_HISTORY_BYTES);
     for _ in 0..5000 {
         print(&mut grid, "x\r\n");
     }
@@ -683,8 +683,10 @@ fn height_resize_keeps_cursor_visible_and_recovers_history_on_growth() {
 fn limits_bound_dimensions_and_scrollback_storage() {
     let grid = grid(usize::MAX, usize::MAX, usize::MAX);
     assert!(grid.size.cols * grid.size.rows <= Size::MAX_CELLS);
-    // History memory is bounded by `HISTORY_BYTE_BUDGET`, independent of width.
-    assert!(grid.history_limit <= MAX_HISTORY_ROWS);
+    // History memory is bounded by its byte limit alone, independent of width
+    // and of the row limit.
+    assert_eq!(grid.history_limit, usize::MAX);
+    assert_eq!(grid.history_byte_limit, DEFAULT_HISTORY_BYTES);
 }
 
 #[test]
@@ -768,9 +770,9 @@ fn mixed_edit_sequence_preserves_grid_invariants(mut seed: u32, cols: usize, mar
         assert!(grid.cursor.row < grid.size.rows);
         assert_eq!(grid.screen().rows.len(), grid.size.rows);
         assert!(grid.history.len() <= grid.history_limit);
-        let bytes: usize = grid.history.iter().map(Row::heap_bytes).sum();
+        let bytes: usize = grid.history.iter().map(history::history_charge).sum();
         assert_eq!(grid.history_bytes, bytes);
-        assert!(bytes <= history::HISTORY_BYTE_BUDGET);
+        assert!(bytes <= DEFAULT_HISTORY_BYTES);
         packed |= grid.history.iter().any(Row::is_packed);
         // Rows awaiting compaction are charged at least their metadata, and
         // compacted rows exactly what they reference.
@@ -1392,7 +1394,7 @@ fn borrowed_history_caches_release_before_output_trimming_and_clear() {
     assert_eq!(grid.row_line(-1).unwrap().combining(0), "\u{301}");
     assert!(grid.has_history_read_cache());
     assert_eq!(Arc::strong_count(&extra), 2);
-    grid.set_history_limit(2);
+    grid.set_history_limits(2, DEFAULT_HISTORY_BYTES);
     assert!(!grid.has_history_read_cache());
     assert_eq!(Arc::strong_count(&extra), 2);
 
