@@ -227,7 +227,10 @@ Encoders return the bytes to send to the program and never write anywhere:
 
 - `termy_engine_encode_key` handles legacy keys, DECCKM and DECKPAM, and every
   kitty keyboard flag. When the host reports which Option key is held, only
-  the sides you configure act as Alt; the other side composes text.
+  the sides you configure act as Alt; the other side composes text. Pass the
+  composed text in `text`: legacy encoding sends it as is for every key,
+  Space included (macOS Option+Space sends U+00A0), unless Control or Command
+  is held.
 - `termy_engine_encode_mouse` handles X10, normal, button-event and any-event
   tracking, the X10, UTF-8, SGR and SGR-pixel encodings, and buttons 1–11.
   SGR pixel reports (`?1016`) need `pixel_mouse_reports` in the options.

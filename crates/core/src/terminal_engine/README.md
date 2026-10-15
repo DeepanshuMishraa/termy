@@ -143,6 +143,18 @@ header gives the `rustc` command. The seven cases cover plain scrolling, styled
 redraws, repeated Unicode, 16,384 distinct Unicode scalars, repeated combining
 marks, 112 distinct combining marks, and one-byte fragmented plain text.
 
+`crates/core/examples/scrollback_bench.rs` measures feed throughput while output
+scrolls through history under row and byte limits (a 117x32 engine fed 64 KiB
+chunks, best of seven runs): plain text of varying line lengths, long wrapping
+lines and Unicode, from no history to unlimited rows under 16 and 64 MiB. Run
+one case with `-- <MiB> <plain|long|unicode> <rows|unlimited> <byte limit MiB>`.
+Compare revisions by running their builds alternately; shared machines vary.
+
+```sh
+cargo run --release -p termy_core --example scrollback_bench -- 32
+cargo run --release -p termy_core --example scrollback_bench -- 32 plain unlimited 16
+```
+
 Run the saved binaries with `scripts/benchmark-terminal-facades.py` from the
 repository root:
 
