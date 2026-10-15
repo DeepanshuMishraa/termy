@@ -42,7 +42,11 @@ fn quiet_history_compacts_without_changing_the_frame_or_generation() {
     let mut cells = Vec::new();
     terminal.visit_line_cells(-1, -1, |_, _, _, cell| cells.push(cell.clone()));
     assert_eq!(cells[5].text.as_str(), "👩🏽‍💻");
+    // Quiet output now packs rows as they scroll in: nothing to compact.
     terminal.feed_output(b"another line\r\n");
+    assert!(!terminal.shared.state().engine.needs_history_compaction());
+    // A burst keeps them dense for the idle timer to pack.
+    terminal.feed_output(&b"a burst line\r\n".repeat(400));
     assert!(terminal.shared.state().engine.needs_history_compaction());
 }
 

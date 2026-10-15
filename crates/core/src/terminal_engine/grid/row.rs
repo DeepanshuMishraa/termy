@@ -7,15 +7,28 @@ use super::{Cell, Color, Row, Size, Style};
 use std::sync::{Arc, OnceLock};
 
 /// A character (21 bits) and its cell flags (top byte) in four bytes.
+/// Transparent, so the packing loops store them as `u32` lanes.
 #[derive(Clone, Copy, Debug)]
+#[repr(transparent)]
 struct Scalar(u32);
 
 impl Scalar {
     const FLAGS_SHIFT: u32 = 24;
 
-    fn new(cell: &Cell) -> Self {
-        // Cell flags use the low three bits.
-        Self(u32::from(cell.character) | u32::from(cell.flags as u8) << Self::FLAGS_SHIFT)
+    /// A cell's character and flags, from its words (see [`cell_words`]).
+    /// Cell flags use the low three bits.
+    #[inline(always)]
+    fn from_words([_, tail]: [u64; 2]) -> Self {
+        // The character is the second word's last four bytes and the flags
+        // the two before them: shifts on little-endian targets, where the
+        // packing loop then vectorizes.
+        if cfg!(target_endian = "little") {
+            Self((tail >> 32) as u32 | ((tail >> 16 & 0xff) as u32) << Self::FLAGS_SHIFT)
+        } else {
+            let bytes = tail.to_ne_bytes();
+            let character = u32::from_ne_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+            Self(character | u32::from(bytes[3]) << Self::FLAGS_SHIFT)
+        }
     }
 
     fn character(self) -> char {
@@ -25,6 +38,155 @@ impl Scalar {
     fn flags(self) -> u16 {
         (self.0 >> Self::FLAGS_SHIFT) as u16
     }
+}
+
+/// A cell's two words. `Cell` is `repr(C, align(16))`: its style's ten
+/// bytes, its flags and its character, with no padding.
+#[inline(always)]
+fn cell_words(cell: &Cell) -> [u64; 2] {
+    // SAFETY: a cell is 16 initialized bytes, 16-aligned (see above).
+    unsafe { std::ptr::from_ref(cell).cast::<[u64; 2]>().read() }
+}
+
+/// The words of a cell's style: its first eight bytes and, in the second
+/// word, the two bytes before the flags.
+#[inline(always)]
+fn style_key(cell: &Cell) -> [u64; 2] {
+    let [head, tail] = cell_words(cell);
+    let mask = u64::from_ne_bytes([0xff, 0xff, 0, 0, 0, 0, 0, 0]);
+    [head, tail & mask]
+}
+
+/// Append each cell's [`Scalar`] to `scalars`, which has room for them, and
+/// report whether every cell has the first one's style. Four cells at a time
+/// with the target's baseline vectors, then one at a time; both passes are
+/// branch-free, unlike scanning for a style run's end.
+#[inline]
+fn pack_scalars(cells: &[Cell], scalars: &mut Vec<Scalar>) -> bool {
+    let Some(first) = cells.first() else {
+        return true;
+    };
+    let spare = &mut scalars.spare_capacity_mut()[..cells.len()];
+    let grouped = cells.len() / 4 * 4;
+    let mut same = pack_groups(&cells[..grouped], &mut spare[..grouped], first);
+    let key = style_key(first);
+    let mut diff = [0, 0];
+    for (slot, cell) in spare[grouped..].iter_mut().zip(&cells[grouped..]) {
+        slot.write(Scalar::from_words(cell_words(cell)));
+        let other = style_key(cell);
+        diff = [diff[0] | (other[0] ^ key[0]), diff[1] | (other[1] ^ key[1])];
+    }
+    same &= diff == [0, 0];
+    // SAFETY: the passes above initialized the `cells.len()` slots after
+    // the length.
+    unsafe { scalars.set_len(scalars.len() + cells.len()) };
+    same
+}
+
+/// Sixteen-byte vectors for [`pack_scalars`]: a cell is one vector of four
+/// 32-bit lanes, its style's ten bytes in lanes 0 to 2, its flags in lane
+/// 2's upper half and its character in lane 3 (little-endian). Stores
+/// `cells.len()` (a multiple of four) scalars into `out`; returns whether
+/// every cell has `first`'s style.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+fn pack_groups(cells: &[Cell], out: &mut [std::mem::MaybeUninit<Scalar>], first: &Cell) -> bool {
+    use std::arch::x86_64::{
+        __m128i, _mm_and_si128, _mm_cmpeq_epi8, _mm_load_si128, _mm_movemask_epi8, _mm_or_si128,
+        _mm_set_epi32, _mm_set1_epi32, _mm_setzero_si128, _mm_slli_epi32, _mm_storeu_si128,
+        _mm_unpackhi_epi32, _mm_unpackhi_epi64, _mm_unpacklo_epi64, _mm_xor_si128,
+    };
+    debug_assert!(cells.len().is_multiple_of(4) && out.len() == cells.len());
+    // SAFETY: SSE2 is part of the x86_64 baseline. Cells are 16 bytes and
+    // 16-aligned, so each aligned load reads one in bounds; group `n` reads
+    // cells `4n..4n + 4` and writes the four scalars `4n..4n + 4` of `out`,
+    // which `Scalar`'s transparent `u32` makes a 16-byte unaligned store.
+    unsafe {
+        let key = _mm_load_si128(std::ptr::from_ref(first).cast::<__m128i>());
+        let flag_byte = _mm_set1_epi32(0xff00_0000_u32 as i32);
+        let mut diff = _mm_setzero_si128();
+        let input = cells.as_ptr().cast::<__m128i>();
+        let output = out.as_mut_ptr().cast::<__m128i>();
+        for group in 0..cells.len() / 4 {
+            let cell = |index: usize| _mm_load_si128(input.add(group * 4 + index));
+            let [a, b, c, d] = [cell(0), cell(1), cell(2), cell(3)];
+            diff = _mm_or_si128(
+                diff,
+                _mm_or_si128(
+                    _mm_or_si128(_mm_xor_si128(a, key), _mm_xor_si128(b, key)),
+                    _mm_or_si128(_mm_xor_si128(c, key), _mm_xor_si128(d, key)),
+                ),
+            );
+            // [a2, b2, a3, b3] and [c2, d2, c3, d3].
+            let low = _mm_unpackhi_epi32(a, b);
+            let high = _mm_unpackhi_epi32(c, d);
+            let flags = _mm_unpacklo_epi64(low, high);
+            let characters = _mm_unpackhi_epi64(low, high);
+            // Lane 2's third byte (the flags' low byte) moves to the top.
+            let scalars = _mm_or_si128(
+                characters,
+                _mm_and_si128(_mm_slli_epi32::<8>(flags), flag_byte),
+            );
+            _mm_storeu_si128(output.add(group), scalars);
+        }
+        // The style's ten bytes: lanes 0 and 1 and lane 2's lower half.
+        let style = _mm_set_epi32(0, 0xffff, -1, -1);
+        let differs = _mm_and_si128(diff, style);
+        _mm_movemask_epi8(_mm_cmpeq_epi8(differs, _mm_setzero_si128())) == 0xffff
+    }
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+#[inline(always)]
+fn pack_groups(cells: &[Cell], out: &mut [std::mem::MaybeUninit<Scalar>], first: &Cell) -> bool {
+    use std::arch::aarch64::{
+        vandq_u32, vdupq_n_u32, veorq_u32, vld4q_u32, vmaxvq_u32, vorrq_u32, vshlq_n_u32, vst1q_u32,
+    };
+    debug_assert!(cells.len().is_multiple_of(4) && out.len() == cells.len());
+    let [head, tail] = cell_words(first);
+    // SAFETY: NEON is part of the aarch64 baseline. Group `n` reads the 64
+    // bytes of cells `4n..4n + 4`, deinterleaved into each lane's four
+    // cells, and writes the four scalars `4n..4n + 4` of `out`, both in
+    // bounds; lanes are as in the x86_64 version (this target is
+    // little-endian too).
+    unsafe {
+        let keys =
+            [head as u32, (head >> 32) as u32, tail as u32 & 0xffff].map(|word| vdupq_n_u32(word));
+        let style_half = vdupq_n_u32(0xffff);
+        let flag_byte = vdupq_n_u32(0xff00_0000);
+        let mut diff = vdupq_n_u32(0);
+        let input = cells.as_ptr().cast::<u32>();
+        let output = out.as_mut_ptr().cast::<u32>();
+        for group in 0..cells.len() / 4 {
+            let lanes = vld4q_u32(input.add(group * 16));
+            diff = vorrq_u32(
+                diff,
+                vorrq_u32(
+                    vorrq_u32(veorq_u32(lanes.0, keys[0]), veorq_u32(lanes.1, keys[1])),
+                    vandq_u32(veorq_u32(lanes.2, keys[2]), style_half),
+                ),
+            );
+            let scalars = vorrq_u32(lanes.3, vandq_u32(vshlq_n_u32::<8>(lanes.2), flag_byte));
+            vst1q_u32(output.add(group * 4), scalars);
+        }
+        vmaxvq_u32(diff) == 0
+    }
+}
+
+#[cfg(not(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_endian = "little")
+)))]
+#[inline(always)]
+fn pack_groups(cells: &[Cell], out: &mut [std::mem::MaybeUninit<Scalar>], first: &Cell) -> bool {
+    let key = style_key(first);
+    let mut diff = [0, 0];
+    for (slot, cell) in out.iter_mut().zip(cells) {
+        slot.write(Scalar::from_words(cell_words(cell)));
+        let other = style_key(cell);
+        diff = [diff[0] | (other[0] ^ key[0]), diff[1] | (other[1] ^ key[1])];
+    }
+    diff == [0, 0]
 }
 
 #[derive(Clone, Debug, Default)]
@@ -39,44 +201,63 @@ pub(super) struct PackedCells {
 
 impl PackedCells {
     /// Pack `cells`, returning false when their packed form wouldn't be
-    /// smaller enough to keep.
-    fn encode(&mut self, cells: &[Cell], cols: usize, background: Color) -> bool {
+    /// smaller enough to keep. With `full_width`, the scalars keep room for
+    /// the whole row (see [`Row::retain`]); otherwise they are kept within
+    /// twice their length.
+    fn encode(&mut self, cells: &[Cell], cols: usize, background: Color, full_width: bool) -> bool {
         self.decoded.take();
         self.cols = cols;
         self.background = background;
         self.scalars.clear();
         self.styles.clear();
         // Buffers recycled from a longer row must not keep its capacity.
-        if self.scalars.capacity() > 2 * cells.len() {
-            self.scalars.shrink_to(cells.len());
+        // Room for the whole row is a quarter of its dense size, and lets
+        // lines of any length reuse the buffer.
+        let target = if full_width {
+            cols.max(cells.len())
+        } else {
+            cells.len()
+        };
+        let capacity = self.scalars.capacity();
+        if capacity < cells.len() {
+            self.scalars.reserve_exact(target);
+        } else if capacity > target.max(2 * cells.len()) {
+            self.scalars.shrink_to(target);
         }
-        if self.scalars.capacity() < cells.len() {
-            self.scalars.reserve_exact(cells.len() - self.scalars.len());
-        }
-        self.scalars.extend(cells.iter().map(Scalar::new));
+        let single_style = pack_scalars(cells, &mut self.scalars);
         let fixed_bytes = self.scalars.capacity() * size_of::<Scalar>();
         let budget = cols * size_of::<Cell>() / 2;
         if fixed_bytes >= budget {
             return false;
         }
-        // Style runs, found by scanning for each run's end instead of
-        // probing per cell.
-        let mut start = 0;
-        while let Some(first) = cells.get(start) {
-            let style = first.style;
-            let end = cells[start..]
-                .iter()
-                .position(|cell| cell.style != style)
-                .map_or(cells.len(), |len| start + len);
-            if self.styles.is_empty() {
-                // Most rows have one run; don't reserve room for four.
-                self.styles.reserve_exact(1);
+        if let Some(first) = cells.first()
+            && single_style
+        {
+            // Most rows have one run; don't reserve room for four.
+            self.styles.reserve_exact(1);
+            self.styles.push((cells.len() as u32, first.style));
+        } else {
+            // Style runs, found by scanning for each run's end instead of
+            // probing per cell.
+            let mut start = 0;
+            while let Some(first) = cells.get(start) {
+                let key = style_key(first);
+                let end = cells[start..]
+                    .iter()
+                    .position(|cell| style_key(cell) != key)
+                    .map_or(cells.len(), |len| start + len);
+                if self.styles.is_empty() {
+                    self.styles.reserve_exact(1);
+                }
+                self.styles.push((end as u32, first.style));
+                if fixed_bytes + self.styles.capacity() * size_of::<(u32, Style)>() >= budget {
+                    return false;
+                }
+                start = end;
             }
-            self.styles.push((end as u32, style));
-            if fixed_bytes + self.styles.capacity() * size_of::<(u32, Style)>() >= budget {
-                return false;
-            }
-            start = end;
+        }
+        if fixed_bytes + self.styles.capacity() * size_of::<(u32, Style)>() >= budget {
+            return false;
         }
         // Bounded slack keeps reuse cheap without retaining a wide row's runs.
         if self.styles.capacity() > 2 * self.styles.len() + 4 {
@@ -108,6 +289,33 @@ impl PackedCells {
             start = end;
         }
     }
+}
+
+/// Most of a wide row's packed scalars: lines beyond this are left to the
+/// hardware prefetcher, which follows the stores by then.
+const PREFETCH_BYTES: usize = 512;
+
+/// Hint that `address` is about to be accessed. Prefetches never fault, so
+/// any address is fine.
+#[inline(always)]
+fn prefetch<T>(address: *const T) {
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: SSE is part of the x86_64 baseline; a prefetch reads nothing.
+    unsafe {
+        use std::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
+        _mm_prefetch::<_MM_HINT_T0>(address.cast());
+    }
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: a prefetch for store reads and writes nothing.
+    unsafe {
+        std::arch::asm!(
+            "prfm pstl1keep, [{address}]",
+            address = in(reg) address,
+            options(nostack, readonly, preserves_flags)
+        );
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    let _ = address;
 }
 
 /// Rows store metadata bytes in units of this many, so a row of 4096
@@ -226,7 +434,31 @@ impl Row {
         }
     }
 
-    #[cfg(test)]
+    /// Prefetch the packed header that recycling this row's storage reads
+    /// first. A flood scrolling through a large history recycles rows
+    /// whose scattered allocations are long out of cache.
+    #[inline(always)]
+    pub(super) fn prefetch_packed_header(&self) {
+        if let Some(packed) = &self.packed {
+            prefetch(std::ptr::from_ref::<PackedCells>(packed));
+        }
+    }
+
+    /// Prefetch the buffers recycling this row's storage writes. Reads the
+    /// packed header, so call it a line after [`Self::prefetch_packed_header`].
+    #[inline(always)]
+    pub(super) fn prefetch_packed_buffers(&self) {
+        if let Some(packed) = &self.packed {
+            let scalars = packed.scalars.as_ptr().cast::<u8>();
+            let bytes = packed.scalars.capacity() * size_of::<Scalar>();
+            for offset in (0..bytes.min(PREFETCH_BYTES)).step_by(64) {
+                prefetch(scalars.wrapping_add(offset));
+            }
+            prefetch(packed.styles.as_ptr());
+        }
+    }
+
+    #[inline]
     pub(in crate::terminal_engine) fn is_packed(&self) -> bool {
         self.packed.is_some()
     }
@@ -409,6 +641,7 @@ impl Row {
             &self.cells[..self.occupied],
             self.cells.len(),
             self.clear_background,
+            false,
         );
         // Packed or not, the row is now charged its measured metadata.
         self.measure_extras();
@@ -419,11 +652,16 @@ impl Row {
         self.packed = Some(packed);
     }
 
+    /// Pack this row for history into `recycled`'s packed storage when it
+    /// has some, returning it and a live row holding this row's dense cells
+    /// (to be cleared). `full_width` packed rows keep room for a whole row,
+    /// so a flood recycling them never reallocates.
     pub(super) fn retain(
         mut self,
         recycled: Option<Self>,
         cols: usize,
         blank: &Cell,
+        full_width: bool,
     ) -> (Self, Self) {
         if cols < 16 {
             return (self, recycled.unwrap_or_else(|| Self::new(cols, blank)));
@@ -433,7 +671,12 @@ impl Row {
             .as_mut()
             .and_then(|row| row.packed.take())
             .unwrap_or_default();
-        if !packed.encode(&self.cells[..self.occupied], cols, self.clear_background) {
+        if !packed.encode(
+            &self.cells[..self.occupied],
+            cols,
+            self.clear_background,
+            full_width,
+        ) {
             let mut recycled = recycled.unwrap_or_else(|| Self::new(cols, blank));
             if recycled.cells.is_empty() {
                 recycled.cells.resize(cols, *blank);
@@ -477,6 +720,105 @@ mod tests {
         let packed = row.packed.as_ref().unwrap();
         assert_eq!((packed.styles.len(), packed.styles.capacity()), (1, 1));
         assert_eq!(packed.scalars.capacity(), 10);
+    }
+
+    /// Cells with distinct characters and flags in one style.
+    fn varied_cells(len: usize, style: Style) -> Vec<Cell> {
+        (0..len)
+            .map(|index| Cell {
+                style,
+                flags: (index % 8) as u16,
+                character: char::from_u32(0x41 + index as u32 * 997 % 0x10_0000)
+                    .filter(|_| index % 5 != 0)
+                    .unwrap_or('界'),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn packing_finds_a_style_change_in_any_cell_and_byte() {
+        use super::super::super::types::UnderlineStyle;
+        let base = Style {
+            foreground: Color::rgb(1, 2, 3),
+            background: Color::indexed(4),
+            attributes: Style::BOLD,
+            underline: UnderlineStyle::Single,
+        };
+        // One variant per byte of the style's ten.
+        let variants = [
+            Style {
+                foreground: Color::rgb(9, 2, 3),
+                ..base
+            },
+            Style {
+                foreground: Color::rgb(1, 2, 9),
+                ..base
+            },
+            Style {
+                background: Color::rgb(0, 0, 4),
+                ..base
+            },
+            Style {
+                background: Color::indexed(5),
+                ..base
+            },
+            Style {
+                attributes: 0,
+                ..base
+            },
+            Style {
+                underline: UnderlineStyle::Curly,
+                ..base
+            },
+        ];
+        // Lengths around the four-cell groups and their remainders.
+        for len in [1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 33] {
+            let cells = varied_cells(len, base);
+            let mut row = Row::new(120, &Cell::default());
+            row.cells[..len].copy_from_slice(&cells);
+            row.occupied = len;
+            row.compact();
+            assert_eq!(row.packed.as_ref().unwrap().styles.len(), 1, "{len}");
+            assert_eq!(&row.cells()[..len], cells);
+            for (changed, variant) in (0..len).flat_map(|col| variants.map(|style| (col, style))) {
+                let mut cells = cells.clone();
+                cells[changed].style = variant;
+                let mut row = Row::new(120, &Cell::default());
+                row.cells[..len].copy_from_slice(&cells);
+                row.occupied = len;
+                row.compact();
+                let runs = 1 + usize::from(changed != 0) + usize::from(changed + 1 != len);
+                let packed = row.packed.as_ref().expect("packed");
+                assert_eq!(packed.styles.len(), runs, "{len} {changed} {variant:?}");
+                assert_eq!(&row.cells()[..len], cells, "{len} {changed}");
+            }
+        }
+    }
+
+    #[test]
+    fn full_width_packing_reuses_its_buffer_for_any_line() {
+        let blank = Cell::default();
+        let mut previous = None;
+        let mut pointer = None;
+        for len in [3, 90, 7, 120, 1, 64] {
+            let mut row = Row::new(120, &blank);
+            row.cells[..len].copy_from_slice(&varied_cells(len, Style::default()));
+            row.occupied = len;
+            let expected = row.cells.clone();
+            let (packed, live) = row.retain(previous.take(), 120, &blank, true);
+            let scalars = &packed.packed.as_ref().expect("packed").scalars;
+            assert_eq!(scalars.capacity(), 120);
+            assert_eq!(*pointer.get_or_insert(scalars.as_ptr()), scalars.as_ptr());
+            assert_eq!(packed.cells(), expected);
+            assert_eq!(live.cells.len(), 120);
+            previous = Some(packed);
+        }
+        // Tight packing still sheds a longer line's room.
+        let mut row = Row::new(120, &blank);
+        row.cells[..2].copy_from_slice(&varied_cells(2, Style::default()));
+        row.occupied = 2;
+        let (packed, _) = row.retain(previous, 120, &blank, false);
+        assert_eq!(packed.packed.as_ref().unwrap().scalars.capacity(), 2);
     }
 
     #[test]

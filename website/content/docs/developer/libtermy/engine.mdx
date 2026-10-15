@@ -152,11 +152,18 @@ between a server and replicas on the same release.
 History keeps at most `scrollback_rows` rows and at most `scrollback_bytes`
 of row storage (16 MiB by default), whichever limit binds first. Set
 `scrollback_rows` to `TERMY_ENGINE_SCROLLBACK_UNLIMITED` to bound history by
-bytes alone. Each row is charged its slot, its cells (packed once cold) and
+bytes alone. Each row is charged its slot, its cells and
 the grapheme, link and underline-color metadata it references, measured by
 value, so the charge depends only on the bytes fed and a server and its
 replicas evict the same rows. Calling `termy_engine_compact_history` changes
 how later rows are stored, so don't call it on a server or its replicas.
+
+Cells are stored dense (16 bytes each) or packed (4 bytes per character
+plus style runs). When history at its row limit would hold more dense rows
+than the byte limit or 16 MiB, output packs each line it scrolls into
+history into the storage of the row it evicts, keeping room for a full line.
+At 120 columns such a row costs about 650 bytes, so the default 16 MiB
+holds about 25,000 rows of output.
 
 `termy_engine_set_scrollback` and `termy_engine_set_scrollback_bytes` change
 the limits on a live handle.
@@ -220,7 +227,10 @@ Encoders return the bytes to send to the program and never write anywhere:
 
 - `termy_engine_encode_key` handles legacy keys, DECCKM and DECKPAM, and every
   kitty keyboard flag. When the host reports which Option key is held, only
-  the sides you configure act as Alt; the other side composes text.
+  the sides you configure act as Alt; the other side composes text. Pass the
+  composed text in `text`: legacy encoding sends it as is for every key,
+  Space included (macOS Option+Space sends U+00A0), unless Control or Command
+  is held.
 - `termy_engine_encode_mouse` handles X10, normal, button-event and any-event
   tracking, the X10, UTF-8, SGR and SGR-pixel encodings, and buttons 1–11.
   SGR pixel reports (`?1016`) need `pixel_mouse_reports` in the options.

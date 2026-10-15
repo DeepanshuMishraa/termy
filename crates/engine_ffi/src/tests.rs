@@ -603,6 +603,17 @@ fn key_encoder_handles_modes_and_option_sides() {
         engine.key("a", "\u{e5}", right, MOD_ALT, OPTION_AS_ALT_LEFT),
         "\u{e5}".as_bytes()
     );
+    // Option+Space composes a no-break space unless Option is Alt.
+    assert_eq!(
+        engine.key("space", "\u{a0}", right, MOD_ALT, OPTION_AS_ALT_LEFT),
+        "\u{a0}".as_bytes()
+    );
+    assert_eq!(engine.key("space", "\u{a0}", 0, 0, 0), "\u{a0}".as_bytes());
+    assert_eq!(engine.key("space", " ", 0, 0, 0), b" ");
+    assert_eq!(
+        engine.key("space", "\u{a0}", left, MOD_ALT, OPTION_AS_ALT_LEFT),
+        b"\x1b "
+    );
     // Kitty disambiguation reports Escape as CSI u.
     engine.feed(b"\x1b[>1u");
     assert_eq!(engine.key("escape", "", 0, 0, 0), b"\x1b[27u");

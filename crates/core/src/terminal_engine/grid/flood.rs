@@ -1,7 +1,15 @@
 //! Output floods: a line feed scrolls one full-screen row at a time into
-//! history at its row limit, and the row it scrolls in is blanked lazily, so
-//! the next line's text is not stored on top of a fresh blank.
+//! history, and the row it scrolls in is blanked lazily, so the next line's
+//! text is not stored on top of a fresh blank. Small histories at their row
+//! limit trade dense rows with the screen; large or byte-bound ones are
+//! packed into the storage of the rows they evict.
 use super::{Cell, Color, Grid, GridEffect, Row, Style};
+
+/// Dense history beyond this many bytes no longer stays in cache while a
+/// flood recycles it, so floods pack the rows they scroll in instead (see
+/// `packs_scrolled_rows`). Measured: recycling dense rows wins below about
+/// 12 MiB and loses above.
+const DENSE_FLOOD_HISTORY_BYTES: usize = 16 * 1024 * 1024;
 
 /// Cells `start..end` of a live row that must still become plain blanks.
 /// An `end` of zero leaves nothing to fill, so it also means none is
@@ -171,6 +179,106 @@ impl Grid {
         self.enforce_history_bytes();
     }
 
+    /// Whether a flood packs the rows it scrolls into history instead of
+    /// keeping them dense: while the screen is being packed on scroll
+    /// anyway, or when history at its row limit would hold more dense rows
+    /// than its byte budget or [`DENSE_FLOOD_HISTORY_BYTES`] allow. Then
+    /// dense rows would be packed or evicted under byte pressure regardless,
+    /// or recycling them would write a dense row of cold memory per line.
+    #[inline]
+    fn packs_scrolled_rows(&self) -> bool {
+        let dense_history = self.history_limit.saturating_mul(self.dense_row_charge());
+        self.compact_on_scroll
+            || dense_history > self.history_byte_limit.min(DENSE_FLOOD_HISTORY_BYTES)
+    }
+
+    /// What a plain dense row of the current width is charged in history.
+    #[inline]
+    fn dense_row_charge(&self) -> usize {
+        size_of::<Row>() + self.size.cols * size_of::<Cell>()
+    }
+
+    /// `scroll_region_up` of one full-screen line into history, packed: the
+    /// line's text is packed into the storage of the history row it evicts,
+    /// at the row limit or when it would not fit the byte budget, and the
+    /// screen keeps the line's dense cells as its new bottom row. A flood
+    /// then allocates nothing, and each line writes its packed scalars
+    /// rather than a dense row of history. The viewport shows the live
+    /// screen.
+    #[inline(never)]
+    fn scroll_line_packing_into_history(&mut self) {
+        self.flush_pending_clear();
+        let cols = self.size.cols;
+        let rows = self.size.rows;
+        let history_before = self.history.len();
+        let evicts = history_before == self.history_limit
+            || self.history_bytes.saturating_add(self.dense_row_charge()) > self.history_byte_limit;
+        let recycled = if evicts {
+            let row = self.pop_history_front();
+            self.pending_compaction = self.pending_compaction.min(self.history.len());
+            row
+        } else {
+            None
+        };
+        if evicts {
+            // The next lines recycle the rows now oldest: start loading the
+            // header of the one after next and the buffers of the next,
+            // whose header the previous line loaded.
+            if let Some(row) = self.history.get(1) {
+                row.prefetch_packed_header();
+            }
+            if let Some(row) = self.history.get(0) {
+                row.prefetch_packed_buffers();
+            }
+        }
+        let blank = if self.pen.style.background == Color::DEFAULT {
+            DEFAULT_BLANK
+        } else {
+            self.blank()
+        };
+        let top = self.primary.rows.pop_front().expect("screen row");
+        // Quiet output packs tightly; a flood packs rows with room for any
+        // line, so recycling them (and their byte charge) never changes.
+        let (retained, mut live) = top.retain(recycled, cols, &blank, !self.compact_on_scroll);
+        // Compaction walks the newest `pending_compaction` rows, so a packed
+        // row joins that window only to keep older dense rows inside it.
+        if !retained.is_packed() || self.pending_compaction != 0 {
+            self.pending_compaction += 1;
+        }
+        self.push_history(retained);
+        let end = if self.defer_scroll_clear {
+            live.clear_deferring_fill(cols, &blank)
+        } else {
+            live.clear(cols, &blank);
+            0
+        };
+        self.primary.rows.push_back(live);
+        self.pending_clear = PendingClear {
+            row: rows - 1,
+            start: 0,
+            end,
+            background: blank.style.background,
+        };
+        self.history_activity = true;
+        self.scrolled_into_history = self.scrolled_into_history.wrapping_add(1);
+        // The caller checked that the viewport shows the live screen.
+        self.mark_live_scroll_damage();
+        if self.track_effects {
+            // Measured before the eviction, so the evicted row is reported
+            // as it is for a full history.
+            self.effect(GridEffect::Scroll {
+                alternate: false,
+                top: 0,
+                bottom: rows,
+                lines: 1,
+                retains_history: true,
+                history_before,
+                history_after: self.history.len(),
+            });
+        }
+        self.enforce_history_bytes();
+    }
+
     pub(super) fn scroll_region_up(
         &mut self,
         top: usize,
@@ -178,21 +286,25 @@ impl Grid {
         count: usize,
         retain_history: bool,
     ) {
-        // Output floods scroll one full-screen line at a time into history
-        // that is already at its row limit.
+        // Output floods scroll one full-screen line at a time into history.
         if count == 1
             && top == 0
             && bottom == self.size.rows
             && retain_history
             && self.history_limit != 0
-            && self.history.len() == self.history_limit
-            && !self.compact_on_scroll
             && self.display_offset == 0
-            && self.pen.style.background == Color::DEFAULT
             && self.screen().rows.len() == self.size.rows
         {
-            self.scroll_line_into_full_history();
-            return;
+            if self.packs_scrolled_rows() {
+                self.scroll_line_packing_into_history();
+                return;
+            }
+            if self.history.len() == self.history_limit
+                && self.pen.style.background == Color::DEFAULT
+            {
+                self.scroll_line_into_full_history();
+                return;
+            }
         }
         self.scroll_region_up_general(top, bottom, count, retain_history);
     }
@@ -228,7 +340,7 @@ impl Grid {
                     None
                 };
                 let (retained, recycled) = if self.compact_on_scroll {
-                    removed.retain(recycled, cols, &blank)
+                    removed.retain(recycled, cols, &blank, false)
                 } else {
                     (removed, recycled.unwrap_or_else(|| Row::new(cols, &blank)))
                 };

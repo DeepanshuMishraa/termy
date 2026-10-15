@@ -75,7 +75,11 @@ by native, display-only, tmux and persistent Termy sessions.
   on demand for borrowed reads; invalidation visits only the interval containing
   those reads. Search and bulk visitors reuse scratch storage.
 
-Sustained output retains the dense scrolling fast path. Quiet history compacts
+Sustained output retains the dense scrolling fast path while dense history
+stays within the byte budget and 16 MiB. Larger or byte-bound histories pack
+each line output scrolls in into the storage of the row it evicts, with room
+for a whole line (a quarter of a dense row), so floods allocate nothing and
+write little cold memory either way. Quiet history compacts
 without changing damage or generation. Direct engine hosts can explicitly call
 `compact_history()` after a burst. Allocation benchmarks report active and
 settled retained heap separately from parsing throughput.
@@ -84,7 +88,8 @@ fragmenting a burst into small writes does not keep packing new history rows.
 Grid dimensions are clamped to 4,096 per axis and 1,048,576 cells in total.
 History retains at most the configured rows (`usize::MAX` for no row limit) and
 the configured byte budget (16 MiB by default). Rows are charged their ring slot,
-their stored cells (packed once cold) and their cell metadata measured by value,
+their stored cells (dense, or packed once cold or as output scrolls them in)
+and their cell metadata measured by value,
 so the charge is a function of contents and engines fed the same bytes evict the
 same rows. Combining suffixes, CSI parameters,
 strings, title stacks, keyboard stacks, events and replies are also bounded. The runtime event queue
@@ -137,6 +142,18 @@ each revision's release library before comparing saved executables; its source
 header gives the `rustc` command. The seven cases cover plain scrolling, styled
 redraws, repeated Unicode, 16,384 distinct Unicode scalars, repeated combining
 marks, 112 distinct combining marks, and one-byte fragmented plain text.
+
+`crates/core/examples/scrollback_bench.rs` measures feed throughput while output
+scrolls through history under row and byte limits (a 117x32 engine fed 64 KiB
+chunks, best of seven runs): plain text of varying line lengths, long wrapping
+lines and Unicode, from no history to unlimited rows under 16 and 64 MiB. Run
+one case with `-- <MiB> <plain|long|unicode> <rows|unlimited> <byte limit MiB>`.
+Compare revisions by running their builds alternately; shared machines vary.
+
+```sh
+cargo run --release -p termy_core --example scrollback_bench -- 32
+cargo run --release -p termy_core --example scrollback_bench -- 32 plain unlimited 16
+```
 
 Run the saved binaries with `scripts/benchmark-terminal-facades.py` from the
 repository root:

@@ -336,3 +336,35 @@ fn macos_option_composed_text_is_not_escape_prefixed() {
         Some("∫".as_bytes().to_vec())
     );
 }
+
+#[test]
+fn space_sends_the_text_the_layout_composed() {
+    let alt = Modifiers {
+        alt: true,
+        ..Modifiers::default()
+    };
+    assert_eq!(
+        encode(
+            &keystroke("space", Some("\u{a0}"), Modifiers::default()),
+            legacy_mode()
+        ),
+        Some("\u{a0}".as_bytes().to_vec())
+    );
+    // Alt composes the same text; only an escape prefix may differ by platform.
+    let composed = encode(&keystroke("space", Some("\u{a0}"), alt), legacy_mode()).unwrap();
+    assert!(composed.ends_with("\u{a0}".as_bytes()), "{composed:?}");
+    // Plain and Ctrl+Space keep sending a space.
+    for (key_char, modifiers) in [
+        (None, Modifiers::default()),
+        (Some(""), Modifiers::default()),
+        (Some(" "), Modifiers::default()),
+        (Some("\u{a0}"), control()),
+        (None, control()),
+    ] {
+        assert_eq!(
+            encode(&keystroke("space", key_char, modifiers), legacy_mode()),
+            Some(b" ".to_vec()),
+            "{key_char:?} {modifiers:?}"
+        );
+    }
+}
