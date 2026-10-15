@@ -71,7 +71,14 @@ fn unprefixed_text_input(keystroke: &Keystroke) -> Option<Vec<u8>> {
         }
         "escape" => return Some(vec![0x1b]),
         "backspace" => return Some(vec![0x7f]),
-        "space" => return Some(vec![b' ']),
+        // Text the layout composed on Space wins, as for any other key: on
+        // macOS, Option+Space types U+00A0 unless Option is Alt.
+        "space" => {
+            let composed = keystroke.key_char.as_deref().filter(|text| {
+                !text.is_empty() && !modifiers.control && !modifiers.platform && !modifiers.function
+            });
+            return Some(composed.map_or_else(|| vec![b' '], |text| text.as_bytes().to_vec()));
+        }
         _ => {}
     }
 
