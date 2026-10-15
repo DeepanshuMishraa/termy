@@ -297,8 +297,11 @@ TermyEngineStatus termy_engine_working_directory(
 /* Scrollback limit: history keeps at most scrollback_rows rows and at most
  * scrollback_bytes of row storage, whichever binds first; with
  * TERMY_ENGINE_SCROLLBACK_UNLIMITED only the byte limit applies. Each row
- * is charged its slot, its cells (packed once cold) and the grapheme, link
- * and underline-color metadata it references, measured by value. Without
+ * is charged its slot, its cells and the grapheme, link and underline-color
+ * metadata it references, measured by value. Cells are dense (16 bytes) or
+ * packed; output scrolling into a history that would hold more dense rows
+ * than the byte limit or 16 MiB packs each line with room for a full one
+ * (about 5 bytes per column, 650 bytes per row at 120 columns). Without
  * termy_engine_compact_history() calls the charge follows from the bytes
  * fed alone, and snapshots restore it exactly, so a server and its
  * replicas on the same release evict the same rows. */

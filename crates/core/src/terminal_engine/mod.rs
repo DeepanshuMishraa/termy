@@ -54,9 +54,9 @@ pub struct Options {
     /// History rows to keep. `usize::MAX` leaves only `scrollback_bytes`.
     pub scrollback_history: usize,
     /// Bytes history may hold, whichever of the two limits binds first. Each
-    /// row is charged its storage (packed once cold) and the cell metadata it
-    /// references, as a function of its contents, so engines fed the same
-    /// bytes evict the same rows.
+    /// row is charged its storage (dense, or packed: see the module README)
+    /// and the cell metadata it references, as a function of its contents,
+    /// so engines fed the same bytes evict the same rows.
     pub scrollback_bytes: usize,
     /// OSC and DCS payloads longer than this are dropped whole. Clamped to
     /// `1..=`[`MAX_STRING_PAYLOAD_BYTES`].

@@ -103,7 +103,7 @@ impl Grid {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{Color, tests::grid};
+    use super::super::{Color, GridEffect, tests::grid};
     use super::*;
     use std::{collections::HashSet, sync::Arc};
 
@@ -119,6 +119,9 @@ mod tests {
         // may cost earlier packing but no history.
         for colored in [false, true] {
             let mut grid = grid(120, 4, 20_000);
+            // A status line below the scroll region keeps scrolls off the
+            // flood paths: their rows enter history dense.
+            grid.set_scroll_region(0, 3);
             if colored {
                 grid.pen.set_underline_color(Color::indexed(1));
             }
@@ -134,7 +137,8 @@ mod tests {
             assert!(packed <= BUDGET_COMPACTION_CHUNK, "{packed}");
             assert!(grid.history.iter().take(packed).all(Row::is_packed));
             assert_eq!(grid.pending_compaction, grid.history.len() - packed);
-            assert_eq!(grid.history_size(), lines - 3);
+            // The region's first two lines don't scroll.
+            assert_eq!(grid.history_size(), lines - 2);
             assert!(grid.history_bytes <= DEFAULT_HISTORY_BYTES);
 
             // Later crossings keep packing chunks instead of evicting rows.
@@ -142,10 +146,101 @@ mod tests {
                 line(&mut grid, b"a short log line");
                 lines += 1;
             }
-            assert_eq!(grid.history_size(), lines - 3);
+            assert_eq!(grid.history_size(), lines - 2);
             assert!(grid.history_bytes <= DEFAULT_HISTORY_BYTES);
             let bytes: usize = grid.history.iter().map(history_charge).sum();
             assert_eq!(grid.history_bytes, bytes);
+        }
+    }
+
+    fn text(row: &Row) -> String {
+        let text: String = row.cells().iter().map(|cell| cell.character).collect();
+        text.trim_end().to_owned()
+    }
+
+    fn numbered(index: usize) -> Vec<u8> {
+        format!("line {index} {}", "x".repeat(index * 7 % 110)).into_bytes()
+    }
+
+    /// History holds lines `..=newest` in order, packed, and its charge.
+    fn assert_packed_history_ends_at(grid: &Grid, newest: usize) {
+        for (offset, row) in grid.history.iter().rev().enumerate() {
+            assert!(row.is_packed(), "row {offset} from the end");
+            let expected = String::from_utf8(numbered(newest - offset)).unwrap();
+            assert_eq!(text(row), expected.trim_end(), "row {offset} from the end");
+        }
+        let bytes: usize = grid.history.iter().map(history_charge).sum();
+        assert_eq!(grid.history_bytes, bytes);
+        assert_eq!(grid.pending_compaction, 0);
+    }
+
+    #[test]
+    fn byte_bound_floods_pack_into_the_rows_they_evict() {
+        let budget = 256 * 1024;
+        let mut grid = grid(120, 4, usize::MAX);
+        grid.set_history_limits(usize::MAX, budget);
+        for index in 0..5000 {
+            line(&mut grid, &numbered(index));
+        }
+        let rows = grid.history_size();
+        assert!((300..4997).contains(&rows), "{rows}");
+        assert!(grid.history_bytes <= budget);
+        // The screen holds lines 4997 to 4999 above the cursor's blank row.
+        assert_packed_history_ends_at(&grid, 4996);
+
+        // Each later line evicts one row, reported as a full history's is.
+        grid.track_effects = true;
+        let mut effects = Vec::new();
+        grid.drain_effects(&mut effects);
+        line(&mut grid, &numbered(5000));
+        grid.drain_effects(&mut effects);
+        assert_eq!(grid.history_size(), rows);
+        assert_eq!(
+            effects,
+            [GridEffect::Scroll {
+                alternate: false,
+                top: 0,
+                bottom: 4,
+                lines: 1,
+                retains_history: true,
+                history_before: rows,
+                history_after: rows,
+            }]
+        );
+        assert_packed_history_ends_at(&grid, 4997);
+    }
+
+    #[test]
+    fn large_histories_pack_floods_and_keep_the_pen_background() {
+        // 20,000 dense rows would take 38 MiB: more than the default budget.
+        let mut grid = grid(120, 4, 20_000);
+        for index in 0..25_000 {
+            line(&mut grid, &numbered(index));
+        }
+        assert_eq!(grid.history_size(), 20_000);
+        assert!(grid.history_bytes <= DEFAULT_HISTORY_BYTES);
+        assert_packed_history_ends_at(&grid, 24_996);
+        // Erased rows take the pen's background (BCE), in history too.
+        let background = Color::indexed(4);
+        grid.pen.style.background = background;
+        for index in 25_000..25_005 {
+            line(&mut grid, &numbered(index));
+        }
+        grid.flush_pending_clear();
+        let bottom = grid.screen().rows.back().unwrap();
+        assert!(
+            bottom
+                .cells()
+                .iter()
+                .all(|cell| cell.style.background == background)
+        );
+        // Line 25,000's row was erased before the pen changed; 25,001's after.
+        let history = grid.history.len();
+        for (row, erased) in [(history - 2, Color::DEFAULT), (history - 1, background)] {
+            let row = &grid.history[row];
+            assert!(row.is_packed());
+            assert_eq!(row.cells()[0].style.background, background);
+            assert_eq!(row.cells()[119].style.background, erased);
         }
     }
 

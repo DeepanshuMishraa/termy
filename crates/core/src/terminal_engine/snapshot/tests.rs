@@ -429,10 +429,13 @@ fn links_with_combining_marks_evict_identically_after_decode() {
 
 #[test]
 fn rows_beyond_twenty_thousand_survive_a_snapshot() {
+    // A flood packs rows with room for a whole line, so give them a budget
+    // that holds every one.
     let mut source = Engine::new(
         Size { cols: 80, rows: 10 },
         Options {
             scrollback_history: usize::MAX,
+            scrollback_bytes: 64 * 1024 * 1024,
             ..Default::default()
         },
     );

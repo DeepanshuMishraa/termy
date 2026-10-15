@@ -75,7 +75,11 @@ by native, display-only, tmux and persistent Termy sessions.
   on demand for borrowed reads; invalidation visits only the interval containing
   those reads. Search and bulk visitors reuse scratch storage.
 
-Sustained output retains the dense scrolling fast path. Quiet history compacts
+Sustained output retains the dense scrolling fast path while dense history
+stays within the byte budget and 16 MiB. Larger or byte-bound histories pack
+each line output scrolls in into the storage of the row it evicts, with room
+for a whole line (a quarter of a dense row), so floods allocate nothing and
+write little cold memory either way. Quiet history compacts
 without changing damage or generation. Direct engine hosts can explicitly call
 `compact_history()` after a burst. Allocation benchmarks report active and
 settled retained heap separately from parsing throughput.
@@ -84,7 +88,8 @@ fragmenting a burst into small writes does not keep packing new history rows.
 Grid dimensions are clamped to 4,096 per axis and 1,048,576 cells in total.
 History retains at most the configured rows (`usize::MAX` for no row limit) and
 the configured byte budget (16 MiB by default). Rows are charged their ring slot,
-their stored cells (packed once cold) and their cell metadata measured by value,
+their stored cells (dense, or packed once cold or as output scrolls them in)
+and their cell metadata measured by value,
 so the charge is a function of contents and engines fed the same bytes evict the
 same rows. Combining suffixes, CSI parameters,
 strings, title stacks, keyboard stacks, events and replies are also bounded. The runtime event queue
