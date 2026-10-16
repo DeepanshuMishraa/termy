@@ -983,7 +983,7 @@ fn split_url(text: &str) -> Option<(&str, &str)> {
 }
 
 /// Decode `%XX` escapes; `None` for malformed escapes or non-UTF-8 results.
-pub(crate) fn percent_decode(text: &str) -> Option<String> {
+fn percent_decode(text: &str) -> Option<String> {
     let bytes = text.as_bytes();
     let mut decoded = Vec::with_capacity(bytes.len());
     let mut index = 0;

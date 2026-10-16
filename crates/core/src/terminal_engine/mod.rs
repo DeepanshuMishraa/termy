@@ -6,8 +6,6 @@
 //! status and the remaining integration gates.
 
 mod dispatch;
-#[cfg(feature = "native")]
-pub(crate) use dispatch::percent_decode;
 mod graphics;
 mod grid;
 mod hyperlinks;
@@ -54,9 +52,10 @@ pub struct Options {
     /// History rows to keep. `usize::MAX` leaves only `scrollback_bytes`.
     pub scrollback_history: usize,
     /// Bytes history may hold, whichever of the two limits binds first. Each
-    /// row is charged its storage (dense, or packed: see the module README)
-    /// and the cell metadata it references, as a function of its contents,
-    /// so engines fed the same bytes evict the same rows.
+    /// row is charged its cells as packed with room for the whole row (see
+    /// the module README) and the cell metadata it references, whether it is
+    /// stored dense or packed, so engines fed the same bytes evict the same
+    /// rows however their feeds were split and whenever they compacted.
     pub scrollback_bytes: usize,
     /// OSC and DCS payloads longer than this are dropped whole. Clamped to
     /// `1..=`[`MAX_STRING_PAYLOAD_BYTES`].
@@ -606,7 +605,12 @@ impl Engine {
         self.state.grid.take_render_damage()
     }
 
+    /// Resizing to the current size changes nothing: it neither commits a
+    /// synchronized update nor closes the grapheme being printed.
     pub fn resize(&mut self, size: Size) {
+        if size.clamped() == self.size() {
+            return;
+        }
         self.stop_synchronized_update();
         self.state.grid.resize(size);
         self.state.resize_graphics();

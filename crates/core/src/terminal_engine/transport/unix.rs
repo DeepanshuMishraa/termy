@@ -192,10 +192,51 @@ struct ChildSpawnFailure {
     errno: c_int,
 }
 
+/// Whether the child may still be signaled. The watcher clears `alive` under
+/// `signaling` before it reaps the child, and senders signal under it only
+/// while `alive` is set, so no signal reaches a PID reused after the reap.
+/// Where the exit can be awaited without reaping (`wait_for_child_exit`),
+/// the PID stays the child's zombie until then; elsewhere the reap precedes
+/// the clear and a signal can still race it.
+struct ChildLiveness {
+    alive: AtomicBool,
+    signaling: Mutex<()>,
+}
+
+impl ChildLiveness {
+    fn new() -> Self {
+        Self {
+            alive: AtomicBool::new(true),
+            signaling: Mutex::new(()),
+        }
+    }
+
+    fn is_alive(&self) -> bool {
+        self.alive.load(Ordering::Acquire)
+    }
+
+    /// Run `send` (which signals the child) unless it has exited.
+    fn signal_if_alive<T>(&self, send: impl FnOnce() -> T) -> Option<T> {
+        let _signaling = self
+            .signaling
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.is_alive().then(send)
+    }
+
+    fn exited(&self) {
+        let _signaling = self
+            .signaling
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.alive.store(false, Ordering::Release);
+    }
+}
+
 pub(crate) struct Transport {
     writer: WriterHandle,
     child_pid: c_int,
-    alive: Arc<AtomicBool>,
+    alive: Arc<ChildLiveness>,
     /// A CLOEXEC duplicate of the PTY master, used only for foreground queries.
     control: File,
 }
@@ -825,7 +866,7 @@ impl Transport {
             }
         };
         let reader_writer = writer.clone();
-        let alive = Arc::new(AtomicBool::new(true));
+        let alive = Arc::new(ChildLiveness::new());
         let reader_alive = alive.clone();
         let exit_status = Arc::new(Mutex::new(None::<ChildExit>));
         let reader_exit_status = exit_status.clone();
@@ -900,7 +941,7 @@ impl Transport {
                     {
                     }
                 }
-                if !reader_alive.load(Ordering::Acquire) {
+                if !reader_alive.is_alive() {
                     let exit = reader_exit_status
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -919,12 +960,20 @@ impl Transport {
         let watcher_thread = thread::Builder::new()
             .name("termy-native-pty-child".to_string())
             .spawn(move || {
+                // The child is known to be gone, but not yet reaped, before
+                // it stops taking signals; see `ChildLiveness`.
+                let exited = wait_for_child_exit(pid);
+                if exited {
+                    watcher_alive.exited();
+                }
                 let status = wait_for_child(pid);
                 *exit_status
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner()) =
                     Some(status.map(child_exit_from_wait_status).unwrap_or_default());
-                watcher_alive.store(false, Ordering::Release);
+                if !exited {
+                    watcher_alive.exited();
+                }
                 send_signal_byte(&shutdown_writer);
             });
         if let Err(error) = watcher_thread {
@@ -960,11 +1009,11 @@ impl Transport {
         match self.writer.write_protocol_reply_owned(input) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == ErrorKind::WouldBlock => Err(error),
+            // As for the reader's replies: drop's SIGHUP grace and escalation
+            // own the child's shutdown, so a reply the closed writer rejects
+            // never kills it outright.
             Err(error) => {
                 self.writer.close();
-                if self.alive.load(Ordering::Acquire) {
-                    force_child_shutdown(self.child_pid);
-                }
                 Err(error)
             }
         }
@@ -980,19 +1029,20 @@ impl Transport {
 
     /// Send `signal` to the child process while it is running.
     pub(crate) fn signal(&self, signal: i32) -> io::Result<()> {
-        if !self.alive.load(Ordering::Acquire) {
-            return Ok(());
-        }
-        // SAFETY: `child_pid` is the exact child created by forkpty; the watcher
-        // has not reaped it while `alive` is set.
-        if unsafe { kill(self.child_pid, signal) } < 0 {
-            let error = io::Error::last_os_error();
-            // ESRCH: the child exited between the check and the signal.
-            if error.raw_os_error() != Some(3) {
-                return Err(error);
+        let sent = self.alive.signal_if_alive(|| {
+            // SAFETY: `child_pid` is the exact child created by forkpty; the
+            // watcher has not reaped it while it is alive (see `ChildLiveness`).
+            if unsafe { kill(self.child_pid, signal) } < 0 {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(())
             }
+        });
+        match sent {
+            // ESRCH: the child exited before the watcher noticed.
+            Some(Err(error)) if error.raw_os_error() != Some(3) => Err(error),
+            _ => Ok(()),
         }
-        Ok(())
     }
 
     /// Name of the PTY's foreground process group leader, such as `vim`.
@@ -1093,10 +1143,7 @@ where
     let mut current_protocol_reply: Option<ReservedWrite> = None;
 
     loop {
-        if !matches!(
-            service_writer_control(&writer, &control, &mut resize),
-            Ok(true)
-        ) {
+        if !service_writer_control(&writer, &control, &mut resize) {
             break;
         }
 
@@ -1123,10 +1170,7 @@ where
             // Resize and Close are published before their Wake command. Check
             // shared control state before writing even when recv returned an
             // older Write that was already ahead of that wake in the channel.
-            if !matches!(
-                service_writer_control(&writer, &control, &mut resize),
-                Ok(true)
-            ) {
+            if !service_writer_control(&writer, &control, &mut resize) {
                 break;
             }
         }
@@ -1165,10 +1209,7 @@ where
                 }
                 // poll returns for readiness, a wake, or its backstop timeout;
                 // service controls as soon as it does.
-                if !matches!(
-                    service_writer_control(&writer, &control, &mut resize),
-                    Ok(true)
-                ) {
+                if !service_writer_control(&writer, &control, &mut resize) {
                     break;
                 }
             }
@@ -1180,23 +1221,27 @@ where
     writer
 }
 
+/// Apply a pending resize; false once the writer is closed.
 fn service_writer_control<W>(
     writer: &W,
     control: &WriterControl,
     resize: &mut impl FnMut(&W, WinSize) -> io::Result<()>,
-) -> io::Result<bool> {
+) -> bool {
     if control.is_closed() {
-        return Ok(false);
+        return false;
     }
 
     let pending_resize = control.take_resize();
     if control.is_closed() {
-        return Ok(false);
+        return false;
     }
-    if let Some(window_size) = pending_resize {
-        resize(writer, window_size)?;
+    // A size the PTY rejects keeps the old one; input must still flow.
+    if let Some(window_size) = pending_resize
+        && let Err(error) = resize(writer, window_size)
+    {
+        log::warn!("failed to resize the terminal PTY: {error}");
     }
-    Ok(!control.is_closed())
+    !control.is_closed()
 }
 
 impl ChildSpawnFailure {
@@ -1407,6 +1452,40 @@ fn terminate_and_reap(pid: c_int) {
     }
 }
 
+/// Wait until the child has exited, leaving it unreaped so its PID can't be
+/// reused yet. False when that wait isn't available or failed: the caller
+/// then learns of the exit by reaping.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn wait_for_child_exit(pid: c_int) -> bool {
+    // SAFETY: `info` is writable for the call; WNOWAIT leaves the child for
+    // the watcher's `waitpid`, and the watcher is its sole waiter.
+    unsafe {
+        let mut info = std::mem::zeroed::<libc::siginfo_t>();
+        loop {
+            if libc::waitid(
+                libc::P_PID,
+                pid as libc::id_t,
+                &mut info,
+                libc::WEXITED | libc::WNOWAIT,
+            ) == 0
+            {
+                return true;
+            }
+            if io::Error::last_os_error().kind() != ErrorKind::Interrupted {
+                return false;
+            }
+        }
+    }
+}
+
+/// Elsewhere `waitid` with `WNOWAIT` is not relied on: if it returned before
+/// the exit, the watcher would stop signaling a running child. The reap comes
+/// first.
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+fn wait_for_child_exit(_pid: c_int) -> bool {
+    false
+}
+
 /// `None` when the status is unknown: a host that ignores SIGCHLD or reaps
 /// with `waitpid(-1)` makes this wait fail with ECHILD.
 fn wait_for_child(pid: c_int) -> Option<c_int> {
@@ -1443,31 +1522,29 @@ fn force_child_shutdown(pid: c_int) {
     }
 }
 
-fn schedule_child_shutdown_escalation(pid: c_int, alive: Arc<AtomicBool>) {
+fn schedule_child_shutdown_escalation(pid: c_int, alive: Arc<ChildLiveness>) {
     let fallback_alive = alive.clone();
     let escalation = thread::Builder::new()
         .name("termy-native-pty-shutdown".to_string())
         .spawn(move || {
             thread::sleep(DROP_SHUTDOWN_GRACE);
-            if alive.load(Ordering::Acquire) {
-                force_child_shutdown(pid);
-            }
+            alive.signal_if_alive(|| force_child_shutdown(pid));
         });
 
     // A failed thread spawn must not restore the original unbounded shutdown.
     // Killing is non-blocking here; the dedicated watcher still performs waitpid.
-    if escalation.is_err() && fallback_alive.load(Ordering::Acquire) {
-        force_child_shutdown(pid);
+    if escalation.is_err() {
+        fallback_alive.signal_if_alive(|| force_child_shutdown(pid));
     }
 }
 
 impl Drop for Transport {
     fn drop(&mut self) {
-        let child_was_alive = self.alive.load(Ordering::Acquire);
-        if child_was_alive {
-            // SIGHUP mirrors closing a conventional terminal session.
-            signal_child_shutdown(self.child_pid);
-        }
+        // SIGHUP mirrors closing a conventional terminal session.
+        let child_was_alive = self
+            .alive
+            .signal_if_alive(|| signal_child_shutdown(self.child_pid))
+            .is_some();
         self.writer.close();
         if child_was_alive {
             schedule_child_shutdown_escalation(self.child_pid, self.alive.clone());

@@ -2,6 +2,7 @@
 //! `VecDeque`'s interface the grid uses, plus a rotation of a full ring that
 //! moves no element. A flood scrolls every line into a full history, so that
 //! rotation, inline, replaces moving two rows through the stack per line.
+//! Scrolling part of a screen rotates a range of its rows in one pass.
 use std::{
     iter::Chain,
     mem::MaybeUninit,
@@ -155,38 +156,33 @@ impl<T> Ring<T> {
         }
     }
 
-    /// Insert `value` at `index`, shifting the elements from there back.
-    pub(super) fn insert(&mut self, index: usize, value: T) {
-        assert!(index <= self.len, "index out of bounds");
-        if self.len == self.slots.len() {
-            self.grow();
-        }
-        self.make_contiguous();
-        // SAFETY: the elements are in slots `0..len` and slot `len` is free,
-        // so shifting `index..len` back one stays in bounds and leaves slot
-        // `index` free for `value`.
-        unsafe {
-            let base = self.slots.as_mut_ptr().cast::<T>();
-            ptr::copy(base.add(index), base.add(index + 1), self.len - index);
-            base.add(index).write(value);
-        }
-        self.len += 1;
+    /// Rotate the elements in `range` so the one at `range.start + count`
+    /// comes first, moving each once rather than once per step.
+    pub(super) fn rotate_range_left(&mut self, range: Range<usize>, count: usize) {
+        self.contiguous_range(range).rotate_left(count);
     }
 
-    /// Remove the element at `index`, shifting the elements after it forward.
-    pub(super) fn remove(&mut self, index: usize) -> Option<T> {
-        if index >= self.len {
-            return None;
+    /// Rotate the elements in `range` so its last `count` come first.
+    pub(super) fn rotate_range_right(&mut self, range: Range<usize>, count: usize) {
+        self.contiguous_range(range).rotate_right(count);
+    }
+
+    fn contiguous_range(&mut self, range: Range<usize>) -> &mut [T] {
+        assert!(
+            range.start <= range.end && range.end <= self.len,
+            "range out of bounds"
+        );
+        // A range within either slice needs no move.
+        let split = self.len.min(self.slots.len() - self.head);
+        if range.start < split && range.end > split {
+            self.make_contiguous();
         }
-        self.make_contiguous();
-        // SAFETY: the elements are in slots `0..len`; the one at `index` is
-        // read out and the rest shifted over its slot.
-        unsafe {
-            let base = self.slots.as_mut_ptr().cast::<T>();
-            let value = base.add(index).read();
-            ptr::copy(base.add(index + 1), base.add(index), self.len - index - 1);
-            self.len -= 1;
-            Some(value)
+        let (front, back) = self.as_mut_slices();
+        if range.end <= front.len() {
+            &mut front[range]
+        } else {
+            let split = front.len();
+            &mut back[range.start - split..range.end - split]
         }
     }
 
@@ -442,14 +438,18 @@ mod tests {
                         ring.rotate_front_to_back();
                         deque.rotate_left(usize::from(!deque.is_empty()));
                     }
-                    8 => {
-                        let index = next(deque.len() + 1);
-                        ring.insert(index, element());
-                        deque.insert(index, step + 100);
-                    }
-                    9 => {
-                        let index = next(deque.len() + 1);
-                        assert_eq!(ring.remove(index).map(|e| e.0), deque.remove(index));
+                    8 | 9 => {
+                        let start = next(deque.len() + 1);
+                        let end = start + next(deque.len() - start + 1);
+                        let count = next(end - start + 1);
+                        let range = &mut deque.make_contiguous()[start..end];
+                        if step % 2 == 0 {
+                            ring.rotate_range_left(start..end, count);
+                            range.rotate_left(count);
+                        } else {
+                            ring.rotate_range_right(start..end, count);
+                            range.rotate_right(count);
+                        }
                     }
                     10 => {
                         let len = next(deque.len() + 2);
@@ -507,6 +507,30 @@ mod tests {
     }
 
     // A full ring rotates without moving an element: each stays in its slot.
+    #[test]
+    fn ranges_rotate_across_the_wrap() {
+        for head in 0..6 {
+            let mut ring = Ring::with_capacity(6);
+            let mut deque = VecDeque::new();
+            for value in 0..6 {
+                ring.push_back(value);
+                deque.push_back(value);
+            }
+            for _ in 0..head {
+                ring.rotate_front_to_back();
+                deque.rotate_left(1);
+            }
+            for (start, end, count) in [(0, 6, 2), (1, 5, 3), (2, 3, 1), (0, 4, 4), (3, 6, 0)] {
+                ring.rotate_range_left(start..end, count);
+                deque.make_contiguous()[start..end].rotate_left(count);
+                assert!(ring.iter().eq(deque.iter()), "{head} {start}..{end}");
+                ring.rotate_range_right(start..end, count);
+                deque.make_contiguous()[start..end].rotate_right(count);
+                assert!(ring.iter().eq(deque.iter()), "{head} {start}..{end}");
+            }
+        }
+    }
+
     #[test]
     fn full_rings_rotate_in_place() {
         let mut ring: Ring<u32> = (0..4).collect();

@@ -46,8 +46,9 @@ by native, display-only, tmux and persistent Termy sessions.
   working directory, program status, the parser's in-progress sequence and a
   pending synchronized update, the scrollback and payload limits, and kitty
   graphics (images PNG-compressed). Rows keep their packed representation,
-  metadata charge and storage capacities, so a decoded engine fed the same
-  bytes evicts the same history. Queued events and replies, damage and caches
+  metadata charge and storage capacities. A row's byte charge doesn't depend
+  on its representation, so a decoded engine fed the same bytes evicts the
+  same history. Queued events and replies, damage and caches
   are not included. Every build reads and writes versions
   `MIN_SNAPSHOT_VERSION..=SNAPSHOT_VERSION`; `snapshot/v1.snap` is a fixture
   written by the first release. Tests feed random streams split at random points to
@@ -88,10 +89,14 @@ fragmenting a burst into small writes does not keep packing new history rows.
 Grid dimensions are clamped to 4,096 per axis and 1,048,576 cells in total.
 History retains at most the configured rows (`usize::MAX` for no row limit) and
 the configured byte budget (16 MiB by default). Rows are charged their ring slot,
-their stored cells (dense, or packed once cold or as output scrolls them in)
-and their cell metadata measured by value,
-so the charge is a function of contents and engines fed the same bytes evict the
-same rows. Combining suffixes, CSI parameters,
+their cells as a packed row with room for the whole line (what a flood stores),
+and their cell metadata measured by value, whether they are stored dense or
+packed. Storage depends on when compaction ran and on how output was split into
+feeds; the charge doesn't, so engines fed the same bytes evict the same rows.
+History past the budget packs its queued dense rows; rows that resist packing
+(a style change every few cells) can take up to four times their charge. A
+widen evicts nothing the old width kept; later output evicts down to the
+budget. Combining suffixes, CSI parameters,
 strings, title stacks, keyboard stacks, events and replies are also bounded. The runtime event queue
 has an 8 MiB retained-payload budget as well as a count limit; dropping clipboard
 chunks aborts the transaction, and resets still revoke permission grants.

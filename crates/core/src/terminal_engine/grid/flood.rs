@@ -143,9 +143,11 @@ impl Grid {
             std::ptr::write(newest, std::mem::replace(recycled, row));
         }
         // Charged where they now stay.
-        self.history_bytes -= recycled.heap_bytes();
+        self.history_bytes -= recycled.charged_bytes();
+        self.history_heap -= recycled.heap_bytes();
         newest.bound_extras();
-        self.history_bytes += newest.heap_bytes();
+        self.history_bytes += newest.charged_bytes();
+        self.history_heap += newest.heap_bytes();
         if self.defer_scroll_clear {
             let end = recycled.clear_deferring_fill(cols, &DEFAULT_BLANK);
             self.pending_clear = PendingClear {
@@ -192,7 +194,7 @@ impl Grid {
             || dense_history > self.history_byte_limit.min(DENSE_FLOOD_HISTORY_BYTES)
     }
 
-    /// What a plain dense row of the current width is charged in history.
+    /// What a plain dense row of the current width takes in history.
     #[inline]
     fn dense_row_charge(&self) -> usize {
         size_of::<Row>() + self.size.cols * size_of::<Cell>()
@@ -211,8 +213,10 @@ impl Grid {
         let cols = self.size.cols;
         let rows = self.size.rows;
         let history_before = self.history.len();
+        // A plain row's charge: a row with metadata may evict more below.
+        let charge = size_of::<Row>() + Row::charged_cells(cols);
         let evicts = history_before == self.history_limit
-            || self.history_bytes.saturating_add(self.dense_row_charge()) > self.history_byte_limit;
+            || self.history_bytes.saturating_add(charge) > self.history_byte_limit;
         let recycled = if evicts {
             let row = self.pop_history_front();
             self.pending_compaction = self.pending_compaction.min(self.history.len());
@@ -323,16 +327,20 @@ impl Grid {
         let history_before = self.history_size();
         self.flush_pending_clear();
         // A full-screen region rotates the ring instead of shifting rows.
+        // Another region moves its first `count` rows to its end at once,
+        // where each is then replaced in place.
         let whole_screen = top == 0 && bottom == self.screen().rows.len();
         let defer_clear = self.defer_scroll_clear && count == 1 && whole_screen;
-        for _ in 0..count {
+        if !whole_screen {
+            self.screen_mut().rows.rotate_range_left(top..bottom, count);
+        }
+        for index in bottom - count..bottom {
             let rows = &mut self.screen_mut().rows;
             let removed = if whole_screen {
-                rows.pop_front()
+                rows.pop_front().expect("scroll region row")
             } else {
-                rows.remove(top)
-            }
-            .expect("scroll region row");
+                std::mem::replace(&mut rows[index], Row::new(0, &blank))
+            };
             let mut recycled = if retain_history && self.history_limit != 0 {
                 let recycled = if self.history.len() == self.history_limit {
                     self.pop_history_front()
@@ -365,7 +373,7 @@ impl Grid {
             if whole_screen {
                 rows.push_back(recycled);
             } else {
-                rows.insert(bottom - 1, recycled);
+                rows[index] = recycled;
             }
             if let Some(end) = deferred {
                 self.pending_clear = PendingClear {

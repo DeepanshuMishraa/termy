@@ -655,3 +655,73 @@ fn damaged_graphics_snapshots_are_rejected_without_panicking() {
         }
     }
 }
+
+/// Lines of varying length and color, some with links and marks.
+fn budget_stream(lines: std::ops::Range<usize>) -> Vec<u8> {
+    let mut out = Vec::new();
+    for line in lines {
+        out.extend_from_slice(format!("\x1b[3{}m", line % 8).as_bytes());
+        if line % 5 == 0 {
+            out.extend_from_slice(
+                format!("\x1b]8;;https://example.com/{}\x07", line % 3).as_bytes(),
+            );
+        }
+        out.extend_from_slice(format!("line {line} ").as_bytes());
+        out.extend_from_slice("x".repeat(line * 13 % 90).as_bytes());
+        if line % 7 == 0 {
+            out.extend_from_slice("e\u{301}".as_bytes());
+        }
+        out.extend_from_slice(b"\x1b]8;;\x07\x1b[0m\r\n");
+    }
+    out
+}
+
+#[test]
+fn byte_budget_eviction_ignores_feed_splits_and_compaction_timing() {
+    let new = || {
+        Engine::new(
+            Size { cols: 80, rows: 6 },
+            Options {
+                scrollback_history: usize::MAX,
+                scrollback_bytes: 128 * 1024,
+                ..Default::default()
+            },
+        )
+    };
+    let stream = budget_stream(0..6000);
+    // A host fed whole PTY reads and compacting after each, a replica fed
+    // small fragments with idle and forced steps in between, and an engine
+    // that never compacts. Each sees the same bytes.
+    let mut host = new();
+    let mut replica = new();
+    let mut never = new();
+    let mut random = Lcg(0xb0d6e7);
+    for (index, chunk) in stream.chunks(5000).enumerate() {
+        host.feed(chunk);
+        if index % 3 == 0 {
+            host.compact_history();
+        }
+        let mut offset = 0;
+        while offset < chunk.len() {
+            let end = (offset + 1 + random.below(40)).min(chunk.len());
+            replica.feed(&chunk[offset..end]);
+            if random.below(6) == 0 {
+                replica.compact_history_step(1 + random.below(300), random.below(2) == 0);
+            }
+            offset = end;
+        }
+        never.feed(chunk);
+        assert_eq!(
+            (replica.history_size(), replica.state.grid.history_bytes()),
+            (host.history_size(), host.state.grid.history_bytes()),
+            "chunk {index}"
+        );
+        assert_eq!(never.history_size(), host.history_size(), "chunk {index}");
+    }
+    assert!(host.history_size() < 6000 - 6, "{}", host.history_size());
+    // The same rows survive (compaction state itself differs).
+    for line in -(host.history_size() as i32)..host.size().rows as i32 {
+        assert_eq!(replica.line(line), host.line(line), "line {line}");
+        assert_eq!(never.line(line), host.line(line), "line {line}");
+    }
+}

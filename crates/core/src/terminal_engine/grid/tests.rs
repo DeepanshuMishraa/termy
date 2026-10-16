@@ -1488,3 +1488,37 @@ fn ascii_runs_without_autowrap_match_scalar_output() {
 pub(super) fn text_of(grid: &Grid) -> Vec<String> {
     (0..grid.size.rows).map(|row| text(grid, row)).collect()
 }
+
+#[test]
+fn restoring_a_cursor_saved_at_the_right_margin_keeps_its_pending_wrap() {
+    let mut grid = grid(12, 3, 8);
+    grid.set_lr_margin_mode(true);
+    grid.set_lr_margins(0, 6);
+    print(&mut grid, "abcdef");
+    assert!(grid.pending_wrap);
+    grid.save_cursor();
+    grid.goto(2, 1);
+    grid.restore_cursor();
+    assert_eq!((grid.cursor.row, grid.cursor.col), (0, 5));
+    assert!(grid.pending_wrap);
+    print(&mut grid, "g");
+    assert_eq!(text(&grid, 0), "abcdef      ");
+    assert_eq!(text(&grid, 1), "g           ");
+}
+
+#[test]
+fn fast_paths_write_over_cells_with_metadata() {
+    let mut grid = grid(20, 2, 4);
+    grid.pen.set_underline_color(Color::indexed(1));
+    print(&mut grid, "abcde");
+    grid.pen.set_underline_color(Color::DEFAULT);
+    grid.carriage_return();
+    // Neither fast path gives up on a row with metadata; each drops the
+    // metadata of the cells it writes.
+    assert!(grid.write_ascii_cell(b'x'));
+    assert_eq!(grid.write_utf8_run("éé".as_bytes()).0, 4);
+    let row = &grid.primary.rows[0];
+    let columns: Vec<_> = row.extras.iter().map(|(col, _)| *col).collect();
+    assert_eq!(columns, [3, 4]);
+    assert!(text(&grid, 0).starts_with("xééde"));
+}

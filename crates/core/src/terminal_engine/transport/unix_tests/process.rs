@@ -1207,3 +1207,88 @@ fn a_child_setup_failure_is_reported_instead_of_looking_like_a_spawn() {
         "{error}"
     );
 }
+
+#[test]
+fn a_reply_to_a_closed_writer_leaves_the_child_running() {
+    const READY: &[u8] = b"TERMY_NATIVE_CLOSED_REPLY_READY";
+    let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+    let mut output = Vec::new();
+    let mut ready_reported = false;
+    let terminal = Transport::spawn(
+        SpawnConfig {
+            program: "/bin/sh".to_string(),
+            args: vec![
+                "-c".to_string(),
+                "printf TERMY_NATIVE_CLOSED_REPLY_READY; exec sleep 30".to_string(),
+            ],
+            working_directory: None,
+            environment: Vec::new(),
+        },
+        test_size(),
+        move |bytes| {
+            output.extend_from_slice(bytes);
+            if !ready_reported && output.windows(READY.len()).any(|part| part == READY) {
+                ready_reported = true;
+                let _ = ready_tx.send(());
+            }
+            Vec::new()
+        },
+        || {},
+    )
+    .expect("PTY should start");
+    let cleanup = KillProcessOnDrop(terminal.child_pid);
+    ready_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("child should start");
+    // A writer thread that stopped, as after a failed write.
+    terminal.writer.close();
+    let error = terminal
+        .write_protocol_reply_owned(b"\x1b[?62c".to_vec())
+        .expect_err("a closed writer rejects the reply");
+    assert_eq!(error.kind(), ErrorKind::BrokenPipe);
+    thread::sleep(Duration::from_millis(200));
+    assert!(
+        terminal.alive.is_alive(),
+        "a rejected reply killed the child without a SIGHUP grace"
+    );
+    drop(terminal);
+    drop(cleanup);
+}
+
+#[test]
+fn absolute_path_entries_resolve_without_a_working_directory() {
+    let config = SpawnConfig {
+        program: "sh".to_string(),
+        args: Vec::new(),
+        working_directory: None,
+        environment: vec![("PATH".to_string(), "/usr/bin:/bin".to_string())],
+    };
+    // As when the parent's working directory was deleted.
+    let deleted = || Err(io::Error::from_raw_os_error(2));
+    let resolved = resolve_program_from(&config, deleted).expect("absolute PATH should resolve");
+    assert!(resolved.is_absolute());
+    // Relative entries are skipped, as `execvp` skips them.
+    let config = SpawnConfig {
+        environment: vec![("PATH".to_string(), "bin:/usr/bin:/bin".to_string())],
+        ..config
+    };
+    assert_eq!(resolve_program_from(&config, deleted).ok(), Some(resolved));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn the_watcher_sees_an_exit_before_the_pid_is_released() {
+    let child = Command::new("/bin/sh")
+        .args(["-c", "exit 3"])
+        .spawn()
+        .expect("child should start");
+    let pid = child.id() as c_int;
+    assert!(wait_for_child_exit(pid));
+    // Still a zombie: the PID can't be reused before the reap below.
+    // SAFETY: signal 0 only checks that `pid`, this test's child, exists.
+    assert_eq!(unsafe { kill(pid, 0) }, 0);
+    let status = wait_for_child(pid).expect("the exit is still reapable");
+    assert_eq!(child_exit_from_wait_status(status).code, Some(3));
+    // Reaped here, so `child` must not be waited on again.
+    std::mem::forget(child);
+}
