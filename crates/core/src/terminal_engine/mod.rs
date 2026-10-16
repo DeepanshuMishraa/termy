@@ -590,11 +590,6 @@ impl Engine {
         self.state.resize_graphics();
     }
 
-    pub fn discard_events_and_replies(&mut self) {
-        self.state.events.clear();
-        self.state.replies.clear();
-    }
-
     pub fn take_damage(&mut self) -> Damage {
         self.state.grid.take_damage()
     }

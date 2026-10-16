@@ -25,16 +25,6 @@ pub use crate::theme_core::{
 /// store.
 pub const BUILTIN_THEME_IDS: &[&str] = &["termy", "termy-light"];
 
-/// The ids in [`BUILTIN_THEME_IDS`], kept for existing callers.
-pub fn available_theme_ids() -> Vec<&'static str> {
-    BUILTIN_THEME_IDS.to_vec()
-}
-
-/// Same as [`builtin_theme`], kept for existing callers.
-pub fn resolve_theme(theme_id: &str) -> Option<ThemeColors> {
-    builtin_theme(theme_id)
-}
-
 /// Colors of a [`BUILTIN_THEME_IDS`] theme; `termylight` is accepted for
 /// `termy-light`.
 pub fn builtin_theme(theme_id: &str) -> Option<ThemeColors> {
@@ -113,9 +103,7 @@ mod tests {
     fn every_builtin_theme_id_resolves() {
         for id in BUILTIN_THEME_IDS {
             assert!(builtin_theme(id).is_some(), "{id}");
-            assert!(resolve_theme(id).is_some(), "{id}");
         }
-        assert_eq!(available_theme_ids(), BUILTIN_THEME_IDS);
         assert!(builtin_theme("dracula").is_none());
     }
 
