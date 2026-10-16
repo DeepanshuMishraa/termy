@@ -118,8 +118,6 @@ impl From<(&ThemeColors, Option<&str>)> for ThemeColorsJson {
     }
 }
 
-pub const BUILTIN_THEME_IDS: &[&str] = &[];
-
 pub const ANSI_COLOR_NAMES: [&str; 16] = [
     "black",
     "red",
@@ -241,11 +239,6 @@ pub fn normalize_theme_id(theme_id: &str) -> String {
     normalized
 }
 
-pub fn canonical_builtin_theme_id(theme_id: &str) -> Option<&'static str> {
-    let _ = theme_id;
-    None
-}
-
 pub fn format_hex(color: Rgb8) -> String {
     format!("#{:02x}{:02x}{:02x}", color.r, color.g, color.b)
 }
@@ -294,8 +287,8 @@ fn parse_hex_color(value: &str) -> Option<Rgb8> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Rgb8, canonical_builtin_theme_id, format_hex, normalize_theme_id, parse_theme_colors_json,
-        registry_file_url, theme_colors_json_pretty,
+        Rgb8, format_hex, normalize_theme_id, parse_theme_colors_json, registry_file_url,
+        theme_colors_json_pretty,
     };
 
     #[test]
@@ -316,13 +309,6 @@ mod tests {
     fn normalize_theme_id_is_stable() {
         assert_eq!(normalize_theme_id("  Tokyo_Night  "), "tokyo-night");
         assert_eq!(normalize_theme_id("gruvbox---dark"), "gruvbox-dark");
-    }
-
-    #[test]
-    fn builtin_aliases_are_disabled() {
-        assert_eq!(canonical_builtin_theme_id("gruvbox"), None);
-        assert_eq!(canonical_builtin_theme_id("tokyonight"), None);
-        assert_eq!(canonical_builtin_theme_id("default"), None);
     }
 
     #[test]

@@ -40,26 +40,6 @@ fn final_chunk_uses_current_cursor_and_screen() {
 }
 
 #[test]
-fn utf8_continuation_bytes_never_start_an_apc() {
-    let input = "🟢Ghello 🟢Gworld";
-    let mut parser = KittyGraphicsInterceptor::default();
-    let mut output = Vec::new();
-    for byte in input.bytes() {
-        for item in parser.process(&[byte]) {
-            match item {
-                KittyGraphicsItem::Text(bytes) => output.extend(bytes),
-                KittyGraphicsItem::Command(_) => panic!("UTF-8 text became a command"),
-            }
-        }
-    }
-    assert_eq!(output, input.as_bytes());
-    assert!(matches!(
-        parser.process(b"\x1b_Ga=d\x1b\\").as_slice(),
-        [KittyGraphicsItem::Command(_)]
-    ));
-}
-
-#[test]
 fn failed_replacement_preserves_the_previous_image_and_placement() {
     let mut state = KittyGraphicsState::default();
     state.apply(

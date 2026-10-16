@@ -71,6 +71,8 @@ fn unprefixed_text_input(keystroke: &Keystroke) -> Option<Vec<u8>> {
         }
         "escape" => return Some(vec![0x1b]),
         "backspace" => return Some(vec![0x7f]),
+        // Ctrl+Space sends NUL like xterm (emacs `C-SPC`, tmux `C-Space`).
+        "space" if is_control_chord(modifiers) => return Some(vec![0x00]),
         // Text the layout composed on Space wins, as for any other key: on
         // macOS, Option+Space types U+00A0 unless Option is Alt.
         "space" => {
@@ -82,7 +84,7 @@ fn unprefixed_text_input(keystroke: &Keystroke) -> Option<Vec<u8>> {
         _ => {}
     }
 
-    if modifiers.control && !modifiers.platform && !modifiers.function && key.len() == 1 {
+    if is_control_chord(modifiers) && key.len() == 1 {
         let c = key.chars().next().unwrap();
         if c.is_ascii_alphabetic() {
             let ctrl_char = (c.to_ascii_lowercase() as u8) - b'a' + 1;
@@ -93,6 +95,19 @@ fn unprefixed_text_input(keystroke: &Keystroke) -> Option<Vec<u8>> {
             let ctrl_char = (c as u8) & 0x1F;
             return Some(vec![ctrl_char]);
         }
+        // xterm's legacy mappings for the digit row and a few symbols, e.g.
+        // readline undo on Ctrl+/.
+        let ctrl_char = match c {
+            '2' => 0x00,
+            '3' => 0x1b,
+            '4' => 0x1c,
+            '5' => 0x1d,
+            '6' => 0x1e,
+            '7' | '/' | '-' => 0x1f,
+            '8' | '?' => 0x7f,
+            _ => return None,
+        };
+        return Some(vec![ctrl_char]);
     }
 
     if !modifiers.control
@@ -116,6 +131,10 @@ fn unprefixed_text_input(keystroke: &Keystroke) -> Option<Vec<u8>> {
     }
 
     None
+}
+
+fn is_control_chord(modifiers: Modifiers) -> bool {
+    modifiers.control && !modifiers.platform && !modifiers.function
 }
 
 /// Alt sends ESC before the key's bytes (xterm `metaSendsEscape`). macOS

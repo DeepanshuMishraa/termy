@@ -247,6 +247,9 @@ fn install_cli_session_command(shell: InstallShell, install_dir: &str) -> String
 fn ensure_install_cli_profile_block(profile_path: &Path, block: &str) -> Result<bool, String> {
     const START: &str = "# >>> termy cli path >>>";
 
+    // Update the file a symlinked profile points at (stow, chezmoi,
+    // home-manager): renaming over the link would replace it.
+    let profile_path = &resolve_profile_symlinks(profile_path);
     if let Some(parent) = profile_path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| {
             format!(
@@ -305,6 +308,26 @@ fn ensure_install_cli_profile_block(profile_path: &Path, block: &str) -> Result<
         )
     })?;
     Ok(true)
+}
+
+/// Follows `path` through symlinks, including a dangling last link, so the
+/// profile can be created where the link expects it.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn resolve_profile_symlinks(path: &Path) -> PathBuf {
+    // Bounded like the kernel's ELOOP limit, so a link cycle just stops.
+    const MAX_LINKS: usize = 40;
+
+    let mut path = path.to_path_buf();
+    for _ in 0..MAX_LINKS {
+        let Ok(target) = std::fs::read_link(&path) else {
+            break;
+        };
+        path = match path.parent() {
+            Some(parent) => parent.join(target),
+            None => target,
+        };
+    }
+    path
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -487,49 +510,39 @@ fn install_cli_binary() -> Result<PathBuf, String> {
 }
 
 fn find_cli_binary() -> Result<PathBuf, String> {
-    if let Ok(exe_path) = std::env::current_exe() {
-        let exe_dir = exe_path
-            .parent()
-            .ok_or("Failed to get executable directory")?;
+    let exe_path = std::env::current_exe()
+        .map_err(|error| format!("Failed to resolve the Termy executable: {error}"))?;
+    let exe_dir = exe_path
+        .parent()
+        .ok_or("Failed to get executable directory")?;
 
-        #[cfg(target_os = "windows")]
-        let cli_name = "termy-cli.exe";
-        #[cfg(not(target_os = "windows"))]
-        let cli_name = "termy-cli";
+    cli_binary_candidates(exe_dir)
+        .into_iter()
+        .find(|path| path.exists())
+        .ok_or_else(|| {
+            "CLI binary not found. Make sure to build it with: cargo build -p termy_cli".to_string()
+        })
+}
 
-        let cli_path = exe_dir.join(cli_name);
-        if cli_path.exists() {
-            return Ok(cli_path);
-        }
-
-        #[cfg(target_os = "macos")]
-        {
-            if exe_dir.ends_with("Contents/MacOS") {
-                let bundle_cli = exe_dir.join("termy-cli");
-                if bundle_cli.exists() {
-                    return Ok(bundle_cli);
-                }
+/// Where the CLI may be, relative to the running executable only: next to it
+/// (app bundles, packages, `cargo run`), or in the other profile of the same
+/// cargo target dir. Never relative to the current directory, so starting
+/// Termy inside a checkout can't install that checkout's `target/` binary.
+fn cli_binary_candidates(exe_dir: &Path) -> Vec<PathBuf> {
+    let cli_name = format!("termy-cli{}", std::env::consts::EXE_SUFFIX);
+    let mut candidates = vec![exe_dir.join(&cli_name)];
+    if let Some(target_dir) = exe_dir
+        .parent()
+        .filter(|dir| dir.file_name() == Some(OsStr::new("target")))
+    {
+        for profile in ["release", "debug"] {
+            let path = target_dir.join(profile).join(&cli_name);
+            if !candidates.contains(&path) {
+                candidates.push(path);
             }
         }
     }
-
-    let possible_paths = fallback_cli_binary_paths();
-
-    for path in &possible_paths {
-        if path.exists() {
-            return Ok(path.clone());
-        }
-    }
-
-    Err("CLI binary not found. Make sure to build it with: cargo build -p termy_cli".to_string())
-}
-
-fn fallback_cli_binary_paths() -> [PathBuf; 2] {
-    let exe_suffix = std::env::consts::EXE_SUFFIX;
-    [
-        PathBuf::from(format!("./target/release/termy-cli{exe_suffix}")),
-        PathBuf::from(format!("./target/debug/termy-cli{exe_suffix}")),
-    ]
+    candidates
 }
 
 #[cfg(test)]
@@ -659,16 +672,70 @@ mod tests {
     }
 
     #[test]
-    fn fallback_cli_paths_include_platform_exe_suffix() {
-        let paths = fallback_cli_binary_paths();
+    fn cli_binary_candidates_are_relative_to_the_executable_only() {
         let exe_suffix = std::env::consts::EXE_SUFFIX;
+        let root = std::env::temp_dir().join("termy-cli-candidates");
+
+        let installed = root.join("Termy.app").join("Contents").join("MacOS");
         assert_eq!(
-            paths[0],
-            PathBuf::from(format!("./target/release/termy-cli{exe_suffix}"))
+            cli_binary_candidates(&installed),
+            vec![installed.join(format!("termy-cli{exe_suffix}"))]
         );
+
+        let debug = root.join("target").join("debug");
+        let candidates = cli_binary_candidates(&debug);
         assert_eq!(
-            paths[1],
-            PathBuf::from(format!("./target/debug/termy-cli{exe_suffix}"))
+            candidates,
+            vec![
+                debug.join(format!("termy-cli{exe_suffix}")),
+                root.join("target")
+                    .join("release")
+                    .join(format!("termy-cli{exe_suffix}")),
+            ]
+        );
+        assert!(candidates.iter().all(|path| path.starts_with(&root)));
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn profile_update_writes_through_a_symlinked_profile() {
+        let home = TempDir::new().expect("home");
+        let dotfiles = home.path().join("dotfiles");
+        std::fs::create_dir_all(&dotfiles).expect("dotfiles");
+        let target = dotfiles.join("zshrc");
+        std::fs::write(&target, "export EDITOR=vi\n").expect("write target");
+        let profile = home.path().join(".zshrc");
+        std::os::unix::fs::symlink(Path::new("dotfiles").join("zshrc"), &profile).expect("symlink");
+
+        let block = install_cli_profile_block(InstallShell::Zsh, "/tmp/bin");
+        assert!(ensure_install_cli_profile_block(&profile, &block).expect("update profile"));
+
+        assert!(
+            std::fs::symlink_metadata(&profile)
+                .expect("profile metadata")
+                .file_type()
+                .is_symlink()
+        );
+        let contents = std::fs::read_to_string(&target).expect("read target");
+        assert!(contents.starts_with("export EDITOR=vi\n"));
+        assert!(contents.contains("# >>> termy cli path >>>"));
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn profile_update_creates_the_target_of_a_dangling_symlink() {
+        let home = TempDir::new().expect("home");
+        let target = home.path().join("dotfiles").join("zshrc");
+        let profile = home.path().join(".zshrc");
+        std::os::unix::fs::symlink(&target, &profile).expect("symlink");
+
+        let block = install_cli_profile_block(InstallShell::Zsh, "/tmp/bin");
+        assert!(ensure_install_cli_profile_block(&profile, &block).expect("update profile"));
+
+        assert!(
+            std::fs::read_to_string(&target)
+                .expect("read target")
+                .contains("# >>> termy cli path >>>")
         );
     }
 

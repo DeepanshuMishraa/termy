@@ -5,9 +5,7 @@
 
 mod placement;
 mod protocol;
-pub use protocol::{
-    KittyGraphicsCommand, KittyGraphicsInterceptor, KittyGraphicsItem, KittyGraphicsItemRef,
-};
+pub use protocol::KittyGraphicsCommand;
 mod animation;
 mod deletion;
 mod image;
@@ -33,7 +31,6 @@ use crate::TerminalSize;
 const MAX_IMAGE_BYTES: usize = 128 * 1024 * 1024;
 const MAX_CONTROL_BYTES: usize = 4096;
 const MAX_CONTROL_FIELDS: usize = 64;
-const MAX_COMMAND_BYTES: usize = MAX_IMAGE_BYTES * 2;
 const MAX_DIMENSION: u32 = 32_768;
 const MAX_PIXELS: u64 = (MAX_IMAGE_BYTES / 4) as u64;
 const MAX_PLACEMENTS: usize = 4_096;

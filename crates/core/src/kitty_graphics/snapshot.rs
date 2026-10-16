@@ -88,26 +88,41 @@ fn write_image(writer: &mut Writer, image: &GraphicsImage) {
     }
 }
 
-fn read_image(reader: &mut Reader<'_>) -> Result<GraphicsImage> {
+/// Reads one image, charging what it holds to `charged_total` before any
+/// pixels are decoded. Distinct images never hold more than the storage quota
+/// in a live state, so a snapshot past it is rejected instead of decoded.
+fn read_image(reader: &mut Reader<'_>, charged_total: &mut usize) -> Result<GraphicsImage> {
     let width = reader.u32_value()?;
     let height = reader.u32_value()?;
     validate_dimensions(width, height, 4).map_err(|_| Corrupt("image dimensions"))?;
+    let pixel_bytes = width as usize * height as usize * 4;
     match reader.u8()? {
         RGBA => {
+            charge_image(charged_total, pixel_bytes)?;
             let pixels =
                 decode_rgba_png(reader.bytes()?, width, height).ok_or(Corrupt("image pixels"))?;
             Ok(GraphicsImage::from_rgba(width, height, pixels))
         }
         PNG => {
             let png = reader.bytes()?.to_vec();
-            let charged = reader.usize()?;
+            // The source is held as well, whatever the snapshot claims.
+            let charged = reader.usize()?.max(png.len());
             if charged > MAX_IMAGE_BYTES * 2 {
                 return Err(Corrupt("image source"));
             }
+            charge_image(charged_total, pixel_bytes.saturating_add(charged))?;
             Ok(GraphicsImage::from_png_charged(width, height, png, charged))
         }
         _ => Err(Corrupt("image kind")),
     }
+}
+
+fn charge_image(charged_total: &mut usize, bytes: usize) -> Result<()> {
+    *charged_total = charged_total.saturating_add(bytes);
+    if *charged_total > MAX_IMAGE_BYTES {
+        return Err(Corrupt("graphics images"));
+    }
+    Ok(())
 }
 
 fn write_placement(writer: &mut Writer, placement: &Placement) {
@@ -328,8 +343,9 @@ impl KittyGraphicsState {
             return Err(Corrupt("graphics images"));
         }
         let mut images = Vec::with_capacity(count.min(MAX_IMAGES));
+        let mut charged_total = 0;
         for _ in 0..count {
-            images.push(Arc::new(read_image(reader)?));
+            images.push(Arc::new(read_image(reader, &mut charged_total)?));
         }
         let image = |reader: &mut Reader<'_>| {
             images
@@ -434,10 +450,71 @@ impl KittyGraphicsState {
             });
         }
         state.next_anonymous_id = reader.u32_value()?;
-        state.stored_bytes = reader.usize()?;
+        // Recomputed rather than trusted: quota evictions rely on it.
+        let _ = reader.usize()?;
+        state.stored_bytes = state.recount_stored_bytes()?;
         state.next_generation = reader.varint()?;
         state.next_placement_serial = reader.varint()?;
         state.viewport_rows = reader.u16()?;
         Ok(state)
+    }
+
+    /// What the stored images charge to the quota, as uploads keep it.
+    fn recount_stored_bytes(&self) -> Result<usize> {
+        let stored_bytes = self.images.values().fold(0_usize, |total, image| {
+            total.saturating_add(image.byte_len())
+        });
+        if stored_bytes > MAX_IMAGE_BYTES {
+            return Err(Corrupt("graphics storage"));
+        }
+        Ok(stored_bytes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stored(width: u32, height: u32) -> StoredImage {
+        StoredImage {
+            image: Arc::new(GraphicsImage::from_png(width, height, Vec::new())),
+            width,
+            height,
+            generation: 1,
+            number: None,
+            anonymous: false,
+            animation: None,
+        }
+    }
+
+    #[test]
+    fn stored_bytes_are_recounted_from_the_images() {
+        let mut state = KittyGraphicsState::default();
+        state.images.insert(1, stored(2, 3));
+        state.images.insert(2, stored(4, 1));
+        // A snapshot claiming nothing is stored must not hide the images
+        // from the quota.
+        state.stored_bytes = 0;
+        assert_eq!(state.recount_stored_bytes(), Ok(2 * 3 * 4 + 4 * 4));
+    }
+
+    #[test]
+    fn stored_images_past_the_quota_are_rejected() {
+        let mut state = KittyGraphicsState::default();
+        // Each is exactly the quota, so one fits and two don't.
+        state.images.insert(1, stored(8192, 4096));
+        assert_eq!(state.recount_stored_bytes(), Ok(MAX_IMAGE_BYTES));
+        state.images.insert(2, stored(1, 1));
+        assert!(state.recount_stored_bytes().is_err());
+    }
+
+    #[test]
+    fn decoded_images_are_charged_against_one_budget() {
+        let mut charged = 0;
+        assert!(charge_image(&mut charged, MAX_IMAGE_BYTES - 4).is_ok());
+        assert!(charge_image(&mut charged, 4).is_ok());
+        assert!(charge_image(&mut charged, 1).is_err());
+        let mut charged = 0;
+        assert!(charge_image(&mut charged, usize::MAX).is_err());
     }
 }

@@ -18,8 +18,6 @@ mod locale;
 mod monotonic_time;
 mod mouse_protocol;
 #[cfg(feature = "native")]
-mod osc_intercept;
-#[cfg(feature = "native")]
 mod path_env;
 mod program_status;
 mod protocol;
@@ -73,12 +71,14 @@ pub use keyboard::{
     TermyModifiers, keystroke_to_input, keystroke_to_input_with_options,
 };
 pub use kitty_graphics::{
-    KittyGraphicsApplyResult, KittyGraphicsCommand, KittyGraphicsInterceptor, KittyGraphicsItem,
-    KittyGraphicsItemRef, KittyGraphicsPlaceholder, KittyGraphicsRenderPlacement,
-    KittyGraphicsScreen, KittyGraphicsState,
+    KittyGraphicsApplyResult, KittyGraphicsCommand, KittyGraphicsPlaceholder,
+    KittyGraphicsRenderPlacement, KittyGraphicsScreen, KittyGraphicsState,
 };
 #[cfg(feature = "native")]
-pub use links::{DetectedLink, DetectedViewportLink, classify_link_token, find_link_in_line};
+pub use links::{
+    DetectedLink, DetectedViewportLink, classify_link_token, classify_link_token_in,
+    find_link_in_line,
+};
 #[cfg(all(unix, feature = "native"))]
 pub use locale::{
     DEFAULT_UTF8_LOCALE, Utf8LocaleOverridePlan, preferred_utf8_locale, utf8_locale_override_plan,
@@ -88,8 +88,6 @@ pub use mouse_protocol::{
     TerminalMouseButton, TerminalMouseEventKind, TerminalMouseMode, TerminalMouseModifiers,
     TerminalMousePosition, encode_mouse_report,
 };
-#[cfg(feature = "native")]
-pub use osc_intercept::{OscEvent, OscInterceptor};
 #[cfg(feature = "native")]
 pub use path_env::normalized_path_env;
 pub use protocol::{
@@ -117,10 +115,7 @@ pub use runtime::{
     resolve_terminal_launch, resolve_working_directory_path, terminal_environment_overrides,
 };
 #[cfg(feature = "native")]
-pub use search::{
-    TermySearchMatch, TermySearchOptions, TermySharedSearchMatch, search_frame,
-    search_frame_shared, search_frame_shared_with_options, search_frame_with_options,
-};
+pub use search::{TermySearchMatch, TermySearchOptions, TermySharedSearchMatch, search_frame};
 pub use shell_integration::{CommandLifecycle, CommandPhase, ProgressState};
 pub use terminal_types::{TerminalColor, TerminalSize};
 

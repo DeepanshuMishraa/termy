@@ -161,8 +161,9 @@ pub(super) fn read_regular_file(
     offset: u64,
     size: Option<u64>,
 ) -> Result<Vec<u8>, String> {
-    // Reject FIFOs and devices before opening: a child controls this path and a
-    // blocking FIFO open would otherwise stall the parser thread indefinitely.
+    // Skip FIFOs, devices and pseudo-files without opening them; opening a
+    // device can have side effects. A child controls this path and may swap it
+    // at any time, so the opened file is checked again below.
     let initial_metadata =
         std::fs::metadata(path).map_err(|_| "ENOENT:unable to open image file".to_string())?;
     if !initial_metadata.is_file() || is_pseudo_file(path) {
@@ -172,7 +173,7 @@ pub(super) fn read_regular_file(
     let metadata = file
         .metadata()
         .map_err(|_| "EIO:unable to inspect image file".to_string())?;
-    if !metadata.is_file() || offset > metadata.len() {
+    if !metadata.is_file() || !opened_file_is_allowed(path, &metadata) || offset > metadata.len() {
         return Err("EINVAL:invalid image file".into());
     }
     let length = size
@@ -191,60 +192,58 @@ pub(super) fn read_regular_file(
 }
 
 fn open_image_file(path: &Path) -> Result<File, String> {
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    const NONBLOCK: i32 = 0o4000;
-    #[cfg(any(
-        target_os = "macos",
-        target_os = "ios",
-        target_os = "freebsd",
-        target_os = "openbsd",
-        target_os = "netbsd",
-        target_os = "dragonfly"
-    ))]
-    const NONBLOCK: i32 = 0x0004;
-
-    #[cfg(any(
-        target_os = "linux",
-        target_os = "android",
-        target_os = "macos",
-        target_os = "ios",
-        target_os = "freebsd",
-        target_os = "openbsd",
-        target_os = "netbsd",
-        target_os = "dragonfly"
-    ))]
+    // Non-blocking, so a FIFO swapped in after the type check can't stall the
+    // parser thread in `open`, and never adopting a terminal as controlling tty.
+    #[cfg(unix)]
     {
         use std::{fs::OpenOptions, os::unix::fs::OpenOptionsExt};
 
         OpenOptions::new()
             .read(true)
-            .custom_flags(NONBLOCK)
+            .custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY)
             .open(path)
             .map_err(|_| "ENOENT:unable to open image file".to_string())
     }
 
-    #[cfg(not(any(
-        target_os = "linux",
-        target_os = "android",
-        target_os = "macos",
-        target_os = "ios",
-        target_os = "freebsd",
-        target_os = "openbsd",
-        target_os = "netbsd",
-        target_os = "dragonfly"
-    )))]
+    #[cfg(not(unix))]
     File::open(path).map_err(|_| "ENOENT:unable to open image file".to_string())
+}
+
+/// Whether the file opened from `path` may be read: `path` must still resolve
+/// to that same file, outside the kernel pseudo-filesystems. Checking before
+/// `open` alone would let a symlink swapped in between pass.
+pub(super) fn opened_file_is_allowed(path: &Path, opened: &std::fs::Metadata) -> bool {
+    let Ok(canonical) = path.canonicalize() else {
+        return false;
+    };
+    if is_pseudo_path(&canonical) {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+
+        std::fs::metadata(&canonical)
+            .is_ok_and(|resolved| (resolved.dev(), resolved.ino()) == (opened.dev(), opened.ino()))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = opened;
+        true
+    }
+}
+
+pub(super) fn is_pseudo_file(path: &Path) -> bool {
+    path.canonicalize().is_ok_and(|path| is_pseudo_path(&path))
 }
 
 /// Kernel pseudo-files report as regular files but expose process and
 /// system state, so a program must not read them through `t=f` (as in kitty).
-pub(super) fn is_pseudo_file(path: &Path) -> bool {
-    path.canonicalize().is_ok_and(|path| {
-        ["/proc", "/sys", "/dev"]
-            .iter()
-            .any(|root| path.starts_with(root))
-            && !path.starts_with("/dev/shm")
-    })
+fn is_pseudo_path(canonical: &Path) -> bool {
+    ["/proc", "/sys", "/dev"]
+        .iter()
+        .any(|root| canonical.starts_with(root))
+        && !canonical.starts_with("/dev/shm")
 }
 
 pub(super) fn temporary_path_can_be_removed(path: &Path) -> bool {
