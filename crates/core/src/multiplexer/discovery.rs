@@ -1,6 +1,7 @@
 use crate::multiplexer::{SessionClient, protocol::*};
 use anyhow::{Context, bail, ensure};
 use fs4::fs_std::FileExt;
+use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File, OpenOptions},
@@ -21,6 +22,9 @@ pub(crate) struct Endpoint {
     pub graphics_stream: bool,
     #[serde(default)]
     pub viewport_replies: bool,
+    /// The host proves it knows the token before the client sends anything.
+    #[serde(default)]
+    pub mutual_auth: bool,
 }
 
 pub(crate) fn prepare_root(root: &Path) -> anyhow::Result<()> {
@@ -71,18 +75,57 @@ pub(crate) fn connect_with_capabilities(root: &Path) -> anyhow::Result<(TcpStrea
     stream.set_nodelay(true)?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-    write_message(
-        &mut stream,
-        &Request::Hello {
-            version: VERSION,
-            token: endpoint.token.clone(),
-        },
-    )?;
-    match read_message(&mut stream)? {
+    if endpoint.mutual_auth {
+        authenticate(&mut stream, &endpoint.token)?;
+    } else {
+        // Hosts from before mutual authentication only accept the token.
+        write_message(
+            &mut stream,
+            &Request::Hello {
+                version: VERSION,
+                token: endpoint.token.clone(),
+            },
+        )?;
+    }
+    match read_message_limited(&mut stream, 4096)? {
         Response::Ok => Ok((stream, endpoint)),
         Response::Error(error) => bail!(error),
         _ => bail!("unexpected multiplexer greeting"),
     }
+}
+
+/// Challenge-response over the endpoint port. Another local user can bind the
+/// port after a host crash, so the host must prove it knows the token before
+/// the client sends its own proof, and later its keystrokes.
+pub(crate) fn authenticate(stream: &mut TcpStream, token: &str) -> anyhow::Result<()> {
+    let mut client_nonce = [0; 32];
+    OsRng.fill_bytes(&mut client_nonce);
+    write_message(
+        stream,
+        &Request::Authenticate {
+            version: VERSION,
+            client_nonce,
+        },
+    )?;
+    let (server_nonce, server_proof) = match read_message_limited(stream, 4096)? {
+        Response::Challenge {
+            server_nonce,
+            server_proof,
+        } => (server_nonce, server_proof),
+        Response::Error(error) => bail!(error),
+        _ => bail!("unexpected multiplexer greeting"),
+    };
+    ensure!(
+        constant_time_eq(
+            &server_proof,
+            &host_proof(token, &client_nonce, &server_nonce)
+        ),
+        "the multiplexer endpoint failed authentication; it is not this user's session host"
+    );
+    write_message(
+        stream,
+        &Request::Proof(client_proof(token, &client_nonce, &server_nonce)),
+    )
 }
 
 pub fn connect_or_start(root: &Path, executable: &Path) -> anyhow::Result<SessionClient> {
@@ -177,4 +220,52 @@ fn prevent_standard_handle_inheritance() -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    /// After a host crash another local user can bind the freed port. The
+    /// client must not hand that listener the token or accept it as the host.
+    #[test]
+    fn client_rejects_listener_that_does_not_know_the_token() {
+        let temp = tempfile::tempdir().unwrap();
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let token = "f".repeat(64);
+        fs::write(
+            temp.path().join("endpoint.json"),
+            serde_json::json!({
+                "version": VERSION,
+                "port": port,
+                "token": token,
+                "mutual_auth": true,
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let impostor = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let greeting: Request = read_message_limited(&mut stream, 4096).unwrap();
+            // Pretend to be the host without knowing the token.
+            let reply = match &greeting {
+                Request::Authenticate { .. } => Response::Challenge {
+                    server_nonce: [7; 32],
+                    server_proof: [0; 32],
+                },
+                _ => Response::Ok,
+            };
+            write_message(&mut stream, &reply).unwrap();
+            greeting
+        });
+        let result = connect_with_capabilities(temp.path());
+        let greeting = impostor.join().unwrap();
+        assert!(result.is_err(), "client accepted an impostor host");
+        assert!(
+            matches!(greeting, Request::Authenticate { .. }),
+            "client must not send the token to an unauthenticated listener"
+        );
+    }
 }

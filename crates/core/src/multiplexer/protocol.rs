@@ -61,6 +61,15 @@ pub(crate) enum Request {
         pane: String,
         command: RemoteCommand,
     },
+    /// Mutual authentication, gated by `Endpoint::mutual_auth`: the host must
+    /// answer with [`Response::Challenge`] proving it knows the token before
+    /// the client sends anything else. The token itself never crosses the wire.
+    Authenticate {
+        version: u32,
+        client_nonce: [u8; 32],
+    },
+    /// The client's proof of the token, answering [`Response::Challenge`].
+    Proof([u8; 32]),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -72,7 +81,14 @@ pub(crate) enum Response {
     Layout(Option<String>),
     Error(String),
     LayoutUpdated(bool),
-    Viewport { changed: bool, generation: u64 },
+    Viewport {
+        changed: bool,
+        generation: u64,
+    },
+    Challenge {
+        server_nonce: [u8; 32],
+        server_proof: [u8; 32],
+    },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -81,6 +97,101 @@ pub(crate) enum Update {
     Events(Vec<TerminalEvent>),
     Host { id: u64, request: RemoteHostRequest },
     GraphicsState(Arc<RemoteState>, graphics::GraphicsUpdate),
+}
+
+const HOST_PROOF_LABEL: &[u8] = b"termy-multiplexer host proof v1";
+const CLIENT_PROOF_LABEL: &[u8] = b"termy-multiplexer client proof v1";
+
+/// The host's answer to a client nonce: HMAC-SHA256 keyed by the token.
+pub(crate) fn host_proof(
+    token: &str,
+    client_nonce: &[u8; 32],
+    server_nonce: &[u8; 32],
+) -> [u8; 32] {
+    hmac_sha256(
+        token.as_bytes(),
+        &[HOST_PROOF_LABEL, client_nonce, server_nonce],
+    )
+}
+
+/// The client's answer to the host nonce. A distinct label keeps either side
+/// from reflecting the other's proof.
+pub(crate) fn client_proof(
+    token: &str,
+    client_nonce: &[u8; 32],
+    server_nonce: &[u8; 32],
+) -> [u8; 32] {
+    hmac_sha256(
+        token.as_bytes(),
+        &[CLIENT_PROOF_LABEL, server_nonce, client_nonce],
+    )
+}
+
+fn hmac_sha256(key: &[u8], message: &[&[u8]]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    const BLOCK: usize = 64;
+    let mut block = [0u8; BLOCK];
+    if key.len() > BLOCK {
+        block[..32].copy_from_slice(&Sha256::digest(key));
+    } else {
+        block[..key.len()].copy_from_slice(key);
+    }
+    let mut inner = Sha256::new();
+    inner.update(block.map(|byte| byte ^ 0x36));
+    for part in message {
+        inner.update(part);
+    }
+    let mut outer = Sha256::new();
+    outer.update(block.map(|byte| byte ^ 0x5c));
+    outer.update(inner.finalize());
+    outer.finalize().into()
+}
+
+/// Compares secrets without exiting early on the first differing byte.
+pub(crate) fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right)
+            .fold(0u8, |difference, (a, b)| difference | (a ^ b))
+            == 0
+}
+
+/// Events whose latest value replaces earlier ones, so a reattaching client
+/// can be given the current title, directory, progress and status.
+pub(crate) fn sticky_key(event: &TerminalEvent) -> Option<u8> {
+    match event {
+        TerminalEvent::Title(_) | TerminalEvent::ResetTitle => Some(0),
+        TerminalEvent::WorkingDirectory(_) => Some(1),
+        TerminalEvent::Progress(_) => Some(2),
+        TerminalEvent::ProgramStatus(_) => Some(4),
+        TerminalEvent::ShellPromptStart
+        | TerminalEvent::ShellCommandStart
+        | TerminalEvent::ShellCommandExecuting
+        | TerminalEvent::ShellCommandFinished(_) => Some(3),
+        _ => None,
+    }
+}
+
+/// Prepares `queue`, the undelivered events of a client that may not be
+/// draining, for `event`: a newer state replaces the queued one and only the
+/// latest clipboard store matters. Returns false when `event` repeats one
+/// that is already queued (a bell rings once until the client catches up).
+/// This keeps the queue bounded by the number of event kinds.
+pub(crate) fn coalesce_event(queue: &mut Vec<TerminalEvent>, event: &TerminalEvent) -> bool {
+    if let Some(key) = sticky_key(event) {
+        queue.retain(|old| sticky_key(old) != Some(key));
+    }
+    match event {
+        TerminalEvent::Bell | TerminalEvent::InputDropped | TerminalEvent::Exit => !queue
+            .iter()
+            .any(|old| std::mem::discriminant(old) == std::mem::discriminant(event)),
+        TerminalEvent::ClipboardStore(_) => {
+            queue.retain(|old| !matches!(old, TerminalEvent::ClipboardStore(_)));
+            true
+        }
+        _ => true,
+    }
 }
 
 fn codec() -> impl Options {
@@ -181,5 +292,24 @@ mod tests {
         assert_eq!(image.png_encoding_count(), 2);
         let decoded: RemoteReply = bincode::deserialize(&wire).unwrap();
         assert!(matches!(decoded, RemoteReply::Graphics(7, placements) if placements.len() == 10));
+    }
+
+    #[test]
+    fn hmac_matches_rfc_4231_and_proofs_are_direction_bound() {
+        // RFC 4231 test case 2.
+        let mac = hmac_sha256(b"Jefe", &[b"what do ya want ", b"for nothing?"]);
+        let hex: String = mac.iter().map(|byte| format!("{byte:02x}")).collect();
+        assert_eq!(
+            hex,
+            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+        );
+        let (client, server) = ([1; 32], [2; 32]);
+        assert_ne!(
+            host_proof("token", &client, &server),
+            client_proof("token", &client, &server)
+        );
+        assert!(constant_time_eq(b"same", b"same"));
+        assert!(!constant_time_eq(b"same", b"sane"));
+        assert!(!constant_time_eq(b"same", b"same "));
     }
 }

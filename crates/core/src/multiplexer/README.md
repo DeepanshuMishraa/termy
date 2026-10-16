@@ -12,6 +12,9 @@ images, and live processes. Clients cache the viewport and request history,
 search, and links when needed. Dropping a client detaches it; closing a pane
 is an explicit host operation. Clipboard operations use the attached UI's
 existing permission policy; terminal protocol replies continue when detached.
+Client and host prove knowledge of the `endpoint.json` token to each other
+(HMAC challenge-response) before any request, so a process that binds the
+port after a host crash neither learns the token nor receives input.
 
 ## Validation
 
