@@ -2,8 +2,10 @@
 //!
 //! A row stores its explicit cells (everything before its trailing erase
 //! blanks) as style runs, scalars and sparse wide-cell flags, followed by its
-//! metadata by column. Cold history keeps its packed representation and
-//! metadata charge, so a decoded grid evicts history like the original.
+//! metadata by column. Cold history keeps its packed representation, storage
+//! capacities and metadata charge. History's byte charge doesn't depend on
+//! the representation (see `history.rs`), so a decoded grid evicts history
+//! like the original either way; keeping it keeps the memory it takes.
 
 use std::sync::Arc;
 
@@ -20,6 +22,8 @@ use super::{
 
 const WRAPPED: u8 = 1;
 const PACKED: u8 = 1 << 1;
+/// The smallest row encoding: a blank row of fewer than 128 columns.
+const MIN_ROW_BYTES: usize = 15;
 const CELL_FLAGS: u16 = Cell::WIDE | Cell::WIDE_SPACER | Cell::LEADING_WIDE_SPACER;
 
 fn write_pen(writer: &mut Writer, pen: &Pen) {
@@ -117,14 +121,15 @@ impl Row {
         }
     }
 
-    /// `width` is required of screen rows.
-    fn read_snapshot(reader: &mut Reader<'_>, width: Option<usize>) -> Result<Self> {
+    /// Screen rows (`screen`) must be dense.
+    fn read_snapshot(reader: &mut Reader<'_>, width: usize, screen: bool) -> Result<Self> {
         let len = reader.usize()?;
-        if len == 0 || len > Size::MAX_COLS || width.is_some_and(|width| width != len) {
+        if len == 0 || len > Size::MAX_COLS || len != width {
             return Err(Corrupt("row width"));
         }
         let flags = reader.u8()?;
-        if flags & !(WRAPPED | PACKED) != 0 {
+        // Screen rows are always dense: writes index their cells directly.
+        if flags & !(WRAPPED | PACKED) != 0 || (screen && flags & PACKED != 0) {
             return Err(Corrupt("row flags"));
         }
         let clear_background = reader.color()?;
@@ -190,6 +195,10 @@ impl Row {
             }
             extras.push((col, reader.extra()?));
         }
+        // `occupied` bounds everything but erase blanks; a stale bound
+        // would let a recycled row keep this row's text.
+        let extras_end = extras.last().map_or(0, |(col, _)| col + 1);
+        let occupied = occupied.max(explicit).max(extras_end);
         let extra_units = reader.u16_value()?;
         let mut capacities = [0; 3];
         for capacity in &mut capacities {
@@ -239,7 +248,7 @@ impl Screen {
         }
         let mut rows = Ring::with_capacity(size.rows);
         for _ in 0..size.rows {
-            rows.push_back(Row::read_snapshot(reader, Some(size.cols))?);
+            rows.push_back(Row::read_snapshot(reader, size.cols, true)?);
         }
         let saved = SavedCursor {
             cursor: reader.cursor()?,
@@ -353,13 +362,15 @@ impl Grid {
             return Err(Corrupt("alternate screen"));
         }
 
-        let history = reader.count(16)?;
+        let history = reader.count(MIN_ROW_BYTES)?;
         if history > grid.history_limit {
             return Err(Corrupt("history length"));
         }
         let mut rows = Vec::with_capacity(history);
         for _ in 0..history {
-            rows.push(Row::read_snapshot(reader, None)?);
+            // Resizes give history rows the grid's width, and moving one onto
+            // the screen relies on it.
+            rows.push(Row::read_snapshot(reader, size.cols, false)?);
         }
         grid.history = rows.into_iter().collect::<Ring<Row>>();
         grid.history_bytes = grid.history.iter().map(history_charge).sum();
@@ -403,10 +414,91 @@ impl Grid {
         grid.origin_mode = reader.bool()?;
         grid.insert_mode = reader.bool()?;
         grid.newline_mode = reader.bool()?;
-        // A no-op for snapshots of this release; older ones may have charged
-        // their rows less.
-        grid.enforce_history_bytes();
+        // History over its budget (after a widen, or from a release that
+        // charged rows differently) is evicted by the next scroll, as in the
+        // original. Packing changes no charge.
+        grid.pack_history_to_budget();
         grid.mark_full_damage();
         Ok(grid)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::super::{
+        Engine, Options,
+        snapshot::SnapshotError::{self, Corrupt},
+    };
+    use super::*;
+
+    fn engine(cols: usize, rows: usize, history: usize) -> Engine {
+        Engine::new(
+            Size { cols, rows },
+            Options {
+                scrollback_history: history,
+                ..Default::default()
+            },
+        )
+    }
+
+    fn decode(engine: &mut Engine) -> std::result::Result<Engine, SnapshotError> {
+        Engine::decode_snapshot(&engine.encode_snapshot())
+    }
+
+    fn text(row: &Row) -> String {
+        row.cells().iter().map(|cell| cell.character).collect()
+    }
+
+    #[test]
+    fn blank_history_rows_take_the_smallest_row_encoding() {
+        let mut source = engine(80, 5, 5000);
+        source.feed(&b"\n".repeat(3000));
+        assert_eq!(source.history_size(), 2996);
+        let mut decoded = decode(&mut source).expect("decode");
+        assert_eq!(decoded.history_size(), source.history_size());
+        assert_eq!(decoded.canonical_snapshot(), source.canonical_snapshot());
+
+        // The bound is tight: one more blank row takes exactly that much.
+        let before = source.encode_snapshot().len();
+        source.feed(b"\n");
+        assert_eq!(source.encode_snapshot().len(), before + MIN_ROW_BYTES);
+    }
+
+    #[test]
+    fn packed_screen_rows_are_rejected() {
+        let mut source = engine(40, 5, 100);
+        source.feed(b"some text");
+        source.state.grid.primary.rows[0].compact();
+        assert!(source.state.grid.primary.rows[0].is_packed());
+        assert_eq!(
+            decode(&mut source).err(),
+            Some(Corrupt("row flags")),
+            "a packed screen row would panic on the next write"
+        );
+    }
+
+    #[test]
+    fn history_rows_of_another_width_are_rejected() {
+        let mut source = engine(40, 5, 100);
+        source.feed(&b"line\r\n".repeat(20));
+        source.state.grid.history[0] = Row::new(10, &Cell::default());
+        assert_eq!(decode(&mut source).err(), Some(Corrupt("row width")));
+    }
+
+    #[test]
+    fn decoded_rows_bound_their_text_and_metadata() {
+        let mut source = engine(40, 5, 0);
+        source.feed(b"\x1b]8;;https://example.test\x07linked\x1b]8;;\x07 stale text");
+        // A stale bound below the text and its metadata.
+        source.state.grid.primary.rows[0].occupied = 0;
+        let mut decoded = decode(&mut source).expect("decode");
+        let row = &decoded.state.grid.primary.rows[0];
+        assert!(row.occupied >= "linked stale text".len());
+        let _ = row.blank_suffix();
+        // Scrolling recycles the row as the new bottom line, blanked.
+        decoded.feed(b"\x1b[5;1H\n");
+        let bottom = decoded.state.grid.primary.rows.back().unwrap();
+        assert_eq!(text(bottom).trim_end(), "");
+        assert!(bottom.extras.is_empty());
     }
 }

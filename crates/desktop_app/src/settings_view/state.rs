@@ -10,7 +10,7 @@ pub(super) enum EditableField {
     ThemeMode,
     ThemeLight,
     ThemeDark,
-    #[cfg_attr(target_os = "windows", allow(dead_code))]
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     AppIcon,
     BackgroundOpacity,
     FontFamily,

@@ -259,8 +259,6 @@ struct TextBatch {
     cell_offsets: Vec<(usize, usize)>,
     positioned: bool,
     start_col: usize,
-    #[allow(dead_code)]
-    row: usize,
     /// Text content. Stored as `SharedString` so that clones during text
     /// shaping are cheap refcount bumps instead of heap copies.
     text: SharedString,
@@ -274,8 +272,6 @@ struct TextBatch {
 
 #[derive(Clone, Copy)]
 struct BlockDraw {
-    #[cfg_attr(not(test), allow(dead_code))]
-    row: usize,
     col: usize,
     glyph: char,
     /// Normalized glyphs share one immutable plan per codepoint. Box drawing
@@ -300,8 +296,6 @@ impl BlockDraw {
 
 #[derive(Clone, Copy)]
 struct SextantDraw {
-    #[cfg_attr(not(test), allow(dead_code))]
-    row: usize,
     col: usize,
     geometry: &'static TerminalGlyphPlan,
     fg: Hsla,
@@ -356,8 +350,6 @@ fn normalized_glyph_plan(character: char) -> Option<&'static TerminalGlyphPlan> 
 /// path at paint time.
 #[derive(Clone, Copy)]
 struct RoundedCornerDraw {
-    #[allow(dead_code)]
-    row: usize,
     col: usize,
     glyph: char,
     fg: Hsla,
@@ -369,8 +361,6 @@ struct RoundedCornerDraw {
 /// overshoot past cell boundaries to avoid pixel gaps at adjacent-cell seams.
 #[derive(Clone, Copy)]
 struct DiagonalDraw {
-    #[allow(dead_code)]
-    row: usize,
     col: usize,
     glyph: char,
     fg: Hsla,
@@ -421,20 +411,6 @@ fn row_text_signature(cells: &[CellRenderInfo]) -> u64 {
 struct RowDecorations {
     cursor_col: Option<usize>,
     hovered_cols: Option<(usize, usize)>,
-}
-
-impl CachedRowPaintOps {
-    fn move_to_row(&mut self, row: usize) {
-        for op in &mut self.draw_ops {
-            match op {
-                TextDrawOp::Batch(batch) => batch.row = row,
-                TextDrawOp::Block(block) => block.row = row,
-                TextDrawOp::Sextant(sextant) => sextant.row = row,
-                TextDrawOp::RoundedCorner(corner) => corner.row = row,
-                TextDrawOp::Diagonal(diagonal) => diagonal.row = row,
-            }
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -516,9 +492,6 @@ impl TerminalGridPaintCache {
             for row in exposed {
                 self.row_ops[row] = CachedRowPaintOps::default();
                 dirty_rows.push(row);
-            }
-            for row in scroll.top..=scroll.bottom {
-                self.row_ops[row].move_to_row(row);
             }
         }
         true
@@ -1306,20 +1279,17 @@ impl TerminalGrid {
                 let operation = match geometry.kind() {
                     TerminalGlyphRenderKind::RoundedCorner => {
                         TextDrawOp::RoundedCorner(RoundedCornerDraw {
-                            row,
                             col: cell.col,
                             glyph: cell.char,
                             fg,
                         })
                     }
                     TerminalGlyphRenderKind::Diagonal => TextDrawOp::Diagonal(DiagonalDraw {
-                        row,
                         col: cell.col,
                         glyph: cell.char,
                         fg,
                     }),
                     TerminalGlyphRenderKind::Sextant => TextDrawOp::Sextant(SextantDraw {
-                        row,
                         col: cell.col,
                         geometry: normalized_glyph_plan(cell.char).expect("sextant geometry"),
                         fg,
@@ -1327,7 +1297,6 @@ impl TerminalGrid {
                     TerminalGlyphRenderKind::BlockElement
                     | TerminalGlyphRenderKind::BoxDrawing
                     | TerminalGlyphRenderKind::Braille => TextDrawOp::Block(BlockDraw {
-                        row,
                         col: cell.col,
                         glyph: cell.char,
                         geometry: normalized_glyph_plan(cell.char),
@@ -1348,7 +1317,7 @@ impl TerminalGrid {
 
             let should_append = current
                 .as_ref()
-                .is_some_and(|batch| batch.can_append(cell.col, row, key, &underline));
+                .is_some_and(|batch| batch.can_append(cell.col, key, &underline));
             if should_append {
                 if let Some(batch) = current.as_mut() {
                     batch.append_cell(cell.char, cell.combining.as_deref());
@@ -1359,7 +1328,6 @@ impl TerminalGrid {
             Self::push_pending_text_batch(&mut current, ops);
             current = Some(TextBatchBuilder::new(
                 cell.col,
-                row,
                 cell.char,
                 cell.combining.as_deref(),
                 key,
@@ -1828,7 +1796,6 @@ impl TerminalGrid {
                     .as_mut()
                     .and_then(|previous| previous.take_matching_cells(row, row_cells, decorations))
                 {
-                    retained.move_to_row(row);
                     // Point at the current snapshot so old viewport rows can be freed.
                     retained.source_cells = Some(row_cells.clone());
                     *row_slot = retained;
@@ -2691,7 +2658,6 @@ mod tests {
                 };
                 let line_at = |glyph, col, row| {
                     let line = BlockDraw {
-                        row: 0,
                         col: 0,
                         glyph,
                         geometry: None,
@@ -2869,7 +2835,6 @@ mod tests {
         let grid = test_grid(vec![test_cell(0, 'a'), test_cell(1, 'b')], None);
         let batches = collect_batches(&grid);
         assert_eq!(batches.len(), 1);
-        assert_eq!(batches[0].row, 0);
         assert_eq!(batches[0].start_col, 0);
         assert_eq!(batches[0].text, "ab");
     }
@@ -2881,8 +2846,6 @@ mod tests {
         assert_eq!(batches.len(), 2);
         assert_eq!(batches[0].text, "a");
         assert_eq!(batches[1].text, "b");
-        assert_eq!(batches[0].row, 0);
-        assert_eq!(batches[1].row, 1);
     }
 
     #[test]
@@ -3083,7 +3046,7 @@ mod tests {
             fg: test_color(0.4, 0.5, 0.6),
         };
         let make_batch =
-            |underline| TextBatchBuilder::new(0, 0, 'x', None, key, Some(underline)).finalize();
+            |underline| TextBatchBuilder::new(0, 'x', None, key, Some(underline)).finalize();
         let single = make_batch(TerminalUnderline {
             style: TerminalUnderlineStyle::Single,
             color: None,
@@ -3356,12 +3319,10 @@ mod tests {
         );
         let ops = collect_draw_ops(&grid);
         assert_eq!(ops.len(), 4);
-        assert!(
-            matches!(&ops[0], TextDrawOp::Batch(batch) if batch.text == "ab" && batch.row == 0)
-        );
-        assert!(matches!(&ops[1], TextDrawOp::Batch(batch) if batch.text == "c" && batch.row == 1));
-        assert!(matches!(&ops[2], TextDrawOp::Block(block) if block.row == 1 && block.col == 1));
-        assert!(matches!(&ops[3], TextDrawOp::Batch(batch) if batch.text == "d" && batch.row == 1));
+        assert!(matches!(&ops[0], TextDrawOp::Batch(batch) if batch.text == "ab"));
+        assert!(matches!(&ops[1], TextDrawOp::Batch(batch) if batch.text == "c"));
+        assert!(matches!(&ops[2], TextDrawOp::Block(block) if block.col == 1));
+        assert!(matches!(&ops[3], TextDrawOp::Batch(batch) if batch.text == "d"));
     }
 
     #[test]
@@ -3380,7 +3341,7 @@ mod tests {
         assert!(matches!(
             &original_ops[..],
             [TextDrawOp::Batch(batch)]
-                if batch.row == 0 && batch.fg == cursor_fg && batch.underline.is_some()
+                if batch.fg == cursor_fg && batch.underline.is_some()
         ));
 
         grid.cells = Arc::new(vec![empty_row, cached_row]);
@@ -3391,7 +3352,7 @@ mod tests {
         assert!(matches!(
             &moved_ops[..],
             [TextDrawOp::Batch(batch)]
-                if batch.row == 1 && batch.fg == cursor_fg && batch.underline.is_some()
+                if batch.fg == cursor_fg && batch.underline.is_some()
         ));
     }
 
@@ -3864,7 +3825,6 @@ mod tests {
         let batch = TextDrawOp::Batch(
             TextBatchBuilder::new(
                 5, // start_col
-                0, // row
                 'a',
                 None,
                 TextBatchKey {
@@ -3889,7 +3849,7 @@ mod tests {
             strikethrough: false,
             fg: Hsla::transparent_black(),
         };
-        let mut builder = TextBatchBuilder::new(0, 0, 'e', Some("\u{301}"), key, None);
+        let mut builder = TextBatchBuilder::new(0, 'e', Some("\u{301}"), key, None);
         builder.append_cell('x', Some("\u{308}"));
         let batch = builder.finalize();
 
@@ -3912,7 +3872,6 @@ mod tests {
     #[test]
     fn draw_op_col_range_returns_correct_range_for_block() {
         let block = TextDrawOp::Block(BlockDraw {
-            row: 0,
             col: 7,
             glyph: '▀',
             geometry: normalized_glyph_plan('\u{2580}'),
@@ -3924,7 +3883,6 @@ mod tests {
     #[test]
     fn draw_op_col_range_returns_correct_range_for_sextant() {
         let sextant = TextDrawOp::Sextant(SextantDraw {
-            row: 0,
             col: 4,
             geometry: normalized_glyph_plan('\u{1FB00}').unwrap(),
             fg: Hsla::transparent_black(),
@@ -3954,7 +3912,7 @@ mod tests {
         assert_eq!(ops.len(), 2);
         assert!(matches!(&ops[0], TextDrawOp::Batch(batch) if batch.text == "a"));
         assert!(
-            matches!(&ops[1], TextDrawOp::Sextant(s) if s.row == 0 && s.col == 1 && s.geometry.rects().len() == 1)
+            matches!(&ops[1], TextDrawOp::Sextant(s) if s.col == 1 && s.geometry.rects().len() == 1)
         );
     }
 

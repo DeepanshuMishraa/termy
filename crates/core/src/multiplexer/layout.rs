@@ -58,17 +58,10 @@ impl SessionClient {
             let panes = tab.panes.clone();
             if self.compare_and_set_layout(before, serde_json::to_string(&layout)?)? {
                 if matches!(edit, TabEdit::ResizeDivider { .. }) {
+                    let cell = self.tab_cell_size(&panes);
                     for pane in panes {
-                        if let Some(id) = pane.session_id {
-                            self.resize(
-                                &id,
-                                crate::TerminalSize {
-                                    cols: pane.width,
-                                    rows: pane.height,
-                                    cell_width: 9.0,
-                                    cell_height: 18.0,
-                                },
-                            )?;
+                        if let Some(id) = &pane.session_id {
+                            self.resize(id, saved_size(&pane, cell))?;
                         }
                     }
                 }
@@ -131,17 +124,10 @@ impl SessionClient {
                 return Ok(());
             }
             if self.compare_and_set_layout(expected, serde_json::to_string(&layout)?)? {
+                let cell = self.tab_cell_size(&resized);
                 for pane in resized {
-                    if let Some(id) = pane.session_id {
-                        self.resize(
-                            &id,
-                            crate::TerminalSize {
-                                cols: pane.width,
-                                rows: pane.height,
-                                cell_width: 9.0,
-                                cell_height: 18.0,
-                            },
-                        )?;
+                    if let Some(id) = &pane.session_id {
+                        self.resize(id, saved_size(&pane, cell))?;
                     }
                 }
                 return Ok(());
@@ -195,8 +181,12 @@ impl SessionClient {
             tab == expected,
             "Tab changed in another client; refresh before splitting"
         );
-        launch.size.cols = pane.width;
-        launch.size.rows = pane.height;
+        // The new pane shares the split pane's font, so its live metrics are
+        // more accurate than a launch made without a UI.
+        let cell = self
+            .cell_size(id)
+            .unwrap_or((launch.size.cell_width, launch.size.cell_height));
+        launch.size = saved_size(pane, cell);
         let (new_id, terminal) = self.create(launch, None)?;
         let result = (|| -> anyhow::Result<Vec<StoredPane>> {
             for _ in 0..8 {
@@ -236,17 +226,8 @@ impl SessionClient {
         match result {
             Ok(panes) => {
                 for pane in panes {
-                    if let Some(id) = pane.session_id {
-                        self.resize(
-                            &id,
-                            crate::TerminalSize {
-                                cols: pane.width,
-                                rows: pane.height,
-                                cell_width: 9.0,
-                                cell_height: 18.0,
-                            },
-                        )
-                        .with_context(|| {
+                    if let Some(id) = &pane.session_id {
+                        self.resize(id, saved_size(&pane, cell)).with_context(|| {
                             format!("Split created pane {new_id}, but resizing pane {id} failed")
                         })?;
                     }
@@ -388,6 +369,29 @@ impl SessionClient {
             }
         }
         Ok((id, terminal))
+    }
+}
+
+impl SessionClient {
+    /// Cell metrics for resizing a tab's panes. They share one font, so the
+    /// metrics the attached UI applied to any live pane hold for all of them;
+    /// the defaults are only a fallback when no pane can be queried.
+    fn tab_cell_size(&self, panes: &[StoredPane]) -> (f32, f32) {
+        let default = crate::TerminalSize::default();
+        panes
+            .iter()
+            .filter_map(|pane| pane.session_id.as_deref())
+            .find_map(|id| self.cell_size(id).ok())
+            .unwrap_or((default.cell_width, default.cell_height))
+    }
+}
+
+fn saved_size(pane: &StoredPane, (cell_width, cell_height): (f32, f32)) -> crate::TerminalSize {
+    crate::TerminalSize {
+        cols: pane.width,
+        rows: pane.height,
+        cell_width,
+        cell_height,
     }
 }
 

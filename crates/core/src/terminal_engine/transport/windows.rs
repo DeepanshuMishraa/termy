@@ -1151,11 +1151,12 @@ fn run_control(
         if state.is_closed() {
             break;
         }
+        // A size the pseudoconsole rejects keeps the old one; the session
+        // goes on rather than closing.
         if let Some(size) = state.take_resize()
-            && resources.pseudo_console().resize(size).is_err()
+            && let Err(error) = resources.pseudo_console().resize(size)
         {
-            state.request_close();
-            break;
+            log::warn!("failed to resize the pseudoconsole: {error}");
         }
 
         match wait_for_control(resources.process(), &wake) {

@@ -396,10 +396,10 @@ fn multiplexer_text_selection_survives_scrolling_and_output(cx: &mut TestAppCont
                     cx,
                 );
                 assert_eq!(
-                    view.content_scroll_baseline,
+                    view.content_scroll_baseline.display_offset,
                     view.active_terminal().unwrap().scroll_state().0
                 );
-                assert!(view.content_scroll_baseline > 0);
+                assert!(view.content_scroll_baseline.display_offset > 0);
                 view.process_terminal_events(cx);
                 assert_eq!(
                     view.selection_anchor, anchor,

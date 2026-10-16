@@ -21,7 +21,6 @@ native = [
   "dep:fontdb",
   "dep:fs4",
   "dep:keyring",
-  "dep:polling",
   "dep:regex",
   "dep:semver",
   "dep:sha2",
@@ -44,7 +43,6 @@ log = { workspace = true }
 dirs = { workspace = true, optional = true }
 flate2 = "1.1"
 fontdb = { version = "0.23", optional = true }
-polling = { workspace = true, optional = true }
 parking_lot = { version = "0.12", optional = true }
 png = "0.18"
 rand_core = { workspace = true }
@@ -71,6 +69,8 @@ getrandom = { version = "0.2", features = ["js"] }
 [target."cfg(unix)".dependencies]
 rustix-openpty = { version = "0.2" }
 libc = "0.2"
+# Not imported directly: enables `std` on the rustix that rustix-openpty
+# re-exports, so its errors and fds convert to std types (`pty`-only builds).
 rustix = { version = "1", features = ["std"] }
 
 [target."cfg(windows)".dependencies]

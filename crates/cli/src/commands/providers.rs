@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use termy_core::command_core::{
     CommandCapabilities, CommandId, CommandUnavailableReason, KeybindLineRef,
@@ -26,10 +26,45 @@ pub fn list_keybind_lines() -> Vec<String> {
 }
 
 pub fn list_theme_lines() -> Vec<String> {
-    termy_core::themes::available_theme_ids()
-        .into_iter()
+    theme_lines(installed_themes_dir().as_deref())
+}
+
+/// Built-in theme ids first, then themes installed from the theme store.
+fn theme_lines(themes_dir: Option<&Path>) -> Vec<String> {
+    let mut lines: Vec<String> = termy_core::themes::BUILTIN_THEME_IDS
+        .iter()
         .map(ToString::to_string)
-        .collect()
+        .collect();
+
+    let mut installed: Vec<String> = themes_dir
+        .and_then(|dir| std::fs::read_dir(dir).ok())
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let path = entry.path();
+            let is_json = path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("json"));
+            if !is_json {
+                return None;
+            }
+            let normalized =
+                termy_core::theme_core::normalize_theme_id(path.file_stem()?.to_str()?);
+            (!normalized.is_empty()).then_some(normalized)
+        })
+        .filter(|id| !lines.contains(id))
+        .collect();
+    installed.sort();
+    installed.dedup();
+
+    lines.extend(installed);
+    lines
+}
+
+fn installed_themes_dir() -> Option<PathBuf> {
+    Some(config_path()?.parent()?.join("themes"))
 }
 
 pub fn list_color_lines() -> Vec<String> {
@@ -102,7 +137,7 @@ pub fn active_theme_colors() -> Result<ThemeColors, String> {
             terminal_default_theme_colors()
         } else {
             load_installed_theme_colors(&theme_id)
-                .or_else(|| termy_core::themes::resolve_theme(&theme_id))
+                .or_else(|| termy_core::themes::builtin_theme(&theme_id))
                 .ok_or_else(|| format!("Unknown theme: {theme_id}"))?
         };
 
@@ -177,11 +212,7 @@ fn load_installed_theme_colors(theme_id: &str) -> Option<ThemeColors> {
         return None;
     }
 
-    let config_path = config_path()?;
-    let theme_path = config_path
-        .parent()?
-        .join("themes")
-        .join(format!("{normalized}.json"));
+    let theme_path = installed_themes_dir()?.join(format!("{normalized}.json"));
     let contents = std::fs::read_to_string(theme_path).ok()?;
     parse_theme_colors_json(&contents).ok()
 }
@@ -356,8 +387,8 @@ fn list_fonts_impl() -> Vec<String> {
 mod tests {
     use super::{
         action_lines_for_capabilities, action_lines_for_tmux_enabled,
-        keybind_lines_for_capabilities, keybind_lines_for_tmux_enabled, list_theme_lines,
-        resolve_keybinds_for_lines,
+        keybind_lines_for_capabilities, keybind_lines_for_tmux_enabled, resolve_keybinds_for_lines,
+        theme_lines,
     };
     use termy_core::command_core::{
         CommandId, KeybindLineRef, default_resolved_keybinds, parse_keybind_directives_from_iter,
@@ -500,8 +531,28 @@ mod tests {
     }
 
     #[test]
-    fn themes_are_sourced_from_theme_registry() {
-        let themes = list_theme_lines();
-        assert!(themes.is_empty());
+    fn list_themes_includes_builtin_themes() {
+        let themes = theme_lines(None);
+        assert_eq!(themes, termy_core::themes::BUILTIN_THEME_IDS);
+        for theme in &themes {
+            assert!(
+                termy_core::themes::builtin_theme(theme).is_some(),
+                "{theme}"
+            );
+        }
+    }
+
+    #[test]
+    fn list_themes_appends_installed_themes_sorted() {
+        let temp = tempfile::tempdir().unwrap();
+        for name in ["Nord.json", "dracula.json", "termy.json", "notes.txt"] {
+            std::fs::write(temp.path().join(name), "{}").unwrap();
+        }
+
+        let themes = theme_lines(Some(temp.path()));
+
+        let mut expected: Vec<&str> = termy_core::themes::BUILTIN_THEME_IDS.to_vec();
+        expected.extend(["dracula", "nord"]);
+        assert_eq!(themes, expected);
     }
 }

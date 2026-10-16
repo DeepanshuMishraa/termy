@@ -365,7 +365,7 @@ impl Parser {
                         continue;
                     }
                     if let Some((character, len)) = complete_utf8(&bytes[offset..]) {
-                        handler.print(character);
+                        self.print_scalar(handler, character);
                         offset += len;
                         if PAUSABLE && handler.pause_requested() {
                             break;
@@ -478,7 +478,8 @@ impl Parser {
                 if self.utf8_remaining == 0 {
                     // Lead/continuation restrictions exclude surrogates,
                     // overlong encodings, and values greater than U+10FFFF.
-                    handler.print(
+                    self.print_scalar(
+                        handler,
                         char::from_u32(self.utf8_value).unwrap_or(char::REPLACEMENT_CHARACTER),
                     );
                 }
@@ -503,6 +504,25 @@ impl Parser {
             0xf4 => self.begin_utf8(byte & 0x07, 3, 0x80, 0x8f),
             _ => handler.print(char::REPLACEMENT_CHARACTER),
         }
+    }
+
+    /// A decoded scalar. C1 controls sent as UTF-8 (U+0080 to U+009F) act
+    /// as their 7-bit forms, ESC and the byte 0x40 below, as in xterm: U+009B
+    /// opens a CSI sequence. Raw 8-bit C1 bytes are not UTF-8 and print U+FFFD.
+    #[inline(always)]
+    fn print_scalar(&mut self, handler: &mut impl Handler, character: char) {
+        if matches!(character, '\u{80}'..='\u{9f}') {
+            self.c1_control(handler, character as u8);
+        } else {
+            handler.print(character);
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn c1_control(&mut self, handler: &mut impl Handler, code: u8) {
+        self.begin_escape();
+        self.escape_byte(handler, code - 0x40);
     }
 
     fn begin_utf8(&mut self, value: u8, remaining: u8, min: u8, max: u8) {

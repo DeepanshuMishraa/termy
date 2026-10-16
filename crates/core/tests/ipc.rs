@@ -467,3 +467,80 @@ read finish
     assert_eq!(latest[0].app, None); // removed parent no longer supplies app
     host.client.close(&id).unwrap();
 }
+
+#[test]
+fn layout_resizes_keep_the_live_cell_metrics() {
+    use termy_core::session_model::*;
+    let host = Host::new();
+    let launch = |size| PaneLaunch {
+        size,
+        working_directory: None,
+        shell_integration: None,
+        config: TerminalRuntimeConfig::default(),
+        launch: Some(TerminalLaunch::Program {
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), "read done".into()],
+        }),
+    };
+    // The desktop created this pane with its real font metrics.
+    let live = TerminalSize {
+        cols: 80,
+        rows: 24,
+        cell_width: 11.0,
+        cell_height: 23.0,
+    };
+    let (id, terminal) = host.client.create(launch(live), None).unwrap();
+    let tab = StoredTab {
+        zoomed: false,
+        presentation: None,
+        pinned: false,
+        manual_title: None,
+        active_pane: 0,
+        layout_tree_json: None,
+        panes: vec![StoredPane {
+            session_id: Some(id.clone()),
+            left: 0,
+            top: 0,
+            width: 80,
+            height: 24,
+            buffer: None,
+        }],
+    };
+    let layout = StoredMultiplexer {
+        version: 1,
+        windows: vec![StoredWindow {
+            id: "window".into(),
+            session: StoredSession {
+                workspaces: vec![StoredWorkspace {
+                    name: "main".into(),
+                    pinned: false,
+                    active_tab: 0,
+                    tabs: vec![tab.clone()],
+                }],
+                active_workspace: 0,
+            },
+        }],
+    };
+    host.client
+        .set_layout(serde_json::to_string(&layout).unwrap())
+        .unwrap();
+
+    // The CLI splits without knowing the font; both panes keep 11x23 cells.
+    let (new_id, split) = host
+        .client
+        .split_pane(
+            &id,
+            PaneResizeAxis::Horizontal,
+            &tab,
+            launch(TerminalSize::default()),
+        )
+        .unwrap();
+    for pane in [&new_id, &id] {
+        let size = host.client.attach(pane, None).unwrap().size();
+        assert_eq!((size.cell_width, size.cell_height), (11.0, 23.0));
+        assert!(size.cols < 80, "pane was not resized: {size:?}");
+    }
+    drop((terminal, split));
+    host.client.close(&new_id).unwrap();
+    host.client.close(&id).unwrap();
+}

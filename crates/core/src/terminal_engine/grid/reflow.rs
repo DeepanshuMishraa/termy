@@ -1,6 +1,6 @@
 //! Width-change reflow: rewraps logical lines into a bounded output window.
 use super::super::types::{CellExtra, ExtraSlot};
-use super::history::history_charge;
+use super::history::history_heap;
 use super::{Cell, Grid, Ring, Row, Size, print};
 use std::sync::Arc;
 
@@ -9,8 +9,12 @@ use std::sync::Arc;
 /// viewport anchors can be remapped without materializing the entire result.
 struct ReflowWindow {
     rows: Ring<Row>,
-    // Bytes charged to `rows`, and the oldest row not yet packed for the budget.
+    // Bytes charged to `rows`, as though `charge_cols` wide, and the bytes
+    // they take (see `history.rs`), and the oldest row not yet packed for
+    // the budget.
     bytes: usize,
+    charge_cols: usize,
+    heap: usize,
     byte_limit: usize,
     next_pack: usize,
     spare: Vec<Row>,
@@ -26,10 +30,14 @@ struct ReflowWindow {
 }
 
 impl ReflowWindow {
-    fn new(size: Size, history_limit: usize, history_byte_limit: usize) -> Self {
+    /// Rows are charged as though the narrower of `size` and `old_cols`
+    /// wide, so widening evicts no history the old width kept.
+    fn new(size: Size, old_cols: usize, history_limit: usize, history_byte_limit: usize) -> Self {
         Self {
             rows: Ring::new(),
             bytes: 0,
+            charge_cols: old_cols.min(size.cols),
+            heap: 0,
             byte_limit: history_byte_limit,
             next_pack: 0,
             spare: Vec::new(),
@@ -93,25 +101,27 @@ impl ReflowWindow {
             self.evict();
         }
         row.measure_extras();
-        self.bytes += history_charge(&row);
+        self.bytes += self.charge(&row);
+        self.heap += history_heap(&row);
         self.rows.push_back(row);
         self.fit_byte_budget();
     }
 
     /// Rewrapped rows are dense at the new width. Pack the oldest rows above
-    /// the last screenful first, so a wide resize stays within the history
-    /// byte budget instead of evicting history that fits packed. Each row is
-    /// packed at most once.
+    /// the last screenful while they take more than the history byte budget,
+    /// then evict rows while their charge exceeds it. Packing changes no
+    /// charge, so which rows are evicted doesn't depend on which rows were
+    /// packed before the resize. Each row is packed at most once.
     fn fit_byte_budget(&mut self) {
         let budget = self.byte_limit.saturating_add(
             self.size.rows * (size_of::<Row>() + self.size.cols * size_of::<Cell>()),
         );
         let packable = self.rows.len().saturating_sub(self.size.rows);
-        while self.bytes > budget && self.next_pack < packable {
+        while self.heap > budget && self.next_pack < packable {
             let row = &mut self.rows[self.next_pack];
             let before = row.heap_bytes();
             row.compact();
-            self.bytes = self.bytes - before + row.heap_bytes();
+            self.heap = self.heap - before + row.heap_bytes();
             self.next_pack += 1;
         }
         while self.bytes > budget && self.rows.len() > self.size.rows {
@@ -119,9 +129,14 @@ impl ReflowWindow {
         }
     }
 
+    fn charge(&self, row: &Row) -> usize {
+        size_of::<Row>() + row.charged_bytes_at(self.charge_cols)
+    }
+
     fn evict(&mut self) {
         if let Some(evicted) = self.rows.pop_front() {
-            self.bytes -= history_charge(&evicted);
+            self.bytes -= self.charge(&evicted);
+            self.heap -= history_heap(&evicted);
             self.next_pack = self.next_pack.saturating_sub(1);
             self.recycle(evicted);
         }
@@ -148,7 +163,12 @@ impl Grid {
             self.primary.rows.pop_back();
         }
         let source = self.history.drain(..).chain(self.primary.rows.drain(..));
-        let mut output = ReflowWindow::new(size, self.history_limit, self.history_byte_limit);
+        let mut output = ReflowWindow::new(
+            size,
+            self.size.cols,
+            self.history_limit,
+            self.history_byte_limit,
+        );
         let mut logical = Vec::new();
         // The metadata of `logical`'s cells, by index.
         let mut logical_extras = Vec::new();

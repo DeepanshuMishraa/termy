@@ -600,20 +600,7 @@ impl TerminalView {
         );
         self.refresh_tab_title(new_tab_index);
         self.session.active_tab = new_tab_index;
-        if let Some(inactive_scrollback) = self.inactive_tab_scrollback {
-            let active_options = self.terminal_runtime.term_options();
-            let inactive_options = active_options.with_scrollback_history(inactive_scrollback);
-            if let Some(tab) = self.session.tabs.get(old_active_tab) {
-                for pane in &tab.panes {
-                    pane.terminal().set_term_options(inactive_options);
-                }
-            }
-            if let Some(tab) = self.session.tabs.get(new_tab_index) {
-                for pane in &tab.panes {
-                    pane.terminal().set_term_options(active_options);
-                }
-            }
-        }
+        self.sync_active_tab_scrollback(Some(old_active_tab));
         self.mark_tab_strip_layout_dirty();
         self.reset_tab_interaction_state();
         self.sync_tab_strip_for_active_tab();
@@ -668,6 +655,8 @@ impl TerminalView {
         } else if self.session.active_tab >= self.session.tabs.len() {
             self.session.active_tab = self.session.tabs.len() - 1;
         }
+        // The closed tab may have been the active one.
+        self.sync_active_tab_scrollback(None);
 
         match self.renaming_tab {
             Some(editing) if editing == index => {
@@ -703,6 +692,44 @@ impl TerminalView {
             self.sync_persisted_native_workspace();
             crate::app_actions::close_terminal_window::<Self>(self.window_handle, cx);
         }
+    }
+
+    /// Apply `inactive_tab_scrollback`: the tab at `tab_index` gets the full
+    /// scrollback when `active`, else the inactive cap.
+    pub(in crate::terminal_view) fn set_tab_scrollback_options(
+        &self,
+        tab_index: usize,
+        active: bool,
+    ) {
+        let Some(inactive_scrollback) = self.inactive_tab_scrollback else {
+            return;
+        };
+        let active_options = self.terminal_runtime.term_options();
+        let options = if active {
+            active_options
+        } else {
+            active_options.with_scrollback_history(inactive_scrollback)
+        };
+        if let Some(tab) = self.session.tabs.get(tab_index) {
+            for pane in &tab.panes {
+                pane.terminal().set_term_options(options);
+            }
+        }
+    }
+
+    /// Every path that changes `session.active_tab` calls this afterwards:
+    /// the tab active before (if it is still in the strip, at index
+    /// `previous_active`) drops to the inactive scrollback cap, and the newly
+    /// active tab gets its full scrollback back.
+    pub(in crate::terminal_view) fn sync_active_tab_scrollback(
+        &self,
+        previous_active: Option<usize>,
+    ) {
+        let active = self.session.active_tab;
+        if let Some(previous) = previous_active.filter(|previous| *previous != active) {
+            self.set_tab_scrollback_options(previous, false);
+        }
+        self.set_tab_scrollback_options(active, true);
     }
 
     pub(crate) fn tab_index_by_id(&self, tab_id: TabId) -> Option<usize> {
@@ -791,17 +818,7 @@ impl TerminalView {
                     self.mark_tab_strip_layout_dirty();
                 }
 
-                if let Some(inactive_scrollback) = self.inactive_tab_scrollback {
-                    let active_options = self.terminal_runtime.term_options();
-                    let inactive_options =
-                        active_options.with_scrollback_history(inactive_scrollback);
-                    for pane in &self.session.tabs[old_active].panes {
-                        pane.terminal().set_term_options(inactive_options);
-                    }
-                    for pane in &self.session.tabs[index].panes {
-                        pane.terminal().set_term_options(active_options);
-                    }
-                }
+                self.sync_active_tab_scrollback(Some(old_active));
 
                 self.reset_tab_rename_state();
                 self.reset_tab_drag_state();

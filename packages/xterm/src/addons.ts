@@ -1,6 +1,6 @@
 import { Emitter, type IEvent } from '@termysh/web'
 import type { Terminal } from './terminal.ts'
-import type { ITerminalAddon } from './types.ts'
+import type { IBufferLine, ITerminalAddon } from './types.ts'
 
 /** Drop-in for `@xterm/addon-fit`. */
 export class FitAddon implements ITerminalAddon {
@@ -89,20 +89,25 @@ export class SearchAddon implements ITerminalAddon {
     const pattern = searchPattern(term, options)
     if (!pattern) return false
     const buffer = terminal.buffer.active
-    const lines: string[] = []
-    for (let y = 0; y < buffer.length; y++) lines.push(buffer.getLine(y)?.translateToString(true) ?? '')
-
+    // Matches are in cells: wide characters take two, and surrogate pairs and
+    // combining marks take more than one string index.
     const matches: Array<{ line: number; col: number; length: number }> = []
-    lines.forEach((text, line) => {
+    for (let line = 0; line < buffer.length; line++) {
+      const bufferLine = buffer.getLine(line)
+      const text = bufferLine?.translateToString(true) ?? ''
+      let cells: CellSpans | undefined
       pattern.lastIndex = 0
       for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
         if (match[0].length === 0) {
           pattern.lastIndex++
           continue
         }
-        matches.push({ line, col: match.index, length: match[0].length })
+        cells ??= cellSpans(bufferLine!)
+        const col = cells.start[match.index] ?? match.index
+        const end = cells.end[match.index + match[0].length - 1] ?? col + match[0].length
+        matches.push({ line, col, length: end - col })
       }
-    })
+    }
     if (matches.length === 0) {
       terminal.clearSelection()
       this.#onDidChangeResults.fire({ resultIndex: -1, resultCount: 0 })
@@ -130,6 +135,29 @@ export class SearchAddon implements ITerminalAddon {
     this.#onDidChangeResults.fire({ resultIndex: index, resultCount: matches.length })
     return true
   }
+}
+
+/** For each string index of a line's text, the cells its character covers. */
+export interface CellSpans {
+  start: number[]
+  end: number[]
+}
+
+/** Maps `translateToString` indices of `line` to cell columns. */
+export function cellSpans(line: IBufferLine): CellSpans {
+  const spans: CellSpans = { start: [], end: [] }
+  for (let x = 0; x < line.length; x++) {
+    const cell = line.getCell(x)
+    const width = cell?.getWidth() ?? 1
+    // Spacers after wide characters have no text of their own.
+    if (width === 0) continue
+    const chars = cell?.getChars() || ' '
+    for (let unit = 0; unit < chars.length; unit++) {
+      spans.start.push(x)
+      spans.end.push(x + width)
+    }
+  }
+  return spans
 }
 
 function searchPattern(term: string, options: ISearchOptions): RegExp | undefined {

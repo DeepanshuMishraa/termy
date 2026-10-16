@@ -32,13 +32,14 @@ fn writer_control_coalesces_to_the_latest_resize() {
         "all pending resize work should share one wake"
     );
     let mut applied = Vec::new();
-    assert!(
-        service_writer_control(&(), &writer.control, &mut |_, window_size| {
+    assert!(service_writer_control(
+        &(),
+        &writer.control,
+        &mut |_, window_size| {
             applied.push(window_size);
             Ok(())
-        })
-        .expect("resize control should apply")
-    );
+        }
+    ));
 
     assert_eq!(applied, vec![latest]);
 }
@@ -53,13 +54,14 @@ fn writer_control_reapplies_a_same_size_nudge() {
         writer
             .resize(window_size)
             .expect("same-size resize should queue");
-        assert!(
-            service_writer_control(&(), &writer.control, &mut |_, applied_size| {
+        assert!(service_writer_control(
+            &(),
+            &writer.control,
+            &mut |_, applied_size| {
                 applied.push(applied_size);
                 Ok(())
-            })
-            .expect("same-size resize should apply")
-        );
+            }
+        ));
     }
 
     assert_eq!(applied, vec![window_size, window_size]);
@@ -74,13 +76,14 @@ fn writer_control_close_is_sticky_and_cancels_pending_work() {
     writer.close();
 
     let mut resize_called = false;
-    assert!(
-        !service_writer_control(&(), &writer.control, &mut |_, _| {
+    assert!(!service_writer_control(
+        &(),
+        &writer.control,
+        &mut |_, _| {
             resize_called = true;
             Ok(())
-        })
-        .expect("close control should be readable")
-    );
+        }
+    ));
     assert!(!resize_called, "close should cancel the pending resize");
     assert!(writer.control.is_closed());
     assert_eq!(
@@ -593,15 +596,46 @@ fn mouse_motion_fills_only_half_the_backlog_and_leaves_room_for_keys() {
 
 #[test]
 fn waiting_on_a_hung_up_descriptor_fails_instead_of_spinning() {
-    let mut fds = [0; 2];
-    // SAFETY: `fds` has room for both pipe ends.
-    assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
-    // SAFETY: both descriptors were just created and are owned here.
-    let (read, write) = unsafe { (File::from_raw_fd(fds[0]), File::from_raw_fd(fds[1])) };
+    // Close-on-exec, so a child that another test forks meanwhile doesn't
+    // keep the read end open.
+    let (read, write) = io::pipe().unwrap();
+    let write = File::from(std::os::fd::OwnedFd::from(write));
     let (wake, _wake_sender) = signal_socket_pair().unwrap();
     drop(read);
     let started = Instant::now();
     let result = wait_for_pty_writable(&write, &wake);
     assert!(started.elapsed() < Duration::from_millis(500), "{result:?}");
     assert_eq!(result.unwrap_err().kind(), ErrorKind::BrokenPipe);
+}
+
+#[test]
+fn a_failed_resize_keeps_the_writer_running() {
+    let (writer, receiver) = WriterHandle::channel();
+    let control = writer.control.clone();
+    writer
+        .resize(WinSize::from(test_size()))
+        .expect("resize should queue");
+    writer
+        .write_owned(b"after".to_vec())
+        .expect("write should queue");
+    let protocol_replies = writer.protocol_replies.clone();
+    drop(writer);
+
+    let mut resizes = 0;
+    let sink = run_pty_writer_loop(
+        PartialWriter {
+            max_write: usize::MAX,
+            ..PartialWriter::default()
+        },
+        receiver,
+        control,
+        protocol_replies,
+        |_| Ok(()),
+        |_, _| {
+            resizes += 1;
+            Err(io::Error::from_raw_os_error(25))
+        },
+    );
+    assert_eq!(resizes, 1);
+    assert_eq!(sink.bytes, b"after");
 }

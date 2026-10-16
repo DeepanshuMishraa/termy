@@ -14,6 +14,9 @@ pub(super) const SYNC_TIMEOUT: Duration = Duration::from_millis(150);
 /// Repeated begin markers extend the timeout, but never past this hold time
 /// from the first one, so a program cannot keep the screen frozen.
 pub(super) const SYNC_MAX_HOLD: Duration = Duration::from_secs(1);
+/// A committed update's buffer is kept for the next one up to this size; a
+/// rare larger frame doesn't pin up to [`MAX_SYNC_BYTES`] per terminal.
+const RETAINED_SYNC_BYTES: usize = 64 * 1024;
 
 pub(super) struct SynchronizedUpdate {
     scanner: Parser,
@@ -86,6 +89,7 @@ impl SynchronizedUpdate {
 
     pub(super) fn recycle_buffer(&mut self, mut bytes: Vec<u8>) {
         bytes.clear();
+        bytes.shrink_to(RETAINED_SYNC_BYTES);
         self.bytes = bytes;
     }
 }

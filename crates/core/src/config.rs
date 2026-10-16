@@ -185,7 +185,7 @@ pub fn resolve_theme_colors_from_app_config(
         terminal_default_theme_colors()
     } else {
         load_installed_theme_colors(&active_theme, config_path)
-            .or_else(|| builtin_theme_colors(&active_theme))
+            .or_else(|| crate::themes::builtin_theme(&active_theme))
             .unwrap_or_else(|| match (config.theme_mode, system_appearance) {
                 (crate::config_core::AppearanceMode::System, SystemAppearance::Light) => {
                     crate::themes::termy_light()
@@ -234,28 +234,6 @@ fn load_installed_theme_colors(theme_id: &str, config_path: Option<&Path>) -> Op
         .join(format!("{normalized}.json"));
     let contents = std::fs::read_to_string(theme_path).ok()?;
     parse_theme_colors_json(&contents).ok()
-}
-
-fn builtin_theme_colors(theme_id: &str) -> Option<ThemeColors> {
-    match normalize_theme_id(theme_id).as_str() {
-        "termy" => Some(crate::themes::termy()),
-        "termy-light" | "termylight" => Some(crate::themes::termy_light()),
-        "tokyo-night" | "tokyonight" => Some(crate::themes::tokyo_night()),
-        "catppuccin-mocha" | "catppuccin" | "catppuccinmocha" => {
-            Some(crate::themes::catppuccin_mocha())
-        }
-        "dracula" => Some(crate::themes::dracula()),
-        "gruvbox-dark" | "gruvbox" | "gruvboxdark" => Some(crate::themes::gruvbox_dark()),
-        "nord" => Some(crate::themes::nord()),
-        "solarized-dark" | "solarized" | "solarizeddark" => Some(crate::themes::solarized_dark()),
-        "one-dark" | "one" | "onedark" => Some(crate::themes::one_dark()),
-        "monokai" => Some(crate::themes::monokai()),
-        "material-dark" | "material" | "materialdark" => Some(crate::themes::material_dark()),
-        "palenight" => Some(crate::themes::palenight()),
-        "tomorrow-night" | "tomorrow" | "tomorrownight" => Some(crate::themes::tomorrow_night()),
-        "oceanic-next" | "oceanic" | "oceanicnext" => Some(crate::themes::oceanic_next()),
-        _ => crate::themes::resolve_theme(theme_id),
-    }
 }
 
 fn apply_custom_colors(colors: &mut ThemeColors, custom: &crate::config_core::CustomColors) {
@@ -318,16 +296,16 @@ mod tests {
     #[test]
     fn parses_runtime_fields_from_contents() {
         let loaded = load_config_from_contents(
-            "theme = nord\nshell = /bin/zsh\nterm = screen-256color\ncolorterm = none\nscrollback = 42\ncursor_style = line\n",
+            "theme = termy-light\nshell = /bin/zsh\nterm = screen-256color\ncolorterm = none\nscrollback = 42\ncursor_style = line\n",
         );
 
         assert_eq!(loaded.runtime_config.shell.as_deref(), Some("/bin/zsh"));
         assert_eq!(loaded.runtime_config.term, "screen-256color");
         assert_eq!(loaded.runtime_config.colorterm, None);
         assert_eq!(loaded.runtime_config.scrollback_history, 42);
-        assert_eq!(loaded.runtime_config.query_colors.background.r, 0x2e);
-        assert_eq!(loaded.runtime_config.query_colors.background.g, 0x34);
-        assert_eq!(loaded.runtime_config.query_colors.background.b, 0x40);
+        assert_eq!(loaded.runtime_config.query_colors.background.r, 0xfa);
+        assert_eq!(loaded.runtime_config.query_colors.background.g, 0xfa);
+        assert_eq!(loaded.runtime_config.query_colors.background.b, 0xf9);
         assert_eq!(
             loaded.runtime_config.default_cursor_style,
             TerminalCursorStyle::Line
@@ -370,6 +348,42 @@ mod tests {
                 b: 6,
                 a: 255,
             }
+        );
+    }
+
+    #[test]
+    fn store_themes_resolve_only_when_installed_like_in_the_app() {
+        let tempdir = tempdir().expect("tempdir");
+        let config_path = tempdir.path().join("config.txt");
+        let config = AppConfig {
+            theme_mode: crate::config_core::AppearanceMode::Manual,
+            theme: "dracula".to_string(),
+            ..AppConfig::default()
+        };
+        let termy_background = crate::themes::termy().background;
+
+        let colors = resolve_theme_colors_from_app_config(
+            &config,
+            Some(&config_path),
+            SystemAppearance::Dark,
+        );
+        assert_eq!(colors.background, term_color_from_rgb(termy_background));
+
+        let themes_dir = tempdir.path().join("themes");
+        fs::create_dir_all(&themes_dir).expect("themes dir");
+        fs::write(
+            themes_dir.join("dracula.json"),
+            crate::themes::theme_colors_json_pretty(&crate::themes::dracula(), None).expect("json"),
+        )
+        .expect("write theme");
+        let colors = resolve_theme_colors_from_app_config(
+            &config,
+            Some(&config_path),
+            SystemAppearance::Dark,
+        );
+        assert_eq!(
+            colors.background,
+            term_color_from_rgb(crate::themes::dracula().background)
         );
     }
 

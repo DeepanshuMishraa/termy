@@ -1,14 +1,14 @@
 use crate::colors::TerminalColors;
 use crate::config::{self, AppConfig, SystemAppearance, system_appearance_from_window};
 use crate::text_input::{TextInputAlignment, TextInputElement, TextInputProvider, TextInputState};
-use crate::theme_store::{self, ThemeStoreAuthSession, ThemeStoreAuthUser, ThemeStoreTheme};
+use crate::theme_store::{self, ThemeStoreTheme};
 use crate::ui::scrollbar::{self as ui_scrollbar, ScrollbarPaintStyle, ScrollbarRange};
 use gpui_kit::{
     AnyElement, AsyncApp, Bounds, Context, FocusHandle, Font, InteractiveElement, IntoElement,
-    KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit,
-    ParentElement, Pixels, Render, Rgba, ScrollAnchor, ScrollHandle, ScrollWheelEvent,
-    SharedString, StatefulInteractiveElement, Styled, StyledImage, TextAlign, WeakEntity, Window,
-    WindowBackgroundAppearance, canvas, deferred, div, img, point, prelude::FluentBuilder, px, svg,
+    KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels,
+    Render, Rgba, ScrollAnchor, ScrollHandle, ScrollWheelEvent, SharedString,
+    StatefulInteractiveElement, Styled, TextAlign, WeakEntity, Window, WindowBackgroundAppearance,
+    canvas, deferred, div, point, prelude::FluentBuilder, px, svg,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
@@ -168,10 +168,10 @@ pub struct SettingsWindow {
     theme_store_loading: bool,
     theme_store_error: Option<String>,
     theme_store_from_cache: bool,
-    theme_store_auth_session: Option<ThemeStoreAuthSession>,
-    theme_store_auth_loading: bool,
-    theme_store_auth_error: Option<String>,
     theme_store_installed_versions: HashMap<String, String>,
+    /// Swatch colors of installed store themes by lowercase slug, so cards do
+    /// not read and parse theme files on every render.
+    theme_store_swatch_cache: HashMap<String, Option<Vec<Rgba>>>,
     plugin_runtime: PluginRuntime,
     installed_plugins: Vec<InstalledPlugin>,
     plugin_settings: BTreeMap<String, Vec<PluginSettingState>>,
@@ -275,10 +275,8 @@ impl SettingsWindow {
             theme_store_loading: false,
             theme_store_error: None,
             theme_store_from_cache: false,
-            theme_store_auth_session: None,
-            theme_store_auth_loading: false,
-            theme_store_auth_error: None,
             theme_store_installed_versions: theme_store::load_installed_theme_versions(),
+            theme_store_swatch_cache: HashMap::new(),
             plugin_runtime,
             installed_plugins,
             plugin_settings: BTreeMap::new(),
@@ -364,10 +362,6 @@ impl SettingsWindow {
             self.colors = TerminalColors::from_config(&self.config, self.system_appearance);
             cx.notify();
         }
-    }
-
-    fn theme_store_api_base_url() -> String {
-        theme_store::theme_store_api_base_url()
     }
 
     fn theme_store_registry_url() -> String {
@@ -563,66 +557,9 @@ impl SettingsWindow {
     }
 
     fn reload_theme_assets(&mut self, cx: &mut Context<Self>) {
+        self.theme_store_swatch_cache.clear();
         self.colors = TerminalColors::from_config(&self.config, self.system_appearance);
         cx.notify();
-    }
-
-    fn logout_theme_store_user(&mut self, cx: &mut Context<Self>) {
-        if self.theme_store_auth_loading {
-            return;
-        }
-        let Some(session) = self.theme_store_auth_session.clone() else {
-            return;
-        };
-
-        self.theme_store_auth_loading = true;
-        self.theme_store_auth_error = None;
-        let api_base = Self::theme_store_api_base_url();
-
-        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            let session_token = session.session_token.clone();
-            let result = cx
-                .background_executor()
-                .spawn(async move {
-                    theme_store::logout_auth_session_blocking(&api_base, &session_token)?;
-                    theme_store::clear_auth_session()
-                })
-                .await;
-
-            let _ = cx.update(|cx| {
-                this.update(cx, |view, cx| {
-                    view.theme_store_auth_loading = false;
-                    match result {
-                        Ok(()) => {
-                            view.theme_store_auth_session = None;
-                            view.theme_store_auth_error = None;
-                            crate::ui::toast::success("Logged out from theme store");
-                        }
-                        Err(error) => {
-                            log::error!("Failed to logout from theme store: {error}");
-                            view.theme_store_auth_error = Some(error.clone());
-                            crate::ui::toast::error(error);
-                        }
-                    }
-                    cx.notify();
-                })
-            });
-        })
-        .detach();
-    }
-
-    fn theme_store_auth_display_name(user: &ThemeStoreAuthUser) -> String {
-        user.name
-            .clone()
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| format!("@{}", user.github_login))
-    }
-
-    fn theme_store_auth_avatar_fallback_label(user: &ThemeStoreAuthUser) -> String {
-        user.github_login
-            .chars()
-            .next()
-            .map_or_else(|| "?".to_string(), |ch| ch.to_ascii_uppercase().to_string())
     }
 
     pub(super) fn open_url(url: &str) -> Result<(), String> {

@@ -185,13 +185,6 @@ impl Backend {
         }
     }
 
-    pub(super) fn write_str(&self, input: &str) {
-        match self {
-            Self::Custom(backend) => backend.write_str(input),
-            Self::Remote(backend) => backend.write_str(input),
-        }
-    }
-
     pub(super) fn resize(&mut self, new_size: TerminalSize) {
         match self {
             Self::Custom(backend) => backend.resize(new_size),

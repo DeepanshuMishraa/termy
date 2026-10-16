@@ -353,6 +353,12 @@ fn read_formats(
     }
 }
 
+// `None` means the primary selection is unsupported on this platform, so the
+// wrap is only "unnecessary" on Linux.
+#[cfg_attr(
+    target_os = "linux",
+    expect(clippy::unnecessary_wraps, reason = "None signals non-Linux platforms")
+)]
 fn primary_item(
     cx: &mut Context<'_, TerminalView>,
 ) -> Option<(Option<ClipboardItem>, Vec<String>)> {

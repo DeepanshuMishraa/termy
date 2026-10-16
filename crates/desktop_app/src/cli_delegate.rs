@@ -82,30 +82,21 @@ pub(crate) fn delegate_to_cli_or_exit(args: Vec<String>) -> ! {
 fn find_termy_cli_binary() -> Result<PathBuf, String> {
     let exe_path =
         std::env::current_exe().map_err(|error| format!("Failed to resolve app path: {error}"))?;
+    termy_cli_binary_next_to(&exe_path)?.ok_or_else(|| {
+        "termy-cli binary not found. Build it with: cargo build -p termy_cli".to_string()
+    })
+}
+
+/// Only the directory of the running executable is searched. Paths relative to
+/// the current directory would run whatever binary a checkout happens to ship.
+fn termy_cli_binary_next_to(exe_path: &Path) -> Result<Option<PathBuf>, String> {
     let exe_dir = exe_path
         .parent()
         .ok_or_else(|| format!("App path {} has no parent directory", exe_path.display()))?;
 
     let cli_name = format!("termy-cli{}", std::env::consts::EXE_SUFFIX);
     let sibling = exe_dir.join(&cli_name);
-    if is_executable_file(&sibling) && sibling != exe_path {
-        return Ok(sibling);
-    }
-
-    for candidate in fallback_termy_cli_binary_paths(&cli_name) {
-        if is_executable_file(&candidate) && candidate != exe_path {
-            return Ok(candidate);
-        }
-    }
-
-    Err("termy-cli binary not found. Build it with: cargo build -p termy_cli".to_string())
-}
-
-fn fallback_termy_cli_binary_paths(cli_name: &str) -> [PathBuf; 2] {
-    [
-        PathBuf::from("target/debug").join(cli_name),
-        PathBuf::from("target/release").join(cli_name),
-    ]
+    Ok((is_executable_file(&sibling) && sibling != exe_path).then_some(sibling))
 }
 
 fn is_executable_file(path: &Path) -> bool {
@@ -114,7 +105,20 @@ fn is_executable_file(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::should_delegate_to_cli;
+    use super::{should_delegate_to_cli, termy_cli_binary_next_to};
+
+    #[test]
+    fn cli_binary_is_only_resolved_next_to_the_executable() {
+        let app_dir = tempfile::tempdir().expect("app dir");
+        let exe_path = app_dir.path().join("termy");
+        let cli_name = format!("termy-cli{}", std::env::consts::EXE_SUFFIX);
+
+        assert_eq!(termy_cli_binary_next_to(&exe_path), Ok(None));
+
+        let sibling = app_dir.path().join(&cli_name);
+        std::fs::write(&sibling, "").expect("sibling cli");
+        assert_eq!(termy_cli_binary_next_to(&exe_path), Ok(Some(sibling)));
+    }
 
     fn args(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_string()).collect()

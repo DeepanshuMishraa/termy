@@ -642,7 +642,9 @@ impl Handler for State {
         written
     }
 
-    #[inline]
+    // Out of line, as the parser's loop runs faster without it on some
+    // targets; left to the inliner, unrelated changes to the crate flip it.
+    #[inline(never)]
     fn print_ascii(&mut self, bytes: &[u8]) {
         // Byte-at-a-time output (echo, small PTY reads) writes one cell.
         if let &[byte] = bytes
@@ -983,7 +985,7 @@ fn split_url(text: &str) -> Option<(&str, &str)> {
 }
 
 /// Decode `%XX` escapes; `None` for malformed escapes or non-UTF-8 results.
-pub(crate) fn percent_decode(text: &str) -> Option<String> {
+fn percent_decode(text: &str) -> Option<String> {
     let bytes = text.as_bytes();
     let mut decoded = Vec::with_capacity(bytes.len());
     let mut index = 0;

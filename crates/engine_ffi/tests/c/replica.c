@@ -1,5 +1,6 @@
 /* A server terminal answers queries; a replica restored from its snapshot
  * mirrors the same output silently and ends in the same state. */
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -20,7 +21,24 @@ static int feed(TermyEngine *engine, const char *text, TermyEngineBytes *replies
 
 int main(void) {
   CHECK(termy_engine_abi_version() == TERMY_ENGINE_ABI_VERSION);
+  /* Layouts mirrored by const assertions in src/frame.rs and src/input.rs. */
   CHECK(sizeof(TermyEngineCell) == 32);
+  CHECK(offsetof(TermyEngineCell, grapheme_start) == 4);
+  CHECK(offsetof(TermyEngineCell, grapheme_len) == 8);
+  CHECK(offsetof(TermyEngineCell, width) == 10);
+  CHECK(offsetof(TermyEngineCell, underline) == 11);
+  CHECK(offsetof(TermyEngineCell, foreground) == 12);
+  CHECK(offsetof(TermyEngineCell, background) == 16);
+  CHECK(offsetof(TermyEngineCell, underline_color) == 20);
+  CHECK(offsetof(TermyEngineCell, flags) == 24);
+  CHECK(offsetof(TermyEngineCell, hyperlink) == 28);
+  CHECK(offsetof(TermyEngineKeyEvent, unshifted_codepoint) == 4 * sizeof(void *));
+  CHECK(offsetof(TermyEngineKeyEvent, action) == 4 * sizeof(void *) + 12);
+  CHECK(offsetof(TermyEngineKeyEvent, composing) == 4 * sizeof(void *) + 13);
+  CHECK(offsetof(TermyEngineMouseEvent, any_button_pressed) == 2);
+  CHECK(offsetof(TermyEngineMouseEvent, mods) == 4);
+  CHECK(offsetof(TermyEngineMouseEvent, y_px) == 20);
+  CHECK(sizeof(TermyEngineMouseEvent) == 24);
 
   TermyEngineOptions options = termy_engine_options_default();
   options.cols = 40;

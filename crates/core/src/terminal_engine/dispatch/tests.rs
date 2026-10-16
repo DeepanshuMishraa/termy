@@ -737,3 +737,16 @@ fn entering_1049_from_another_alternate_mode_saves_the_cursor_and_clears() {
     assert_eq!(text(&engine, 0), "primar");
     assert_eq!((engine.cursor().row, engine.cursor().col), (1, 2));
 }
+
+#[test]
+fn utf8_encoded_c1_controls_are_executed_not_stored_as_marks() {
+    let mut engine = engine(20, 3);
+    // U+009B is CSI: `1m` sets bold rather than printing.
+    engine.feed("x\u{9b}1my\u{85}z".as_bytes());
+    assert_eq!(text(&engine, 0).trim_end(), "xy");
+    let row = engine.viewport_row(0).unwrap();
+    assert_eq!(row.combining(0), "");
+    assert_eq!(row[1].style.attributes, Style::BOLD);
+    // U+0085 is NEL.
+    assert_eq!(text(&engine, 1).trim_end(), "z");
+}

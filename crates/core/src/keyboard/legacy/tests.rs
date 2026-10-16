@@ -353,18 +353,63 @@ fn space_sends_the_text_the_layout_composed() {
     // Alt composes the same text; only an escape prefix may differ by platform.
     let composed = encode(&keystroke("space", Some("\u{a0}"), alt), legacy_mode()).unwrap();
     assert!(composed.ends_with("\u{a0}".as_bytes()), "{composed:?}");
-    // Plain and Ctrl+Space keep sending a space.
+    // Plain Space keeps sending a space.
+    for key_char in [None, Some(""), Some(" ")] {
+        assert_eq!(
+            encode(
+                &keystroke("space", key_char, Modifiers::default()),
+                legacy_mode()
+            ),
+            Some(b" ".to_vec()),
+            "{key_char:?}"
+        );
+    }
+}
+
+#[test]
+fn ctrl_space_sends_nul() {
     for (key_char, modifiers) in [
-        (None, Modifiers::default()),
-        (Some(""), Modifiers::default()),
-        (Some(" "), Modifiers::default()),
-        (Some("\u{a0}"), control()),
         (None, control()),
+        (Some(" "), control()),
+        (Some("\u{a0}"), control()),
+        (None, control_shift()),
     ] {
         assert_eq!(
             encode(&keystroke("space", key_char, modifiers), legacy_mode()),
-            Some(b" ".to_vec()),
+            Some(vec![0x00]),
             "{key_char:?} {modifiers:?}"
+        );
+    }
+}
+
+#[test]
+fn ctrl_digits_and_symbols_use_xterm_control_bytes() {
+    let cases = [
+        ("2", 0x00),
+        ("3", 0x1b),
+        ("4", 0x1c),
+        ("5", 0x1d),
+        ("6", 0x1e),
+        ("7", 0x1f),
+        ("8", 0x7f),
+        ("/", 0x1f),
+        ("-", 0x1f),
+        ("?", 0x7f),
+    ];
+
+    for (key, expected) in cases {
+        assert_eq!(
+            encode(&keystroke(key, Some(key), control()), legacy_mode()),
+            Some(vec![expected]),
+            "ctrl+{key}"
+        );
+    }
+    // Digits without an xterm mapping still send nothing.
+    for key in ["1", "9", "0"] {
+        assert_eq!(
+            encode(&keystroke(key, Some(key), control()), legacy_mode()),
+            None,
+            "ctrl+{key}"
         );
     }
 }

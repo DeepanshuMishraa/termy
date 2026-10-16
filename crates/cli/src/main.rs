@@ -83,7 +83,7 @@ enum Action {
     #[command(name = "-validate-config")]
     ValidateConfig,
 
-    /// Prettify configuration file (removes comments, formats consistently)
+    /// Prettify configuration file (removes comments, formats consistently; keeps a .bak copy)
     #[command(name = "-prettify-config")]
     PrettifyConfig,
 

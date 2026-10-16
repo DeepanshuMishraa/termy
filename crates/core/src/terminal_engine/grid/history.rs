@@ -1,20 +1,40 @@
-//! Scrollback storage. History is bounded by a row limit and by a byte budget
-//! that counts packed rows at their real size, so how much history survives
-//! no longer depends on the current width (and a transient widen loses none).
-//! The charge is a function of row contents alone (see `row.rs`), so two
-//! engines fed the same bytes evict the same rows.
+//! Scrollback storage. History is bounded by a row limit and by a byte budget.
+//! Each row is charged a canonical size: its cells as though packed with room
+//! for the whole row and one style run, and its metadata. That is what a flood
+//! stores, but the charge doesn't depend on whether a row is actually stored
+//! dense or packed, nor on its buffers' capacities: those depend on when idle
+//! compaction ran and on how output was split into feeds, so charging them let
+//! a mux host and its replica evict different rows. Now engines fed the same
+//! bytes evict the same rows, whenever each compacts.
+//!
+//! Rows queued for compaction are usually dense, which takes more than their
+//! charge: once the charge with that excess passes the budget, the oldest
+//! queued rows are packed, which changes no charge. Rows that resist packing
+//! (a style change every few cells) take up to four times their charge.
+//!
+//! The charge follows the width, but a widen evicts nothing the old width
+//! kept (see `Grid::resize`), so a transient widen loses no history; later
+//! output evicts down to the budget.
 use super::{Cell, Grid, Row, Size};
 
 /// The default byte budget: what one million dense cells take (16 MiB).
 pub(in crate::terminal_engine) const DEFAULT_HISTORY_BYTES: usize =
     Size::MAX_CELLS * size_of::<Cell>();
 
-/// What a history row costs: its ring slot and its heap bytes. Counting the
-/// slot keeps an unlimited row count bounded by the byte budget alone.
+/// What a history row is charged: its ring slot and [`Row::charged_bytes`].
+/// Counting the slot keeps an unlimited row count bounded by the byte budget
+/// alone.
 #[inline]
 pub(super) fn history_charge(row: &Row) -> usize {
+    size_of::<Row>() + row.charged_bytes()
+}
+
+/// What a history row really takes: its ring slot and its heap bytes.
+#[inline]
+pub(super) fn history_heap(row: &Row) -> usize {
     size_of::<Row>() + row.heap_bytes()
 }
+
 /// Queued rows packed per step when history crosses its byte budget.
 const BUDGET_COMPACTION_CHUNK: usize = 256;
 
@@ -46,23 +66,31 @@ impl Grid {
         self.history_bytes = 0;
     }
 
-    /// Remeasure every row, for paths that edit history rows in place.
+    /// Recount history's bytes, for paths that replace its rows. Each row
+    /// keeps the metadata charge it was measured.
     pub(super) fn recount_history_bytes(&mut self) {
-        self.history_bytes = self
-            .history
-            .iter_mut()
-            .map(|row| {
-                row.measure_extras();
-                history_charge(row)
-            })
-            .sum();
+        self.history_bytes = self.history.iter().map(history_charge).sum();
     }
 
-    /// Pack the oldest queued rows, then evict the oldest rows, until history
-    /// fits its byte budget. Cheap when it already fits.
+    /// History's charge plus what its queued rows take beyond theirs while
+    /// dense: an estimate of the bytes it takes that only packing reduces.
+    #[inline]
+    fn queued_history_bytes(&self) -> usize {
+        let dense_excess =
+            (self.size.cols * size_of::<Cell>()).saturating_sub(Row::charged_cells(self.size.cols));
+        self.pending_compaction
+            .min(self.history.len())
+            .saturating_mul(dense_excess)
+            .saturating_add(self.history_bytes)
+    }
+
+    /// Pack the oldest queued rows while history holds more than its byte
+    /// budget, then evict the oldest rows until their charge fits it. Cheap
+    /// when both fit.
     #[inline]
     pub(super) fn enforce_history_bytes(&mut self) {
-        if self.history_bytes > self.history_byte_limit {
+        // At least the charge, so this covers both.
+        if self.queued_history_bytes() > self.history_byte_limit {
             self.fit_history_bytes();
         }
     }
@@ -71,9 +99,7 @@ impl Grid {
     /// crossing it costs one chunk rather than packing every queued row.
     #[inline(never)]
     fn fit_history_bytes(&mut self) {
-        while self.history_bytes > self.history_byte_limit && self.needs_compaction() {
-            self.compact_pending_history(BUDGET_COMPACTION_CHUNK);
-        }
+        self.pack_history_to_budget();
         let mut removed = 0;
         while self.history_bytes > self.history_byte_limit && self.pop_history_front().is_some() {
             removed += 1;
@@ -85,6 +111,13 @@ impl Grid {
         }
     }
 
+    /// Pack the oldest queued rows while history takes more than its budget.
+    pub(super) fn pack_history_to_budget(&mut self) {
+        while self.queued_history_bytes() > self.history_byte_limit && self.needs_compaction() {
+            self.compact_pending_history(BUDGET_COMPACTION_CHUNK);
+        }
+    }
+
     /// Pack queued history without switching scrolling rows to immediate
     /// packing, for steps forced while output is still arriving.
     pub(in crate::terminal_engine) fn compact_pending_history(&mut self, limit: usize) {
@@ -92,10 +125,8 @@ impl Grid {
         let start = self.history.len() - self.pending_compaction;
         let count = limit.min(self.pending_compaction);
         for row in self.history.iter_mut().skip(start).take(count) {
-            let before = row.heap_bytes();
-            // Also replaces a bound charged on entry with the measured bytes.
+            // Packing changes the row's storage, never its charge.
             row.compact();
-            self.history_bytes = self.history_bytes - before + row.heap_bytes();
         }
         self.pending_compaction -= count;
     }

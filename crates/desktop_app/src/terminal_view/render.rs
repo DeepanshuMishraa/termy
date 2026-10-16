@@ -689,6 +689,37 @@ fn cursor_state_with_preview(
 
 type PaneRenderCells = TerminalGridRows;
 
+/// Re-mark `selected` on the cached rows that a selection change enters or
+/// leaves, without rebuilding their colors, and return those rows.
+fn restyle_selection_rows(
+    rows: &mut [TerminalGridRow],
+    previous: Option<(SelectionPos, SelectionPos)>,
+    current: Option<(SelectionPos, SelectionPos)>,
+    display_offset: usize,
+) -> Vec<usize> {
+    let spans_line = |range: Option<(SelectionPos, SelectionPos)>, line: i32| {
+        range.is_some_and(|(start, end)| (start.line..=end.line).contains(&line))
+    };
+    let mut changed = Vec::new();
+    for (row, cells) in rows.iter_mut().enumerate() {
+        let Some(line) = i32::try_from(row as i64 - display_offset as i64).ok() else {
+            continue;
+        };
+        if !spans_line(previous, line) && !spans_line(current, line) {
+            continue;
+        }
+        let selected = |col| selection_range_contains(current, col, line);
+        if cells.iter().all(|cell| cell.selected == selected(cell.col)) {
+            continue;
+        }
+        for cell in Arc::make_mut(cells) {
+            cell.selected = selected(cell.col);
+        }
+        changed.push(row);
+    }
+    changed
+}
+
 fn pane_render_cells_match_dimensions(cells: &PaneRenderCells, cols: usize, rows: usize) -> bool {
     cells.len() == rows && cells.iter().all(|row_cells| row_cells.len() == cols)
 }
@@ -1115,17 +1146,42 @@ impl TerminalView {
         let planned = terminal.with_render_damage(|damage, mut damage_cells| {
             let palette_matches =
                 render_damage_palette_matches(damage.palette_revision, cache_key.palette_revision);
+            // A selection change alone (a drag, say) restyles only the rows
+            // it enters or leaves, unless output also changed the pane.
+            let previous_selection = cache.key.as_ref().map(|key| key.selection_range);
+            let selection_only_change = cache.key.as_ref().is_some_and(|key| {
+                key.selection_range != cache_key.selection_range
+                    && TerminalPaneRenderCacheKey {
+                        selection_range: cache_key.selection_range,
+                        ..*key
+                    } == cache_key
+            });
             let mut strategy = pane_cache_update_strategy(
                 !cache.cells.is_empty(),
                 cache.cols == cols && cache.rows == rows,
                 cache.display_offset == display_offset,
-                cache.key.as_ref() == Some(&cache_key),
+                cache.key.as_ref() == Some(&cache_key) || selection_only_change,
                 &damage.damage,
             );
             if !palette_matches {
                 strategy = PaneCacheUpdateStrategy::Full;
             } else if strategy == PaneCacheUpdateStrategy::Reuse && !damage.scrolls.is_empty() {
                 strategy = PaneCacheUpdateStrategy::Partial;
+            }
+            if selection_only_change {
+                if strategy != PaneCacheUpdateStrategy::Reuse {
+                    return (PaneCacheUpdateStrategy::Full, TerminalGridPaintDamage::Full);
+                }
+                let rows = restyle_selection_rows(
+                    Arc::make_mut(&mut cache.cells).as_mut_slice(),
+                    previous_selection.flatten(),
+                    cache_key.selection_range,
+                    display_offset,
+                );
+                return (
+                    PaneCacheUpdateStrategy::Partial,
+                    TerminalGridPaintDamage::Rows(rows.into()),
+                );
             }
             if strategy == PaneCacheUpdateStrategy::Partial
                 && !damage.scrolls.is_empty()
@@ -1606,11 +1662,20 @@ impl TerminalView {
                                                 MouseButton::Left,
                                                 cx.listener(move |this, _event, _window, cx| {
                                                     if !this.cancel_plugin_invocation(toast_id, cx) {
-                                                        crate::config::execute_fix_for_toast(
-                                                            toast_id,
-                                                        );
+                                                        let fixed =
+                                                            crate::config::execute_fix_for_toast(
+                                                                toast_id,
+                                                            );
                                                         crate::ui::toast::dismiss_toast(toast_id);
-                                                        crate::ui::toast::success("Config fixed");
+                                                        if fixed {
+                                                            crate::ui::toast::success(
+                                                                "Config fixed",
+                                                            );
+                                                        } else {
+                                                            crate::ui::toast::error(
+                                                                "Could not fix config",
+                                                            );
+                                                        }
                                                     }
                                                     this.notify_overlay(cx);
                                                     cx.stop_propagation();
@@ -2909,6 +2974,12 @@ impl Render for TerminalView {
                 if cols == 0 || rows == 0 {
                     continue;
                 }
+                // Skip before the render cache consumes the pane's damage, so
+                // the rows it names repaint once the pane can be laid out.
+                let Some(pane_layout) = self.terminal_pane_layout(active_tab, pane, content_bounds)
+                else {
+                    continue;
+                };
                 let is_active_pane = active_pane_id.as_deref() == Some(pane.id.as_str());
                 let (pane_inactive_focus, pane_active_focus) =
                     pane_focus_factors(is_active_pane, pane_focus_enabled);
@@ -2970,7 +3041,6 @@ impl Render for TerminalView {
                     selection_range: pane_cache_key.selection_range,
                     pane_search_results,
                 };
-                #[cfg_attr(not(debug_assertions), allow(unused_variables))]
                 let (pane_cells, cache_strategy, paint_damage, paint_cache) = {
                     let mut pane_render_cache = pane.render_cache.borrow_mut();
                     let paint_cache = pane_render_cache.paint_cache.clone();
@@ -3011,13 +3081,32 @@ impl Render for TerminalView {
                                 .is_some_and(|cell| !cell.bg_matches_theme)
                         },
                     );
-                let pane_surface_bg = tui_surface_background(
-                    tui_paints_border,
-                    pane_cells
-                        .iter()
-                        .flat_map(|row| row.iter().map(|cell| cell.bg)),
-                    terminal_surface_bg,
-                );
+                // Voting scans every cell twice, so reuse the result until the
+                // cells or its other inputs change.
+                let pane_surface_bg = {
+                    let mut pane_render_cache = pane.render_cache.borrow_mut();
+                    match pane_render_cache.surface_background {
+                        Some((border, configured, background))
+                            if cache_strategy == PaneCacheUpdateStrategy::Reuse
+                                && border == tui_paints_border
+                                && configured == terminal_surface_bg =>
+                        {
+                            background
+                        }
+                        _ => {
+                            let background = tui_surface_background(
+                                tui_paints_border,
+                                pane_cells
+                                    .iter()
+                                    .flat_map(|row| row.iter().map(|cell| cell.bg)),
+                                terminal_surface_bg,
+                            );
+                            pane_render_cache.surface_background =
+                                Some((tui_paints_border, terminal_surface_bg, background));
+                            background
+                        }
+                    }
+                };
                 if pane_surface_bg != terminal_surface_bg {
                     terminal_area_background = Some(pane_surface_bg);
                 }
@@ -3146,10 +3235,6 @@ impl Render for TerminalView {
                         .into_any_element()
                 });
 
-                let Some(pane_layout) = self.terminal_pane_layout(active_tab, pane, content_bounds)
-                else {
-                    continue;
-                };
                 let pane_frame_left = pane_layout.frame.origin_x;
                 let pane_frame_top = pane_layout.frame.origin_y;
                 let pane_frame_width = pane_layout.frame.width;
@@ -5172,6 +5257,43 @@ mod tests {
             }]),
         );
         assert_eq!(strategy, PaneCacheUpdateStrategy::Full);
+    }
+
+    #[test]
+    fn selection_change_restyles_only_rows_it_enters_or_leaves() {
+        let mut rows: Vec<TerminalGridRow> = (0..4)
+            .map(|_| Arc::new((0..3).map(|col| test_render_cell(col, 'x')).collect()))
+            .collect();
+        let untouched = Arc::clone(&rows[0]);
+        let pos = |line, col| SelectionPos { col, line };
+        // Scrolled one line into history: viewport row 1 is terminal line 0.
+        let first = Some((pos(0, 1), pos(1, 0)));
+        assert_eq!(restyle_selection_rows(&mut rows, None, first, 1), [1, 2]);
+        let selected = |rows: &[TerminalGridRow], row: usize| {
+            rows[row]
+                .iter()
+                .map(|cell| cell.selected)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(selected(&rows, 1), [false, true, true]);
+        assert_eq!(selected(&rows, 2), [true, false, false]);
+
+        // Dragging the head down one row leaves row 1 as it was.
+        let second = Some((pos(0, 1), pos(2, 1)));
+        assert_eq!(restyle_selection_rows(&mut rows, first, second, 1), [2, 3]);
+        assert_eq!(selected(&rows, 1), [false, true, true]);
+        assert_eq!(selected(&rows, 2), [true, true, true]);
+        assert_eq!(selected(&rows, 3), [true, true, false]);
+
+        assert_eq!(
+            restyle_selection_rows(&mut rows, second, None, 1),
+            [1, 2, 3]
+        );
+        assert!((0..4).all(|row| selected(&rows, row) == [false; 3]));
+        assert!(
+            Arc::ptr_eq(&rows[0], &untouched),
+            "rows outside both selections are shared"
+        );
     }
 
     #[test]

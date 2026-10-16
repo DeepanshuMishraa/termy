@@ -188,10 +188,7 @@ impl Shared {
     }
 
     pub(super) fn live_transport(&self) -> Option<Arc<Transport>> {
-        self.transport
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .upgrade()
+        self.transport.get().and_then(Weak::upgrade)
     }
 
     /// Queue replies to the child. Callers hold the engine lock, so replies

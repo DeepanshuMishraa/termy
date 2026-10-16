@@ -1,4 +1,4 @@
-use super::super::history::DEFAULT_HISTORY_BYTES;
+use super::super::history::{DEFAULT_HISTORY_BYTES, history_heap};
 use super::super::tests::{assert_history_compacted, grid, print, text};
 use super::super::*;
 
@@ -102,10 +102,12 @@ fn widening_packs_rewrapped_history_instead_of_evicting_it() {
         cols: 4096,
         rows: 3,
     });
-    // At 4096 columns the old cell cap kept only 256 rows.
+    // At 4096 columns the old cell cap kept only 256 rows. The widen evicts
+    // nothing the old width kept, and what history takes fits the budget.
     assert_eq!(grid.history_size(), 1022);
     assert_eq!(grid.display_offset(), 400);
-    assert!(grid.history_bytes <= DEFAULT_HISTORY_BYTES);
+    let heap: usize = grid.history.iter().map(history_heap).sum();
+    assert!(heap <= DEFAULT_HISTORY_BYTES);
     assert_eq!(
         grid.row(-1).unwrap().line()[0].character,
         char::from(b'a' + (1021 % 26) as u8)

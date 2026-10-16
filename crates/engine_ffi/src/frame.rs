@@ -47,6 +47,19 @@ pub struct TermyEngineCell {
 }
 
 const _: () = assert!(size_of::<TermyEngineCell>() == 32);
+// Mirrored by tests/c/replica.c, so the header and Rust agree on every field.
+const _: () = {
+    use std::mem::offset_of;
+    assert!(offset_of!(TermyEngineCell, grapheme_start) == 4);
+    assert!(offset_of!(TermyEngineCell, grapheme_len) == 8);
+    assert!(offset_of!(TermyEngineCell, width) == 10);
+    assert!(offset_of!(TermyEngineCell, underline) == 11);
+    assert!(offset_of!(TermyEngineCell, foreground) == 12);
+    assert!(offset_of!(TermyEngineCell, background) == 16);
+    assert!(offset_of!(TermyEngineCell, underline_color) == 20);
+    assert!(offset_of!(TermyEngineCell, flags) == 24);
+    assert!(offset_of!(TermyEngineCell, hyperlink) == 28);
+};
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -431,7 +444,10 @@ pub unsafe extern "C" fn termy_engine_read_lines(
         buffers.clear();
         let cols = engine.size().cols;
         let first = first_line.max(-(engine.history_size() as i64));
-        let last = (first_line.saturating_add(i64::from(count))).min(engine.size().rows as i64);
+        // `rows` is a u16 in the frame, so one call reads at most 65,535 rows.
+        let last = (first_line.saturating_add(i64::from(count)))
+            .min(engine.size().rows as i64)
+            .min(first + i64::from(u16::MAX));
         let mut rows = 0_u16;
         let mut line = first;
         while line < last {

@@ -196,11 +196,6 @@ impl TermyEngine {
             .read_viewport(&self.engine, start as usize, end as usize)
     }
 
-    /// Strings referenced by the last [`Self::read_rows`] call.
-    pub fn read_string(&self, index: u32) -> Option<String> {
-        self.cells.string(index as usize).map(str::to_owned)
-    }
-
     /// Flat cells for one buffer line; strings via [`Self::read_strings`].
     pub fn read_line(&mut self, line: i32) -> Vec<u32> {
         self.cells.read_line(&self.engine, line)
@@ -402,9 +397,10 @@ impl TermyEngine {
         input::encode_mouse(&self.engine, kind, button, col, row, modifiers)
     }
 
-    /// Normalize newlines and apply bracketed paste when the application asked for it.
-    pub fn encode_paste(&self, text: &str) -> Vec<u8> {
-        input::encode_paste(self.engine.modes().bracketed_paste, text)
+    /// Normalize newlines, drop control characters, and apply bracketed paste
+    /// when the application asked for it and `allow_brackets` is set.
+    pub fn encode_paste(&self, text: &str, allow_brackets: bool) -> Vec<u8> {
+        input::encode_paste(allow_brackets && self.engine.modes().bracketed_paste, text)
     }
 
     pub fn encode_focus(&self, focused: bool) -> Option<Vec<u8>> {

@@ -234,6 +234,9 @@ typedef void (*TermyFfiProtocolReplyCallback)(
     TermyFfiUserData user_data,
     TermyFfiByteSlice reply);
 
+/* Placements of the same image in one batch share a single `png` buffer
+ * (same pointer). Never free it directly: termy_kitty_graphics_batch_free
+ * releases each buffer once. */
 typedef struct {
   uint64_t placement_serial;
   uint32_t image_id;
@@ -521,6 +524,9 @@ TermyFfiStatus termy_terminal_new_with_options(
     TermyFfiSize size,
     const TermyFfiTerminalOptions *options,
     TermyFfiTerminal **out_terminal);
+/* A terminal without a PTY, fed with termy_terminal_feed_output. Its wake
+ * channel fires when a synchronized update (?2026) times out and commits
+ * without further output, so hosts should render and drain replies then. */
 TermyFfiStatus termy_display_terminal_new(
     TermyFfiSize size,
     TermyFfiTerminal **out_terminal);
@@ -608,6 +614,8 @@ TermyFfiStatus termy_cli_install(
     size_t shell_len,
     TermyFfiBytes *out_message);
 
+/* tmux control mode is unix-only; libtermy does not export it on Windows. */
+#ifndef _WIN32
 typedef struct {
   uint32_t kind;
   TermyFfiBytes pane_id;
@@ -641,6 +649,7 @@ TermyFfiStatus termy_tmux_control_send(
     size_t command_len,
     TermyFfiBytes *out_output);
 void termy_tmux_control_close(TermyFfiTmuxControl *session);
+#endif /* _WIN32 */
 
 TermyFfiStatus termy_settings_prettify_config(void);
 TermyFfiStatus termy_terminal_reload_default_config_colors(TermyFfiTerminal *terminal);
@@ -715,6 +724,15 @@ TermyFfiStatus termy_terminal_encode_key_with_options(
 TermyFfiStatus termy_terminal_encode_mouse(
     TermyFfiTerminal *terminal,
     const TermyFfiMouseInput *input,
+    TermyFfiBytes *out_bytes);
+/* Encode pasted UTF-8 text for the program: line endings become Enter,
+ * control characters (C0 except tab, DEL, C1) are dropped so the paste cannot
+ * run commands or end the bracket early, and the text is wrapped in
+ * bracketed-paste markers when the program enabled mode 2004. */
+TermyFfiStatus termy_terminal_encode_paste(
+    TermyFfiTerminal *terminal,
+    const uint8_t *text_ptr,
+    size_t text_len,
     TermyFfiBytes *out_bytes);
 TermyFfiStatus termy_terminal_resize(TermyFfiTerminal *terminal, TermyFfiSize size);
 TermyFfiStatus termy_terminal_set_wakeup_enabled(

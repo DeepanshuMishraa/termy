@@ -534,7 +534,9 @@ impl Grid {
         let right = self.right_limit();
         let style = self.pen.style;
         let active = &mut self.screen_mut().rows[row];
-        if active.has_extras() {
+        // Metadata left of the run (a link earlier on the line) stays; the
+        // general path drops any the run would overwrite.
+        if !active.follows_extras(start) {
             return (0, None);
         }
         let occupied = active.occupied;
@@ -734,7 +736,7 @@ impl Grid {
         true
     }
 
-    /// `write_ascii` of one byte in the middle of a plain row, without the
+    /// `write_ascii` of one byte in the middle of a row, without the
     /// general path's setup. Returns false, having changed nothing, when any
     /// condition that path handles applies.
     #[inline]
@@ -751,7 +753,7 @@ impl Grid {
         }
         let style = self.pen.style;
         let active = &mut self.screen_mut().rows[row];
-        if active.has_extras() || (col < active.occupied && active.cells[col].flags != 0) {
+        if !active.follows_extras(col) || (col < active.occupied && active.cells[col].flags != 0) {
             return false;
         }
         Cell::plain(style, 0).store(&mut active.cells[col], char::from(byte));

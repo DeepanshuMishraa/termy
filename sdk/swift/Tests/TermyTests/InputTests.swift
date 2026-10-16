@@ -62,6 +62,22 @@ struct InputTests {
         try terminal.feed("\u{1b}[?2004h")
         #expect(terminal.isBracketedPasteEnabled)
         try terminal.paste("a\u{1b}[201~b")
-        #expect(String(decoding: sent, as: UTF8.self) == "\u{1b}[200~ab\u{1b}[201~")
+        #expect(String(decoding: sent, as: UTF8.self) == "\u{1b}[200~a[201~b\u{1b}[201~")
+    }
+
+    @Test func pasteCannotEscapeTheBracket() throws {
+        let terminal = try displayTerminal()
+        var sent = Data()
+        terminal.onInput = { sent.append($0) }
+        // A single-pass marker strip would collapse this into a real end marker.
+        try terminal.feed("\u{1b}[?2004h")
+        try terminal.paste("x\u{1b}[20\u{1b}[201~1~rm -rf ~\n")
+        #expect(String(decoding: sent, as: UTF8.self) == "\u{1b}[200~x[20[201~1~rm -rf ~\r\u{1b}[201~")
+
+        // Without bracketed paste, controls are still dropped.
+        sent.removeAll()
+        try terminal.feed("\u{1b}[?2004l")
+        try terminal.paste("ls\u{3}\u{1b}[201~\r\n")
+        #expect(String(decoding: sent, as: UTF8.self) == "ls[201~\r")
     }
 }

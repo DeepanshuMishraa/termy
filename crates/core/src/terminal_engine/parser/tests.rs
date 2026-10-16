@@ -146,7 +146,8 @@ fn utf8_validation_matches_lossy_decoding_including_reconsumption() {
         b"\xc2!",
         b"\xe2\xc2\xa3!",
         b"\xf0\x9f\xe2\x82\xac!",
-        "\u{80}\u{7ff}\u{800}\u{d7ff}\u{e000}\u{ffff}\u{10000}\u{10ffff}!".as_bytes(),
+        // U+0080 to U+009F are C1 controls, not text.
+        "\u{a0}\u{7ff}\u{800}\u{d7ff}\u{e000}\u{ffff}\u{10000}\u{10ffff}!".as_bytes(),
     ];
     for &bytes in samples {
         let expected = String::from_utf8_lossy(bytes);
@@ -740,4 +741,37 @@ fn line_endings_parse_alike_whole_and_bytewise() {
         }
         assert_eq!(parse(&bytes), bytewise.events, "{bytes:02x?}");
     }
+}
+
+#[test]
+fn utf8_encoded_c1_controls_act_as_their_seven_bit_forms() {
+    // U+009B is CSI, U+009D OSC (ended by BEL), U+0084 IND and U+0090 DCS.
+    let stream = "a\u{9b}31mb\u{9d}0;title\x07\u{84}\u{90}q\x1b\\c".as_bytes();
+    let expected = vec![
+        Event::Print('a'),
+        Event::Csi(vec![vec![Some(31)]], None, vec![], b'm'),
+        Event::Print('b'),
+        Event::Osc(b"0;title".to_vec()),
+        Event::Escape(vec![], b'D'),
+        Event::Dcs(b"q".to_vec()),
+        Event::Print('c'),
+    ];
+    assert_eq!(parse(stream), expected);
+    // The same, one byte at a time through the streaming decoder.
+    let mut recorder = Recorder::default();
+    let mut parser = Parser::default();
+    for byte in stream {
+        parser.advance(&mut recorder, std::slice::from_ref(byte));
+    }
+    assert_eq!(recorder.events, expected);
+    // Raw 8-bit C1 bytes are not UTF-8.
+    assert_eq!(
+        parse(b"\x9b31m"),
+        vec![
+            Event::Print(char::REPLACEMENT_CHARACTER),
+            Event::Print('3'),
+            Event::Print('1'),
+            Event::Print('m'),
+        ]
+    );
 }

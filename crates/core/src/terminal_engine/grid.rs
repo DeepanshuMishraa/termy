@@ -940,14 +940,11 @@ impl Grid {
         let cols = self.size.cols;
         let count = count.min(bottom - top);
         let history_before = self.history_size();
-        for _ in 0..count {
-            let mut row = self
-                .screen_mut()
-                .rows
-                .remove(bottom - 1)
-                .expect("scroll region row");
+        // The region's last `count` rows move to its top at once, blanked.
+        let rows = &mut self.screen_mut().rows;
+        rows.rotate_range_right(top..bottom, count);
+        for row in rows.range_mut(top..top + count) {
             row.clear(cols, &blank);
-            self.screen_mut().rows.insert(top, row);
         }
         if count != 0 {
             self.mark_scroll_damage(top, bottom, -(count as i32));
@@ -1049,7 +1046,8 @@ impl Grid {
         self.origin_mode = saved.origin_mode;
         self.autowrap = saved.autowrap;
         self.motion_done(old);
-        self.pending_wrap = saved.pending_wrap && self.cursor.col + 1 == self.size.cols;
+        // A wrap saved at the right margin is still pending there.
+        self.pending_wrap = saved.pending_wrap && self.cursor.col + 1 == self.right_limit();
     }
 
     pub(super) fn set_alternate(&mut self, enabled: bool, clear: bool, save_cursor: bool) {
@@ -1279,11 +1277,21 @@ impl Grid {
             self.primary.saved.cursor.col = self.primary.cursor.col;
             self.primary.saved.pending_wrap = self.primary.pending_wrap;
         }
+        let widened = size.cols > self.size.cols;
         self.size = size;
         self.flood_exposed = false;
-        self.recount_history_bytes();
+        // Reflow recounted history; height changes keep its count.
         self.trim_history();
-        self.enforce_history_bytes();
+        if widened {
+            // History is charged at the new width from here on, but the
+            // widen itself evicts nothing the old width kept (as `reflow`
+            // charges it), so a transient widen loses no history. Later
+            // output, or a resize that doesn't widen, evicts down to the
+            // budget.
+            self.pack_history_to_budget();
+        } else {
+            self.enforce_history_bytes();
+        }
         self.pending_compaction = self.pending_compaction.min(self.history.len());
         if self.pending_compaction != 0 {
             self.history_activity = true;

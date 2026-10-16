@@ -18,85 +18,15 @@ pub use crate::theme_core::{
     ThemeRegistryIndex, ThemeStoreTheme, normalize_theme_id, parse_theme_colors_json,
     registry_file_url, theme_colors_json_pretty,
 };
-use std::sync::{OnceLock, RwLock};
 
-pub trait ThemeProvider: Send + Sync {
-    fn theme(&self, theme_id: &str) -> Option<ThemeColors>;
+/// Themes every Termy host ships offline: core config, libtermy, the CLI and
+/// the desktop app. Other palettes below are bundled only for embedders that
+/// list them themselves (the web package); apps install them from the theme
+/// store.
+pub const BUILTIN_THEME_IDS: &[&str] = &["termy", "termy-light"];
 
-    fn theme_ids(&self) -> &'static [&'static str] {
-        &[]
-    }
-}
-
-#[derive(Default)]
-pub struct ThemeRegistry {
-    providers: Vec<Box<dyn ThemeProvider>>,
-}
-
-impl ThemeRegistry {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn register_provider<P>(&mut self, provider: P)
-    where
-        P: ThemeProvider + 'static,
-    {
-        self.providers.push(Box::new(provider));
-    }
-
-    pub fn resolve(&self, theme_id: &str) -> Option<ThemeColors> {
-        for provider in self.providers.iter().rev() {
-            if let Some(theme) = provider.theme(theme_id) {
-                return Some(theme);
-            }
-        }
-        None
-    }
-
-    pub fn theme_ids(&self) -> Vec<&'static str> {
-        let mut ids = Vec::new();
-        for provider in &self.providers {
-            for id in provider.theme_ids() {
-                if !ids.contains(id) {
-                    ids.push(*id);
-                }
-            }
-        }
-        ids
-    }
-}
-
-static GLOBAL_THEME_REGISTRY: OnceLock<RwLock<ThemeRegistry>> = OnceLock::new();
-
-fn global_theme_registry() -> &'static RwLock<ThemeRegistry> {
-    GLOBAL_THEME_REGISTRY.get_or_init(|| RwLock::new(ThemeRegistry::new()))
-}
-
-pub fn register_theme_provider<P>(provider: P)
-where
-    P: ThemeProvider + 'static,
-{
-    global_theme_registry()
-        .write()
-        .expect("Theme registry lock poisoned")
-        .register_provider(provider);
-}
-
-pub fn resolve_theme(theme_id: &str) -> Option<ThemeColors> {
-    global_theme_registry()
-        .read()
-        .expect("Theme registry lock poisoned")
-        .resolve(theme_id)
-}
-
-pub fn available_theme_ids() -> Vec<&'static str> {
-    global_theme_registry()
-        .read()
-        .expect("Theme registry lock poisoned")
-        .theme_ids()
-}
-
+/// Colors of a [`BUILTIN_THEME_IDS`] theme; `termylight` is accepted for
+/// `termy-light`.
 pub fn builtin_theme(theme_id: &str) -> Option<ThemeColors> {
     match normalize_theme_id(theme_id).as_str() {
         "termy" => Some(termy()),
@@ -168,6 +98,14 @@ fn rgba(r: u8, g: u8, b: u8) -> Rgb8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_builtin_theme_id_resolves() {
+        for id in BUILTIN_THEME_IDS {
+            assert!(builtin_theme(id).is_some(), "{id}");
+        }
+        assert!(builtin_theme("dracula").is_none());
+    }
 
     #[test]
     fn termy_light_is_an_offline_builtin_with_a_light_background() {

@@ -82,7 +82,7 @@ where
     S: Into<String>,
 {
     let mut startup = StartupArguments::default();
-    let mut args = args.into_iter().map(Into::into).peekable();
+    let mut args = args.into_iter().map(Into::into);
 
     while let Some(arg) = args.next() {
         if arg.starts_with("termy://") {
@@ -773,6 +773,9 @@ fn main() {
         // geometry that is still waiting for its delayed save.
         cx.on_app_quit(|cx| {
             window_state::flush(cx);
+            // The listener thread never returns, so its guard's cleanup does
+            // not run; drop the endpoint here so no later launch reads it.
+            instance::remove_published_endpoint();
             async {}
         })
         .detach();

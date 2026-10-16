@@ -63,7 +63,7 @@ fn oversized_string_isolates_escapes_until_a_csi_end_marker() {
 }
 
 #[test]
-fn byte_budget_commits_at_exact_bound_and_reuses_allocation() {
+fn byte_budget_commits_at_exact_bound_and_releases_most_of_the_buffer() {
     let now = Instant::now();
     let mut update = SynchronizedUpdate::default();
     update.begin(now, None);
@@ -72,6 +72,12 @@ fn byte_budget_commits_at_exact_bound_and_reuses_allocation() {
     assert_eq!(result.consumed, MAX_SYNC_BYTES);
     assert!(result.commit);
     assert!(update.bytes.capacity() <= MAX_SYNC_BYTES);
+    let buffer = update.take_buffer().unwrap();
+    update.recycle_buffer(buffer);
+    assert!(update.bytes.capacity() <= RETAINED_SYNC_BYTES);
+    update.begin(now, None);
+    assert!(!update.push(b"small next frame", now).commit);
+    // A frame within the retained size reuses its buffer.
     let buffer = update.take_buffer().unwrap();
     let allocation = buffer.as_ptr();
     update.recycle_buffer(buffer);
@@ -317,6 +323,38 @@ mod engine {
         assert_eq!(text(&engine, 0), "frame               ");
         assert_eq!(replies(&mut engine), b"\x1b[1;6R");
         assert!(engine.synchronized_update_deadline().is_none());
+    }
+
+    #[test]
+    fn resizing_to_the_current_size_keeps_the_update_and_the_open_grapheme() {
+        let mut engine = engine();
+        // A regional indicator pairs with the next one printed.
+        engine.feed("\u{1f1e9}".as_bytes());
+        let size = engine.size();
+        let generation = engine.generation();
+        engine.resize(size);
+        assert_eq!(engine.generation(), generation);
+        engine.feed("\u{1f1ea}".as_bytes());
+        assert_eq!(engine.viewport_row(0).unwrap().combining(0), "\u{1f1ea}");
+
+        engine.feed(b"\x1b[?2026hframe");
+        engine.resize(size);
+        assert!(engine.synchronized_update_deadline().is_some());
+    }
+
+    #[test]
+    fn a_large_update_does_not_pin_its_buffer() {
+        let mut engine = engine();
+        engine.feed(b"\x1b[?2026h");
+        engine.feed(&b"x".repeat(1024 * 1024));
+        engine.feed(b"\x1b[?2026l");
+        assert!(engine.synchronized_update.bytes.capacity() <= RETAINED_SYNC_BYTES);
+        // Small frames keep reusing theirs.
+        engine.feed(b"\x1b[?2026hsmall frame\x1b[?2026l");
+        let capacity = engine.synchronized_update.bytes.capacity();
+        assert_ne!(capacity, 0);
+        engine.feed(b"\x1b[?2026hsmall frame\x1b[?2026l");
+        assert_eq!(engine.synchronized_update.bytes.capacity(), capacity);
     }
 
     #[test]

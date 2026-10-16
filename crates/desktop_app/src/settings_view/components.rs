@@ -258,7 +258,7 @@ impl SettingsWindow {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(self.render_switch(id, checked, cx, on_toggle))
+                    .child(self.render_switch(id, title, checked, cx, on_toggle))
                     .child(self.render_reset_setting_button(search_key, cx)),
             );
 
@@ -302,6 +302,7 @@ impl SettingsWindow {
     pub(super) fn render_switch(
         &self,
         id: impl Into<SharedString>,
+        label: impl Into<SharedString>,
         checked: bool,
         cx: &mut Context<Self>,
         on_toggle: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
@@ -310,6 +311,7 @@ impl SettingsWindow {
         let view = cx.entity().downgrade();
         crate::ui::native::mac_switch(id, &self.native())
             .checked(checked)
+            .accessibility_label(label)
             .on_change(move |_, window, cx| {
                 let _ = view.update(cx, |view, cx| {
                     on_toggle(view, window, cx);

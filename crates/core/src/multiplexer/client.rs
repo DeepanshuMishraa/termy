@@ -12,29 +12,55 @@ use std::{
     time::Duration,
 };
 
+/// Longer than the host's own per-request deadline, so a slow host answers
+/// with its error before the client gives up on the reply.
+const RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
+
 struct Connection {
-    stream: Mutex<TcpStream>,
+    root: PathBuf,
+    /// `None` after a failed exchange; the next request reconnects.
+    stream: Mutex<Option<TcpStream>>,
     conditional_layout_updates: bool,
     viewport_replies: bool,
 }
 
 impl Connection {
     fn connect(root: &Path) -> anyhow::Result<Self> {
-        let (stream, capabilities) = discovery::connect_with_capabilities(root)?;
+        let (stream, capabilities) = open_rpc_stream(root)?;
         Ok(Self {
-            stream: Mutex::new(stream),
+            root: root.to_owned(),
+            stream: Mutex::new(Some(stream)),
             conditional_layout_updates: capabilities.conditional_layout_updates,
             viewport_replies: capabilities.viewport_replies,
         })
     }
     fn request(&self, request: Request) -> anyhow::Result<Response> {
-        let mut stream = self.stream.lock().unwrap();
-        write_message(&mut *stream, &request)?;
-        match read_message(&mut *stream)? {
+        let mut slot = self.stream.lock().unwrap();
+        let stream = match slot.as_mut() {
+            Some(stream) => stream,
+            None => slot.insert(open_rpc_stream(&self.root)?.0),
+        };
+        let response = match write_message(stream, &request).and_then(|()| read_message(stream)) {
+            Ok(response) => response,
+            Err(error) => {
+                // A timed-out or broken exchange leaves the stream mid-reply:
+                // its late answer would be read as the next request's reply.
+                *slot = None;
+                return Err(error);
+            }
+        };
+        drop(slot);
+        match response {
             Response::Error(error) => bail!(error),
             response => Ok(response),
         }
     }
+}
+
+fn open_rpc_stream(root: &Path) -> anyhow::Result<(TcpStream, discovery::Endpoint)> {
+    let (stream, capabilities) = discovery::connect_with_capabilities(root)?;
+    stream.set_read_timeout(Some(RESPONSE_TIMEOUT))?;
+    Ok((stream, capabilities))
 }
 
 #[derive(Clone)]
@@ -266,6 +292,15 @@ impl SessionClient {
     pub fn write(&self, id: &str, bytes: Vec<u8>) -> anyhow::Result<()> {
         self.send_command(id, RemoteCommand::Write(bytes))
     }
+    /// The cell metrics (pixels) the attached UI last applied to `id`.
+    pub(crate) fn cell_size(&self, id: &str) -> anyhow::Result<(f32, f32)> {
+        let Response::Attached(_, state) =
+            self.connection.request(Request::Attach(id.to_owned()))?
+        else {
+            bail!("invalid attach response");
+        };
+        Ok((state.size.cell_width, state.size.cell_height))
+    }
     pub fn resize(&self, id: &str, size: TerminalSize) -> anyhow::Result<()> {
         self.send_command(id, RemoteCommand::Resize(size))
     }
@@ -340,10 +375,10 @@ struct Pending {
 impl Pending {
     fn extend_events(&mut self, events: Vec<TerminalEvent>) -> anyhow::Result<()> {
         for event in events {
-            // A snapshot replaces the previous one even for a suspended UI.
-            if matches!(event, TerminalEvent::ProgramStatus(_)) {
-                self.events
-                    .retain(|old| !matches!(old, TerminalEvent::ProgramStatus(_)));
+            // A suspended UI keeps only the latest state and one of each
+            // repeated notification, like the host's queue for slow clients.
+            if !coalesce_event(&mut self.events, &event) {
+                continue;
             }
             ensure!(self.events.len() < 1024, "session event queue overflow");
             self.events.push(event);
@@ -527,7 +562,9 @@ impl RemoteTransport for ClientTerminal {
     fn take_events(&self) -> Vec<TerminalEvent> {
         let mut pending = self.shared.pending.lock().unwrap();
         let mut events = std::mem::take(&mut pending.events);
-        if std::mem::take(&mut pending.wakeup) {
+        let wakeup = std::mem::take(&mut pending.wakeup);
+        drop(pending);
+        if wakeup {
             events.push(TerminalEvent::Wakeup);
         }
         events
@@ -572,5 +609,72 @@ mod tests {
         assert_eq!(pending.events.len(), 2);
         assert!(matches!(pending.events[0], TerminalEvent::Bell));
         assert!(matches!(pending.events[1], TerminalEvent::ProgramStatus(_)));
+    }
+
+    #[test]
+    fn late_reply_after_timeout_is_not_returned_for_the_next_request() {
+        use std::net::TcpListener;
+        let temp = tempfile::tempdir().unwrap();
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::fs::write(
+            temp.path().join("endpoint.json"),
+            serde_json::json!({ "version": VERSION, "port": port, "token": "token" }).to_string(),
+        )
+        .unwrap();
+        let host = std::thread::spawn(move || {
+            let accept = || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let _: Request = read_message(&mut stream).unwrap();
+                write_message(&mut stream, &Response::Ok).unwrap();
+                let _: Request = read_message(&mut stream).unwrap();
+                stream
+            };
+            // The first request is answered only after the client gave up.
+            let mut slow = accept();
+            std::thread::sleep(Duration::from_millis(300));
+            let _ = write_message(&mut slow, &Response::Layout(Some("first".into())));
+            let mut next = accept();
+            write_message(&mut next, &Response::Layout(Some("second".into()))).unwrap();
+        });
+
+        let connection = Connection::connect(temp.path()).unwrap();
+        let short_timeout = Some(Duration::from_millis(100));
+        let stream = connection.stream.lock().unwrap();
+        stream
+            .as_ref()
+            .unwrap()
+            .set_read_timeout(short_timeout)
+            .unwrap();
+        drop(stream);
+        assert!(connection.request(Request::GetLayout).is_err());
+        let Response::Layout(layout) = connection.request(Request::GetLayout).unwrap() else {
+            panic!("expected a layout reply");
+        };
+        assert_eq!(layout.as_deref(), Some("second"));
+        host.join().unwrap();
+    }
+
+    #[test]
+    fn suspended_ui_queue_coalesces_bells_progress_and_clipboard_writes() {
+        let mut pending = Pending::default();
+        for round in 0..2048 {
+            pending
+                .extend_events(vec![
+                    TerminalEvent::Bell,
+                    TerminalEvent::Progress(ProgressState::InProgress((round % 100) as u8)),
+                    TerminalEvent::ClipboardStore(format!("copy {round}")),
+                ])
+                .unwrap();
+        }
+        assert_eq!(pending.events.len(), 3);
+        assert!(matches!(pending.events[0], TerminalEvent::Bell));
+        assert!(matches!(
+            pending.events[1],
+            TerminalEvent::Progress(ProgressState::InProgress(47))
+        ));
+        assert!(
+            matches!(&pending.events[2], TerminalEvent::ClipboardStore(text) if text == "copy 2047")
+        );
     }
 }

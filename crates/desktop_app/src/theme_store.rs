@@ -1,5 +1,5 @@
 use crate::config;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 pub(crate) use termy_core::themes::ThemeStoreTheme;
 use termy_core::themes::{
@@ -7,7 +7,6 @@ use termy_core::themes::{
     normalize_theme_id, parse_theme_colors_json, registry_file_url,
 };
 
-const DEFAULT_THEME_STORE_API_URL: &str = "https://api.termy.sh";
 const DEFAULT_THEME_REGISTRY_URL: &str =
     "https://raw.githubusercontent.com/termy-org/themes/main/index.json";
 
@@ -52,25 +51,6 @@ pub(crate) struct InstalledTheme {
     pub(crate) slug: String,
     pub(crate) version: String,
     pub(crate) message: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct ThemeStoreAuthUser {
-    pub(crate) id: String,
-    pub(crate) github_user_id: i64,
-    pub(crate) github_login: String,
-    pub(crate) avatar_url: Option<String>,
-    pub(crate) name: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct ThemeStoreAuthSession {
-    pub(crate) session_token: String,
-    pub(crate) user: ThemeStoreAuthUser,
-}
-
-pub(crate) fn theme_store_api_base_url() -> String {
-    std::env::var("THEME_STORE_API_URL").unwrap_or_else(|_| DEFAULT_THEME_STORE_API_URL.into())
 }
 
 pub(crate) fn theme_store_registry_url() -> String {
@@ -244,34 +224,6 @@ pub(crate) fn fetch_theme_for_deeplink_blocking(slug: &str) -> Result<ThemeStore
         .ok_or_else(|| format!("Theme '{slug}' was not found in the theme registry"))
 }
 
-pub(crate) fn logout_auth_session_blocking(
-    api_base: &str,
-    session_token: &str,
-) -> Result<(), String> {
-    let base = api_base.trim_end_matches('/');
-    let url = format!("{base}/auth/logout");
-    let response = ureq::post(&url)
-        .set("Authorization", &format!("Bearer {}", session_token.trim()))
-        .call();
-
-    match response {
-        Ok(_) => Ok(()),
-        Err(ureq::Error::Status(401, _)) => Ok(()),
-        Err(error) => Err(format!("Failed to logout from theme store: {error}")),
-    }
-}
-
-pub(crate) fn clear_auth_session() -> Result<(), String> {
-    let Some(path) = auth_session_path() else {
-        return Ok(());
-    };
-    if path.exists() {
-        std::fs::remove_file(path)
-            .map_err(|error| format!("Failed to clear auth session: {error}"))?;
-    }
-    Ok(())
-}
-
 pub(crate) fn load_installed_theme_versions() -> HashMap<String, String> {
     let Some(path) = installed_theme_state_path() else {
         return HashMap::new();
@@ -350,13 +302,9 @@ pub(crate) fn persist_installed_theme_versions(
     std::fs::create_dir_all(parent)
         .map_err(|error| format!("Failed to create metadata directory: {error}"))?;
 
-    let mut sorted_entries: Vec<(String, String)> = versions
-        .iter()
-        .map(|(slug, version)| (slug.clone(), version.clone()))
-        .collect();
-    sorted_entries.sort_unstable_by(|left, right| left.0.cmp(&right.0));
-    let normalized: HashMap<String, String> = sorted_entries.into_iter().collect();
-    let contents = serde_json::to_string_pretty(&normalized)
+    // A BTreeMap keeps the file sorted by slug, so rewrites produce stable diffs.
+    let sorted: BTreeMap<&String, &String> = versions.iter().collect();
+    let contents = serde_json::to_string_pretty(&sorted)
         .map_err(|error| format!("Failed to serialize installed themes: {error}"))?;
     std::fs::write(&path, contents)
         .map_err(|error| format!("Failed to write installed themes metadata: {error}"))?;
@@ -410,12 +358,6 @@ fn installed_theme_state_path() -> Option<PathBuf> {
     let config_path = config::ensure_config_file().ok()?;
     let parent = config_path.parent()?;
     Some(parent.join("theme_store_installed.json"))
-}
-
-fn auth_session_path() -> Option<PathBuf> {
-    let config_path = config::ensure_config_file().ok()?;
-    let parent = config_path.parent()?;
-    Some(parent.join("theme_store_auth.json"))
 }
 
 fn installed_themes_dir_path() -> Option<PathBuf> {

@@ -57,7 +57,9 @@ const PLUGIN_CAPABILITIES: [&str; 2] = ["storage", "native-ui"];
 pub const MAX_INSTALLED_PLUGINS: usize = 32;
 pub const MAX_PLUGIN_SOURCE_BYTES: u64 = 16 * 1024 * 1024;
 pub const MAX_PLUGIN_SOURCE_FILES: usize = 4_096;
-const BUNDLE_CACHE_FORMAT: &[u8] = b"termy-plugin-bundle-v2\0";
+// Bundle cache keys hash each file's relative path and SHA-256; `worker.ts`
+// computes the same key.
+const BUNDLE_CACHE_FORMAT: &[u8] = b"termy-plugin-bundle-v3\0";
 const DISABLED_MARKER: &str = ".termy-disabled";
 const SOURCE_METADATA_FILE: &str = ".termy-source.json";
 const SETTINGS_FILE: &str = "settings.json";
@@ -1795,23 +1797,29 @@ impl PluginRuntime {
 
         ensure_managed_files(plugins_dir)?;
         if discovered.sources.is_empty() {
-            let mut host = self
+            // Shut the host down and clear the bundle cache without holding
+            // either lock.
+            let connection = self
                 .inner
                 .host
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            host.connection.take();
-            let mut catalog = self
-                .inner
-                .catalog
-                .write()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            catalog.fingerprint = Some(discovered.fingerprint);
-            catalog.commands.clear();
-            catalog.events.clear();
-            catalog.views.clear();
-            catalog.settings.clear();
-            catalog.revisions.clear();
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .connection
+                .take();
+            drop(connection);
+            {
+                let mut catalog = self
+                    .inner
+                    .catalog
+                    .write()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                catalog.fingerprint = Some(discovered.fingerprint);
+                catalog.commands.clear();
+                catalog.events.clear();
+                catalog.views.clear();
+                catalog.settings.clear();
+                catalog.revisions.clear();
+            }
             let bundles = plugins_dir.join(".termy-cache/bundles");
             if bundles.exists() {
                 fs::remove_dir_all(&bundles).map_err(|error| {
@@ -2585,8 +2593,19 @@ fn valid_protocol_handshake(line: &str, bytes: usize, protocol_secret: &str) -> 
                     .and_then(Value::as_str)
                     .map(str::to_string)
             })
-            .as_deref()
-            == Some(protocol_secret)
+            .is_some_and(|secret| secrets_match(secret.as_bytes(), protocol_secret.as_bytes()))
+}
+
+/// Compares in time that depends only on the lengths, so a local process
+/// can't recover the secret byte by byte from handshake timings.
+fn secrets_match(candidate: &[u8], secret: &[u8]) -> bool {
+    candidate.len() == secret.len()
+        && std::hint::black_box(
+            candidate
+                .iter()
+                .zip(secret)
+                .fold(0_u8, |difference, (a, b)| difference | (a ^ b)),
+        ) == 0
 }
 
 fn read_protocol_handshake(
@@ -3454,13 +3473,12 @@ fn discover_plugins(plugins_dir: &Path) -> Result<DiscoveredPlugins, String> {
         if !seen.insert(id.clone()) {
             return Err(format!("Duplicate plugin ID `{id}`"));
         }
-        let files = plugin_tree_files(&root)?;
         let mut source_hasher = Sha256::new();
         source_hasher.update(BUNDLE_CACHE_FORMAT);
-        for (relative_path, contents) in &files {
-            source_hasher.update(relative_path.as_bytes());
+        for entry in plugin_tree_entries(&root)? {
+            source_hasher.update(entry.relative_path.as_bytes());
             source_hasher.update([0]);
-            source_hasher.update(contents);
+            source_hasher.update(plugin_file_digest(&entry)?);
             source_hasher.update([0]);
         }
         let source_hash = source_hasher.finalize();
@@ -3482,12 +3500,21 @@ fn discover_plugins(plugins_dir: &Path) -> Result<DiscoveredPlugins, String> {
     })
 }
 
-fn plugin_tree_files(root: &Path) -> Result<PluginFiles, String> {
+/// A file of a plugin's source tree, found without reading it.
+struct PluginTreeEntry {
+    relative_path: String,
+    path: PathBuf,
+    metadata: fs::Metadata,
+}
+
+/// Every source file under `root`, sorted by relative path. The tree limits
+/// are checked against file sizes before anything is read.
+fn plugin_tree_entries(root: &Path) -> Result<Vec<PluginTreeEntry>, String> {
     fn visit(
         root: &Path,
         directory: &Path,
         total_bytes: &mut u64,
-        files: &mut Vec<(String, Vec<u8>)>,
+        files: &mut Vec<PluginTreeEntry>,
     ) -> Result<(), String> {
         let mut entries = fs::read_dir(directory)
             .map_err(|error| format!("Failed to read {}: {error}", directory.display()))?
@@ -3516,15 +3543,12 @@ fn plugin_tree_files(root: &Path) -> Result<PluginFiles, String> {
                     path.display()
                 ));
             }
-            let contents = fs::read(&path).map_err(|error| {
-                format!("Failed to read plugin file {}: {error}", path.display())
+            let metadata = entry.metadata().map_err(|error| {
+                format!("Failed to inspect plugin file {}: {error}", path.display())
             })?;
-            *total_bytes = total_bytes.saturating_add(contents.len() as u64);
+            *total_bytes = total_bytes.saturating_add(metadata.len());
             if *total_bytes > MAX_PLUGIN_SOURCE_BYTES {
-                return Err(format!(
-                    "Plugin {} exceeds the 16 MiB source-tree limit",
-                    root.display()
-                ));
+                return Err(plugin_source_too_large(root));
             }
             let relative_path = path
                 .strip_prefix(root)
@@ -3537,7 +3561,11 @@ fn plugin_tree_files(root: &Path) -> Result<PluginFiles, String> {
                 })
                 .collect::<Result<Vec<_>, _>>()?
                 .join("/");
-            files.push((relative_path, contents));
+            files.push(PluginTreeEntry {
+                relative_path,
+                path,
+                metadata,
+            });
             if files.len() > MAX_PLUGIN_SOURCE_FILES {
                 return Err(format!(
                     "Plugin {} exceeds the {MAX_PLUGIN_SOURCE_FILES}-file source-tree limit",
@@ -3551,8 +3579,125 @@ fn plugin_tree_files(root: &Path) -> Result<PluginFiles, String> {
     let mut files = Vec::new();
     let mut total_bytes = 0;
     visit(root, root, &mut total_bytes, &mut files)?;
-    files.sort_by(|left, right| left.0.as_bytes().cmp(right.0.as_bytes()));
+    files.sort_by(|left, right| {
+        left.relative_path
+            .as_bytes()
+            .cmp(right.relative_path.as_bytes())
+    });
     Ok(files)
+}
+
+fn plugin_source_too_large(root: &Path) -> String {
+    format!(
+        "Plugin {} exceeds the 16 MiB source-tree limit",
+        root.display()
+    )
+}
+
+fn plugin_tree_files(root: &Path) -> Result<PluginFiles, String> {
+    let mut remaining = MAX_PLUGIN_SOURCE_BYTES;
+    plugin_tree_entries(root)?
+        .into_iter()
+        .map(|entry| {
+            let contents = read_plugin_file(&entry.path, remaining)?;
+            // A file that grew since it was listed still counts.
+            remaining = remaining
+                .checked_sub(contents.len() as u64)
+                .ok_or_else(|| plugin_source_too_large(root))?;
+            Ok((entry.relative_path, contents))
+        })
+        .collect()
+}
+
+/// Reads at most `limit` bytes, failing if the file holds more.
+fn read_plugin_file(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
+    let file = fs::File::open(path)
+        .map_err(|error| format!("Failed to read plugin file {}: {error}", path.display()))?;
+    let mut contents = Vec::new();
+    file.take(limit.saturating_add(1))
+        .read_to_end(&mut contents)
+        .map_err(|error| format!("Failed to read plugin file {}: {error}", path.display()))?;
+    if contents.len() as u64 > limit {
+        return Err(format!(
+            "Plugin file {} exceeds the 16 MiB source-tree limit",
+            path.display()
+        ));
+    }
+    Ok(contents)
+}
+
+/// Path, modification time, length and, on Unix, inode and status-change
+/// time, which tools that restore modification times (`cp -p`, `rsync -t`)
+/// can't preserve.
+type PluginFileDigestKey = (PathBuf, std::time::SystemTime, u64, [i64; 3]);
+
+fn plugin_file_change_stamp(metadata: &fs::Metadata) -> [i64; 3] {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        [
+            metadata.ino() as i64,
+            metadata.ctime(),
+            metadata.ctime_nsec(),
+        ]
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = metadata;
+        [0; 3]
+    }
+}
+
+fn plugin_file_digests() -> &'static Mutex<HashMap<PluginFileDigestKey, [u8; 32]>> {
+    static DIGESTS: std::sync::OnceLock<Mutex<HashMap<PluginFileDigestKey, [u8; 32]>>> =
+        std::sync::OnceLock::new();
+    DIGESTS.get_or_init(Mutex::default)
+}
+
+/// SHA-256 of a plugin file, cached by [`PluginFileDigestKey`] so refreshing
+/// the catalog (on every palette open) doesn't rehash unchanged sources.
+fn plugin_file_digest(entry: &PluginTreeEntry) -> Result<[u8; 32], String> {
+    // Entries cached per file, across every plugin directory in use.
+    const MAX_CACHED_DIGESTS: usize = MAX_INSTALLED_PLUGINS * 256;
+    // A file changed again within the timestamp granularity could keep its
+    // modification time and length, so recently modified files aren't cached.
+    const RACY_MODIFICATION: Duration = Duration::from_secs(2);
+
+    let key = entry.metadata.modified().ok().and_then(|modified| {
+        let settled = modified
+            .elapsed()
+            .is_ok_and(|elapsed| elapsed >= RACY_MODIFICATION);
+        settled.then(|| {
+            (
+                entry.path.clone(),
+                modified,
+                entry.metadata.len(),
+                plugin_file_change_stamp(&entry.metadata),
+            )
+        })
+    });
+    let digests = plugin_file_digests();
+    if let Some(key) = &key
+        && let Some(digest) = digests
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(key)
+    {
+        return Ok(*digest);
+    }
+
+    let contents = read_plugin_file(&entry.path, MAX_PLUGIN_SOURCE_BYTES)?;
+    let digest: [u8; 32] = Sha256::digest(&contents).into();
+    if let Some(key) = key {
+        let mut digests = digests
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if digests.len() >= MAX_CACHED_DIGESTS {
+            digests.clear();
+        }
+        digests.insert(key, digest);
+    }
+    Ok(digest)
 }
 
 fn ensure_managed_files(plugins_dir: &Path) -> Result<(), String> {

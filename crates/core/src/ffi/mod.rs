@@ -498,6 +498,9 @@ pub struct TermyFfiTerminal {
     terminal: Terminal,
     wakeups_tx: Option<Sender<()>>,
     wakeups_rx: Option<Receiver<()>>,
+    /// PNG exports from the last graphics batch. Images cache their encoding
+    /// only while someone holds it, so this keeps polling from re-encoding.
+    kitty_png_exports: Vec<std::sync::Arc<Vec<u8>>>,
 }
 
 pub struct TermyFfiConfig {
@@ -967,13 +970,13 @@ fn ffi_bytes_from_string(value: String) -> TermyFfiBytes {
 
 fn ffi_kitty_graphics_placement_from_placement(
     placement: KittyGraphicsRenderPlacement,
-    png: &[u8],
+    png: TermyFfiBytes,
 ) -> TermyFfiKittyGraphicsPlacement {
     TermyFfiKittyGraphicsPlacement {
         placement_serial: placement.placement_serial,
         image_id: placement.image_id,
         placement_id: placement.placement_id,
-        png: ffi_bytes_from_vec(png.to_vec()),
+        png,
         image_width: placement.image_width,
         image_height: placement.image_height,
         image_generation: placement.image_generation,
@@ -1466,6 +1469,7 @@ unsafe fn terminal_new_with_runtime_config(
             terminal,
             wakeups_tx: Some(wakeups_tx),
             wakeups_rx: Some(wakeups_rx),
+            kitty_png_exports: Vec::new(),
         }));
     }
     TermyFfiStatus::Ok
@@ -1496,6 +1500,23 @@ pub unsafe extern "C" fn termy_terminal_new(
     })
 }
 
+/// A display terminal with a wake channel. Output is fed by the host, but a
+/// synchronized update (`?2026`) that times out commits later on its own; the
+/// wake channel is how the host learns to render it and send its replies.
+fn display_terminal(size: TerminalSize) -> TermyFfiTerminal {
+    let (wakeups_tx, wakeups_rx) = bounded(1);
+    let sender = wakeups_tx.clone();
+    let notifier = crate::TerminalWakeupNotifier::new(move || {
+        let _ = sender.try_send(());
+    });
+    TermyFfiTerminal {
+        terminal: Terminal::new_display_with_wakeup_notifier(size, None, Some(notifier)),
+        wakeups_tx: Some(wakeups_tx),
+        wakeups_rx: Some(wakeups_rx),
+        kitty_png_exports: Vec::new(),
+    }
+}
+
 /// Create a display-only terminal: a grid with no PTY/shell, fed via
 /// `termy_terminal_feed_output`. Used for tmux control-mode panes. All other
 /// terminal functions (render, resize, snapshot, free) work on the result.
@@ -1508,13 +1529,8 @@ pub unsafe extern "C" fn termy_display_terminal_new(
         if out_terminal.is_null() {
             return TermyFfiStatus::Null;
         }
-        let terminal = Terminal::new_display(size.into(), None);
         unsafe {
-            *out_terminal = Box::into_raw(Box::new(TermyFfiTerminal {
-                terminal,
-                wakeups_tx: None,
-                wakeups_rx: None,
-            }));
+            *out_terminal = Box::into_raw(Box::new(display_terminal(size.into())));
         }
         TermyFfiStatus::Ok
     })
@@ -2167,10 +2183,49 @@ fn settings_write_contents_to(
     path: &std::path::Path,
     contents: &str,
 ) -> Result<(), TermyFfiStatus> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|_| TermyFfiStatus::WriteFailed)?;
+    use std::io::Write as _;
+
+    // Write the file a symlink points at, so dotfile managers (stow, chezmoi)
+    // keep their link.
+    let target = settings_write_target(path);
+    let parent = match target.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    std::fs::create_dir_all(parent).map_err(|_| TermyFfiStatus::WriteFailed)?;
+    // Replace the file atomically: truncating in place would let a concurrent
+    // read see an empty file, which reads as the default template and could
+    // be written back over the user's config.
+    let mut temp =
+        tempfile::NamedTempFile::new_in(parent).map_err(|_| TermyFfiStatus::WriteFailed)?;
+    if let Ok(metadata) = std::fs::metadata(&target) {
+        let _ = temp.as_file().set_permissions(metadata.permissions());
     }
-    std::fs::write(path, contents).map_err(|_| TermyFfiStatus::WriteFailed)
+    temp.write_all(contents.as_bytes())
+        .and_then(|()| temp.as_file().sync_all())
+        .map_err(|_| TermyFfiStatus::WriteFailed)?;
+    temp.persist(&target)
+        .map(drop)
+        .map_err(|_| TermyFfiStatus::WriteFailed)
+}
+
+/// The file `path` resolves to through symlinks, or `path` itself.
+fn settings_write_target(path: &Path) -> PathBuf {
+    if let Ok(target) = std::fs::canonicalize(path) {
+        return target;
+    }
+    // A dangling link: create the file it names.
+    let mut target = path.to_path_buf();
+    for _ in 0..40 {
+        let Ok(link) = std::fs::read_link(&target) else {
+            break;
+        };
+        target = match target.parent() {
+            Some(parent) => parent.join(link),
+            None => link,
+        };
+    }
+    target
 }
 
 fn settings_color_hex(app: &cfg::AppConfig, id: cfg::ColorSettingId) -> Option<String> {
@@ -3354,18 +3409,14 @@ pub unsafe extern "C" fn termy_terminal_snapshot_decode(
         }
         unsafe { *out_terminal = ptr::null_mut() };
         let bytes = unsafe { slice::from_raw_parts(snapshot_ptr, snapshot_len) };
-        let terminal = Terminal::new_display(TerminalSize::default(), None);
-        match terminal.restore_snapshot(bytes) {
+        let terminal = display_terminal(TerminalSize::default());
+        match terminal.terminal.restore_snapshot(bytes) {
             Some(Ok(())) => {}
             Some(Err(error)) => return ffi_snapshot_status(&error),
             None => return TermyFfiStatus::InvalidArgument,
         }
         unsafe {
-            *out_terminal = Box::into_raw(Box::new(TermyFfiTerminal {
-                terminal,
-                wakeups_tx: None,
-                wakeups_rx: None,
-            }));
+            *out_terminal = Box::into_raw(Box::new(terminal));
         }
         TermyFfiStatus::Ok
     })
@@ -3499,6 +3550,69 @@ pub unsafe extern "C" fn termy_terminal_encode_mouse(
 
         unsafe {
             *out_bytes = encoded.map_or_else(|| termy_null_buffer(), ffi_bytes_from_vec);
+        }
+        TermyFfiStatus::Ok
+    })
+}
+
+/// Paste text with line endings as Enter, unsafe controls removed, and the
+/// bracketed-paste markers when the program enabled them. Matches
+/// `termy_engine_encode_paste` and the wasm encoder.
+fn encode_paste(text: &[u8], bracketed: bool) -> Vec<u8> {
+    let text = String::from_utf8_lossy(text);
+    let mut body = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(character) = chars.next() {
+        match character {
+            '\r' => {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                body.push('\r');
+            }
+            '\n' => body.push('\r'),
+            '\t' => body.push('\t'),
+            // Other C0 controls, DEL and C1 controls could run commands or
+            // end the bracket early, including nested end markers.
+            '\0'..='\x1f' | '\x7f'..='\u{9f}' => {}
+            character => body.push(character),
+        }
+    }
+    if !bracketed {
+        return body.into_bytes();
+    }
+    let mut out = Vec::with_capacity(body.len() + 12);
+    out.extend_from_slice(b"\x1b[200~");
+    out.extend_from_slice(body.as_bytes());
+    out.extend_from_slice(b"\x1b[201~");
+    out
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_terminal_encode_paste(
+    terminal: *mut TermyFfiTerminal,
+    text_ptr: *const u8,
+    text_len: usize,
+    out_bytes: *mut TermyFfiBytes,
+) -> TermyFfiStatus {
+    ffi_status_guard(|| {
+        if terminal.is_null() || out_bytes.is_null() || (text_ptr.is_null() && text_len > 0) {
+            return TermyFfiStatus::Null;
+        }
+        // (null, 0) is an empty paste, as for `termy_terminal_write`.
+        let text = if text_len == 0 {
+            &[][..]
+        } else {
+            unsafe { slice::from_raw_parts(text_ptr, text_len) }
+        };
+        let bracketed = unsafe { (*terminal).terminal.bracketed_paste_mode() };
+        let encoded = encode_paste(text, bracketed);
+        unsafe {
+            *out_bytes = if encoded.is_empty() {
+                termy_null_buffer()
+            } else {
+                ffi_bytes_from_vec(encoded)
+            };
         }
         TermyFfiStatus::Ok
     })
@@ -3945,19 +4059,28 @@ pub unsafe extern "C" fn termy_terminal_kitty_graphics_placements(
             return TermyFfiStatus::Null;
         }
 
-        let (revision, placements) = unsafe { (*terminal).terminal.kitty_graphics_snapshot() };
-        // An image may have thousands of Unicode placeholder placements. Keep
-        // one owned export per image until the entire C batch has been copied.
+        let terminal = unsafe { &mut *terminal };
+        let (revision, placements) = terminal.terminal.kitty_graphics_snapshot();
+        // An image may have thousands of Unicode placeholder placements. They
+        // all share one C copy of its PNG, which the batch frees once.
         let mut png_exports = HashMap::new();
+        let mut exports = Vec::new();
         let placements = placements
             .into_iter()
             .map(|placement| {
-                let png = png_exports
+                let png = *png_exports
                     .entry(std::sync::Arc::as_ptr(&placement.image))
-                    .or_insert_with(|| placement.image.png());
-                ffi_kitty_graphics_placement_from_placement(placement, png.as_slice())
+                    .or_insert_with(|| {
+                        let png = placement.image.png();
+                        let bytes = ffi_bytes_from_vec(png.to_vec());
+                        exports.push(png);
+                        bytes
+                    });
+                ffi_kitty_graphics_placement_from_placement(placement, png)
             })
             .collect::<Vec<_>>();
+        // Hold the encodings of images still placed until the next batch.
+        terminal.kitty_png_exports = exports;
         let (placements_ptr, placements_len, placements_capacity) = leak_vec(placements);
         unsafe {
             *out_batch = TermyFfiKittyGraphicsBatch {
@@ -3989,8 +4112,12 @@ pub unsafe extern "C" fn termy_kitty_graphics_batch_free(
                     batch.placements_capacity,
                 )
             };
+            // Placements of one image share a buffer; free each one once.
+            let mut freed = std::collections::HashSet::new();
             for placement in placements {
-                free_bytes(placement.png);
+                if freed.insert(placement.png.ptr) {
+                    free_bytes(placement.png);
+                }
             }
         }
         *batch = TermyFfiKittyGraphicsBatch::default();
@@ -4425,6 +4552,19 @@ mod tests {
             let png = unsafe { slice::from_raw_parts(placement.png.ptr, placement.png.len) };
             assert!(png.starts_with(b"\x89PNG"));
         }
+        // Placements of one image share one C copy of its PNG.
+        assert_eq!(placements[0].png, placements[1].png);
+        assert_eq!(
+            unsafe { termy_kitty_graphics_batch_free(&mut batch) },
+            TermyFfiStatus::Ok
+        );
+
+        // The export outlives the batch, so polling again does not re-encode.
+        assert_eq!(
+            unsafe { termy_terminal_kitty_graphics_placements(terminal, &mut batch) },
+            TermyFfiStatus::Ok
+        );
+        assert_eq!(image.png_encoding_count(), 1);
         assert_eq!(
             unsafe { termy_kitty_graphics_batch_free(&mut batch) },
             TermyFfiStatus::Ok
@@ -4551,6 +4691,68 @@ mod tests {
             TermyFfiStatus::InvalidArgument
         );
         assert!(plan.entries_ptr.is_null());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn settings_write_replaces_the_symlink_target_atomically() {
+        let root = tempfile::tempdir().expect("temporary settings root");
+        let dotfiles = root.path().join("dotfiles");
+        std::fs::create_dir(&dotfiles).expect("create dotfiles directory");
+        let target = dotfiles.join("config.txt");
+        std::fs::write(&target, "font_size = 12\n").expect("seed config");
+        let config_dir = root.path().join("termy");
+        std::fs::create_dir(&config_dir).expect("create config directory");
+        let link = config_dir.join("config.txt");
+        std::os::unix::fs::symlink(&target, &link).expect("link config");
+
+        settings_write_contents_to(&link, "font_size = 14\n").expect("write settings");
+
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .expect("link metadata")
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            std::fs::read_to_string(&target).expect("read target"),
+            "font_size = 14\n"
+        );
+        // No temporary files are left next to either file.
+        assert_eq!(std::fs::read_dir(&dotfiles).expect("list").count(), 1);
+        assert_eq!(std::fs::read_dir(&config_dir).expect("list").count(), 1);
+
+        // A dangling link still writes the file it names.
+        std::fs::remove_file(&target).expect("remove target");
+        settings_write_contents_to(&link, "font_size = 16\n").expect("write settings");
+        assert_eq!(
+            std::fs::read_to_string(&target).expect("read target"),
+            "font_size = 16\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn settings_write_never_exposes_a_truncated_file() {
+        let root = tempfile::tempdir().expect("temporary settings root");
+        let path = root.path().join("config.txt");
+        let contents = "font_size = 14\n".repeat(4096);
+        settings_write_contents_to(&path, &contents).expect("seed config");
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let writer = {
+            let (path, contents, done) = (path.clone(), contents.clone(), done.clone());
+            std::thread::spawn(move || {
+                for _ in 0..200 {
+                    settings_write_contents_to(&path, &contents).expect("write settings");
+                }
+                done.store(true, Ordering::SeqCst);
+            })
+        };
+        while !done.load(Ordering::SeqCst) {
+            let read = std::fs::read_to_string(&path).expect("read config");
+            assert_eq!(read.len(), contents.len(), "a reader saw a partial config");
+        }
+        writer.join().expect("writer thread");
     }
 
     #[cfg(unix)]
@@ -5551,6 +5753,75 @@ mod tests {
         let encoded = unsafe { slice::from_raw_parts(bytes.ptr, bytes.len) };
         assert_eq!(encoded, b"\x1b[<0;5;3M");
 
+        assert_eq!(unsafe { termy_buffer_free(bytes) }, TermyFfiStatus::Ok);
+        assert_eq!(unsafe { termy_terminal_free(terminal) }, TermyFfiStatus::Ok);
+    }
+
+    #[test]
+    fn display_terminal_wakes_when_a_synchronized_update_times_out() {
+        let mut terminal = ptr::null_mut();
+        assert_eq!(
+            unsafe { termy_display_terminal_new(termy_size_default(), &mut terminal) },
+            TermyFfiStatus::Ok
+        );
+        let output = b"\x1b[?2026hframe";
+        assert_eq!(
+            unsafe { termy_terminal_feed_output(terminal, output.as_ptr(), output.len()) },
+            TermyFfiStatus::Ok
+        );
+        let mut woke = false;
+        // Drop any signal from the feed itself.
+        assert_eq!(
+            unsafe { termy_terminal_wait_for_wakeup(terminal, 0, &mut woke) },
+            TermyFfiStatus::Ok
+        );
+        // The timed-out update is committed without further output, so only
+        // the wake channel can tell the host to render it.
+        assert_eq!(
+            unsafe { termy_terminal_wait_for_wakeup(terminal, 5_000, &mut woke) },
+            TermyFfiStatus::Ok
+        );
+        assert!(woke);
+        assert_eq!(unsafe { termy_terminal_free(terminal) }, TermyFfiStatus::Ok);
+    }
+
+    #[test]
+    fn terminal_encode_paste_cannot_escape_the_bracket() {
+        let mut terminal = ptr::null_mut();
+        assert_eq!(
+            unsafe { termy_display_terminal_new(termy_size_default(), &mut terminal) },
+            TermyFfiStatus::Ok
+        );
+        let paste = |text: &[u8]| {
+            let mut bytes = TermyFfiBytes::default();
+            assert_eq!(
+                unsafe {
+                    termy_terminal_encode_paste(terminal, text.as_ptr(), text.len(), &mut bytes)
+                },
+                TermyFfiStatus::Ok
+            );
+            let encoded = if bytes.ptr.is_null() {
+                Vec::new()
+            } else {
+                unsafe { slice::from_raw_parts(bytes.ptr, bytes.len) }.to_vec()
+            };
+            unsafe { termy_buffer_free(bytes) };
+            encoded
+        };
+
+        assert_eq!(paste(b"a\r\nb\x1b[201~\x03\tc"), b"a\rb[201~\tc");
+        unsafe { (*terminal).terminal.hydrate_output(b"\x1b[?2004h") };
+        // A single-pass marker strip would collapse this into a real end marker.
+        assert_eq!(
+            paste(b"x\x1b[20\x1b[201~1~rm -rf ~\n"),
+            b"\x1b[200~x[20[201~1~rm -rf ~\r\x1b[201~"
+        );
+        assert_eq!(paste("\u{9b}201~".as_bytes()), b"\x1b[200~201~\x1b[201~");
+        let mut bytes = TermyFfiBytes::default();
+        assert_eq!(
+            unsafe { termy_terminal_encode_paste(terminal, ptr::null(), 0, &mut bytes) },
+            TermyFfiStatus::Ok
+        );
         assert_eq!(unsafe { termy_buffer_free(bytes) }, TermyFfiStatus::Ok);
         assert_eq!(unsafe { termy_terminal_free(terminal) }, TermyFfiStatus::Ok);
     }

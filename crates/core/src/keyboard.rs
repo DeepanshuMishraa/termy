@@ -232,33 +232,35 @@ fn modifier_or_control_sequence_base(
         "escape" => "27",
         "space" => "32",
         "backspace" => "127",
+        // Hosts don't say which side a modifier is on, so report the kitty
+        // LEFT_* codes (57441..=57444); RIGHT_* starts at 57447.
         "shift" => {
             if !keyboard_mode.report_all_keys_as_esc() {
                 return None;
             }
             modifiers.set(SequenceModifiers::SHIFT, keystroke.modifiers.shift);
-            "57447"
+            "57441"
         }
         "control" => {
             if !keyboard_mode.report_all_keys_as_esc() {
                 return None;
             }
             modifiers.set(SequenceModifiers::CONTROL, keystroke.modifiers.control);
-            "57448"
+            "57442"
         }
         "alt" => {
             if !keyboard_mode.report_all_keys_as_esc() {
                 return None;
             }
             modifiers.set(SequenceModifiers::ALT, keystroke.modifiers.alt);
-            "57449"
+            "57443"
         }
         "super" | "cmd" => {
             if !keyboard_mode.report_all_keys_as_esc() {
                 return None;
             }
             modifiers.set(SequenceModifiers::SUPER, keystroke.modifiers.platform);
-            "57450"
+            "57444"
         }
         "capslock" => {
             if !keyboard_mode.report_all_keys_as_esc() {
@@ -843,11 +845,13 @@ impl SequenceModifiers {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "macos")]
+    use super::keystroke_to_input_with_options;
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     use super::pure_text_event_text;
     use super::{
         Keystroke, Modifiers, TerminalKeyEventKind, TerminalKeyboardMode, associated_text,
-        keystroke_to_input, keystroke_to_input_with_options,
+        keystroke_to_input,
     };
 
     fn keystroke(key: &str, key_char: Option<&str>, modifiers: Modifiers) -> Keystroke {
@@ -901,8 +905,29 @@ mod tests {
                 report_all_mode(),
                 true,
             ),
-            Some(b"\x1b[57450;9u".to_vec())
+            Some(b"\x1b[57444;9u".to_vec())
         );
+    }
+
+    #[test]
+    fn enhanced_mode_reports_left_modifier_key_codes() {
+        for (key, code) in [
+            ("shift", "57441"),
+            ("control", "57442"),
+            ("alt", "57443"),
+            ("super", "57444"),
+        ] {
+            assert_eq!(
+                keystroke_to_input(
+                    &keystroke(key, None, Modifiers::default()),
+                    TerminalKeyEventKind::Release,
+                    report_all_with_event_types_mode(),
+                    true,
+                ),
+                Some(format!("\x1b[{code};1:3u").into_bytes()),
+                "{key}"
+            );
+        }
     }
 
     #[test]
@@ -916,7 +941,7 @@ mod tests {
                 report_all_with_event_types_mode(),
                 true,
             ),
-            Some(b"\x1b[57450;1:3u".to_vec())
+            Some(b"\x1b[57444;1:3u".to_vec())
         );
     }
 

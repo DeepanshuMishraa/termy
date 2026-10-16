@@ -158,6 +158,20 @@ fn topmost_kitty_graphics_placement_at_point(
         })
 }
 
+/// Rows output scrolled the pane's content up between two observations of
+/// the same pane. History growth counts them at any scroll position. Once
+/// history is full it stops growing, but the engine still raises the display
+/// offset to keep a scrolled viewport still; user scrolls resync the baseline,
+/// so offset changes left here come from output (or clearing history).
+fn content_rows_scrolled(previous: &ContentScrollBaseline, current: &ContentScrollBaseline) -> i32 {
+    let delta = |previous: usize, current: usize| {
+        i32::try_from(current as i64 - previous as i64).unwrap_or(0)
+    };
+    let grown = delta(previous.history_size, current.history_size);
+    let offset = delta(previous.display_offset, current.display_offset);
+    if grown > 0 { grown.max(offset) } else { offset }
+}
+
 fn cell_has_visible_foreground_text(line: &[Option<char>], col: usize) -> bool {
     match line.get(col).copied().flatten() {
         Some(c) => !c.is_whitespace(),
@@ -725,32 +739,54 @@ impl TerminalView {
         Some((pane_id, selection_pos))
     }
 
-    /// Sync content_scroll_baseline to the current display_offset after a user-initiated
-    /// scroll action, so that the next content-driven change is detected correctly.
-    pub(in super::super) fn sync_content_scroll_baseline(&mut self) {
-        self.content_scroll_baseline = self
-            .active_terminal()
-            .map_or(self.content_scroll_baseline, |t| t.scroll_state().0);
+    fn current_content_scroll_baseline(&self) -> ContentScrollBaseline {
+        let Some(tab) = self.session.tabs.get(self.session.active_tab) else {
+            return ContentScrollBaseline::default();
+        };
+        let Some(pane) = tab
+            .active_pane_index()
+            .and_then(|index| tab.panes.get(index))
+        else {
+            return ContentScrollBaseline::default();
+        };
+        let (display_offset, history_size) = pane.terminal().scroll_state();
+        ContentScrollBaseline {
+            pane: Some((tab.id, pane.id.clone())),
+            display_offset,
+            history_size,
+        }
     }
 
-    /// Adjust selection positions to compensate for display_offset changes caused by
-    /// new terminal content arriving while the user is scrolled into history.
-    /// Prevents the selection from visually drifting when the terminal engine auto-adjusts the
-    /// scroll offset to keep the viewport stable.
-    pub(in super::super) fn adjust_selection_for_display_offset_change(
-        &mut self,
-        old_offset: usize,
-        new_offset: usize,
-    ) {
-        let delta = new_offset as i32 - old_offset as i32;
-        if delta == 0 {
+    /// Sync content_scroll_baseline to the current scroll state after a user-initiated
+    /// scroll action, so that the next content-driven change is detected correctly.
+    pub(in super::super) fn sync_content_scroll_baseline(&mut self) {
+        self.content_scroll_baseline = self.current_content_scroll_baseline();
+    }
+
+    /// Move the selection with content that output scrolled since the last
+    /// observation, so it keeps covering the same text at any scroll position.
+    pub(in super::super) fn follow_content_scroll_with_selection(&mut self) {
+        let current = self.current_content_scroll_baseline();
+        let previous = std::mem::replace(&mut self.content_scroll_baseline, current);
+        // Another pane's scroll state says nothing about this selection.
+        if previous.pane != self.content_scroll_baseline.pane {
+            return;
+        }
+        let rows = content_rows_scrolled(&previous, &self.content_scroll_baseline);
+        self.adjust_selection_for_content_scroll(rows);
+    }
+
+    /// Shift selection positions up by `rows` lines of content that output
+    /// scrolled, keeping them on the text they covered.
+    fn adjust_selection_for_content_scroll(&mut self, rows: i32) {
+        if rows == 0 {
             return;
         }
         if let Some(anchor) = &mut self.selection_anchor {
-            anchor.line -= delta;
+            anchor.line -= rows;
         }
         if let Some(head) = &mut self.selection_head {
-            head.line -= delta;
+            head.line -= rows;
         }
     }
 
@@ -926,18 +962,17 @@ impl TerminalView {
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .spawn()
-                .is_ok_and(|_| true)
+                .is_ok()
         }
         #[cfg(target_os = "linux")]
         {
-            return Command::new("xdg-open")
+            Command::new("xdg-open")
                 .arg(url)
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .spawn()
-                .map(|_| true)
-                .unwrap_or(false);
+                .is_ok()
         }
         #[cfg(target_os = "windows")]
         {
@@ -968,6 +1003,128 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use termy_core::TerminalSize;
+
+    fn selection_test_window(cx: &mut App, tabs: usize) -> gpui_kit::WindowHandle<TerminalView> {
+        use gpui_kit::AppContext as _;
+        cx.open_window(gpui_kit::WindowOptions::default(), |window, cx| {
+            cx.new(|cx| {
+                let config = crate::config::AppConfig {
+                    tmux_enabled: false,
+                    native_tab_persistence: false,
+                    sidebar_enabled: false,
+                    ..Default::default()
+                };
+                let mut view = TerminalView::new_for_window(window, cx, config, true);
+                view.owns_persisted_session = false;
+                let size = TerminalSize {
+                    cols: 12,
+                    rows: 4,
+                    ..TerminalSize::default()
+                };
+                for _ in 0..tabs {
+                    let id = view.allocate_tab_id();
+                    let tab = TerminalView::create_native_tab(
+                        id,
+                        Terminal::new_test_display(size),
+                        size.cols,
+                        size.rows,
+                        None,
+                    );
+                    view.session.tabs.push(tab);
+                }
+                view
+            })
+        })
+        .unwrap()
+    }
+
+    fn select_on_line(view: &mut TerminalView, line: i32, last_col: usize) {
+        view.selection_anchor = Some(SelectionPos { col: 0, line });
+        view.selection_head = Some(SelectionPos {
+            col: last_col,
+            line,
+        });
+        view.selection_moved = true;
+    }
+
+    #[gpui_kit::test]
+    fn selection_follows_text_that_output_scrolls_at_the_live_bottom(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            let window = selection_test_window(cx, 1);
+            window
+                .update(cx, |view, _, _| {
+                    view.session.active_tab = 0;
+                    let terminal = view.active_terminal().unwrap();
+                    terminal.hydrate_output(b"zero\r\none\r\ntwo");
+                    assert_eq!(terminal.scroll_state().0, 0);
+                    view.sync_content_scroll_baseline();
+                    select_on_line(view, 1, 2);
+                    assert_eq!(view.selected_text().as_deref(), Some("one"));
+
+                    // Output scrolls "one" into history without moving the viewport.
+                    let terminal = view.active_terminal().unwrap();
+                    let rows = usize::from(terminal.size().rows);
+                    terminal.hydrate_output("\r\nmore".repeat(rows).as_bytes());
+                    let (display_offset, history_size) = terminal.scroll_state();
+                    assert_eq!(display_offset, 0);
+                    assert!(history_size >= 2, "\"one\" must reach history");
+                    view.follow_content_scroll_with_selection();
+                    assert_eq!(view.selected_text().as_deref(), Some("one"));
+                })
+                .unwrap();
+        });
+    }
+
+    #[gpui_kit::test]
+    fn selection_ignores_scroll_offset_left_by_the_previous_pane(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            let window = selection_test_window(cx, 2);
+            window
+                .update(cx, |view, _, _| {
+                    for tab in &view.session.tabs {
+                        tab.active_terminal()
+                            .unwrap()
+                            .hydrate_output(b"a\r\nb\r\nc\r\nd\r\ne\r\nf\r\ng");
+                    }
+                    assert!(
+                        view.session.tabs[1]
+                            .active_terminal()
+                            .unwrap()
+                            .scroll_display(2)
+                    );
+                    view.session.active_tab = 0;
+                    view.sync_content_scroll_baseline();
+
+                    view.session.active_tab = 1;
+                    select_on_line(view, 1, 0);
+                    let selected = view.selected_text();
+                    assert_eq!(selected.as_deref(), Some("e"));
+                    view.follow_content_scroll_with_selection();
+                    assert_eq!(view.selected_text(), selected);
+                })
+                .unwrap();
+        });
+    }
+
+    #[test]
+    fn content_scroll_counts_history_growth_and_scrolled_viewport_shifts() {
+        let state = |display_offset, history_size| ContentScrollBaseline {
+            pane: Some((1, "%1".into())),
+            display_offset,
+            history_size,
+        };
+        // At the live bottom only history grows.
+        assert_eq!(content_rows_scrolled(&state(0, 10), &state(0, 13)), 3);
+        // Scrolled into history the engine also raises the offset.
+        assert_eq!(content_rows_scrolled(&state(4, 10), &state(7, 13)), 3);
+        // Full history: only the offset shows the scroll.
+        assert_eq!(content_rows_scrolled(&state(4, 100), &state(6, 100)), 2);
+        assert_eq!(content_rows_scrolled(&state(0, 100), &state(0, 100)), 0);
+    }
 
     #[test]
     fn select_all_copies_history_and_viewport_even_while_scrolled() {

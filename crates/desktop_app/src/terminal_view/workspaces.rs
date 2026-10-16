@@ -482,23 +482,6 @@ impl TerminalView {
         self.session.active_workspace = index;
     }
 
-    fn set_tab_scrollback_options(&self, tab_index: usize, active: bool) {
-        let Some(inactive_scrollback) = self.inactive_tab_scrollback else {
-            return;
-        };
-        let active_options = self.terminal_runtime.term_options();
-        let options = if active {
-            active_options
-        } else {
-            active_options.with_scrollback_history(inactive_scrollback)
-        };
-        if let Some(tab) = self.session.tabs.get(tab_index) {
-            for pane in &tab.panes {
-                pane.terminal().set_term_options(options);
-            }
-        }
-    }
-
     fn reset_view_state_after_workspace_change(&mut self, cx: &mut Context<Self>) {
         self.reset_tab_rename_state();
         self.reset_workspace_rename_state();
@@ -739,6 +722,7 @@ impl TerminalView {
 
         let previous_workspace = self.session.active_workspace;
         let id = self.session.next_workspace_id;
+        self.set_tab_scrollback_options(self.session.active_tab, false);
         self.stash_active_workspace_tabs();
         self.session.workspaces.push(WorkspaceEntry::new(id));
         self.session.active_workspace = self.session.workspaces.len() - 1;

@@ -250,14 +250,8 @@ macro_rules! define_commands {
                 COMMAND_SPECS.iter().map(|spec| spec.action)
             }
 
-            #[allow(dead_code)]
             pub fn from_config_name(name: &str) -> Option<Self> {
                 CommandId::from_config_name(name).map(Self::from_command_id)
-            }
-
-            #[allow(dead_code)]
-            pub fn all_config_names() -> impl std::iter::ExactSizeIterator<Item = &'static str> {
-                CommandId::all_config_names()
             }
 
             #[cfg(test)]
@@ -391,7 +385,6 @@ macro_rules! impl_command_action_id_mapping {
                 }
             }
 
-            #[allow(dead_code)]
             pub fn to_command_id(self) -> CommandId {
                 match self {
                     $(Self::$variant => CommandId::$variant,)+

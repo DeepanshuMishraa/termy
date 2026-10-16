@@ -118,30 +118,38 @@ impl Pane {
         self.shared.lock().unwrap().info.clone()
     }
 
-    pub(crate) fn refresh(&self) -> anyhow::Result<Arc<RemoteState>> {
+    /// Queues work and waits for its reply, both within one `REQUEST_TIMEOUT`
+    /// so the host answers before the client's response timeout.
+    fn call<T>(
+        &self,
+        work: impl FnOnce(Sender<T>) -> Work,
+        what: &'static str,
+    ) -> anyhow::Result<T> {
+        let deadline = Instant::now() + REQUEST_TIMEOUT;
         let (tx, rx) = flume::bounded(1);
-        self.tx.send_timeout(Work::Refresh(tx), REQUEST_TIMEOUT)?;
-        rx.recv_timeout(REQUEST_TIMEOUT)
-            .context("refresh terminal session")
+        self.tx.send_deadline(work(tx), deadline)?;
+        rx.recv_deadline(deadline).context(what)
+    }
+
+    pub(crate) fn refresh(&self) -> anyhow::Result<Arc<RemoteState>> {
+        self.call(Work::Refresh, "refresh terminal session")
     }
 
     pub(crate) fn command(&self, command: RemoteCommand) -> anyhow::Result<RemoteReply> {
-        let (tx, rx) = flume::bounded(1);
-        self.tx
-            .send_timeout(Work::Command(command, tx), REQUEST_TIMEOUT)?;
-        rx.recv_timeout(REQUEST_TIMEOUT)
-            .context("terminal session did not answer")
+        self.call(
+            |tx| Work::Command(command, tx),
+            "terminal session did not answer",
+        )
     }
 
     /// Runs a viewport command and, when it changes the view, publishes that
     /// frame before replying. The client waits for the returned generation
     /// instead of attaching again for a second full state.
     pub(crate) fn viewport_command(&self, command: RemoteCommand) -> anyhow::Result<(bool, u64)> {
-        let (tx, rx) = flume::bounded(1);
-        self.tx
-            .send_timeout(Work::Viewport(command, tx), REQUEST_TIMEOUT)?;
-        rx.recv_timeout(REQUEST_TIMEOUT)
-            .context("terminal session did not answer")
+        self.call(
+            |tx| Work::Viewport(command, tx),
+            "terminal session did not answer",
+        )
     }
 
     pub(crate) fn close(&self) {
@@ -179,20 +187,6 @@ impl Pane {
     }
 }
 
-fn sticky_key(event: &TerminalEvent) -> Option<u8> {
-    match event {
-        TerminalEvent::Title(_) | TerminalEvent::ResetTitle => Some(0),
-        TerminalEvent::WorkingDirectory(_) => Some(1),
-        TerminalEvent::Progress(_) => Some(2),
-        TerminalEvent::ProgramStatus(_) => Some(4),
-        TerminalEvent::ShellPromptStart
-        | TerminalEvent::ShellCommandStart
-        | TerminalEvent::ShellCommandExecuting
-        | TerminalEvent::ShellCommandFinished(_) => Some(3),
-        _ => None,
-    }
-}
-
 fn publish(shared: &mut Shared, state: Option<Arc<RemoteState>>, events: Vec<TerminalEvent>) {
     let changed = state.is_some();
     if let Some(state) = state {
@@ -226,11 +220,12 @@ fn publish(shared: &mut Shared, state: Option<Arc<RemoteState>>, events: Vec<Ter
         let mut pending = subscriber.pending.lock().unwrap();
         pending.state |= changed;
         for event in &events {
-            if let Some(key) = sticky_key(event) {
-                pending.events.retain(|old| sticky_key(old) != Some(key));
+            if !coalesce_event(&mut pending.events, event) {
+                continue;
             }
-            // A slow or suspended client cannot retain an unbounded stream of
-            // bells or clipboard writes. Its terminal continues independently.
+            // Coalescing bounds the queue by the number of event kinds; this
+            // only guards against a future kind that is neither sticky nor
+            // merged, so a slow client cannot retain an unbounded stream.
             if pending.events.len() >= 256 {
                 pending.closed = true;
                 break;
@@ -311,12 +306,17 @@ fn run(mut terminal: Terminal, rx: Receiver<Work>, shared: Arc<Mutex<Shared>>) {
         let (events, more) = terminal.drain_events(&mut host);
         pending_events = more;
         dirty |= !events.is_empty() || more;
-        let mut state = shared.lock().unwrap();
-        let attached = state.subscribers.iter().any(|weak| weak.strong_count() > 0);
-        let animation_due = state
-            .state
-            .graphics_deadline
-            .is_some_and(|deadline| deadline <= Instant::now());
+        let (attached, animation_due) = {
+            let state = shared.lock().unwrap();
+            let attached = state.subscribers.iter().any(|weak| weak.strong_count() > 0);
+            let deadline = state.state.graphics_deadline;
+            drop(state);
+            (
+                attached,
+                deadline.is_some_and(|deadline| deadline <= Instant::now()),
+            )
+        };
+        // Capture the frame without blocking pane lookups and subscribers.
         let update =
             if attached && (dirty || animation_due) && last_frame.elapsed() >= FRAME_INTERVAL {
                 last_frame = Instant::now();
@@ -325,7 +325,7 @@ fn run(mut terminal: Terminal, rx: Receiver<Work>, shared: Arc<Mutex<Shared>>) {
             } else {
                 None
             };
-        publish(&mut state, update, events);
+        publish(&mut shared.lock().unwrap(), update, events);
     }
     let mut state = shared.lock().unwrap();
     for subscriber in state
@@ -347,7 +347,7 @@ struct HostBridge {
 impl HostBridge {
     fn request(&self, request: RemoteHostRequest) -> anyhow::Result<RemoteHostReply> {
         let (tx, rx) = flume::bounded(1);
-        let id = {
+        let (id, subscriber) = {
             let mut shared = self.shared.lock().unwrap();
             let Some(subscriber) = shared.subscribers.iter().rev().find_map(Weak::upgrade) else {
                 bail!("no attached clipboard host");
@@ -355,10 +355,11 @@ impl HostBridge {
             let id = shared.next_host_id;
             shared.next_host_id = id.wrapping_add(1);
             shared.host_replies.insert(id, tx);
-            subscriber.pending.lock().unwrap().host.push((id, request));
-            subscriber.ready.notify_one();
-            id
+            drop(shared);
+            (id, subscriber)
         };
+        subscriber.pending.lock().unwrap().host.push((id, request));
+        subscriber.ready.notify_one();
         let result = rx.recv_timeout(Duration::from_millis(500));
         self.shared.lock().unwrap().host_replies.remove(&id);
         Ok(result?)
@@ -428,5 +429,56 @@ mod tests {
         let subscription = pane.subscribe().unwrap();
         worker.join().unwrap();
         assert!(matches!(subscription.next(), Some(Update::State(_))));
+    }
+
+    #[test]
+    fn bursts_of_bells_and_clipboard_writes_coalesce_for_slow_clients() {
+        let terminal = Terminal::new_display(TerminalSize::default(), None);
+        let shared = Arc::new(Mutex::new(Shared {
+            info: PaneInfo {
+                id: "test-pane".into(),
+                child_pid: None,
+                title: None,
+                working_directory: None,
+                exited: false,
+            },
+            state: Arc::new(RemoteState::capture(&terminal)),
+            sticky_events: Vec::new(),
+            subscribers: Vec::new(),
+            host_replies: HashMap::new(),
+            next_host_id: 1,
+        }));
+        let subscription = Arc::new(Subscription {
+            pending: Mutex::new(Pending::default()),
+            ready: Condvar::new(),
+            shared: Arc::downgrade(&shared),
+        });
+        let mut state = shared.lock().unwrap();
+        state.subscribers.push(Arc::downgrade(&subscription));
+
+        // `printf '\a%.0s' {1..300}` arrives as one drain; a client that has
+        // not read yet then sees more bursts, clipboard writes and dropped input.
+        publish(&mut state, None, vec![TerminalEvent::Bell; 300]);
+        for round in 0..300 {
+            publish(
+                &mut state,
+                None,
+                vec![
+                    TerminalEvent::Bell,
+                    TerminalEvent::InputDropped,
+                    TerminalEvent::ClipboardStore(format!("copy {round}")),
+                ],
+            );
+        }
+        assert_eq!(state.subscribers.len(), 1, "subscriber must stay attached");
+        drop(state);
+
+        let Some(Update::Events(events)) = subscription.next() else {
+            panic!("expected coalesced events");
+        };
+        assert_eq!(events.len(), 3, "{events:?}");
+        assert!(matches!(events[0], TerminalEvent::Bell));
+        assert!(matches!(events[1], TerminalEvent::InputDropped));
+        assert!(matches!(&events[2], TerminalEvent::ClipboardStore(text) if text == "copy 299"));
     }
 }

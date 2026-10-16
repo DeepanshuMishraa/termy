@@ -14,6 +14,8 @@
 //! Raw colors keep the engine's tag in the top byte: `0` default, `1` indexed
 //! (low byte is the palette index), `2` RGB (`0x02RRGGBB`).
 
+use std::collections::HashMap;
+
 use termy_core::terminal_engine::{Cell, Color, Engine, Line, UnderlineStyle};
 
 pub const CELL_STRIDE: usize = 6;
@@ -22,11 +24,14 @@ pub const STRING_FLAG: u32 = 0x8000_0000;
 #[derive(Default)]
 pub struct CellBuffer {
     strings: Vec<String>,
+    /// Hyperlink URIs already in `strings` for this read. A link spans many
+    /// cells, and each copy would cross to JS again.
+    links: HashMap<String, u32>,
 }
 
 impl CellBuffer {
     pub fn read_viewport(&mut self, engine: &Engine, start: usize, end: usize) -> Vec<u32> {
-        self.strings.clear();
+        self.clear();
         let size = engine.size();
         let end = end.min(size.rows);
         let start = start.min(end);
@@ -46,7 +51,7 @@ impl CellBuffer {
 
     /// Flat cells for one buffer line (negative lines are scrollback).
     pub fn read_line(&mut self, engine: &Engine, line: i32) -> Vec<u32> {
-        self.strings.clear();
+        self.clear();
         let cols = engine.size().cols;
         let mut out = vec![0; cols * CELL_STRIDE];
         if let Some(cells) = engine.line(line) {
@@ -62,8 +67,18 @@ impl CellBuffer {
         &self.strings
     }
 
-    pub fn string(&self, index: usize) -> Option<&str> {
-        self.strings.get(index).map(String::as_str)
+    fn clear(&mut self) {
+        self.strings.clear();
+        self.links.clear();
+    }
+
+    fn intern_link(&mut self, uri: &str) -> u32 {
+        if let Some(&index) = self.links.get(uri) {
+            return index;
+        }
+        let index = self.intern(uri.to_owned());
+        self.links.insert(uri.to_owned(), index);
+        index
     }
 
     fn intern(&mut self, value: String) -> u32 {
@@ -90,7 +105,7 @@ impl CellBuffer {
             | (underline_code(cell.style.underline) << 20);
         out[5] = line
             .hyperlink(col)
-            .map_or(0, |link| self.intern(link.uri.clone()) + 1);
+            .map_or(0, |link| self.intern_link(&link.uri) + 1);
     }
 }
 

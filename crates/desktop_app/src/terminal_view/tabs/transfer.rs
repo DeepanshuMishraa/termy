@@ -327,6 +327,8 @@ impl TerminalView {
             .session
             .active_tab
             .min(self.session.tabs.len().saturating_sub(1));
+        // The moved tab may have been the active one.
+        self.sync_active_tab_scrollback(None);
         self.reset_tab_interaction_state();
         self.mark_tab_strip_layout_dirty();
         self.sync_native_terminal_wakeup_interest();
@@ -349,8 +351,10 @@ impl TerminalView {
         if let Some(zoom) = moved.zoom {
             self.session.native_pane_zoom_snapshots.insert(id, zoom);
         }
+        let previous_active = self.session.active_tab;
         self.session.tabs.push(moved.tab);
         self.session.active_tab = self.session.tabs.len() - 1;
+        self.sync_active_tab_scrollback(Some(previous_active));
         if self.runtime_uses_tmux() {
             if let Err(error) = self.tmux_runtime().client.select_window(&tmux_window_id) {
                 log::warn!("Could not select moved tmux tab: {error}");
@@ -397,6 +401,49 @@ mod tests {
             })
         })
         .unwrap()
+    }
+
+    /// Caps every tab but the active one, then reports whether the tab now
+    /// active keeps more history than the inactive cap allows.
+    fn active_tab_keeps_full_scrollback(view: &TerminalView) -> bool {
+        let terminal = view.session.tabs[view.session.active_tab]
+            .active_terminal()
+            .unwrap();
+        for _ in 0..40 {
+            terminal.hydrate_output(b"line\r\n");
+        }
+        terminal.scroll_state().1 > 2
+    }
+
+    fn cap_inactive_tabs(view: &mut TerminalView, active_tab: usize) {
+        view.inactive_tab_scrollback = Some(2);
+        view.session.active_tab = active_tab;
+        for index in 0..view.session.tabs.len() {
+            view.set_tab_scrollback_options(index, index == active_tab);
+        }
+    }
+
+    #[gpui_kit::test]
+    fn closing_or_moving_the_active_tab_restores_full_scrollback_to_the_next(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| {
+            let window = test_window(cx, 4);
+            window
+                .update(cx, |view, _, cx| {
+                    cap_inactive_tabs(view, 1);
+                    view.close_tab(1, cx);
+                    assert_eq!(view.session.active_tab, 1);
+                    assert!(active_tab_keeps_full_scrollback(view));
+
+                    cap_inactive_tabs(view, 2);
+                    let moved = view.session.tabs[2].id;
+                    assert!(view.take_tab_for_transfer(moved, cx).is_some());
+                    assert_eq!(view.session.active_tab, 1);
+                    assert!(active_tab_keeps_full_scrollback(view));
+                })
+                .unwrap();
+        });
     }
 
     #[gpui_kit::test]

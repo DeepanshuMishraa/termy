@@ -46,12 +46,9 @@ const fn motion(millis: u64, x1: f32, y1: f32, x2: f32, y2: f32) -> Motion {
     }
 }
 
-/// A popover-like surface (command palette) arriving: grows from
-/// [`POPOVER_SCALE`] with a hint of overshoot, the way `NSPopover` does.
+/// A popover-like surface (command palette) arriving: grows with a hint of
+/// overshoot, the way `NSPopover` does.
 pub(crate) const CARD_IN: Motion = motion(220, 0.25, 1.04, 0.3, 1.0);
-/// The scale a popover grows from as it appears.
-#[allow(dead_code)]
-pub(crate) const POPOVER_SCALE: f32 = 0.96;
 /// A selection gliding between neighbors (active tab capsule, palette row):
 /// a plain ease-out, so quick sweeps never wobble.
 #[allow(dead_code)]
@@ -206,12 +203,6 @@ impl NativePalette {
         self.blue
     }
 
-    /// The highlight behind a keyboard-focused row that is not selected.
-    #[allow(dead_code)]
-    pub(crate) fn hover(&self) -> Rgba {
-        self.fill
-    }
-
     /// The soft drop shadow under a floating surface.
     pub(crate) fn popover_shadow(&self) -> Vec<BoxShadow> {
         let alpha = if self.dark { 1.0 } else { 0.45 };
@@ -285,18 +276,16 @@ type ChangeHandler = Rc<dyn Fn(bool, &mut Window, &mut App)>;
 pub(crate) struct MacSwitch {
     id: ElementId,
     checked: bool,
-    disabled: bool,
     palette: NativePalette,
     label: Option<SharedString>,
     on_change: Option<ChangeHandler>,
 }
 
-/// A switch, off and enabled until told otherwise.
+/// A switch, off until told otherwise.
 pub(crate) fn mac_switch(id: impl Into<ElementId>, palette: &NativePalette) -> MacSwitch {
     MacSwitch {
         id: id.into(),
         checked: false,
-        disabled: false,
         palette: *palette,
         label: None,
         on_change: None,
@@ -309,14 +298,7 @@ impl MacSwitch {
         self
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn disabled(mut self, disabled: bool) -> Self {
-        self.disabled = disabled;
-        self
-    }
-
     /// What VoiceOver reads when the row doesn't name the switch.
-    #[allow(dead_code)]
     pub(crate) fn accessibility_label(mut self, label: impl Into<SharedString>) -> Self {
         self.label = Some(label.into());
         self
@@ -364,12 +346,10 @@ impl RenderOnce for MacSwitch {
             .rounded_full()
             .bg(gpui_kit::white())
             .shadow(palette.lift_shadow())
-            .when(!self.disabled, |thumb| {
-                thumb.group_active(group.clone(), move |style| {
-                    style
-                        .w(px(SWITCH_THUMB.0 + SWITCH_STRETCH))
-                        .left(px(pressed_left))
-                })
+            .group_active(group.clone(), move |style| {
+                style
+                    .w(px(SWITCH_THUMB.0 + SWITCH_STRETCH))
+                    .left(px(pressed_left))
             });
         let track = div()
             .relative()
@@ -390,7 +370,6 @@ impl RenderOnce for MacSwitch {
         let on_change = self.on_change;
         gpui_kit::base::Switch::new(self.id)
             .checked(self.checked)
-            .disabled(self.disabled)
             .when_some(self.label, |switch, label| {
                 switch.accessibility_label(label)
             })
@@ -402,7 +381,6 @@ impl RenderOnce for MacSwitch {
             .cursor_pointer()
             .w(px(SWITCH_TRACK.0))
             .h(px(SWITCH_TRACK.1))
-            .when(self.disabled, |switch| switch.opacity(0.5))
             .child(track)
     }
 }

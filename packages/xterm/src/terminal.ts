@@ -214,7 +214,7 @@ export class Terminal implements IDisposable {
   }
 
   refresh(_start: number, _end: number): void {
-    this.termy.setOptions({})
+    this.termy.refresh()
   }
 
   clearTextureAtlas(): void {}

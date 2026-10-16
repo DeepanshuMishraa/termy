@@ -65,16 +65,27 @@ fn child_environment(
 }
 
 fn resolve_program(config: &SpawnConfig) -> io::Result<PathBuf> {
+    resolve_program_from(config, std::env::current_dir)
+}
+
+/// [`resolve_program`], with the parent's working directory from
+/// `current_dir`, which is asked only when a relative directory needs it:
+/// that directory may have been deleted, which skips relative entries.
+fn resolve_program_from(
+    config: &SpawnConfig,
+    current_dir: impl Fn() -> io::Result<PathBuf>,
+) -> io::Result<PathBuf> {
     let program = PathBuf::from(&config.program);
     if config.program.as_bytes().contains(&b'/') {
         return Ok(program);
     }
 
-    let child_directory = match config.working_directory.as_deref() {
-        Some(directory) if directory.is_absolute() => directory.to_path_buf(),
-        Some(directory) => std::env::current_dir()?.join(directory),
-        None => std::env::current_dir()?,
+    let child_directory = || match config.working_directory.as_deref() {
+        Some(directory) if directory.is_absolute() => Ok(directory.to_path_buf()),
+        Some(directory) => Ok(current_dir()?.join(directory)),
+        None => current_dir(),
     };
+    let mut resolved_child_directory = None;
 
     let path = config
         .environment
@@ -88,7 +99,12 @@ fn resolve_program(config: &SpawnConfig) -> io::Result<PathBuf> {
         let directory = if directory.is_absolute() {
             directory
         } else {
-            child_directory.join(directory)
+            // Like `execvp`, skip an entry that can't be searched.
+            let base = resolved_child_directory.get_or_insert_with(|| child_directory().ok());
+            let Some(base) = base else {
+                continue;
+            };
+            base.join(directory)
         };
         let Ok(candidate) = directory.join(&program).canonicalize() else {
             continue;

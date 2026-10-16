@@ -59,7 +59,7 @@ impl Row {
     /// Whether `col` is past every cell with metadata. Output moves left to
     /// right, so most edits land there or on the last entry.
     #[inline]
-    fn follows_extras(&self, col: usize) -> bool {
+    pub(super) fn follows_extras(&self, col: usize) -> bool {
         self.extras.last().is_none_or(|&(last, _)| last < col)
     }
 

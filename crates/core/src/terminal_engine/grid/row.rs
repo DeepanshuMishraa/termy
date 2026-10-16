@@ -357,7 +357,9 @@ fn same_extra(left: &Arc<CellExtra>, right: &Arc<CellExtra>) -> bool {
 
 impl<'a> ExtraMeter<'a> {
     /// The recent extra equal to `extra`, if any; otherwise counts it.
-    #[inline]
+    // Inlined into the measuring loops: left to the inliner, unrelated
+    // changes to the crate flip it.
+    #[inline(always)]
     fn add(&mut self, extra: &'a Arc<CellExtra>) -> Option<&'a Arc<CellExtra>> {
         for recent in [self.last, self.before].into_iter().flatten() {
             if same_extra(recent, extra) {
@@ -390,6 +392,39 @@ impl Row {
                     + packed.scalars.capacity() * size_of::<Scalar>()
                     + packed.styles.capacity() * size_of::<(u32, Style)>()
             })
+    }
+
+    /// What history charges this row besides its ring slot: its cells as a
+    /// packed row of its width with one style run, its metadata table's
+    /// entries and the metadata charged by [`Self::measure_extras`]. Unlike
+    /// [`Self::heap_bytes`], it doesn't depend on whether the row is stored
+    /// dense or packed, nor on its buffers' capacities (see `history.rs`).
+    #[inline]
+    pub(super) fn charged_bytes(&self) -> usize {
+        let cols = self
+            .packed
+            .as_ref()
+            .map_or(self.cells.len(), |packed| packed.cols);
+        self.charged_bytes_at(cols)
+    }
+
+    /// [`Self::charged_bytes`] as though the row were `cols` wide.
+    #[inline]
+    pub(super) fn charged_bytes_at(&self, cols: usize) -> usize {
+        Self::charged_cells(cols) + self.metadata_charge()
+    }
+
+    /// The part of [`Self::charged_bytes`] that doesn't depend on the width.
+    #[inline]
+    pub(super) fn metadata_charge(&self) -> usize {
+        self.extras.len() * size_of::<(usize, Arc<CellExtra>)>()
+            + usize::from(self.extra_units) * EXTRA_UNIT
+    }
+
+    /// [`Self::charged_bytes`] of the cells of a row `cols` wide.
+    #[inline]
+    pub(super) const fn charged_cells(cols: usize) -> usize {
+        size_of::<PackedCells>() + cols * size_of::<Scalar>() + size_of::<(u32, Style)>()
     }
 
     /// Charge a row entering history its metadata. Plain rows have none;
