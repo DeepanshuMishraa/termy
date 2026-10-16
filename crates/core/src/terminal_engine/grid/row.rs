@@ -357,7 +357,9 @@ fn same_extra(left: &Arc<CellExtra>, right: &Arc<CellExtra>) -> bool {
 
 impl<'a> ExtraMeter<'a> {
     /// The recent extra equal to `extra`, if any; otherwise counts it.
-    #[inline]
+    // Inlined into the measuring loops: left to the inliner, unrelated
+    // changes to the crate flip it.
+    #[inline(always)]
     fn add(&mut self, extra: &'a Arc<CellExtra>) -> Option<&'a Arc<CellExtra>> {
         for recent in [self.last, self.before].into_iter().flatten() {
             if same_extra(recent, extra) {
@@ -409,8 +411,13 @@ impl Row {
     /// [`Self::charged_bytes`] as though the row were `cols` wide.
     #[inline]
     pub(super) fn charged_bytes_at(&self, cols: usize) -> usize {
-        Self::charged_cells(cols)
-            + self.extras.len() * size_of::<(usize, Arc<CellExtra>)>()
+        Self::charged_cells(cols) + self.metadata_charge()
+    }
+
+    /// The part of [`Self::charged_bytes`] that doesn't depend on the width.
+    #[inline]
+    pub(super) fn metadata_charge(&self) -> usize {
+        self.extras.len() * size_of::<(usize, Arc<CellExtra>)>()
             + usize::from(self.extra_units) * EXTRA_UNIT
     }
 

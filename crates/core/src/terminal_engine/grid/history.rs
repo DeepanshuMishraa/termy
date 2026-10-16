@@ -7,10 +7,10 @@
 //! a mux host and its replica evict different rows. Now engines fed the same
 //! bytes evict the same rows, whenever each compacts.
 //!
-//! What history really takes is tracked beside the charge: past the budget,
-//! queued dense rows are packed, which changes no charge. Rows that resist
-//! packing (a style change every few cells) take up to four times their
-//! charge.
+//! Rows queued for compaction are usually dense, which takes more than their
+//! charge: once the charge with that excess passes the budget, the oldest
+//! queued rows are packed, which changes no charge. Rows that resist packing
+//! (a style change every few cells) take up to four times their charge.
 //!
 //! The charge follows the width, but a widen evicts nothing the old width
 //! kept (see `Grid::resize`), so a transient widen loses no history; later
@@ -46,20 +46,17 @@ impl Grid {
         let row = self.history.back_mut().expect("pushed history row");
         row.bound_extras();
         self.history_bytes += history_charge(row);
-        self.history_heap += history_heap(row);
     }
 
     pub(super) fn pop_history_front(&mut self) -> Option<Row> {
         let row = self.history.pop_front()?;
         self.history_bytes -= history_charge(&row);
-        self.history_heap -= history_heap(&row);
         Some(row)
     }
 
     pub(super) fn pop_history_back(&mut self) -> Option<Row> {
         let row = self.history.pop_back()?;
         self.history_bytes -= history_charge(&row);
-        self.history_heap -= history_heap(&row);
         Some(row)
     }
 
@@ -67,19 +64,24 @@ impl Grid {
         self.history.clear();
         self.history.shrink_to_fit();
         self.history_bytes = 0;
-        self.history_heap = 0;
     }
 
     /// Recount history's bytes, for paths that replace its rows. Each row
     /// keeps the metadata charge it was measured.
     pub(super) fn recount_history_bytes(&mut self) {
-        let (mut bytes, mut heap) = (0, 0);
-        for row in &self.history {
-            bytes += history_charge(row);
-            heap += history_heap(row);
-        }
-        self.history_bytes = bytes;
-        self.history_heap = heap;
+        self.history_bytes = self.history.iter().map(history_charge).sum();
+    }
+
+    /// History's charge plus what its queued rows take beyond theirs while
+    /// dense: an estimate of the bytes it takes that only packing reduces.
+    #[inline]
+    fn queued_history_bytes(&self) -> usize {
+        let dense_excess =
+            (self.size.cols * size_of::<Cell>()).saturating_sub(Row::charged_cells(self.size.cols));
+        self.pending_compaction
+            .min(self.history.len())
+            .saturating_mul(dense_excess)
+            .saturating_add(self.history_bytes)
     }
 
     /// Pack the oldest queued rows while history holds more than its byte
@@ -87,9 +89,8 @@ impl Grid {
     /// when both fit.
     #[inline]
     pub(super) fn enforce_history_bytes(&mut self) {
-        if self.history_bytes > self.history_byte_limit
-            || self.history_heap > self.history_byte_limit
-        {
+        // At least the charge, so this covers both.
+        if self.queued_history_bytes() > self.history_byte_limit {
             self.fit_history_bytes();
         }
     }
@@ -112,7 +113,7 @@ impl Grid {
 
     /// Pack the oldest queued rows while history takes more than its budget.
     pub(super) fn pack_history_to_budget(&mut self) {
-        while self.history_heap > self.history_byte_limit && self.needs_compaction() {
+        while self.queued_history_bytes() > self.history_byte_limit && self.needs_compaction() {
             self.compact_pending_history(BUDGET_COMPACTION_CHUNK);
         }
     }
@@ -124,10 +125,8 @@ impl Grid {
         let start = self.history.len() - self.pending_compaction;
         let count = limit.min(self.pending_compaction);
         for row in self.history.iter_mut().skip(start).take(count) {
-            let before = row.heap_bytes();
             // Packing changes the row's storage, never its charge.
             row.compact();
-            self.history_heap = self.history_heap - before + row.heap_bytes();
         }
         self.pending_compaction -= count;
     }

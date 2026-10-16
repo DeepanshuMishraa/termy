@@ -153,10 +153,8 @@ pub(super) struct Grid {
     alternate: Option<Screen>,
     alternate_active: bool,
     history: Ring<Row>,
-    // Bytes charged to `history` rows, which decide eviction, and the bytes
-    // they really take, which decide packing; see `history.rs`.
+    // Bytes charged to `history` rows; see `history.rs`.
     history_bytes: usize,
-    history_heap: usize,
     history_limit: usize,
     history_byte_limit: usize,
     pending_compaction: usize,
@@ -286,7 +284,6 @@ impl Grid {
             alternate_active: false,
             history: Ring::new(),
             history_bytes: 0,
-            history_heap: 0,
             history_limit,
             history_byte_limit,
             pending_compaction: 0,

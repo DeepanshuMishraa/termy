@@ -1343,18 +1343,23 @@ fn restoring_a_cursor_saved_at_the_right_margin_keeps_its_pending_wrap() {
 }
 
 #[test]
-fn fast_paths_write_over_cells_with_metadata() {
+fn fast_paths_write_after_cells_with_metadata() {
     let mut grid = grid(20, 2, 4);
     grid.pen.set_underline_color(Color::indexed(1));
-    print(&mut grid, "abcde");
+    print(&mut grid, "ab");
     grid.pen.set_underline_color(Color::DEFAULT);
-    grid.carriage_return();
-    // Neither fast path gives up on a row with metadata; each drops the
-    // metadata of the cells it writes.
+    // Metadata left of the cursor (a link earlier on the line) doesn't turn
+    // either fast path away.
     assert!(grid.write_ascii_cell(b'x'));
     assert_eq!(grid.write_utf8_run("éé".as_bytes()).0, 4);
+    // Writing over cells with metadata is left to the general path, which
+    // drops it.
+    grid.carriage_return();
+    assert!(!grid.write_ascii_cell(b'y'));
+    assert_eq!(grid.write_utf8_run("é".as_bytes()).0, 0);
+    grid.put_char('y');
     let row = &grid.primary.rows[0];
     let columns: Vec<_> = row.extras.iter().map(|(col, _)| *col).collect();
-    assert_eq!(columns, [3, 4]);
-    assert!(text(&grid, 0).starts_with("xééde"));
+    assert_eq!(columns, [1]);
+    assert!(text(&grid, 0).starts_with("ybxéé"));
 }

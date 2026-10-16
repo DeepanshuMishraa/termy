@@ -534,6 +534,11 @@ impl Grid {
         let right = self.right_limit();
         let style = self.pen.style;
         let active = &mut self.screen_mut().rows[row];
+        // Metadata left of the run (a link earlier on the line) stays; the
+        // general path drops any the run would overwrite.
+        if !active.follows_extras(start) {
+            return (0, None);
+        }
         let occupied = active.occupied;
         let plain = Cell::plain(style, 0);
         let wide = Cell::plain(style, Cell::WIDE);
@@ -680,8 +685,6 @@ impl Grid {
             byte @ ..0x80 => Some(char::from(byte)),
             _ => complete_utf8(&bytes[last..]).map(|(character, _)| character),
         };
-        // The text replaced any metadata, such as a link, in its cells.
-        active.clear_extras(start..col);
         active.occupied = occupied.max(col);
         // As in `write_ascii`: a pending row is blanked around the text.
         self.write_over_pending_clear(row, start, col);
@@ -750,11 +753,10 @@ impl Grid {
         }
         let style = self.pen.style;
         let active = &mut self.screen_mut().rows[row];
-        if col < active.occupied && active.cells[col].flags != 0 {
+        if !active.follows_extras(col) || (col < active.occupied && active.cells[col].flags != 0) {
             return false;
         }
         Cell::plain(style, 0).store(&mut active.cells[col], char::from(byte));
-        active.clear_extras(col..col + 1);
         active.occupied = active.occupied.max(col + 1);
         self.observe_output();
         self.cursor.col = col + 1;

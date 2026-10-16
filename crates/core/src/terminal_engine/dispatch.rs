@@ -642,7 +642,9 @@ impl Handler for State {
         written
     }
 
-    #[inline]
+    // Out of line, as the parser's loop runs faster without it on some
+    // targets; left to the inliner, unrelated changes to the crate flip it.
+    #[inline(never)]
     fn print_ascii(&mut self, bytes: &[u8]) {
         // Byte-at-a-time output (echo, small PTY reads) writes one cell.
         if let &[byte] = bytes

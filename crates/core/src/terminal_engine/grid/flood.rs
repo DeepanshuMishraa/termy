@@ -142,12 +142,11 @@ impl Grid {
             let row = std::ptr::read(newest);
             std::ptr::write(newest, std::mem::replace(recycled, row));
         }
-        // Charged where they now stay.
-        self.history_bytes -= recycled.charged_bytes();
-        self.history_heap -= recycled.heap_bytes();
+        // Charged where they now stay. Both rows are the screen's width, so
+        // only their metadata charges differ.
+        self.history_bytes -= recycled.metadata_charge();
         newest.bound_extras();
-        self.history_bytes += newest.charged_bytes();
-        self.history_heap += newest.heap_bytes();
+        self.history_bytes += newest.metadata_charge();
         if self.defer_scroll_clear {
             let end = recycled.clear_deferring_fill(cols, &DEFAULT_BLANK);
             self.pending_clear = PendingClear {

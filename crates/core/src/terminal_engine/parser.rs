@@ -509,15 +509,20 @@ impl Parser {
     /// A decoded scalar. C1 controls sent as UTF-8 (U+0080 to U+009F) act
     /// as their 7-bit forms, ESC and the byte 0x40 below, as in xterm: U+009B
     /// opens a CSI sequence. Raw 8-bit C1 bytes are not UTF-8 and print U+FFFD.
-    #[inline]
+    #[inline(always)]
     fn print_scalar(&mut self, handler: &mut impl Handler, character: char) {
-        match u8::try_from(u32::from(character)) {
-            Ok(code @ 0x80..=0x9f) => {
-                self.begin_escape();
-                self.escape_byte(handler, code - 0x40);
-            }
-            _ => handler.print(character),
+        if matches!(character, '\u{80}'..='\u{9f}') {
+            self.c1_control(handler, character as u8);
+        } else {
+            handler.print(character);
         }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn c1_control(&mut self, handler: &mut impl Handler, code: u8) {
+        self.begin_escape();
+        self.escape_byte(handler, code - 0x40);
     }
 
     fn begin_utf8(&mut self, value: u8, remaining: u8, min: u8, max: u8) {

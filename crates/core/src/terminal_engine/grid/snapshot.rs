@@ -16,7 +16,7 @@ use super::super::{
 };
 use super::{
     Cell, Grid, Row, SavedCursor, Screen,
-    history::{DEFAULT_HISTORY_BYTES, history_charge, history_heap},
+    history::{DEFAULT_HISTORY_BYTES, history_charge},
     ring::Ring,
 };
 
@@ -374,7 +374,6 @@ impl Grid {
         }
         grid.history = rows.into_iter().collect::<Ring<Row>>();
         grid.history_bytes = grid.history.iter().map(history_charge).sum();
-        grid.history_heap = grid.history.iter().map(history_heap).sum();
         grid.pending_compaction = reader.usize()?.min(history);
         grid.compact_on_scroll = reader.bool()?;
         grid.output_since_compaction = reader.usize()?;
