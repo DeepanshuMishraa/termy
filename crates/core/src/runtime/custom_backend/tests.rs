@@ -733,3 +733,28 @@ fn covered_additions_normalize_like_every_addition() {
         assert_eq!(spans, expected, "case {case}");
     }
 }
+
+#[test]
+fn restore_snapshot_drops_events_and_deadlines_from_the_replaced_state() {
+    let source = display(10, 2);
+    source.feed_output(b"restored");
+    let snapshot = source.encode_snapshot();
+
+    let terminal = display(10, 2);
+    terminal.feed_output(b"\x07\x1b]2;stale\x07\x1b]52;c;aGk=\x07");
+    terminal.shared.state().history_deadline = Some(Instant::now());
+    terminal
+        .restore_snapshot(&snapshot)
+        .expect("restore snapshot");
+
+    assert_eq!(terminal.shared.state().history_deadline, None);
+    let (events, _) = terminal.drain_events(&mut |_| None);
+    assert!(
+        events.iter().all(|event| !matches!(
+            event,
+            TerminalEvent::Bell | TerminalEvent::Title(_) | TerminalEvent::ClipboardStore(_)
+        )),
+        "{events:?}"
+    );
+    assert_eq!(terminal.snapshot().cells[0].char, 'r');
+}

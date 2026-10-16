@@ -42,11 +42,11 @@ public struct KittyGraphicsPlacement: Hashable, Sendable {
     /// Milliseconds until the next animation frame; nil for static images.
     public var nextFrameDelay: UInt64?
 
-    init(_ placement: TermyFfiKittyGraphicsPlacement) {
+    init(_ placement: TermyFfiKittyGraphicsPlacement, png: Data) {
         placementSerial = placement.placement_serial
         imageID = placement.image_id
         placementID = placement.placement_id
-        png = placement.png.copyData()
+        self.png = png
         imageWidth = Int(placement.image_width)
         imageHeight = Int(placement.image_height)
         imageGeneration = placement.image_generation

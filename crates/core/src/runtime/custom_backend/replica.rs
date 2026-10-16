@@ -47,6 +47,12 @@ impl CustomBackend {
             ..state.size
         };
         state.replies.clear();
+        // Events and deadlines describe the replaced state. Keep only what
+        // the host must still hear: clipboard invalidation, paste mode, exit.
+        state.compact_saturated_events();
+        state.history_deadline = None;
+        state.history_pending_since = None;
+        state.defer_history_compaction(std::time::Instant::now());
         state.generation = state.generation.wrapping_add(1);
         state.palette_epoch = state.palette_epoch.wrapping_add(1);
         state.force_full_damage = true;

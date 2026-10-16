@@ -54,6 +54,18 @@ const BLINK_INTERVAL = 600
 const COMPACT_DELAY = 250
 const utf8 = new TextDecoder('utf-8', { fatal: true })
 const encoder = new TextEncoder()
+// Lenient, for display text; shared so keystrokes don't allocate a decoder.
+const decoder = new TextDecoder()
+
+// requestAnimationFrame, or a timer where there is none (SSR, workers).
+const requestFrame = (callback: FrameRequestCallback): number =>
+  typeof requestAnimationFrame === 'function'
+    ? requestAnimationFrame(callback)
+    : (setTimeout(() => callback(0), 16) as unknown as number)
+const cancelFrame = (frame: number): void => {
+  if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(frame)
+  else clearTimeout(frame)
+}
 
 /**
  * A browser terminal backed by Termy's WebAssembly engine.
@@ -77,6 +89,7 @@ export class Terminal implements IDisposable {
   #pending: Array<() => void> = []
   #disposed = false
   #disposables: Array<() => void> = []
+  #endDrag: (() => void) | undefined
 
   #root: HTMLDivElement | undefined
   #screen: HTMLDivElement | undefined
@@ -284,7 +297,9 @@ export class Terminal implements IDisposable {
   dispose(): void {
     if (this.#disposed) return
     this.#disposed = true
-    cancelAnimationFrame(this.#frame)
+    if (this.#frame) cancelFrame(this.#frame)
+    this.#frame = 0
+    this.#endDrag?.()
     clearTimeout(this.#syncTimer)
     clearTimeout(this.#compactTimer)
     clearTimeout(this.#imageTimer)
@@ -293,6 +308,8 @@ export class Terminal implements IDisposable {
     this.#images?.dispose()
     this.#root?.remove()
     this.#core?.dispose()
+    // Freed wasm memory must not be reached through `core` or the getters.
+    this.#core = undefined
     for (const emitter of [
       this.#onData,
       this.#onBinary,
@@ -527,6 +544,12 @@ export class Terminal implements IDisposable {
       start: { line: 0, col: 0 },
       end: { line: this.historySize + this.rows - 1, col: this.cols },
     })
+  }
+
+  /** Repaint every row on the next frame. */
+  refresh(): void {
+    this.#renderer?.invalidate()
+    this.#scheduleRender()
   }
 
   clearSelection(): void {
@@ -788,8 +811,7 @@ export class Terminal implements IDisposable {
 
   #scheduleRender(): void {
     if (this.#frame || !this.#renderer || this.#disposed) return
-    const raf = typeof requestAnimationFrame === 'function' ? requestAnimationFrame : (fn: FrameRequestCallback) => setTimeout(() => fn(0), 16) as unknown as number
-    this.#frame = raf(() => {
+    this.#frame = requestFrame(() => {
       this.#frame = 0
       this.#render()
     })
@@ -1018,7 +1040,7 @@ export class Terminal implements IDisposable {
     if (!bytes) return
     event.preventDefault()
     event.stopPropagation()
-    this.#onKey.fire({ key: new TextDecoder().decode(bytes), domEvent: event })
+    this.#onKey.fire({ key: decoder.decode(bytes), domEvent: event })
     if (this.#selection.active) this.clearSelection()
     this.#emit(bytes, true)
   }
@@ -1133,14 +1155,21 @@ export class Terminal implements IDisposable {
   }
 
   #trackDrag(_screen: HTMLElement, move: (event: MouseEvent) => void, up: (event: MouseEvent) => void): void {
+    this.#endDrag?.()
     const onMove = (event: MouseEvent): void => move(event)
-    const onUp = (event: MouseEvent): void => {
+    const end = (): void => {
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
+      this.#endDrag = undefined
+    }
+    const onUp = (event: MouseEvent): void => {
+      end()
       up(event)
     }
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup', onUp)
+    // Disposing mid-drag must not leave window listeners on a dead terminal.
+    this.#endDrag = end
   }
 
   #sendMouse(kind: MouseEventKind, button: MouseButton, col: number, row: number, event: MouseEvent): void {
@@ -1232,7 +1261,7 @@ export class Terminal implements IDisposable {
       transition: 'opacity 150ms',
     } satisfies Partial<CSSStyleDeclaration>)
     root.appendChild(overlay)
-    requestAnimationFrame(() => {
+    requestFrame(() => {
       overlay.style.opacity = '0'
       setTimeout(() => overlay.remove(), 200)
     })
@@ -1241,7 +1270,7 @@ export class Terminal implements IDisposable {
   #announce(data: string | Uint8Array): void {
     const live = this.#liveRegion
     if (!live) return
-    const text = (typeof data === 'string' ? data : new TextDecoder().decode(data))
+    const text = (typeof data === 'string' ? data : decoder.decode(data))
       // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping terminal escapes
       .replace(/\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-_]/g, '')
       .replace(/\r/g, '')
@@ -1267,7 +1296,7 @@ function convertEol(data: string | Uint8Array): string | Uint8Array {
 function decodeBase64(value: string): string | undefined {
   try {
     const binary = atob(value)
-    return new TextDecoder().decode(Uint8Array.from(binary, (ch) => ch.charCodeAt(0)))
+    return decoder.decode(Uint8Array.from(binary, (ch) => ch.charCodeAt(0)))
   } catch {
     return undefined
   }

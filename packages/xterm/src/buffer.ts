@@ -178,30 +178,38 @@ class BufferLine implements IBufferLine {
   }
 }
 
+/**
+ * The engine exposes only the active screen. The inactive buffer reads as
+ * empty rather than showing the other screen's lines.
+ */
 export class Buffer implements IBuffer {
   constructor(
     private readonly term: TermyTerminal,
     readonly type: 'normal' | 'alternate',
   ) {}
 
+  get #active(): boolean {
+    return (this.term.modes?.alternateScreen ?? false) === (this.type === 'alternate')
+  }
+
   get cursorX(): number {
-    return this.term.cursor?.col ?? 0
+    return this.#active ? (this.term.cursor?.col ?? 0) : 0
   }
 
   get cursorY(): number {
-    return this.term.cursor?.row ?? 0
+    return this.#active ? (this.term.cursor?.row ?? 0) : 0
   }
 
   get viewportY(): number {
-    return this.term.viewportY
+    return this.#active ? this.term.viewportY : 0
   }
 
   get baseY(): number {
-    return this.term.historySize
+    return this.#active ? this.term.historySize : 0
   }
 
   get length(): number {
-    return this.term.historySize + this.term.rows
+    return this.#active ? this.term.historySize + this.term.rows : 0
   }
 
   getLine(y: number): IBufferLine | undefined {

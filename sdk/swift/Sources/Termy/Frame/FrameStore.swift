@@ -64,9 +64,14 @@ public final class FrameStore {
     public func text(from start: GridPosition, to end: GridPosition) -> String {
         guard !isEmpty else { return "" }
         let (first, last) = start <= end ? (start, end) : (end, start)
+        // A selection can lie outside the grid after a shrinking resize; a
+        // closed range with its bounds inverted would trap.
+        let firstRow = max(0, first.row)
+        let lastRow = min(rows - 1, last.row)
+        guard firstRow <= lastRow else { return "" }
         var lines: [String] = []
         var current = ""
-        for row in max(0, first.row)...min(rows - 1, last.row) {
+        for row in firstRow...lastRow {
             let from = row == first.row ? max(0, first.col) : 0
             let to = row == last.row ? min(cols - 1, last.col) : cols - 1
             guard from <= to else { continue }

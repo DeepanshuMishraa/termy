@@ -36,7 +36,9 @@ pub struct TermyEngineKeyEvent {
     pub mods: u32,
     pub consumed_mods: u32,
     pub action: u8,
-    pub composing: bool,
+    /// A C `bool`, read as a byte: any nonzero value is true, so a host that
+    /// writes another byte cannot produce an invalid Rust `bool`.
+    pub composing: u8,
 }
 
 pub const MOUSE_PRESS: u8 = 0;
@@ -59,13 +61,27 @@ pub const MOUSE_BUTTON_11: u8 = 11;
 pub struct TermyEngineMouseEvent {
     pub action: u8,
     pub button: u8,
-    pub any_button_pressed: bool,
+    /// A C `bool`, read as a byte; any nonzero value is true.
+    pub any_button_pressed: u8,
     pub mods: u32,
     pub col: u32,
     pub row: u32,
     pub x_px: u32,
     pub y_px: u32,
 }
+
+// Mirrored by tests/c/replica.c, so the header and Rust agree on every field.
+const _: () = {
+    use std::mem::offset_of;
+    let pointer = size_of::<usize>();
+    assert!(offset_of!(TermyEngineKeyEvent, unshifted_codepoint) == 4 * pointer);
+    assert!(offset_of!(TermyEngineKeyEvent, action) == 4 * pointer + 12);
+    assert!(offset_of!(TermyEngineKeyEvent, composing) == 4 * pointer + 13);
+    assert!(offset_of!(TermyEngineMouseEvent, any_button_pressed) == 2);
+    assert!(offset_of!(TermyEngineMouseEvent, mods) == 4);
+    assert!(offset_of!(TermyEngineMouseEvent, y_px) == 20);
+    assert!(size_of::<TermyEngineMouseEvent>() == 24);
+};
 
 pub(crate) fn keyboard_mode(engine: &Engine) -> TerminalKeyboardMode {
     let modes = engine.modes();
@@ -90,7 +106,7 @@ pub(crate) fn encode_key(
     text: &str,
     option_as_alt: u32,
 ) -> Vec<u8> {
-    if event.composing {
+    if event.composing != 0 {
         return Vec::new();
     }
     let kind = match event.action {
@@ -185,7 +201,7 @@ pub(crate) fn encode_mouse(engine: &Engine, event: &TermyEngineMouseEvent) -> Ve
         // Wheels have no release; X10 reports presses only.
         MOUSE_RELEASE => !wheel && tracking != MouseTracking::Press,
         MOUSE_MOTION => match tracking {
-            MouseTracking::Drag => event.any_button_pressed,
+            MouseTracking::Drag => event.any_button_pressed != 0,
             MouseTracking::Motion => true,
             _ => false,
         },
@@ -249,7 +265,9 @@ pub(crate) fn encode_mouse(engine: &Engine, event: &TermyEngineMouseEvent) -> Ve
         }
         MouseEncoding::Utf8 => {
             let mut out = b"\x1b[M".to_vec();
-            for value in [code + 32, event.col + 33, event.row + 33] {
+            // Saturate so huge positions are skipped below rather than wrapping.
+            let position = [event.col.saturating_add(33), event.row.saturating_add(33)];
+            for value in [code + 32, position[0], position[1]] {
                 // UTF-8 extended coordinates stop at 2047.
                 let Some(character) = char::from_u32(value).filter(|_| value < 2048) else {
                     return Vec::new();
@@ -260,7 +278,11 @@ pub(crate) fn encode_mouse(engine: &Engine, event: &TermyEngineMouseEvent) -> Ve
             out
         }
         MouseEncoding::Default => {
-            let values = [code + 32, event.col + 33, event.row + 33];
+            let values = [
+                code + 32,
+                event.col.saturating_add(33),
+                event.row.saturating_add(33),
+            ];
             if values.iter().any(|value| *value > 255) {
                 return Vec::new();
             }

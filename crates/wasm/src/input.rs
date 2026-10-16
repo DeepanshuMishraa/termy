@@ -112,13 +112,32 @@ pub fn encode_mouse(
     )
 }
 
+/// Paste text with line endings as Enter, unsafe controls removed, and the
+/// bracketed-paste markers when the application enabled them. Mirrors
+/// `termy_engine_ffi`'s encoder so every host filters pastes the same way.
 pub fn encode_paste(bracketed: bool, text: &str) -> Vec<u8> {
-    let normalized = text.replace("\r\n", "\r").replace('\n', "\r");
-    if !bracketed {
-        return normalized.into_bytes();
+    let mut body = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(character) = chars.next() {
+        match character {
+            '\r' => {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                body.push('\r');
+            }
+            '\n' => body.push('\r'),
+            '\t' => body.push('\t'),
+            // Other C0 controls, DEL and C1 controls could run commands or
+            // end the bracket early. Dropping ESC also defeats nested end
+            // markers such as `ESC[20 ESC[201~ 1~`.
+            '\0'..='\x1f' | '\x7f'..='\u{9f}' => {}
+            character => body.push(character),
+        }
     }
-    // A pasted end marker would let clipboard content escape the bracket.
-    let body = normalized.replace("\x1b[201~", "");
+    if !bracketed {
+        return body.into_bytes();
+    }
     let mut out = Vec::with_capacity(body.len() + 12);
     out.extend_from_slice(b"\x1b[200~");
     out.extend_from_slice(body.as_bytes());

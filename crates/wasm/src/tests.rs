@@ -7,9 +7,7 @@ fn text_at(engine: &mut TermyEngine, row: u32) -> String {
         .map(|col| {
             let value = cells[col * CELL_STRIDE];
             if value & cells::STRING_FLAG != 0 {
-                engine
-                    .read_string(value & !cells::STRING_FLAG)
-                    .unwrap_or_default()
+                engine.read_strings()[(value & !cells::STRING_FLAG) as usize].clone()
             } else {
                 char::from_u32(value).unwrap_or(' ').to_string()
             }
@@ -37,17 +35,23 @@ fn combining_text_and_hyperlinks_use_the_string_table() {
     engine.feed("e\u{301}\x1b]8;;https://termy.sh\x07L\x1b]8;;\x07".as_bytes());
     let cells = engine.read_rows(0, 1);
     assert_ne!(cells[0] & cells::STRING_FLAG, 0);
+    let strings = engine.read_strings();
     assert_eq!(
-        engine
-            .read_string(cells[0] & !cells::STRING_FLAG)
-            .as_deref(),
-        Some("e\u{301}")
+        strings[(cells[0] & !cells::STRING_FLAG) as usize],
+        "e\u{301}"
     );
     let link = cells[CELL_STRIDE + 5];
-    assert_eq!(
-        engine.read_string(link - 1).as_deref(),
-        Some("https://termy.sh")
-    );
+    assert_eq!(strings[link as usize - 1], "https://termy.sh");
+}
+
+#[test]
+fn a_hyperlink_is_interned_once_per_read() {
+    let mut engine = TermyEngine::new(10, 2, 0);
+    engine.feed(b"\x1b]8;;https://termy.sh\x07link\x1b]8;;\x07 \x1b]8;;https://termy.sh\x07x");
+    let cells = engine.read_rows(0, 1);
+    let links: Vec<u32> = (0..6).map(|col| cells[col * CELL_STRIDE + 5]).collect();
+    assert_eq!(links, [1, 1, 1, 1, 0, 1]);
+    assert_eq!(engine.read_strings(), ["https://termy.sh"]);
 }
 
 #[test]
@@ -114,10 +118,33 @@ fn mouse_reports_require_tracking_mode() {
 #[test]
 fn paste_normalizes_newlines_and_brackets() {
     let mut engine = TermyEngine::new(10, 2, 0);
-    assert_eq!(engine.encode_paste("a\nb"), b"a\rb");
+    assert_eq!(engine.encode_paste("a\nb", true), b"a\rb");
     engine.feed(b"\x1b[?2004h");
-    assert_eq!(engine.encode_paste("a\x1b[201~b"), b"\x1b[200~ab\x1b[201~");
+    assert_eq!(
+        engine.encode_paste("a\x1b[201~b", true),
+        b"\x1b[200~a[201~b\x1b[201~"
+    );
     assert_ne!(engine.mode_bits() & mode_bits::BRACKETED_PASTE, 0);
+}
+
+#[test]
+fn paste_cannot_escape_the_bracket() {
+    let mut engine = TermyEngine::new(10, 2, 0);
+    engine.feed(b"\x1b[?2004h");
+    // A single-pass marker strip would collapse this into a real end marker.
+    let pasted = engine.encode_paste("x\x1b[20\x1b[201~1~rm -rf ~\n", true);
+    assert_eq!(pasted, b"\x1b[200~x[20[201~1~rm -rf ~\r\x1b[201~");
+    let body = &pasted[6..pasted.len() - 6];
+    assert!(!body.contains(&0x1b));
+    // C1 CSI, DEL and other C0 controls are dropped too; tabs survive.
+    assert_eq!(
+        engine.encode_paste("a\u{9b}201~\x7f\x03\tb\r\nc", true),
+        b"\x1b[200~a201~\tb\rc\x1b[201~"
+    );
+    // Hosts that ignore bracketed paste still get the filter.
+    assert_eq!(engine.encode_paste("x\x1b[201~\x03", false), b"x[201~");
+    engine.feed(b"\x1b[?2004l");
+    assert_eq!(engine.encode_paste("\x1b[201~ls\x04", true), b"[201~ls");
 }
 
 #[test]

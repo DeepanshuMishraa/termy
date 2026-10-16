@@ -30,7 +30,7 @@ use flume::Sender;
 use std::{
     collections::VecDeque,
     sync::{
-        Arc, Condvar, Mutex, Weak,
+        Arc, Condvar, Mutex, OnceLock, Weak,
         atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
@@ -67,7 +67,8 @@ struct Shared {
     notifier: Option<TerminalWakeupNotifier>,
     wakeup_enabled: AtomicBool,
     wakeup_queued: AtomicBool,
-    transport: Mutex<Weak<Transport>>,
+    /// Set once after spawning; read on every PTY read, so it takes no lock.
+    transport: OnceLock<Weak<Transport>>,
     sync_signal: Arc<SyncSignal>,
     sync_watchdog_started: AtomicBool,
     // Set when keys or a paste could not queue; drained as one event.
@@ -722,12 +723,10 @@ impl CustomBackend {
                 exit.notify_tab_chrome();
             },
         )?));
-        *terminal
+        let _ = terminal
             .shared
             .transport
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) =
-            Arc::downgrade(terminal.transport.as_ref().unwrap());
+            .set(Arc::downgrade(terminal.transport.as_ref().unwrap()));
         Ok(terminal)
     }
 
@@ -751,7 +750,7 @@ impl CustomBackend {
                 notifier,
                 wakeup_enabled: AtomicBool::new(true),
                 wakeup_queued: AtomicBool::new(false),
-                transport: Mutex::new(Weak::new()),
+                transport: OnceLock::new(),
                 sync_signal: Arc::new(SyncSignal::default()),
                 sync_watchdog_started: AtomicBool::new(false),
                 input_dropped: AtomicBool::new(false),
@@ -810,9 +809,6 @@ impl CustomBackend {
         {
             self.shared.notify();
         }
-    }
-    pub(super) fn write_str(&self, input: &str) {
-        self.write(input.as_bytes());
     }
     #[inline]
     fn send_reply(&self, bytes: Vec<u8>) {
@@ -1144,11 +1140,13 @@ impl CustomBackend {
         if query.is_empty() {
             return Vec::new();
         }
+        // Copy the text under the engine lock, then compile the pattern and
+        // match without it, so a long search doesn't stall PTY output.
         let state = self.shared.state();
         let history = state.engine.history_size() as i32;
         let mut scratch = Vec::new();
-        search_lines_shared(
-            (-history..i32::from(state.size.rows)).filter_map(|line| {
+        let lines = (-history..i32::from(state.size.rows))
+            .filter_map(|line| {
                 state.engine.with_line(line, &mut scratch, |cells| {
                     let mut text = String::with_capacity(cells.len());
                     let mut mapping = SearchLineMapping::default();
@@ -1168,17 +1166,23 @@ impl CustomBackend {
                     text.truncate(text.trim_end().len());
                     ((line + history) as usize, text, mapping)
                 })
-            }),
-            query,
-            options,
-        )
+            })
+            .collect::<Vec<_>>();
+        drop(state);
+        search_lines_shared(lines, query, options)
     }
     pub(super) fn hyperlink_at(&self, row: usize, col: usize) -> Option<DetectedLink> {
         crate::links::hyperlink_at_viewport_cell(&self.shared.state().engine, row, col)
     }
 
     pub(super) fn link_at(&self, row: usize, col: usize) -> Option<DetectedViewportLink> {
-        crate::links::link_at_viewport_cell(&self.shared.state().engine, row, col)
+        // Only the grid lookup needs the engine lock; checking a path on the
+        // filesystem can be slow, so it runs after the lock is released.
+        let candidate = {
+            let state = self.shared.state();
+            crate::links::link_candidate_at_viewport_cell(&state.engine, row, col)
+        };
+        candidate?.resolve()
     }
 
     pub(super) fn scroll_display(&self, delta: i32) -> bool {

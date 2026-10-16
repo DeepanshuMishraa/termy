@@ -101,6 +101,16 @@ struct FrameTests {
         #expect(text == "0123456789abcde\nnext")
     }
 
+    @Test func textOutsideTheGridIsEmpty() throws {
+        // A selection made before a shrinking resize can lie past the last row.
+        let terminal = try displayTerminal(cols: 10, rows: 5, feeding: "hello")
+        let store = FrameStore()
+        try terminal.updateFrame(store)
+        #expect(store.text(from: GridPosition(row: 8, col: 0), to: GridPosition(row: 9, col: 3)).isEmpty)
+        #expect(store.text(from: GridPosition(row: -3, col: 0), to: GridPosition(row: -1, col: 3)).isEmpty)
+        #expect(store.text(from: GridPosition(row: 0, col: 0), to: GridPosition(row: 9, col: 9)).hasPrefix("hello"))
+    }
+
     @Test func scrollbackMovesTheViewport() throws {
         let terminal = try displayTerminal(cols: 20, rows: 5)
         for line in 0..<30 { try terminal.feed("row \(line)\r\n") }

@@ -108,7 +108,8 @@ pub struct TermyEngineOptions {
     pub reply_mode: u32,
     /// Recognize `?1016` (SGR pixel mouse reports). Servers and replicas
     /// must agree; snapshots carry the setting.
-    pub pixel_mouse_reports: bool,
+    /// A C `bool`, read as a byte; any nonzero value is true.
+    pub pixel_mouse_reports: u8,
     pub cell_width_px: u16,
     pub cell_height_px: u16,
     /// History byte limit; 0 selects the 16 MiB default.
@@ -323,7 +324,7 @@ pub extern "C" fn termy_engine_options_default() -> TermyEngineOptions {
         rows: 24,
         scrollback_rows: 10_000,
         reply_mode: TERMY_ENGINE_REPLIES_RETURN,
-        pixel_mouse_reports: false,
+        pixel_mouse_reports: 0,
         cell_width_px: 9,
         cell_height_px: 18,
         scrollback_bytes: DEFAULT_SCROLLBACK_BYTES as u64,
@@ -354,7 +355,7 @@ pub unsafe extern "C" fn termy_engine_new(
             return TermyEngineStatus::InvalidArgument;
         }
         let mut engine = Engine::new(size, engine_options(&options));
-        engine.set_pixel_mouse_reports(options.pixel_mouse_reports);
+        engine.set_pixel_mouse_reports(options.pixel_mouse_reports != 0);
         engine.set_cell_pixels(
             f32::from(options.cell_width_px),
             f32::from(options.cell_height_px),

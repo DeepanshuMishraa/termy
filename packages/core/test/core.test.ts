@@ -30,6 +30,17 @@ describe('TermyCore', () => {
     expect(term.encodeKey('c', 'c', Modifier.Ctrl)).toEqual(new TextEncoder().encode('\x1b[99;5u'))
   })
 
+  it('filters pastes so they cannot escape the bracket', () => {
+    const term = new TermyCore({ cols: 20, rows: 4 })
+    const text = (bytes: Uint8Array): string => new TextDecoder().decode(bytes)
+    expect(text(term.encodePaste('ls\x03\x1b[201~\r\n'))).toBe('ls[201~\r')
+    term.write('\x1b[?2004h')
+    // A single-pass marker strip would collapse this into a real end marker.
+    expect(text(term.encodePaste('x\x1b[20\x1b[201~1~rm -rf ~\n'))).toBe('\x1b[200~x[20[201~1~rm -rf ~\r\x1b[201~')
+    expect(text(term.encodePaste('x\x1b[201~\x03', false))).toBe('x[201~')
+    term.dispose()
+  })
+
   it('decodes kitty graphics placements', () => {
     const term = new TermyCore({ cols: 10, rows: 4 })
     term.setCellPixels(10, 20)

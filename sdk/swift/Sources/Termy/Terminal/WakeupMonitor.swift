@@ -11,6 +11,7 @@ final class WakeupMonitor: @unchecked Sendable {
     private let onWake: @Sendable () -> Void
     private let lock = NSLock()
     private var running = false
+    private var thread: Thread?
     private let exited = DispatchSemaphore(value: 0)
 
     init(handle: OpaquePointer, onWake: @escaping @Sendable () -> Void) {
@@ -30,17 +31,24 @@ final class WakeupMonitor: @unchecked Sendable {
         let thread = Thread { [self] in run() }
         thread.name = "dev.termy.wakeup"
         thread.qualityOfService = .userInteractive
+        lock.withLock { self.thread = thread }
         thread.start()
     }
 
     /// Wakes the waiting thread and blocks until it has exited.
+    ///
+    /// When `onWake` drops the last reference to the `Terminal`, its deinit
+    /// calls this on the wakeup thread itself. Waiting there would deadlock,
+    /// so it returns at once: the thread leaves its loop when `onWake` returns
+    /// and no longer touches the handle.
     func stop() {
-        let wasRunning = lock.withLock {
+        let (wasRunning, thread) = lock.withLock {
             defer { running = false }
-            return running
+            return (running, self.thread)
         }
         guard wasRunning else { return }
         termy_terminal_notify_wakeup(handle)
+        if let thread, Thread.current === thread { return }
         exited.wait()
     }
 

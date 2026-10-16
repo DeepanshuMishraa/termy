@@ -146,7 +146,6 @@ const MOUSE_KINDS: Record<MouseEventKind, number> = {
 }
 const MOUSE_BUTTONS: Record<MouseButton, number> = { left: 0, middle: 1, right: 2 }
 const CURSOR_SHAPES: readonly CursorShape[] = ['block', 'bar', 'underline']
-const encoder = new TextEncoder()
 const EMPTY = new Uint8Array(0)
 
 /**
@@ -348,8 +347,8 @@ export class TermyCore {
     kind: KeyEventKind = 'press',
     optionAsAlt = false,
   ): Uint8Array | undefined {
-    const bytes = this.#engine.encode_key(key, text, modifiers, KEY_KINDS[kind], optionAsAlt)
-    return bytes ? new Uint8Array(bytes) : undefined
+    // The wasm glue already returns a fresh copy; don't copy it again.
+    return this.#engine.encode_key(key, text, modifiers, KEY_KINDS[kind], optionAsAlt)
   }
 
   /** Encode a mouse report; undefined when the application is not tracking it. */
@@ -360,13 +359,17 @@ export class TermyCore {
     row: number,
     modifiers: number,
   ): Uint8Array | undefined {
-    const bytes = this.#engine.encode_mouse(MOUSE_KINDS[kind], MOUSE_BUTTONS[button], col, row, modifiers)
-    return bytes ? new Uint8Array(bytes) : undefined
+    return this.#engine.encode_mouse(MOUSE_KINDS[kind], MOUSE_BUTTONS[button], col, row, modifiers)
   }
 
+  /**
+   * Encode pasted text: line endings become Enter and control characters are
+   * dropped, so a paste cannot run commands or end the bracket early. It is
+   * wrapped in bracketed-paste markers when the program enabled them, unless
+   * `bracketed` is false.
+   */
   encodePaste(text: string, bracketed = true): Uint8Array {
-    if (!bracketed) return encoder.encode(text.replace(/\r?\n/g, '\r'))
-    return this.#engine.encode_paste(text)
+    return this.#engine.encode_paste(text, bracketed)
   }
 
   encodeFocus(focused: boolean): Uint8Array {

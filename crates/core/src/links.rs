@@ -146,6 +146,7 @@ pub(crate) fn hyperlink_at_viewport_cell(
 /// OSC 8 metadata takes priority over heuristic URL detection. The returned
 /// range is clipped to the visible viewport while the target is built from the
 /// complete logical link, including portions currently in scrollback.
+#[cfg(test)]
 pub(crate) fn link_at_viewport_cell(
     term: &Engine,
     row: usize,

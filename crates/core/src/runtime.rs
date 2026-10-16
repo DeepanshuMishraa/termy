@@ -619,7 +619,6 @@ pub enum TerminalEvent {
     /// Terminal content has changed, needs redraw
     Wakeup,
     /// Terminal title changed
-    #[allow(dead_code)]
     Title(String),
     /// Terminal title reset
     ResetTitle,
@@ -946,11 +945,6 @@ impl Terminal {
         self.backend.hydrate_output(bytes);
     }
 
-    #[allow(dead_code)]
-    pub fn write_str(&self, input: &str) {
-        self.backend.write_str(input);
-    }
-
     pub fn resize(&mut self, new_size: TerminalSize) {
         self.backend.resize(new_size);
     }
@@ -1176,7 +1170,6 @@ impl Terminal {
         self.backend.cursor_position()
     }
 
-    #[allow(dead_code)]
     pub fn has_pending_events(&self) -> bool {
         self.backend.has_pending_events()
     }

@@ -102,9 +102,6 @@ impl RemoteBackend {
     pub(crate) fn write_owned(&self, bytes: Vec<u8>) {
         self.transport.send(RemoteCommand::Write(bytes));
     }
-    pub(crate) fn write_str(&self, text: &str) {
-        self.write(text.as_bytes());
-    }
     pub(crate) fn child_pid(&self) -> Option<u32> {
         self.transport.state().child_pid
     }

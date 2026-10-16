@@ -110,7 +110,7 @@ impl Handle {
             mods,
             consumed_mods: consumed,
             action: KEY_PRESS,
-            composing: false,
+            composing: 0,
         };
         let mut out = TermyEngineBytes::EMPTY;
         // SAFETY: live handle, event and out buffer.
@@ -127,7 +127,7 @@ impl Handle {
         let event = TermyEngineMouseEvent {
             action,
             button,
-            any_button_pressed: button != MOUSE_BUTTON_NONE,
+            any_button_pressed: u8::from(button != MOUSE_BUTTON_NONE),
             mods: 0,
             col,
             row,
@@ -437,7 +437,7 @@ fn soft_wrapped_rows_mark_their_last_cell() {
 #[test]
 fn mode_queries_follow_decrqm() {
     let mut options = termy_engine_options_default();
-    options.pixel_mouse_reports = true;
+    options.pixel_mouse_reports = 1;
     let engine = Handle::with_options(&options);
     assert_eq!(engine.mode(2004, false), 2);
     engine.feed(b"\x1b[?2004h\x1b[?1007h\x1b[?1016h\x1b[4h");
@@ -555,6 +555,29 @@ fn scrollbar_and_viewport_scrolling() {
 }
 
 #[test]
+fn read_lines_caps_rows_to_the_frame_row_type() {
+    let mut options = termy_engine_options_default();
+    options.cols = 2;
+    options.rows = 1;
+    options.scrollback_rows = 70_000;
+    let engine = Handle::with_options(&options);
+    engine.feed(&b"x\r\n".repeat(70_000));
+    let history = engine.state().history_size;
+    assert!(history > u32::from(u16::MAX));
+    let mut frame = TermyEngineFrame::default();
+    // SAFETY: live handle and out struct.
+    let status =
+        unsafe { termy_engine_read_lines(engine.0, -i64::from(history), u32::MAX, &raw mut frame) };
+    assert_eq!(status, TermyEngineStatus::Ok);
+    // The row count must agree with the cells; more rows need another call.
+    assert_eq!(frame.rows, u16::MAX);
+    assert_eq!(
+        frame.cells_len,
+        usize::from(frame.rows) * usize::from(frame.cols)
+    );
+}
+
+#[test]
 fn effective_colors_apply_osc_overrides() {
     let engine = Handle::new(10, 2, TERMY_ENGINE_REPLIES_RETURN);
     let palette: Vec<u32> = (0..256).map(|index| index * 0x10101).collect();
@@ -627,7 +650,8 @@ fn key_encoder_handles_modes_and_option_sides() {
         mods: 0,
         consumed_mods: 0,
         action: KEY_PRESS,
-        composing: true,
+        // Any nonzero byte from the host means true.
+        composing: 2,
     };
     let mut out = TermyEngineBytes::EMPTY;
     // SAFETY: live handle, event and out buffer.
@@ -638,7 +662,7 @@ fn key_encoder_handles_modes_and_option_sides() {
 #[test]
 fn mouse_encoder_covers_modes_buttons_and_pixels() {
     let mut options = termy_engine_options_default();
-    options.pixel_mouse_reports = true;
+    options.pixel_mouse_reports = 1;
     let engine = Handle::with_options(&options);
     // No tracking: nothing.
     assert!(
@@ -709,6 +733,25 @@ fn mouse_encoder_covers_modes_buttons_and_pixels() {
             .mouse(MOUSE_RELEASE, MOUSE_BUTTON_MIDDLE, 0, 0, (0, 0))
             .is_empty()
     );
+    // Positions the encoding cannot carry are not reported, without overflow.
+    for far in [223, u32::MAX] {
+        assert!(
+            engine
+                .mouse(MOUSE_PRESS, MOUSE_BUTTON_LEFT, far, 0, (0, 0))
+                .is_empty()
+        );
+        assert!(
+            engine
+                .mouse(MOUSE_PRESS, MOUSE_BUTTON_LEFT, 0, far, (0, 0))
+                .is_empty()
+        );
+    }
+    engine.feed(b"\x1b[?1005h");
+    assert!(
+        engine
+            .mouse(MOUSE_PRESS, MOUSE_BUTTON_LEFT, u32::MAX, u32::MAX, (0, 0))
+            .is_empty()
+    );
 }
 
 #[test]
@@ -725,6 +768,11 @@ fn paste_and_focus_encoders() {
         b"\x1b[200~x[201~rm\ty\x1b[201~"
     );
     assert_eq!(paste("\u{9b}31m".as_bytes(), false), b"31m");
+    // A nested marker must not collapse into a real end marker.
+    assert_eq!(
+        paste(b"x\x1b[20\x1b[201~1~rm", true),
+        b"\x1b[200~x[20[201~1~rm\x1b[201~"
+    );
     let mut out = TermyEngineBytes::EMPTY;
     // SAFETY: valid out buffer.
     unsafe { termy_engine_encode_focus(true, &raw mut out) };
@@ -746,7 +794,7 @@ fn text_formats_and_selection_helpers() {
         start_col: 0,
         end_line: 0,
         end_col: 7,
-        rectangular: false,
+        rectangular: 0,
     });
     let vt = engine.text(first, FORMAT_VT, TEXT_TRIM);
     assert!(vt.starts_with("\x1b[0;1mbold\x1b[0m <&>"), "{vt:?}");
@@ -783,6 +831,25 @@ fn text_formats_and_selection_helpers() {
     // SAFETY: live handle and out struct.
     unsafe { termy_engine_select_line(engine.0, 2, &raw mut range) };
     assert_eq!((range.start_line, range.end_line), (1, 2));
+}
+
+#[test]
+fn html_links_allow_only_safe_schemes() {
+    let engine = Handle::new(40, 2, TERMY_ENGINE_REPLIES_RETURN);
+    engine.feed(
+        b"\x1b]8;;javascript:alert(1)\x1b\\js\x1b]8;;\x1b\\ \
+          \x1b]8;;HTTPS://e.x/?a=\"b\"&c\x1b\\ok\x1b]8;;\x1b\\ \
+          \x1b]8;; java\tscript:x\x1b\\ws\x1b]8;;\x1b\\",
+    );
+    let html = engine.text(None, FORMAT_HTML, TEXT_TRIM);
+    assert!(!html.contains("script:"), "{html}");
+    assert!(
+        html.contains("<a href=\"HTTPS://e.x/?a=&quot;b&quot;&amp;c\">ok</a>"),
+        "{html}"
+    );
+    // Dropped links keep their text and leave no dangling tags.
+    assert!(html.contains(">js ") || html.contains("\"js "), "{html}");
+    assert_eq!(html.matches("<a ").count(), html.matches("</a>").count());
 }
 
 #[test]

@@ -60,8 +60,9 @@ public final class Terminal {
         mode = .display
     }
 
-    /// A parser/screen without a PTY. It has no wake channel: drain events and
-    /// take frames after each `feed(_:)`.
+    /// A parser/screen without a PTY. Drain events and take frames after each
+    /// `feed(_:)`. Its wake channel fires when a synchronized update (`?2026`)
+    /// times out and commits without further output.
     public static func display(size: TerminalSize) throws(TermyError) -> Terminal {
         var handle: OpaquePointer?
         try check(termy_display_terminal_new(size.ffi, &handle), "termy_display_terminal_new")
@@ -165,18 +166,22 @@ public final class Terminal {
         return termy_terminal_bracketed_paste_mode(handle, &enabled) == TERMY_FFI_OK && enabled
     }
 
-    /// Pastes text, wrapping it in bracketed-paste markers when the program
-    /// requested them and stripping any markers embedded in the payload.
+    /// Encodes pasted text: line endings become Enter, control characters are
+    /// dropped so the paste cannot run commands or end the bracket early, and
+    /// the text is wrapped in bracketed-paste markers when the program
+    /// requested them.
+    public func encodePaste(_ text: String) throws(TermyError) -> Data {
+        try withUTF8(text) { (textPtr, textLen) throws(TermyError) -> Data in
+            try takeBytes("termy_terminal_encode_paste") {
+                termy_terminal_encode_paste(handle, textPtr, textLen, $0)
+            }
+        }
+    }
+
+    /// Pastes text encoded by `encodePaste(_:)`.
     public func paste(_ text: String, availableFormats: [String] = ["text/plain"]) throws(TermyError) {
         try sendKittyClipboardPasteEvent(location: .clipboard, availableFormats: availableFormats)
-        guard isBracketedPasteEnabled else {
-            try write(text)
-            return
-        }
-        let payload = text
-            .replacingOccurrences(of: "\u{1b}[200~", with: "")
-            .replacingOccurrences(of: "\u{1b}[201~", with: "")
-        try write("\u{1b}[200~" + payload + "\u{1b}[201~")
+        try write(encodePaste(text))
     }
 
     // MARK: - Size and scrollback
@@ -314,11 +319,10 @@ public final class Terminal {
 
     // MARK: - Wakeups
 
-    /// Calls `onWake` from a background thread whenever the PTY has new work.
-    /// Hop to the terminal's thread before touching it. Display terminals have
-    /// no wake channel, so this does nothing for them.
+    /// Calls `onWake` from a background thread whenever the terminal has new
+    /// work: PTY output, or for display terminals a synchronized update that
+    /// timed out. Hop to the terminal's thread before touching it.
     public func startWakeupMonitor(onWake: @escaping @Sendable () -> Void) {
-        guard mode == .pty else { return }
         wakeupMonitor?.stop()
         let monitor = WakeupMonitor(handle: handle, onWake: onWake)
         wakeupMonitor = monitor
@@ -371,8 +375,21 @@ public final class Terminal {
         let status = termy_terminal_kitty_graphics_placements(handle, &batch)
         defer { termy_kitty_graphics_batch_free(&batch) }
         try check(status, "termy_terminal_kitty_graphics_placements")
+        // Placements of one image share a PNG buffer; copy each buffer once so
+        // placeholder images spanning many cells share one `Data`.
+        var pngs: [UnsafeMutablePointer<UInt8>: Data] = [:]
         let placements = UnsafeBufferPointer(start: batch.placements_ptr, count: batch.placements_len)
-            .map(KittyGraphicsPlacement.init)
+            .map { placement -> KittyGraphicsPlacement in
+                guard let ptr = placement.png.ptr else {
+                    return KittyGraphicsPlacement(placement, png: Data())
+                }
+                if let png = pngs[ptr] {
+                    return KittyGraphicsPlacement(placement, png: png)
+                }
+                let png = placement.png.copyData()
+                pngs[ptr] = png
+                return KittyGraphicsPlacement(placement, png: png)
+            }
         return KittyGraphicsSnapshot(revision: batch.revision, placements: placements)
     }
 

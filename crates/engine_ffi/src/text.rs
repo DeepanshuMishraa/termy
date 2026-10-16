@@ -26,7 +26,8 @@ pub struct TermyEngineTextRange {
     pub start_col: u32,
     pub end_line: i64,
     pub end_col: u32,
-    pub rectangular: bool,
+    /// A C `bool`, read as a byte; any nonzero value is true.
+    pub rectangular: u8,
 }
 
 fn line_bounds(engine: &Engine) -> (i64, i64) {
@@ -109,6 +110,19 @@ fn html_escape(out: &mut String, character: char) {
     }
 }
 
+/// Whether an OSC 8 URI may become an HTML `href`. Programs choose these
+/// URIs, so schemes that run script (`javascript:`, `data:`) are dropped.
+fn safe_href(uri: &str) -> bool {
+    let Some((scheme, _)) = uri.split_once(':') else {
+        return false;
+    };
+    [
+        "http", "https", "mailto", "file", "ftp", "ftps", "sftp", "ssh",
+    ]
+    .iter()
+    .any(|safe| scheme.eq_ignore_ascii_case(safe))
+}
+
 fn css_color(colors: &TermyEngineColors, color: Color, default: u32) -> u32 {
     if let Some(index) = color.as_indexed() {
         colors.palette[usize::from(index)]
@@ -180,6 +194,7 @@ struct Formatter<'a> {
 
 impl Formatter<'_> {
     fn set(&mut self, pen: Pen, link: Option<&str>) {
+        let link = link.filter(|link| self.format != FORMAT_HTML || safe_href(link));
         match self.format {
             FORMAT_VT => {
                 if pen != self.pen {
@@ -283,7 +298,7 @@ pub(crate) fn read_text(
     if start > end {
         std::mem::swap(&mut start, &mut end);
     }
-    let (left, right) = if range.rectangular {
+    let (left, right) = if range.rectangular != 0 {
         (start.1.min(end.1), start.1.max(end.1))
     } else {
         (0, usize::MAX)
@@ -303,7 +318,7 @@ pub(crate) fn read_text(
         let Some(cells) = get_line(engine, line) else {
             break;
         };
-        let (from, to) = if range.rectangular {
+        let (from, to) = if range.rectangular != 0 {
             (left, right)
         } else {
             (
@@ -312,7 +327,7 @@ pub(crate) fn read_text(
             )
         };
         let to = to.min(cells.len().saturating_sub(1));
-        let soft_wrapped = wrapped(engine, line) && !range.rectangular;
+        let soft_wrapped = wrapped(engine, line) && range.rectangular == 0;
         // Trailing blanks of a hard line end are padding, not text.
         let mut stop = to + 1;
         if options & TEXT_TRIM != 0 && !(soft_wrapped && to + 1 == cells.len()) {
@@ -440,7 +455,7 @@ pub(crate) fn select_word(engine: &Engine, line: i64, col: usize) -> Option<Term
         start_col: start_col as u32,
         end_line,
         end_col: end_col as u32,
-        rectangular: false,
+        rectangular: 0,
     })
 }
 
@@ -462,7 +477,7 @@ pub(crate) fn select_line(engine: &Engine, line: i64) -> Option<TermyEngineTextR
         start_col: 0,
         end_line: end,
         end_col: line_len(engine, end).saturating_sub(1) as u32,
-        rectangular: false,
+        rectangular: 0,
     })
 }
 
@@ -508,7 +523,7 @@ pub unsafe extern "C" fn termy_engine_read_text(
                 start_col: 0,
                 end_line: bottom,
                 end_col: u32::MAX,
-                rectangular: false,
+                rectangular: 0,
             }
         });
         let text = read_text(&engine.engine, Some(&colors), range, format, options);

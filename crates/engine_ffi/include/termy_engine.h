@@ -510,7 +510,8 @@ TermyEngineStatus termy_engine_frame(
 
 /* count buffer lines from first_line (negative lines are scrollback, -1
  * the newest; 0 is the first live row), clamped to the buffer, as a FULL
- * frame of `rows` rows starting at max(first_line, -history_size). Reading
+ * frame of `rows` rows starting at max(first_line, -history_size). One call
+ * reads at most 65535 rows; read the rest from first_line + rows. Reading
  * makes the next termy_engine_frame() FULL. */
 TermyEngineStatus termy_engine_read_lines(
     TermyEngine *engine,
@@ -633,7 +634,9 @@ TermyEngineStatus termy_engine_encode_focus(bool gained, TermyEngineBytes *out_b
 
 #define TERMY_ENGINE_FORMAT_PLAIN 0
 #define TERMY_ENGINE_FORMAT_VT 1   /* SGR and OSC 8 preserved */
-#define TERMY_ENGINE_FORMAT_HTML 2 /* <pre> with inline styles */
+#define TERMY_ENGINE_FORMAT_HTML 2 /* <pre> with inline styles; OSC 8 links
+                                   * only for http(s), mailto, file, ftp(s),
+                                   * sftp and ssh URIs */
 
 /* Join soft-wrapped rows without a line break. */
 #define TERMY_ENGINE_TEXT_UNWRAP (1u << 0)
