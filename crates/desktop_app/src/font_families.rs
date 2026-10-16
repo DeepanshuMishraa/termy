@@ -81,6 +81,11 @@ pub(crate) fn effective_terminal_font_family(
     requested: &str,
     text_system: &TextSystem,
 ) -> SharedString {
+    // The cache assumes the app's single text system. Tests build many (often
+    // no-op) text systems, so a shared entry would leak between them.
+    if cfg!(test) {
+        return resolve_terminal_font_family(requested, text_system);
+    }
     let mut last = LAST_RESOLVED_FAMILY
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
