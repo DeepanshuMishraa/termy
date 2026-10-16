@@ -1,17 +1,20 @@
-use gpui_kit::{App, AsyncApp, WeakEntity};
+use gpui_kit::{App, AppContext, AsyncApp, Entity, Global, WeakEntity};
 
 mod engine;
-#[cfg(any(target_os = "linux", all(test, unix)))]
-mod linux_install;
-#[cfg(any(target_os = "macos", target_os = "linux", test))]
+#[cfg(any(target_os = "macos", test))]
 mod staged_install;
 
 pub use engine::{InstallOutcome, ReleaseInfo, UpdateCheck, UpdateState};
 
 use engine::{
     cache_installer_path, check_for_updates, do_install, download_installer,
-    verify_installer_checksum,
+    ensure_install_supported, verify_installer_checksum,
 };
+
+/// The one updater shared by every window, so the app checks, downloads and
+/// installs each release once.
+struct GlobalAutoUpdater(Entity<AutoUpdater>);
+impl Global for GlobalAutoUpdater {}
 
 pub struct AutoUpdater {
     current_version: &'static str,
@@ -30,8 +33,46 @@ impl AutoUpdater {
         cfg!(any(target_os = "macos", target_os = "windows"))
     }
 
+    /// Returns the app-wide updater, creating it on first use. `None` when
+    /// auto updates are not supported on this platform.
+    pub fn global(cx: &mut App) -> Option<Entity<Self>> {
+        if !Self::supported_on_current_platform() {
+            return None;
+        }
+        if let Some(global) = cx.try_global::<GlobalAutoUpdater>() {
+            return Some(global.0.clone());
+        }
+        let updater = cx.new(|_| Self::new(env!("CARGO_PKG_VERSION")));
+        cx.set_global(GlobalAutoUpdater(updater.clone()));
+        Some(updater)
+    }
+
+    /// A new check would only repeat or interrupt work already under way.
+    fn busy(state: &UpdateState) -> bool {
+        matches!(
+            state,
+            UpdateState::Checking
+                | UpdateState::Downloading { .. }
+                | UpdateState::Downloaded { .. }
+                | UpdateState::Installing { .. }
+                | UpdateState::InstallerLaunched { .. }
+        )
+    }
+
+    /// Checks once per app run; later calls (e.g. from each new window's
+    /// startup check) reuse the earlier result.
+    pub fn check_if_idle(entity: WeakEntity<Self>, cx: &mut App) {
+        let Some(this) = entity.upgrade() else { return };
+        if this.read(cx).state == UpdateState::Idle {
+            Self::check(entity, cx);
+        }
+    }
+
     pub fn check(entity: WeakEntity<Self>, cx: &mut App) {
         let Some(this) = entity.upgrade() else { return };
+        if Self::busy(&this.read(cx).state) {
+            return;
+        }
         this.update(cx, |this, cx| {
             this.state = UpdateState::Checking;
             cx.notify();
@@ -112,6 +153,7 @@ impl AutoUpdater {
         let dest = cache_installer_path(&version, &extension);
         let dl_version = version.clone();
         let bg = cx.background_executor().spawn(async move {
+            ensure_install_supported()?;
             let path = download_installer(&url, &dest, progress_tx)?;
             verify_installer_checksum(
                 &path,
@@ -220,5 +262,28 @@ impl AutoUpdater {
     pub fn dismiss(&mut self, cx: &mut gpui_kit::Context<Self>) {
         self.state = UpdateState::Idle;
         cx.notify();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AutoUpdater, UpdateState};
+
+    #[test]
+    fn checks_do_not_restart_work_in_progress() {
+        assert!(!AutoUpdater::busy(&UpdateState::Idle));
+        assert!(!AutoUpdater::busy(&UpdateState::UpToDate));
+        assert!(!AutoUpdater::busy(&UpdateState::Error(
+            "offline".to_string()
+        )));
+        assert!(AutoUpdater::busy(&UpdateState::Checking));
+        assert!(AutoUpdater::busy(&UpdateState::Downloading {
+            version: "1.0.0".to_string(),
+            downloaded: 1,
+            total: 2,
+        }));
+        assert!(AutoUpdater::busy(&UpdateState::Installing {
+            version: "1.0.0".to_string(),
+        }));
     }
 }

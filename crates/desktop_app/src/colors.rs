@@ -57,7 +57,6 @@ impl TerminalColors {
         } else {
             if let Some(theme_colors) = theme_store::load_installed_theme_colors(theme)
                 .or_else(|| themes::builtin_theme(theme))
-                .or_else(|| themes::resolve_theme(theme))
             {
                 Self::from_theme_colors(theme_colors)
             } else {

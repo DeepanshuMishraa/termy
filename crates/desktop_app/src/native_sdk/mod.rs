@@ -78,18 +78,28 @@ pub struct NativeContextMenuAnchor {
     pub y: f64,
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 const CONTEXT_MENU_COPY_ID: i32 = 1;
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 const CONTEXT_MENU_PASTE_ID: i32 = 2;
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 const CONTEXT_MENU_OPEN_SEARCH_ID: i32 = 3;
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 const CONTEXT_MENU_COPY_BUFFER_POSITION_ID: i32 = 4;
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 const CONTEXT_MENU_COPY_IMAGE_ID: i32 = 5;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 const TAB_CONTEXT_MENU_PIN_ID: i32 = 101;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 const TAB_CONTEXT_MENU_UNPIN_ID: i32 = 102;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 const TAB_CONTEXT_MENU_RENAME_ID: i32 = 103;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 const TAB_CONTEXT_MENU_CLOSE_ID: i32 = 104;
 #[cfg(target_os = "macos")]
 static CONTEXT_MENU_SELECTION: AtomicI32 = AtomicI32::new(0);
 
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 fn context_menu_action_for_id(action_id: i32) -> Option<ContextMenuAction> {
     match action_id {
         CONTEXT_MENU_COPY_ID => Some(ContextMenuAction::Copy),
@@ -173,38 +183,6 @@ fn has_command(cmd: &str) -> bool {
         .stderr(std::process::Stdio::null())
         .status()
         .is_ok_and(|s| s.success())
-}
-
-/// Read the system icon for any file or app bundle as PNG bytes.
-/// Returns `None` on non-macOS or if icon retrieval fails.
-///
-/// # Safety
-/// Must be called from the main thread.
-pub fn app_icon_png_for_path(path: &str, size_px: f64) -> Option<Vec<u8>> {
-    #[cfg(target_os = "macos")]
-    {
-        use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSWorkspace};
-        use objc2_foundation::{NSDictionary, NSSize};
-
-        let _ = unsafe { MainThreadMarker::new_unchecked() };
-        let ns_path = NSString::from_str(path);
-        let workspace = NSWorkspace::sharedWorkspace();
-        let image = workspace.iconForFile(&ns_path);
-        image.setSize(NSSize::new(size_px, size_px));
-        let tiff_data = image.TIFFRepresentation()?;
-        let bitmap_rep = NSBitmapImageRep::imageRepWithData(&tiff_data)?;
-        let properties = NSDictionary::new();
-        let png_data = unsafe {
-            bitmap_rep.representationUsingType_properties(NSBitmapImageFileType::PNG, &properties)
-        }?;
-        let bytes = unsafe { png_data.as_bytes_unchecked() };
-        Some(bytes.to_vec())
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = (path, size_px);
-        None
-    }
 }
 
 #[cfg(target_os = "macos")]
@@ -298,21 +276,6 @@ pub fn clear_current_app_bundle_file_icon() -> bool {
             &path,
             objc2_app_kit::NSWorkspaceIconCreationOptions::empty(),
         )
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        false
-    }
-}
-
-/// Whether macOS "Reduce transparency" (System Settings → Accessibility →
-/// Display) is enabled. When it is on, AppKit flattens `NSVisualEffectView`
-/// vibrancy, so window-background blur cannot render and callers should fall
-/// back to plain transparency. Always `false` on non-macOS platforms.
-pub fn macos_reduce_transparency() -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        objc2_app_kit::NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceTransparency()
     }
     #[cfg(not(target_os = "macos"))]
     {

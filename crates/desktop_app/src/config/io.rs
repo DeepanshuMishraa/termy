@@ -104,6 +104,31 @@ fn ensure_config_file_watcher_started() {
 }
 
 pub(crate) fn write_atomic(path: &Path, contents: &str) -> Result<(), ConfigIoError> {
+    write_replacing(path, contents, true)
+}
+
+/// Like [`write_atomic`] but without `fsync`, for small state files written
+/// from the UI thread (such as window geometry) that are cheap to lose on a
+/// power failure. The temp-file rename still never leaves a torn file.
+pub(crate) fn write_atomic_unsynced(path: &Path, contents: &str) -> Result<(), ConfigIoError> {
+    write_replacing(path, contents, false)
+}
+
+fn write_replacing(path: &Path, contents: &str, sync: bool) -> Result<(), ConfigIoError> {
+    // Renaming over a symlink would replace the link itself with a regular
+    // file, detaching dotfile managers (stow, chezmoi, home-manager). Replace
+    // the file the link points to instead.
+    let resolved;
+    let path = if fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink())
+    {
+        resolved = fs::canonicalize(path).map_err(|source| ConfigIoError::WriteConfig {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        resolved.as_path()
+    } else {
+        path
+    };
     let parent = path
         .parent()
         .ok_or_else(|| ConfigIoError::InvalidConfigPath(path.to_path_buf()))?;
@@ -122,12 +147,14 @@ pub(crate) fn write_atomic(path: &Path, contents: &str) -> Result<(), ConfigIoEr
         path: path.to_path_buf(),
         source,
     })?;
-    temp.as_file()
-        .sync_all()
-        .map_err(|source| ConfigIoError::WriteConfig {
-            path: path.to_path_buf(),
-            source,
-        })?;
+    if sync {
+        temp.as_file()
+            .sync_all()
+            .map_err(|source| ConfigIoError::WriteConfig {
+                path: path.to_path_buf(),
+                source,
+            })?;
+    }
     temp.persist(path)
         .map_err(|error| ConfigIoError::PersistTempFile {
             path: path.to_path_buf(),
@@ -240,5 +267,31 @@ mod tests {
             })
             .collect();
         assert_eq!(entries, vec!["config.txt".to_string()]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_atomic_preserves_symlinked_config() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dotfiles = dir.path().join("dotfiles");
+        std::fs::create_dir(&dotfiles).expect("create dotfiles dir");
+        let target = dotfiles.join("config.txt");
+        std::fs::write(&target, "theme = termy\n").expect("write target");
+        let link = dir.path().join("config.txt");
+        std::os::unix::fs::symlink(&target, &link).expect("create symlink");
+
+        write_atomic(&link, "theme = nord\n").expect("write through symlink");
+
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .expect("link metadata")
+                .file_type()
+                .is_symlink(),
+            "config symlink was replaced by a regular file"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&target).expect("read target"),
+            "theme = nord\n"
+        );
     }
 }

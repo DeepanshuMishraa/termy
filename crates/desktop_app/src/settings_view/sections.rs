@@ -1199,6 +1199,12 @@ impl SettingsWindow {
                 .into_any_element();
         }
 
+        for theme in &filtered_themes {
+            self.theme_store_swatch_cache
+                .entry(theme.slug.to_ascii_lowercase())
+                .or_insert_with(|| installed_theme_swatches(theme));
+        }
+
         let cards: Vec<AnyElement> = filtered_themes
             .into_iter()
             .map(|theme| self.render_theme_store_card(theme, cx))
@@ -1317,29 +1323,16 @@ impl SettingsWindow {
             border_color
         };
 
-        let swatch_colors: Vec<Rgba> = {
-            let resolved = crate::theme_store::load_installed_theme_colors(&theme.slug)
-                .or_else(|| crate::theme_store::load_installed_theme_colors(&theme.name));
-            if let Some(colors) = resolved {
-                let palette_indices = [1usize, 2, 4, 3, 5, 6, 14];
-                palette_indices
-                    .iter()
-                    .map(|&i| {
-                        let c = colors.ansi[i];
-                        Rgba {
-                            r: c.r as f32 / 255.0,
-                            g: c.g as f32 / 255.0,
-                            b: c.b as f32 / 255.0,
-                            a: 1.0,
-                        }
-                    })
-                    .collect()
-            } else {
+        let swatch_colors: Vec<Rgba> = self
+            .theme_store_swatch_cache
+            .get(&slug_key)
+            .cloned()
+            .flatten()
+            .unwrap_or_else(|| {
                 let mut muted = text_muted;
                 muted.a *= 0.35;
                 vec![muted; 7]
-            }
-        };
+            });
 
         let mut swatch_row = div().flex().items_center().gap(px(5.0));
         for color in swatch_colors {
@@ -1639,4 +1632,24 @@ impl SettingsWindow {
             })
             .child(config_group)
     }
+}
+
+fn installed_theme_swatches(theme: &ThemeStoreTheme) -> Option<Vec<Rgba>> {
+    let colors = crate::theme_store::load_installed_theme_colors(&theme.slug)
+        .or_else(|| crate::theme_store::load_installed_theme_colors(&theme.name))?;
+    let palette_indices = [1usize, 2, 4, 3, 5, 6, 14];
+    Some(
+        palette_indices
+            .iter()
+            .map(|&i| {
+                let c = colors.ansi[i];
+                Rgba {
+                    r: c.r as f32 / 255.0,
+                    g: c.g as f32 / 255.0,
+                    b: c.b as f32 / 255.0,
+                    a: 1.0,
+                }
+            })
+            .collect(),
+    )
 }

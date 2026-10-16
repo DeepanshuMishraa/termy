@@ -6,7 +6,7 @@ mod preview;
 use crate::theme_store;
 use std::time::Duration;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     fs,
     hash::{DefaultHasher, Hash, Hasher},
     path::{Path, PathBuf},
@@ -14,7 +14,7 @@ use std::{
 };
 
 pub use error::ConfigIoError;
-pub(crate) use io::write_atomic;
+pub(crate) use io::write_atomic_unsynced;
 pub use io::{ensure_config_file, open_config_file, subscribe_config_changes};
 pub use mutate::{
     import_colors_from_json, prettify_config_file, remove_root_setting,
@@ -109,69 +109,144 @@ pub fn summarize_parse_diagnostics(diagnostics: &[ConfigDiagnostic]) -> Option<S
     ))
 }
 
-/// Maps toast ID → list of raw config keys to remove when "Fix" is clicked.
-static PENDING_FIXES: LazyLock<Mutex<HashMap<u64, Vec<String>>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+/// A one-click fix offered by the config diagnostics toast.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ConfigFix {
+    /// Remove every occurrence of an unknown root key.
+    RemoveUnknownKey(String),
+    /// Remove all but the last (effective) occurrence of a duplicated root key.
+    RemoveDuplicateKey(String),
+}
+
+/// The diagnostics toast currently shown for the config file, if any.
+struct DiagnosticsToast {
+    fingerprint: u64,
+    toast_id: u64,
+    fixes: Vec<ConfigFix>,
+}
+
+/// The config is reloaded from many places (each window, settings, tmux), so
+/// the toast is only shown again when the diagnostics themselves change. This
+/// also bounds the pending fixes to the latest toast.
+static DIAGNOSTICS_TOAST: LazyLock<Mutex<Option<DiagnosticsToast>>> =
+    LazyLock::new(|| Mutex::new(None));
+
+fn diagnostics_fingerprint(diagnostics: &[ConfigDiagnostic]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    for diagnostic in diagnostics {
+        diagnostic.line_number.hash(&mut hasher);
+        diagnostic_kind_label(diagnostic.kind).hash(&mut hasher);
+        diagnostic.message.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+fn fixes_for_diagnostics(diagnostics: &[ConfigDiagnostic]) -> Vec<ConfigFix> {
+    let mut fixes = Vec::new();
+    for diagnostic in diagnostics {
+        // Messages look like "Unknown root key 'key'" and
+        // "Duplicate root key 'key' (first defined on line N)".
+        let fix = match diagnostic.kind {
+            ConfigDiagnosticKind::UnknownRootKey => diagnostic
+                .message
+                .strip_prefix("Unknown root key '")
+                .and_then(|rest| rest.split_once('\''))
+                .map(|(key, _)| ConfigFix::RemoveUnknownKey(key.to_string())),
+            ConfigDiagnosticKind::DuplicateRootKey => diagnostic
+                .message
+                .strip_prefix("Duplicate root key '")
+                .and_then(|rest| rest.split_once('\''))
+                .map(|(key, _)| ConfigFix::RemoveDuplicateKey(key.to_string())),
+            _ => None,
+        };
+        if let Some(fix) = fix
+            && !fixes.contains(&fix)
+        {
+            fixes.push(fix);
+        }
+    }
+    fixes
+}
 
 pub fn show_parse_diagnostics_toast(diagnostics: &[ConfigDiagnostic]) {
+    let mut state = DIAGNOSTICS_TOAST.lock().expect("diagnostics toast lock");
+    show_parse_diagnostics_toast_with_state(
+        &mut state,
+        diagnostics,
+        |summary, action_label| {
+            crate::ui::toast::enqueue_actionable_toast_with_id(
+                crate::ui::toast::ToastKind::Warning,
+                summary,
+                Some(Duration::from_secs(10)),
+                action_label,
+            )
+        },
+        crate::ui::toast::dismiss_toast,
+    );
+}
+
+fn show_parse_diagnostics_toast_with_state(
+    state: &mut Option<DiagnosticsToast>,
+    diagnostics: &[ConfigDiagnostic],
+    enqueue: impl FnOnce(String, Option<String>) -> u64,
+    mut dismiss: impl FnMut(u64),
+) {
     let Some(summary) = summarize_parse_diagnostics(diagnostics) else {
+        if let Some(previous) = state.take() {
+            dismiss(previous.toast_id);
+        }
         return;
     };
 
-    // Collect fixable keys (unknown/duplicate root keys can simply be removed).
-    let fixable_keys: Vec<String> = diagnostics
-        .iter()
-        .filter(|d| {
-            matches!(
-                d.kind,
-                ConfigDiagnosticKind::UnknownRootKey | ConfigDiagnosticKind::DuplicateRootKey
-            )
-        })
-        .filter_map(|d| {
-            // The message format is "Unknown root key 'key'" — extract the key.
-            d.message
-                .strip_prefix("Unknown root key '")
-                .or_else(|| d.message.strip_prefix("Duplicate root key '"))
-                .and_then(|s| s.strip_suffix('\''))
-                .map(|s| s.to_string())
-        })
-        .collect();
+    let fingerprint = diagnostics_fingerprint(diagnostics);
+    if state
+        .as_ref()
+        .is_some_and(|previous| previous.fingerprint == fingerprint)
+    {
+        return;
+    }
+    if let Some(previous) = state.take() {
+        dismiss(previous.toast_id);
+    }
 
-    let action_label = if fixable_keys.is_empty() {
+    let fixes = fixes_for_diagnostics(diagnostics);
+    let action_label = if fixes.is_empty() {
         None
     } else {
         Some("Fix".to_string())
     };
 
-    let toast_id = crate::ui::toast::enqueue_actionable_toast_with_id(
-        crate::ui::toast::ToastKind::Warning,
-        summary,
-        Some(Duration::from_secs(10)),
-        action_label,
-    );
+    let toast_id = enqueue(summary, action_label);
 
-    if !fixable_keys.is_empty() {
-        let mut fixes = PENDING_FIXES.lock().expect("pending fixes lock");
-        fixes.insert(toast_id, fixable_keys);
-    }
+    *state = Some(DiagnosticsToast {
+        fingerprint,
+        toast_id,
+        fixes,
+    });
 }
 
 /// Execute the fix registered for a toast (remove unknown/duplicate keys from config).
 /// Returns true if any fix was applied.
 pub fn execute_fix_for_toast(toast_id: u64) -> bool {
-    let keys = {
-        let mut fixes = PENDING_FIXES.lock().expect("pending fixes lock");
-        fixes.remove(&toast_id)
+    let fixes = {
+        let mut state = DIAGNOSTICS_TOAST.lock().expect("diagnostics toast lock");
+        match state.as_mut() {
+            Some(toast) if toast.toast_id == toast_id => std::mem::take(&mut toast.fixes),
+            _ => return false,
+        }
     };
-    let Some(keys) = keys else {
-        return false;
-    };
-    for key in &keys {
-        if let Err(e) = mutate::remove_raw_root_key_from_config(key) {
-            log::warn!("Failed to fix config key '{key}': {e}");
+    for fix in &fixes {
+        let result = match fix {
+            ConfigFix::RemoveUnknownKey(key) => mutate::remove_raw_root_key_from_config(key),
+            ConfigFix::RemoveDuplicateKey(key) => {
+                mutate::remove_duplicate_root_key_from_config(key)
+            }
+        };
+        if let Err(e) = result {
+            log::warn!("Failed to fix config: {fix:?}: {e}");
         }
     }
-    !keys.is_empty()
+    !fixes.is_empty()
 }
 
 // This uses Rust's default SipHash-based hasher and is only for in-process
@@ -270,7 +345,11 @@ fn migrate_legacy_builtin_theme_in_contents_with_installed_ids(
         return contents.to_string();
     };
 
-    let next_theme = if installed_theme_ids.contains(canonical_legacy_theme) {
+    // Themes still shipped in the binary (e.g. the default `termy`) are kept
+    // as-is; only themes that moved to the theme store need to be installed.
+    let next_theme = if termy_core::themes::builtin_theme(canonical_legacy_theme).is_some()
+        || installed_theme_ids.contains(canonical_legacy_theme)
+    {
         canonical_legacy_theme.to_string()
     } else {
         SHELL_DECIDE_THEME_ID.to_string()
@@ -399,10 +478,101 @@ mod tests {
     #[test]
     fn migrates_removed_builtin_theme_to_shell_decide_when_not_installed() {
         let output = migrate_legacy_builtin_theme_in_contents_with_installed_ids(
-            "theme = termy\nfont_size = 14\n",
+            "theme = dracula\nfont_size = 14\n",
             &HashSet::new(),
         );
         assert_eq!(output, "theme = shell-decide\nfont_size = 14\n");
+    }
+
+    #[test]
+    fn keeps_builtin_termy_theme_unchanged() {
+        let input = "theme = termy\nfont_size = 14\n";
+        let output =
+            migrate_legacy_builtin_theme_in_contents_with_installed_ids(input, &HashSet::new());
+        assert_eq!(output, input);
+    }
+
+    #[test]
+    fn default_config_template_is_not_migrated() {
+        let output = migrate_legacy_builtin_theme_in_contents_with_installed_ids(
+            DEFAULT_CONFIG,
+            &HashSet::new(),
+        );
+        assert_eq!(output, DEFAULT_CONFIG);
+    }
+
+    #[test]
+    fn migrates_legacy_default_theme_alias_to_builtin_termy() {
+        let output = migrate_legacy_builtin_theme_in_contents_with_installed_ids(
+            "theme = default\nfont_size = 14\n",
+            &HashSet::new(),
+        );
+        assert_eq!(output, "theme = termy\nfont_size = 14\n");
+    }
+
+    fn diagnostic(kind: ConfigDiagnosticKind, message: &str) -> ConfigDiagnostic {
+        ConfigDiagnostic {
+            line_number: 3,
+            kind,
+            message: message.to_string(),
+        }
+    }
+
+    #[test]
+    fn duplicate_and_unknown_root_keys_are_fixable() {
+        let report =
+            AppConfig::from_contents_with_report("font_size = 12\nfont_size = 14\nbogus = 1\n");
+        assert_eq!(
+            fixes_for_diagnostics(&report.diagnostics),
+            vec![
+                ConfigFix::RemoveDuplicateKey("font_size".to_string()),
+                ConfigFix::RemoveUnknownKey("bogus".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn identical_diagnostics_show_a_single_toast() {
+        let diagnostics = vec![diagnostic(
+            ConfigDiagnosticKind::UnknownRootKey,
+            "Unknown root key 'bogus'",
+        )];
+        let mut state = None;
+        let mut next_id = 0;
+        let mut dismissed = Vec::new();
+        let mut show = |state: &mut Option<DiagnosticsToast>, diagnostics: &[ConfigDiagnostic]| {
+            show_parse_diagnostics_toast_with_state(
+                state,
+                diagnostics,
+                |_, _| {
+                    next_id += 1;
+                    next_id
+                },
+                |id| dismissed.push(id),
+            );
+        };
+
+        show(&mut state, &diagnostics);
+        let first_id = state.as_ref().expect("toast shown").toast_id;
+        show(&mut state, &diagnostics);
+        assert_eq!(state.as_ref().expect("toast kept").toast_id, first_id);
+
+        let changed = vec![diagnostic(
+            ConfigDiagnosticKind::UnknownRootKey,
+            "Unknown root key 'other'",
+        )];
+        show(&mut state, &changed);
+        let second = state.as_ref().expect("new toast shown");
+        assert_ne!(second.toast_id, first_id);
+        assert_eq!(
+            second.fixes,
+            vec![ConfigFix::RemoveUnknownKey("other".to_string())]
+        );
+
+        let second_id = second.toast_id;
+        show(&mut state, &[]);
+        assert!(state.is_none());
+        assert_eq!(dismissed, vec![first_id, second_id]);
     }
 
     #[test]

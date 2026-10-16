@@ -206,7 +206,9 @@ fn write(state: &SavedWindowState) {
             return;
         }
     };
-    if let Err(error) = crate::config::write_atomic(&path, &contents) {
+    // Runs on the UI thread (after moves, resizes and at quit), so skip the
+    // fsync; losing the last geometry on a power failure is harmless.
+    if let Err(error) = crate::config::write_atomic_unsynced(&path, &contents) {
         log::warn!("Failed to save window state: {error}");
     }
 }

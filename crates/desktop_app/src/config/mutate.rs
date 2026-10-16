@@ -15,7 +15,8 @@ use termy_core::config_core::{
     AppConfig, ColorSettingId, ColorSettingUpdate, Rgb8, RootSettingId, SHELL_DECIDE_THEME_ID,
     TaskConfig, apply_color_updates, color_setting_from_key, color_setting_spec, parse_theme_id,
     prettify_config_contents, remove_raw_root_key as remove_raw_root_key_entry,
-    remove_root_setting as remove_root_setting_entry, replace_keybind_lines, upsert_root_setting,
+    remove_root_setting as remove_root_setting_entry, replace_keybind_lines, root_setting_from_key,
+    upsert_root_setting,
 };
 
 use super::ConfigIoError;
@@ -143,6 +144,62 @@ pub fn remove_root_setting(setting: RootSettingId) -> Result<(), String> {
 pub fn remove_raw_root_key_from_config(key: &str) -> Result<(), String> {
     let key = key.to_string();
     update_config_contents(move |existing| Ok((remove_raw_root_key_entry(existing, &key), ())))
+}
+
+pub fn remove_duplicate_root_key_from_config(key: &str) -> Result<(), String> {
+    let key = key.to_string();
+    update_config_contents(move |existing| {
+        Ok((remove_duplicate_root_key_entries(existing, &key), ()))
+    })
+}
+
+/// Removes every occurrence of a non-repeatable root setting except the last
+/// one. The parser lets the last occurrence win, so this keeps the effective
+/// value. Like the parser, root settings inside `[colors]` are counted too.
+fn remove_duplicate_root_key_entries(contents: &str, key: &str) -> String {
+    let Some(target) = root_setting_from_key(key) else {
+        return contents.to_string();
+    };
+
+    let mut in_root_like_section = true;
+    let mut occurrences = Vec::new();
+    for (index, line) in contents.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            in_root_like_section = trimmed[1..trimmed.len() - 1]
+                .trim()
+                .eq_ignore_ascii_case("colors");
+            continue;
+        }
+        if in_root_like_section
+            && let Some((raw_key, _)) = trimmed.split_once('=')
+            && root_setting_from_key(raw_key.trim()) == Some(target)
+        {
+            occurrences.push(index);
+        }
+    }
+
+    let Some((_, overridden)) = occurrences.split_last() else {
+        return contents.to_string();
+    };
+    if overridden.is_empty() {
+        return contents.to_string();
+    }
+
+    let mut out = contents
+        .lines()
+        .enumerate()
+        .filter(|(index, _)| !overridden.contains(index))
+        .map(|(_, line)| line)
+        .collect::<Vec<_>>()
+        .join("\n");
+    if contents.ends_with('\n') {
+        out.push('\n');
+    }
+    out
 }
 
 pub fn set_theme_in_config(theme_id: &str) -> Result<String, String> {
@@ -347,7 +404,10 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{TEST_CONFIG_PATH_OVERRIDE, write_atomic};
-    use super::{import_colors_from_json, reset_theme_references_in_config, upsert_task_lines};
+    use super::{
+        import_colors_from_json, remove_duplicate_root_key_entries,
+        reset_theme_references_in_config, upsert_task_lines,
+    };
     use crate::config::TaskConfig;
 
     struct ConfigPathOverrideGuard {
@@ -501,5 +561,25 @@ mod tests {
         assert!(output.contains("task.build.keybind = secondary-shift-b\n"));
         assert!(!output.contains("cargo test"));
         assert!(output.contains("[colors]\nforeground = #fff\n"));
+    }
+
+    #[test]
+    fn remove_duplicate_root_key_keeps_last_effective_occurrence() {
+        let input = "# header\nfont_size = 12\ntheme = termy\nfont_size = 14\n[colors]\nfont_size = 16\nforeground = #ffffff\n";
+        let output = remove_duplicate_root_key_entries(input, "font_size");
+        assert_eq!(
+            output,
+            "# header\ntheme = termy\n[colors]\nfont_size = 16\nforeground = #ffffff\n"
+        );
+        let report = termy_core::config_core::AppConfig::from_contents_with_report(&output);
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        assert_eq!(report.config.font_size, 16.0);
+    }
+
+    #[test]
+    fn remove_duplicate_root_key_leaves_single_occurrence_untouched() {
+        let input = "font_size = 12\ntheme = termy";
+        assert_eq!(remove_duplicate_root_key_entries(input, "font_size"), input);
+        assert_eq!(remove_duplicate_root_key_entries(input, "unknown"), input);
     }
 }
