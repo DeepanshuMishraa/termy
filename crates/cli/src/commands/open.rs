@@ -82,13 +82,8 @@ fn find_app_for_cli(reported_exe_path: PathBuf, sibling_names: &[&str]) -> Resul
         }
     }
 
-    let app_binary_name = format!("termy{}", std::env::consts::EXE_SUFFIX);
-    for candidate in fallback_termy_app_binary_paths(&app_binary_name) {
-        if is_executable_file(&candidate) && candidate != exe_path {
-            return Ok(candidate);
-        }
-    }
-
+    // Only look next to the CLI itself: cwd-relative paths would let an
+    // untrusted checkout's `target/*/termy` run when the CLI is used inside it.
     Err("Termy app binary not found. Build it with: cargo build -p termy".to_string())
 }
 
@@ -116,20 +111,13 @@ fn sibling_app_binary_names() -> &'static [&'static str] {
 #[cfg(any(not(any(target_os = "macos", target_os = "windows")), all(test, unix)))]
 const LINUX_APP_BINARY_NAMES: &[&str] = &["termy", "termy-bin"];
 
-fn fallback_termy_app_binary_paths(app_binary_name: &str) -> [PathBuf; 2] {
-    [
-        PathBuf::from("target/debug").join(app_binary_name),
-        PathBuf::from("target/release").join(app_binary_name),
-    ]
-}
-
 fn is_executable_file(path: &Path) -> bool {
     std::fs::metadata(path).is_ok_and(|metadata| metadata.is_file())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_executable_path, resolve_working_dir, sibling_app_binary_names};
+    use super::{resolve_executable_path, resolve_working_dir};
 
     #[cfg(unix)]
     #[test]
@@ -179,7 +167,7 @@ mod tests {
     #[test]
     fn bundled_native_app_binary_is_a_sibling_candidate() {
         #[cfg(target_os = "macos")]
-        assert_eq!(sibling_app_binary_names().first(), Some(&"Termy"));
+        assert_eq!(super::sibling_app_binary_names().first(), Some(&"Termy"));
     }
 
     #[cfg(unix)]
