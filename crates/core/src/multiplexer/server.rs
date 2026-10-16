@@ -39,13 +39,13 @@ struct PendingAuth(Arc<Server>);
 
 impl PendingAuth {
     fn acquire(server: &Arc<Server>) -> Option<Self> {
-        server
-            .unauthenticated
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-                (count < MAX_UNAUTHENTICATED).then_some(count + 1)
-            })
-            .ok()
-            .map(|_| Self(Arc::clone(server)))
+        // Reserve first and give the slot back when over the cap, so a burst
+        // of accepts can never push the count past it.
+        if server.unauthenticated.fetch_add(1, Ordering::AcqRel) >= MAX_UNAUTHENTICATED {
+            server.unauthenticated.fetch_sub(1, Ordering::AcqRel);
+            return None;
+        }
+        Some(Self(Arc::clone(server)))
     }
 }
 
