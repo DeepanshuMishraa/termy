@@ -23,8 +23,7 @@ fn terminal_ime_selected_text_range(ime_selected_range: Option<Range<usize>>) ->
 fn ime_candidate_bounds(
     cursor: Bounds<Pixels>,
     element_bounds: Bounds<Pixels>,
-    range_start_utf16: usize,
-    cell_width: f32,
+    range_start_x: Pixels,
 ) -> Bounds<Pixels> {
     let mut bounds = Bounds::new(
         point(
@@ -33,8 +32,27 @@ fn ime_candidate_bounds(
         ),
         cursor.size,
     );
-    bounds.origin.x += px(range_start_utf16 as f32 * cell_width);
+    bounds.origin.x += range_start_x;
     bounds
+}
+
+/// Byte offset of the first `utf16_len` UTF-16 units of `text`.
+fn utf16_prefix_byte_len(text: &str, utf16_len: usize) -> usize {
+    let mut units = 0;
+    text.char_indices()
+        .find_map(|(byte, character)| {
+            units += character.len_utf16();
+            (units > utf16_len).then_some(byte)
+        })
+        .unwrap_or(text.len())
+}
+
+/// The viewport row showing the cursor at screen row `cursor_row`, kept in
+/// the viewport while it is scrolled `display_offset` rows into history.
+fn ime_cursor_viewport_row(cursor_row: usize, display_offset: usize, rows: usize) -> usize {
+    cursor_row
+        .saturating_add(display_offset)
+        .min(rows.saturating_sub(1))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -487,10 +505,7 @@ pub(super) struct InlineInputElement {
     alignment: InlineInputAlignment,
 }
 
-// Retained for upcoming inline input layout variants and to keep call sites stable
-// while alignment options are wired through additional UI surfaces.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(super) enum InlineInputAlignment {
     Left,
     Center,
@@ -1388,6 +1403,11 @@ impl TerminalView {
         // Use cursor_position() instead of cursor_state() so that IME
         // preedit is shown even when the TUI app hides the cursor.
         let (cursor_col, cursor_row) = terminal.cursor_position();
+        let cursor_row = ime_cursor_viewport_row(
+            cursor_row,
+            terminal.scroll_state().0,
+            usize::from(size.rows),
+        );
         let x = geometry.origin_x + (cursor_col as f32) * cell_width;
         let y = geometry.origin_y + (cursor_row as f32) * cell_height;
         Some(Bounds::new(
@@ -1504,7 +1524,7 @@ impl EntityInputHandler for TerminalView {
         &mut self,
         range_utf16: Range<usize>,
         element_bounds: Bounds<Pixels>,
-        _window: &mut Window,
+        window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
         if let Some(state) = self.active_inline_input_state() {
@@ -1514,17 +1534,27 @@ impl EntityInputHandler for TerminalView {
         // content area.  Offset by element_bounds.origin to convert to
         // window coordinates so macOS positions the candidate window correctly.
         let cursor = self.ime_cursor_bounds()?;
-        let cell_width: f32 = self
-            .active_pane_ref()
-            .map(TerminalPane::terminal)
-            .map(|terminal| terminal.size().cell_width)
-            .unwrap_or_default();
-        Some(ime_candidate_bounds(
-            cursor,
-            element_bounds,
-            range_utf16.start,
-            cell_width,
-        ))
+        // The range counts UTF-16 units of the preedit, which the overlay draws
+        // as plain text from the cursor: measure that text, since a CJK glyph
+        // spans two cells and an astral character two UTF-16 units.
+        let range_start_x = self.ime_marked_text.as_deref().map_or(px(0.0), |marked| {
+            let run = TextRun {
+                len: marked.len(),
+                font: Font {
+                    family: self.font_family.clone(),
+                    ..gpui_kit::font("")
+                },
+                color: Hsla::default(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            window
+                .text_system()
+                .shape_line(marked.to_string().into(), self.font_size, &[run], None)
+                .x_for_index(utf16_prefix_byte_len(marked, range_utf16.start))
+        });
+        Some(ime_candidate_bounds(cursor, element_bounds, range_start_x))
     }
 
     fn character_index_for_point(
@@ -1695,9 +1725,26 @@ mod tests {
         let cursor = Bounds::new(point(px(10.0), px(20.0)), size(px(8.0), px(16.0)));
         let element_bounds = Bounds::new(point(px(100.0), px(200.0)), size(px(320.0), px(240.0)));
 
-        let bounds = ime_candidate_bounds(cursor, element_bounds, 2, 8.0);
+        let bounds = ime_candidate_bounds(cursor, element_bounds, px(16.0));
 
         assert_eq!(bounds.origin, point(px(126.0), px(220.0)));
         assert_eq!(bounds.size, cursor.size);
+    }
+
+    #[test]
+    fn ime_range_offsets_map_utf16_units_to_preedit_bytes() {
+        assert_eq!(utf16_prefix_byte_len("ab", 1), 1);
+        // Each CJK character is one UTF-16 unit but three bytes.
+        assert_eq!(utf16_prefix_byte_len("你好", 1), 3);
+        // An astral character is two UTF-16 units and four bytes.
+        assert_eq!(utf16_prefix_byte_len("\u{20000}x", 2), 4);
+        assert_eq!(utf16_prefix_byte_len("你好", 9), "你好".len());
+    }
+
+    #[test]
+    fn ime_cursor_row_follows_the_cursor_while_scrolled_into_history() {
+        assert_eq!(ime_cursor_viewport_row(3, 0, 24), 3);
+        assert_eq!(ime_cursor_viewport_row(3, 5, 24), 8);
+        assert_eq!(ime_cursor_viewport_row(20, 10, 24), 23);
     }
 }

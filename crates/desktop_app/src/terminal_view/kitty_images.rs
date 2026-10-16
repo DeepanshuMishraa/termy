@@ -9,16 +9,36 @@ struct Texture {
 
 impl Drop for Texture {
     fn drop(&mut self) {
-        if let ImageSource::Render(image) = &self.source {
-            let image = image.clone();
-            // Cache invalidation and pane removal happen while App is borrowed.
-            // Release atlas entries on the next foreground turn, after painting.
-            self.cx
-                .spawn(async move |cx| {
-                    cx.update(|cx| cx.drop_image(image, None));
-                })
-                .detach();
+        let source = self.source.clone();
+        // Cache invalidation and pane removal happen while App is borrowed.
+        // Release atlas entries on the next foreground turn, after painting.
+        self.cx
+            .spawn(async move |cx| {
+                cx.update(|cx| release_texture(source, cx));
+            })
+            .detach();
+    }
+}
+
+fn release_texture(source: ImageSource, cx: &mut App) {
+    match source {
+        ImageSource::Render(image) => cx.drop_image(image, None),
+        ImageSource::Image(image) => {
+            // GPUI decodes PNGs into its app-wide asset cache, and each window
+            // uploads the decoded frames to its sprite atlas. Neither is freed
+            // when the `Image` drops, so release both explicitly. Reading the
+            // asset needs a window, but the cache and `drop_image` cover all.
+            if let Some(window) = cx.windows().first().copied() {
+                let image = image.clone();
+                let _ = window.update(cx, |_, window, cx| {
+                    if let Some(decoded) = image.get_render_image(window, cx) {
+                        cx.drop_image(decoded, Some(window));
+                    }
+                });
+            }
+            image.remove_asset(cx);
         }
+        ImageSource::Resource(_) | ImageSource::Custom(_) => {}
     }
 }
 
@@ -214,7 +234,44 @@ fn padded_bgra(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::{TextureCache, padded_bgra};
+    use super::{Texture, TextureCache, padded_bgra};
+    use gpui_kit::{
+        Context, Image, ImageFormat, ImageSource, IntoElement, Render, Styled as _, TestAppContext,
+        Window, img,
+    };
+    use std::sync::Arc;
+
+    struct PngView(Arc<Image>);
+
+    impl Render for PngView {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            img(ImageSource::Image(self.0.clone())).size_full()
+        }
+    }
+
+    #[gpui_kit::test]
+    fn kitty_png_texture_leaves_gpui_asset_cache_when_dropped(cx: &mut TestAppContext) {
+        let mut png = Vec::new();
+        image::RgbaImage::from_pixel(2, 2, image::Rgba([1, 2, 3, 255]))
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .expect("encode test PNG");
+        let image = Arc::new(Image::from_bytes(ImageFormat::Png, png));
+        let window = cx.add_window(|_, _| PngView(image.clone()));
+        cx.run_until_parked();
+        // Paint again now that the decode finished, uploading it to the atlas.
+        window
+            .update(cx, |_, window, _| window.refresh())
+            .expect("window is open");
+        cx.run_until_parked();
+        assert!(cx.update(|cx| image.is_asset_cached(cx)));
+
+        drop(Texture {
+            source: ImageSource::Image(image.clone()),
+            cx: cx.to_async(),
+        });
+        cx.run_until_parked();
+        assert!(!cx.update(|cx| image.is_asset_cached(cx)));
+    }
 
     #[test]
     fn kitty_animation_frames_keep_their_textures_while_playing() {

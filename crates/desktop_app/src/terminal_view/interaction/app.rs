@@ -130,7 +130,7 @@ impl TerminalView {
         };
 
         AutoUpdater::check(updater.downgrade(), cx);
-        self.update_check_toast_id = Some(crate::ui::toast::loading("Checking for updates"));
+        super::super::update_toasts::UpdateToasts::show_checking(cx);
         self.notify_overlay(cx);
     }
 

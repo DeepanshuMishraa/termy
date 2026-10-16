@@ -1,5 +1,4 @@
 use super::*;
-use std::env;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(in crate::terminal_view) enum PendingKeyRelease {
@@ -103,24 +102,79 @@ pub(in crate::terminal_view) fn kitty_png_clipboard_item(png: &[u8]) -> Clipboar
     gpui_kit::Image::from_bytes(gpui_kit::ImageFormat::Png, png.to_vec()).into()
 }
 
-fn clipboard_image_cache_dir() -> PathBuf {
-    env::temp_dir().join("termy-clipboard-images")
+/// Pasted images stay this long, so the program they were pasted into has
+/// time to read them; a later paste then deletes them.
+const CLIPBOARD_IMAGE_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+const CLIPBOARD_IMAGE_PREFIX: &str = "clipboard-image-";
+
+/// A per-user directory: in a shared temp directory other users could read
+/// pasted images, or plant files where the paste expects to write them.
+fn clipboard_image_cache_dir() -> std::io::Result<PathBuf> {
+    #[cfg(test)]
+    let base = Some(std::env::temp_dir().join(format!("termy-test-cache-{}", std::process::id())));
+    #[cfg(not(test))]
+    let base = dirs::cache_dir();
+    let base = base.ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::NotFound, "no user cache directory")
+    })?;
+    Ok(base.join("termy").join("clipboard-images"))
+}
+
+fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        builder.mode(0o700);
+        builder.create(dir)?;
+        // Also tighten a directory that already existed.
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+    }
+    #[cfg(not(unix))]
+    builder.create(dir)
+}
+
+fn remove_expired_clipboard_images(dir: &Path, max_age: std::time::Duration) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let now = std::time::SystemTime::now();
+    for entry in entries.flatten() {
+        if !entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(CLIPBOARD_IMAGE_PREFIX)
+        {
+            continue;
+        }
+        let expired = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .is_ok_and(|modified| now.duration_since(modified).is_ok_and(|age| age > max_age));
+        if expired {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// Write `image` under a fresh random name (created exclusively, owner-only)
+/// in the private `dir`, after removing expired earlier pastes.
+fn write_clipboard_image_in(dir: &Path, image: &gpui_kit::Image) -> std::io::Result<PathBuf> {
+    use std::io::Write as _;
+    create_private_dir(dir)?;
+    remove_expired_clipboard_images(dir, CLIPBOARD_IMAGE_MAX_AGE);
+    let mut file = tempfile::Builder::new()
+        .prefix(CLIPBOARD_IMAGE_PREFIX)
+        .suffix(&format!(".{}", image_extension(image.format())))
+        .tempfile_in(dir)?;
+    file.write_all(image.bytes())?;
+    let (_, path) = file.keep().map_err(|error| error.error)?;
+    Ok(path)
 }
 
 fn write_clipboard_image_to_temp_file(image: &gpui_kit::Image) -> std::io::Result<PathBuf> {
-    let dir = clipboard_image_cache_dir();
-    std::fs::create_dir_all(&dir)?;
-
-    let path = dir.join(format!(
-        "clipboard-image-{}.{}",
-        image.id(),
-        image_extension(image.format())
-    ));
-    if !path.exists() {
-        std::fs::write(&path, image.bytes())?;
-    }
-
-    Ok(path)
+    write_clipboard_image_in(&clipboard_image_cache_dir()?, image)
 }
 
 fn clipboard_item_to_terminal_paste_input(
@@ -271,7 +325,6 @@ fn take_deferred_ime_key_release(
 enum PendingKeyReleaseAction {
     Drop,
     ForwardToPane(String),
-    FallbackToActivePane,
 }
 
 fn take_pending_key_release_action(
@@ -283,7 +336,10 @@ fn take_pending_key_release_action(
         Some(PendingKeyRelease::Terminal { pane_id }) => {
             PendingKeyReleaseAction::ForwardToPane(pane_id)
         }
-        None => PendingKeyReleaseAction::FallbackToActivePane,
+        // The terminal never saw this key's press: a key binding consumed it,
+        // or it was held when the window gained focus. Forwarding the release
+        // would hand kitty keyboard clients an unpaired release.
+        None => PendingKeyReleaseAction::Drop,
     }
 }
 
@@ -374,19 +430,6 @@ impl TerminalView {
         true
     }
 
-    fn write_terminal_keystroke(
-        &mut self,
-        keystroke: &gpui_kit::Keystroke,
-        event_kind: TerminalKeyEventKind,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let Some(pane_id) = self.active_pane_id().map(str::to_owned) else {
-            return false;
-        };
-
-        self.write_terminal_keystroke_to_pane(pane_id.as_str(), keystroke, event_kind, cx)
-    }
-
     fn remember_consumed_key_release(&mut self, key: &str) {
         self.pending_key_releases
             .insert(key.to_string(), PendingKeyRelease::Consumed);
@@ -437,9 +480,6 @@ impl TerminalView {
                     TerminalKeyEventKind::Release,
                     cx,
                 ),
-            PendingKeyReleaseAction::FallbackToActivePane => {
-                self.write_terminal_keystroke(keystroke, TerminalKeyEventKind::Release, cx)
-            }
         }
     }
 
@@ -999,18 +1039,19 @@ impl TerminalView {
 #[cfg(test)]
 mod tests {
     use super::{
-        FileDropTarget, PendingKeyRelease, PendingKeyReleaseAction, classify_file_drop_target,
-        clipboard_entries_to_terminal_paste_input, clipboard_item_to_terminal_paste_input,
-        dropped_paths_to_terminal_paste_input, image_extension, is_compose_dead_key,
-        kitty_png_clipboard_item, modifier_transition_events, shell_quote_paths,
-        should_defer_key_down_to_ime, should_prepare_terminal_input_write,
+        CLIPBOARD_IMAGE_MAX_AGE, FileDropTarget, PendingKeyRelease, PendingKeyReleaseAction,
+        classify_file_drop_target, clipboard_entries_to_terminal_paste_input,
+        clipboard_item_to_terminal_paste_input, dropped_paths_to_terminal_paste_input,
+        image_extension, is_compose_dead_key, kitty_png_clipboard_item, modifier_transition_events,
+        shell_quote_paths, should_defer_key_down_to_ime, should_prepare_terminal_input_write,
         should_write_drop_to_target, take_deferred_ime_key_release,
         take_pending_key_release_action, terminal_modifier_transition_events,
+        write_clipboard_image_in,
     };
     use gpui_kit::{Keystroke, Modifiers};
     use std::{
         collections::{HashMap, HashSet},
-        path::PathBuf,
+        path::{Path, PathBuf},
     };
 
     fn keystroke(key: &str, key_char: Option<&str>, modifiers: Modifiers) -> Keystroke {
@@ -1184,7 +1225,43 @@ mod tests {
 
         assert!(text.starts_with('\''));
         assert!(text.ends_with(".png'"));
-        assert!(text.contains("termy-clipboard-images"));
+        assert!(text.contains("clipboard-images"));
+        let path = PathBuf::from(&text[1..text.len() - 1]);
+        assert_eq!(std::fs::read(&path).unwrap(), [1, 2, 3, 4]);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn clipboard_images_get_private_unpredictable_files_and_expire() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("clipboard-images");
+        let image = gpui_kit::Image::from_bytes(gpui_kit::ImageFormat::Png, vec![1, 2, 3]);
+        let first = write_clipboard_image_in(&dir, &image).unwrap();
+        let second = write_clipboard_image_in(&dir, &image).unwrap();
+        assert_ne!(first, second, "names must not be derived from the image");
+        assert_eq!(std::fs::read(&second).unwrap(), [1, 2, 3]);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(&dir), 0o700);
+            assert_eq!(mode(&second), 0o600);
+        }
+
+        let unrelated = dir.join("notes.txt");
+        std::fs::write(&unrelated, b"keep").unwrap();
+        let old = std::time::SystemTime::now() - CLIPBOARD_IMAGE_MAX_AGE * 2;
+        for path in [&first, &unrelated] {
+            std::fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(old)
+                .unwrap();
+        }
+        let third = write_clipboard_image_in(&dir, &image).unwrap();
+        assert!(!first.exists(), "expired pastes are removed");
+        assert!(second.exists() && third.exists() && unrelated.exists());
     }
 
     #[test]
@@ -1327,6 +1404,17 @@ mod tests {
             PendingKeyReleaseAction::Drop
         );
         assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn release_without_a_forwarded_press_is_dropped() {
+        // A key binding handled the press, so the terminal never received it.
+        let mut pending = HashMap::new();
+
+        assert_eq!(
+            take_pending_key_release_action(&mut pending, "t"),
+            PendingKeyReleaseAction::Drop
+        );
     }
 
     #[test]

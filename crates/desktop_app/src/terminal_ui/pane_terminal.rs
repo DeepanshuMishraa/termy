@@ -4,8 +4,8 @@ use termy_core::{
     TerminalClipboardLocation, TerminalClipboardReadRequest, TerminalClipboardReadResult,
     TerminalClipboardTarget, TerminalClipboardWriteRequest, TerminalClipboardWriteResult,
     TerminalCursorState, TerminalKeyboardMode, TerminalMouseMode, TerminalOptions, TerminalPalette,
-    TerminalQueryColors, TerminalRenderDamageSnapshot, TerminalRenderRead, TerminalReplyHost,
-    TerminalRuntimeConfig, TerminalSize,
+    TerminalQueryColors, TerminalRenderRead, TerminalReplyHost, TerminalRuntimeConfig,
+    TerminalSize,
 };
 
 /// Display terminal for a tmux pane. Core owns parsing, screen state and protocols
@@ -52,9 +52,6 @@ impl PaneTerminal {
     }
     pub fn link_at(&self, row: usize, col: usize) -> Option<DetectedViewportLink> {
         self.read().link_at(row, col)
-    }
-    pub fn take_render_damage_snapshot(&self) -> TerminalRenderDamageSnapshot {
-        self.read().take_render_damage_snapshot()
     }
     pub fn render_read(&self, force_full: bool) -> TerminalRenderRead {
         self.read().render_read(force_full)

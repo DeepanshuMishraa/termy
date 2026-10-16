@@ -11,8 +11,8 @@ use crate::config::{
 use crate::keybindings;
 use crate::terminal_ui::{
     CellRenderInfo, PaneTerminal, TerminalGrid, TerminalGridPaintCacheHandle,
-    TerminalGridPaintDamage, TerminalGridRows, TmuxLaunchTarget, TmuxPaneMouseMode,
-    keystroke_to_input,
+    TerminalGridPaintDamage, TerminalGridRow, TerminalGridRows, TmuxLaunchTarget,
+    TmuxPaneMouseMode, keystroke_to_input,
 };
 use crate::ui::scrollbar::{ScrollbarVisibilityController, ScrollbarVisibilityMode};
 use crate::ui::toast::ToastManager;
@@ -215,6 +215,16 @@ enum DeferredTerminalResize {
 struct SelectionPos {
     col: usize,
     line: i32,
+}
+
+/// The active pane's scroll state as last observed on the UI thread. Comparing
+/// against it tells output scrolling the selected text apart from user scrolls
+/// (which resync it) and from switching to another pane.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct ContentScrollBaseline {
+    pane: Option<(TabId, String)>,
+    display_offset: usize,
+    history_size: usize,
 }
 
 #[derive(Clone)]
@@ -922,11 +932,13 @@ impl Terminal {
             .map(|(_, placements)| placements)
     }
 
+    /// `None` while another holder has the terminal locked, so a caller can
+    /// keep its previous placements instead of waiting.
     fn try_kitty_graphics_snapshot(&self) -> Option<(u64, Vec<KittyGraphicsRenderPlacement>)> {
         match self {
             Self::Tmux(terminal) => Some(terminal.kitty_graphics_snapshot()),
             Self::Native(terminal) => terminal
-                .lock()
+                .try_lock()
                 .ok()
                 .map(|terminal| terminal.kitty_graphics_snapshot()),
         }
@@ -974,6 +986,22 @@ impl Terminal {
             Self::Tmux(terminal) => Some(visit(&terminal.read())),
             Self::Native(terminal) => terminal.lock().ok().map(|terminal| visit(&terminal)),
         }
+    }
+
+    /// Changes whenever the terminal's content, size or scroll position does.
+    fn content_generation(&self) -> Option<u64> {
+        self.with_core_terminal(|terminal| {
+            terminal
+                .visit_viewport_cells_locked(|_, _, _, _| {})
+                .generation
+        })
+    }
+
+    fn content_generation_is(&self, generation: u64) -> bool {
+        self.with_core_terminal(|terminal| {
+            terminal.visit_viewport_ranges_locked_at_generation(generation, &[], |_, _, _, _, _| {})
+        })
+        .unwrap_or(false)
     }
 
     fn for_each_renderable_cell(
@@ -1372,10 +1400,10 @@ pub struct TerminalView {
     selection_autoscroll_pointer: Option<gpui_kit::Point<Pixels>>,
     selection_autoscroll_running: bool,
     kitty_image_selection: Option<KittyImageSelection>,
-    /// Tracks the active terminal's display_offset as observed from the UI thread.
+    /// Tracks the active terminal's scroll state as observed from the UI thread.
     /// Updated after every user-initiated scroll and after each content-scroll adjustment,
-    /// so that process_terminal_events can detect only content-driven offset changes.
-    content_scroll_baseline: usize,
+    /// so that process_terminal_events can detect only content-driven scrolling.
+    content_scroll_baseline: ContentScrollBaseline,
     pending_cursor_move_click: Option<PendingCursorMoveClick>,
     pending_cursor_move_preview: Option<PendingCursorMovePreview>,
     terminal_context_menu: Option<TerminalContextMenuState>,
@@ -1456,8 +1484,6 @@ pub struct TerminalView {
     allow_quit_without_prompt: bool,
     auto_updater: Option<Entity<AutoUpdater>>,
     show_update_banner: bool,
-    last_notified_update_state: Option<UpdateState>,
-    update_check_toast_id: Option<u64>,
     release_notes: Option<update_overlay::ReleaseNotesDialog>,
     release_notes_generation: u64,
     release_notes_scroll: ScrollHandle,
@@ -1718,7 +1744,7 @@ impl TerminalView {
         #[cfg(any(target_os = "linux", target_os = "android"))]
         {
             let path = std::fs::read_link(format!("/proc/{pid}/cwd")).ok()?;
-            return path.is_dir().then(|| path.to_string_lossy().into_owned());
+            path.is_dir().then(|| path.to_string_lossy().into_owned())
         }
 
         #[cfg(target_os = "macos")]
@@ -2353,7 +2379,6 @@ impl TerminalView {
     }
 
     fn handle_auto_update_state_change(&mut self, state: &UpdateState, cx: &mut Context<Self>) {
-        self.sync_update_toasts(Some(state));
         let was_banner_visible = self.show_update_banner;
         self.show_update_banner = Self::overlay_banner_visible_for_state(Some(state));
         self.notify_overlay(cx);
@@ -2377,15 +2402,12 @@ impl TerminalView {
     }
 
     fn ensure_auto_updater(&mut self, cx: &mut Context<Self>) -> Option<Entity<AutoUpdater>> {
-        if !AutoUpdater::supported_on_current_platform() {
-            return None;
-        }
-
         if let Some(updater) = self.auto_updater.as_ref() {
             return Some(updater.clone());
         }
 
-        let updater = cx.new(|_| AutoUpdater::new(crate::APP_VERSION));
+        let updater = AutoUpdater::global(cx)?;
+        update_toasts::UpdateToasts::observe(&updater, cx);
         self.observe_auto_updater(&updater, cx);
         self.auto_updater = Some(updater.clone());
         Some(updater)
@@ -3342,7 +3364,7 @@ impl TerminalView {
             selection_autoscroll_pointer: None,
             selection_autoscroll_running: false,
             kitty_image_selection: None,
-            content_scroll_baseline: 0,
+            content_scroll_baseline: ContentScrollBaseline::default(),
             pending_cursor_move_click: None,
             pending_cursor_move_preview: None,
             terminal_context_menu: None,
@@ -3417,8 +3439,6 @@ impl TerminalView {
             allow_quit_without_prompt: false,
             auto_updater: None,
             show_update_banner: false,
-            last_notified_update_state: None,
-            update_check_toast_id: None,
             release_notes: None,
             release_notes_generation: 0,
             release_notes_scroll: ScrollHandle::new(),
@@ -3599,7 +3619,7 @@ impl TerminalView {
                 cx.background_executor()
                     .timer(Duration::from_millis(5000))
                     .await;
-                cx.update(|cx| AutoUpdater::check(weak, cx));
+                cx.update(|cx| AutoUpdater::check_if_idle(weak, cx));
             })
             .detach();
         }
@@ -4070,19 +4090,9 @@ impl TerminalView {
         if should_redraw {
             self.debug_overlay_stats.record_terminal_redraw();
 
-            // Detect content-driven display_offset changes: the terminal engine auto-increments the
-            // offset to keep the viewport stable when new lines arrive while the user is
-            // scrolled into history. The background PTY thread already updated the offset
-            // before we got here, so we compare against content_scroll_baseline (a value
-            // we maintain separately from user-initiated scrolls) to find the delta.
-            let current_offset = self.active_terminal().map_or(0, |t| t.scroll_state().0);
-            if current_offset != self.content_scroll_baseline {
-                self.adjust_selection_for_display_offset_change(
-                    self.content_scroll_baseline,
-                    current_offset,
-                );
-                self.content_scroll_baseline = current_offset;
-            }
+            // Output scrolls content up while the selection stays put in
+            // terminal lines; follow it so the selection keeps its text.
+            self.follow_content_scroll_with_selection();
         }
 
         should_redraw

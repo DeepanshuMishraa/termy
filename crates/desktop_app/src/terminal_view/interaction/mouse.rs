@@ -81,8 +81,11 @@ impl TerminalView {
         running_process: bool,
         has_current_command: bool,
         alternate_screen_mode: bool,
+        display_offset: usize,
     ) -> bool {
-        if running_process || alternate_screen_mode {
+        // Scrolled into history, the clicked row is not the cursor's screen
+        // row, so arrow keys would move the cursor somewhere else.
+        if running_process || alternate_screen_mode || display_offset > 0 {
             return false;
         }
 
@@ -133,6 +136,7 @@ impl TerminalView {
             tab.running_process,
             tab.current_command.is_some(),
             terminal.alternate_screen_mode(),
+            terminal.scroll_state().0,
         ) {
             return None;
         }
@@ -1064,24 +1068,37 @@ mod tests {
             false,
             false,
             false,
+            0,
         ));
         assert!(!TerminalView::click_cursor_move_allowed_for_state(
             RuntimeKind::Native,
             false,
             true,
             false,
+            0,
         ));
         assert!(!TerminalView::click_cursor_move_allowed_for_state(
             RuntimeKind::Native,
             true,
             false,
             false,
+            0,
         ));
         assert!(TerminalView::click_cursor_move_allowed_for_state(
             RuntimeKind::Tmux,
             false,
             true,
             false,
+            0,
         ));
+    }
+
+    #[test]
+    fn click_cursor_move_is_ignored_while_scrolled_into_history() {
+        for runtime in [RuntimeKind::Native, RuntimeKind::Tmux] {
+            assert!(!TerminalView::click_cursor_move_allowed_for_state(
+                runtime, false, false, false, 3,
+            ));
+        }
     }
 }

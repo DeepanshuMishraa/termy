@@ -235,6 +235,7 @@ pub fn execute_fix_for_toast(toast_id: u64) -> bool {
             _ => return false,
         }
     };
+    let mut fixed_any = false;
     for fix in &fixes {
         let result = match fix {
             ConfigFix::RemoveUnknownKey(key) => mutate::remove_raw_root_key_from_config(key),
@@ -242,11 +243,12 @@ pub fn execute_fix_for_toast(toast_id: u64) -> bool {
                 mutate::remove_duplicate_root_key_from_config(key)
             }
         };
-        if let Err(e) = result {
-            log::warn!("Failed to fix config: {fix:?}: {e}");
+        match result {
+            Ok(_) => fixed_any = true,
+            Err(e) => log::warn!("Failed to fix config: {fix:?}: {e}"),
         }
     }
-    !fixes.is_empty()
+    fixed_any
 }
 
 // This uses Rust's default SipHash-based hasher and is only for in-process

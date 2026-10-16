@@ -142,6 +142,36 @@ impl TerminalView {
         (!joined.trim().is_empty()).then_some(joined)
     }
 
+    /// Persisting walks the whole scrollback under the terminal lock, so a
+    /// pane whose content did not change since the last persist reuses it.
+    fn persisted_pane_buffer(&self, pane: &TerminalPane) -> Option<String> {
+        if self.multiplexer.is_some() || !self.native_buffer_persistence {
+            return None;
+        }
+        let cache = &mut pane.render_cache.borrow_mut().persisted_buffer;
+        Self::cached_persisted_buffer(cache, &pane.terminal, |terminal| {
+            self.extract_persisted_buffer_text(terminal)
+        })
+    }
+
+    fn cached_persisted_buffer(
+        cache: &mut Option<(u64, Option<String>)>,
+        terminal: &Terminal,
+        extract: impl FnOnce(&Terminal) -> Option<String>,
+    ) -> Option<String> {
+        if let Some((generation, buffer)) = cache.as_ref()
+            && terminal.content_generation_is(*generation)
+        {
+            return buffer.clone();
+        }
+        // Read the generation first, so output landing during the extraction
+        // invalidates the entry rather than hiding behind it.
+        let generation = terminal.content_generation();
+        let buffer = extract(terminal);
+        *cache = generation.map(|generation| (generation, buffer.clone()));
+        buffer
+    }
+
     fn should_sync_persisted_native_workspace(&self) -> bool {
         self.runtime_kind() == RuntimeKind::Native
             && (self.multiplexer.is_some()
@@ -441,7 +471,7 @@ impl TerminalView {
                             top,
                             width: width.max(1),
                             height: height.max(1),
-                            buffer: self.extract_persisted_buffer_text(&pane.terminal),
+                            buffer: self.persisted_pane_buffer(pane),
                         }
                     })
                     .collect::<Vec<_>>();
@@ -1354,6 +1384,31 @@ mod tests {
     use super::{PersistedNativeLayoutNode, Terminal, TerminalSize, TerminalView};
     use crate::terminal_view::PaneResizeAxis;
     use crate::workspace_store::{StoredPane, StoredTab, StoredWorkspace};
+
+    #[test]
+    fn persisted_buffer_is_extracted_again_only_after_the_terminal_changes() {
+        let terminal = Terminal::new_test_display(TerminalSize {
+            cols: 8,
+            rows: 2,
+            ..TerminalSize::default()
+        });
+        terminal.hydrate_output(b"one");
+        let mut cache = None;
+        let extractions = std::cell::Cell::new(0);
+        let persist = |cache: &mut _| {
+            TerminalView::cached_persisted_buffer(cache, &terminal, |terminal| {
+                extractions.set(extractions.get() + 1);
+                TerminalView::extract_persisted_buffer_line(terminal, 0)
+            })
+        };
+        assert_eq!(persist(&mut cache).as_deref(), Some("one"));
+        assert_eq!(persist(&mut cache).as_deref(), Some("one"));
+        assert_eq!(extractions.get(), 1, "unchanged content reuses the buffer");
+
+        terminal.hydrate_output(b" two");
+        assert_eq!(persist(&mut cache).as_deref(), Some("one two"));
+        assert_eq!(extractions.get(), 2);
+    }
 
     #[test]
     fn persisted_core_buffer_preserves_combining_characters_in_history() {
